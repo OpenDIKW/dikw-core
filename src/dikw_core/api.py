@@ -1177,9 +1177,16 @@ async def _retrieve_inner(
     except BaseException:
         # Catch ``BaseException`` (not just ``Exception``) so the cleanup
         # runs on ``asyncio.CancelledError`` too — a cancelled retrieve
-        # mid-flight must not leak the multimodal embedder we just
-        # built. ``aclose`` exceptions are logged but never mask the
-        # original error.
+        # mid-flight must not leak the multimodal embedder we just built.
+        #
+        # Inner ``except Exception`` (not ``BaseException``) is
+        # intentional: if ``aclose`` itself raises ``CancelledError`` /
+        # ``SystemExit`` / ``KeyboardInterrupt`` we let it propagate and
+        # replace the original exception. asyncio convention treats
+        # cancellation as a higher-priority signal that callers must see
+        # — masking it under ``raise`` of the original would break
+        # cooperative shutdown. Regular cleanup failures (network,
+        # provider crash) are logged and the original exception wins.
         if owned_mm is not None and hasattr(owned_mm, "aclose"):
             try:
                 await owned_mm.aclose()
