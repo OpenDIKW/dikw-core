@@ -16,12 +16,14 @@ mirrored by hermes-agent (hermes_cli/auth.py:74-91).
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import os
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -140,46 +142,69 @@ def account_id_from_jwt(token: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-@contextmanager
-def _auth_file_lock(path: Path, *, timeout: float) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if _fcntl is None and _msvcrt is None:  # pragma: no cover — defensive
-        # No native lock primitives — degrade silently. Hit only on platforms
-        # that have neither fcntl nor msvcrt (e.g. WASI), which dikw doesn't
-        # support today.
-        yield
+def _seed_lock_file_if_needed(path: Path) -> None:
+    """Windows ``msvcrt.locking`` requires the file to have ≥1 byte at
+    offset 0; pre-seed via append mode so a concurrent worker holding an
+    r+ handle isn't blocked by a write_text/open("w") collision."""
+    if _msvcrt is None:
         return
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            with path.open("a", encoding="utf-8") as seed:
+                seed.write(" ")
+    except (PermissionError, OSError):
+        # Another worker already seeded the file — desired end state.
+        pass
 
-    # Windows ``msvcrt.locking`` requires the file to have at least 1 byte
-    # at offset 0. Pre-seed the lock file when needed — using append mode
-    # so a concurrent worker holding an open handle on it isn't blocked
-    # (write_text would call open("w") which collides with the other
-    # worker's r+ handle and raises PermissionError on Windows).
+
+def _try_os_lock_acquire(lock_file: Any) -> None:
+    """Single non-blocking acquire attempt. Raises BlockingIOError /
+    OSError / PermissionError on contention; returns silently on success."""
+    if _fcntl is not None:
+        _fcntl.flock(  # type: ignore[attr-defined]
+            lock_file.fileno(),
+            _fcntl.LOCK_EX | _fcntl.LOCK_NB,  # type: ignore[attr-defined]
+        )
+        return
+    assert _msvcrt is not None
+    lock_file.seek(0)
+    _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_NBLCK, 1)
+
+
+def _release_os_lock(lock_file: Any) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(  # type: ignore[attr-defined]
+            lock_file.fileno(),
+            _fcntl.LOCK_UN,  # type: ignore[attr-defined]
+        )
+        return
     if _msvcrt is not None:
         try:
-            if not path.exists() or path.stat().st_size == 0:
-                with path.open("a", encoding="utf-8") as seed:
-                    seed.write(" ")
-        except (PermissionError, OSError):
-            # Another worker raced us and already seeded the file — that's
-            # the desired end state, just continue to the lock acquire.
+            lock_file.seek(0)
+            _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_UNLCK, 1)
+        except OSError:  # pragma: no cover — release best-effort
             pass
 
+
+@contextmanager
+def _auth_file_lock(path: Path, *, timeout: float) -> Iterator[None]:
+    """Sync flavour — used by ``save_codex_tokens`` (the public sync API).
+
+    The async variant ``_async_auth_file_lock`` mirrors this except the
+    retry sleep yields back to the event loop instead of blocking it; use
+    that one from any code path running under asyncio.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if _fcntl is None and _msvcrt is None:  # pragma: no cover — defensive
+        yield
+        return
+    _seed_lock_file_if_needed(path)
     open_mode = "r+" if _msvcrt else "a+"
     with path.open(open_mode) as lock_file:
         deadline = time.time() + max(1.0, timeout)
         while True:
             try:
-                if _fcntl is not None:
-                    _fcntl.flock(  # type: ignore[attr-defined]
-                        lock_file.fileno(),
-                        _fcntl.LOCK_EX | _fcntl.LOCK_NB,  # type: ignore[attr-defined]
-                    )
-                else:
-                    assert _msvcrt is not None
-                    lock_file.seek(0)
-                    _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_NBLCK, 1)
+                _try_os_lock_acquire(lock_file)
                 break
             except (BlockingIOError, OSError, PermissionError):
                 if time.time() >= deadline:
@@ -187,21 +212,48 @@ def _auth_file_lock(path: Path, *, timeout: float) -> Iterator[None]:
                         f"Timed out waiting for codex auth lock at {path}"
                     ) from None
                 time.sleep(0.05)
-
         try:
             yield
         finally:
-            if _fcntl is not None:
-                _fcntl.flock(  # type: ignore[attr-defined]
-                    lock_file.fileno(),
-                    _fcntl.LOCK_UN,  # type: ignore[attr-defined]
-                )
-            elif _msvcrt is not None:
-                try:
-                    lock_file.seek(0)
-                    _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_UNLCK, 1)
-                except OSError:  # pragma: no cover — release best-effort
-                    pass
+            _release_os_lock(lock_file)
+
+
+@asynccontextmanager
+async def _async_auth_file_lock(
+    path: Path, *, timeout: float
+) -> AsyncIterator[None]:
+    """Async flavour of ``_auth_file_lock``.
+
+    Used by ``resolve_access_token`` so two coroutines on the same event
+    loop racing for the same expiring token don't end up with the second
+    one blocking the loop in ``time.sleep`` while the first awaits the
+    OAuth refresh — the second instead yields via ``asyncio.sleep`` and
+    re-checks once the first releases. OS-level lock semantics are
+    identical to the sync version (cross-process safety is preserved
+    because both flavours use the same file).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if _fcntl is None and _msvcrt is None:  # pragma: no cover — defensive
+        yield
+        return
+    _seed_lock_file_if_needed(path)
+    open_mode = "r+" if _msvcrt else "a+"
+    with path.open(open_mode) as lock_file:
+        deadline = time.time() + max(1.0, timeout)
+        while True:
+            try:
+                _try_os_lock_acquire(lock_file)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.time() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for codex auth lock at {path}"
+                    ) from None
+                await asyncio.sleep(0.05)
+        try:
+            yield
+        finally:
+            _release_os_lock(lock_file)
 
 
 # --------------------------------------------------------------------------- #
@@ -299,7 +351,23 @@ def _write_tokens_unlocked(home: Path, tokens: dict[str, str]) -> None:
         datetime.now(UTC).isoformat().replace("+00:00", "Z")
     )
     tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    # Open with O_CREAT|O_EXCL|O_WRONLY|0o600 so a permissive umask (e.g.
+    # 022) doesn't leave OAuth tokens world-readable on POSIX. mode is
+    # effectively a no-op on Windows where NTFS ACLs handle privacy at
+    # the user level. O_EXCL avoids re-using a leftover .tmp from a
+    # crashed writer (we hold the advisory lock so this is just defence).
+    payload = json.dumps(existing, indent=2).encode("utf-8")
+    flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+    fd = os.open(tmp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+    except BaseException:
+        # fdopen consumes fd on success; on failure ensure no leak before
+        # re-raising so the temp file gets cleaned up below.
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
     os.replace(tmp_path, path)
 
 
@@ -456,7 +524,9 @@ async def resolve_access_token(
 
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
-    with _auth_file_lock(_auth_lock_path(), timeout=CODEX_AUTH_LOCK_TIMEOUT_SECONDS):
+    async with _async_auth_file_lock(
+        _auth_lock_path(), timeout=CODEX_AUTH_LOCK_TIMEOUT_SECONDS
+    ):
         # Re-check under lock: the holder of this lock right before us may
         # have just refreshed.
         tokens = read_codex_tokens()

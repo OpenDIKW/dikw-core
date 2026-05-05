@@ -324,7 +324,9 @@ class _StubStream:
         except StopIteration:
             raise StopAsyncIteration from None
 
-    def get_final_response(self) -> SimpleNamespace:
+    async def get_final_response(self) -> SimpleNamespace:
+        # Mirrors openai SDK's AsyncResponseStream — final response is awaitable
+        # because the SDK may need one more network round-trip to assemble it.
         return self._final
 
 

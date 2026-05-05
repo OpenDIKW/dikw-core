@@ -227,7 +227,7 @@ class OpenAICodexLLM:
                         delta = getattr(event, "delta", None) or ""
                         if delta:
                             yield LLMStreamEvent(type="reasoning", delta=delta)
-                final = stream.get_final_response()
+                final = await stream.get_final_response()
 
             # Prefer the SDK's authoritative final text when present (it
             # already concatenates message items the same way ``complete``

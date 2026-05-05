@@ -314,3 +314,24 @@ def test_save_codex_tokens_writes_atomically(codex_dir: Path) -> None:
     save_codex_tokens({"access_token": "at-1", "refresh_token": "rt-1"})
     assert (codex_dir / "auth.json").is_file()
     assert not (codex_dir / "auth.json.tmp").exists()
+
+
+def test_save_codex_tokens_writes_with_owner_only_permissions(
+    codex_dir: Path,
+) -> None:
+    """OAuth tokens must not leak to other local users. The atomic-write
+    helper opens auth.json.tmp with mode 0o600, so even on POSIX with a
+    permissive umask (022) the resulting auth.json is owner-only.
+
+    On Windows ``stat().st_mode`` doesn't reflect NTFS ACLs, so this
+    check is a no-op there — we still assert the call succeeded."""
+    import os
+    import stat
+    import sys
+
+    save_codex_tokens({"access_token": "at-secret", "refresh_token": "rt-secret"})
+    auth_path = codex_dir / "auth.json"
+    assert auth_path.is_file()
+    if sys.platform != "win32":
+        mode = stat.S_IMODE(os.stat(auth_path).st_mode)
+        assert mode == 0o600, f"expected 0o600, got {mode:o}"

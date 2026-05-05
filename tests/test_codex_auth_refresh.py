@@ -291,3 +291,60 @@ async def test_resolve_raises_codex_auth_missing_when_file_absent(
     with pytest.raises(CodexAuthError) as excinfo:
         await resolve_access_token()
     assert excinfo.value.code == "codex_auth_missing"
+
+
+async def test_resolve_serialises_concurrent_refreshes_on_one_event_loop(
+    codex_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two coroutines on the same event loop racing for the same expiring
+    token must not both fire OAuth refresh.
+
+    Before round-2 fix: the second task hit ``time.sleep`` in the lock
+    retry loop and blocked the event loop, eventually timing out at 30s.
+    With the async file lock, the second task ``await``s while the first
+    refreshes, then re-checks under the lock, finds the freshly written
+    token, and returns without firing another OAuth call.
+    """
+    import asyncio
+
+    refresh_count = [0]
+    new_token = _fresh_jwt()
+
+    class _SlowAsyncClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self._kwargs = kwargs
+
+        async def __aenter__(self) -> _SlowAsyncClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def post(self, url: str, **_: Any) -> _StubResponse:
+            refresh_count[0] += 1
+            # Long enough that any time.sleep-based retry loop in the
+            # contending task would loop ~10 times before timeout.
+            await asyncio.sleep(0.5)
+            return _StubResponse(
+                status_code=200,
+                json_body={"access_token": new_token, "refresh_token": "rt-new"},
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SlowAsyncClient)
+
+    expiring = _expiring_jwt()
+    _write_auth_json(
+        codex_dir,
+        {"tokens": {"access_token": expiring, "refresh_token": "rt-old"}},
+    )
+
+    a, b = await asyncio.gather(
+        resolve_access_token(refresh_timeout_seconds=2.0),
+        resolve_access_token(refresh_timeout_seconds=2.0),
+    )
+
+    # Both tasks return the freshly refreshed access_token, but only one
+    # of them actually called the OAuth endpoint.
+    assert a == new_token
+    assert b == new_token
+    assert refresh_count[0] == 1
