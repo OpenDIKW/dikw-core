@@ -1088,85 +1088,106 @@ async def _retrieve_inner(
     _reporter: ProgressReporter = reporter or NoopReporter()
     owned_mm: MultimodalEmbeddingProvider | None = None
 
-    # Pin the text leg to the active text version's stored model AND
-    # dim so a mid-flight cfg edit (new embedding_model / embedding_dim
-    # in dikw.yml, no re-ingest) doesn't corrupt query rankings — same
-    # anti-drift guard the multimodal path applies below. We resolve
-    # the active version BEFORE building the embedder so the override
-    # can flow into ``default_dimensions``.
-    text_version_id: int | None = None
-    text_query_model = cfg.provider.embedding_model
-    text_query_dim: int | None = None
     try:
-        active_text = await storage.get_active_embed_version(modality="text")
-    except NotSupported as e:
-        logger.warning(
-            "storage backend doesn't support text versioning (%s); "
-            "querying with the cfg embedding_model unchecked",
-            e,
-        )
-        active_text = None
-    if active_text is not None and active_text.version_id is not None:
-        text_version_id = active_text.version_id
-        text_query_model = active_text.model
-        text_query_dim = active_text.dim
-
-    _embedder = embedder
-    if _embedder is None:
-        _embedder = build_embedder(cfg.provider, dim_override=text_query_dim)
-
-    mm_search: MultimodalSearch | None = None
-    mm_cfg = cfg.assets.multimodal
-    if mm_cfg is not None:
+        # Pin the text leg to the active text version's stored model AND
+        # dim so a mid-flight cfg edit (new embedding_model /
+        # embedding_dim in dikw.yml, no re-ingest) doesn't corrupt query
+        # rankings — same anti-drift guard the multimodal path applies
+        # below. We resolve the active version BEFORE building the
+        # embedder so the override can flow into ``default_dimensions``.
+        text_version_id: int | None = None
+        text_query_model = cfg.provider.embedding_model
+        text_query_dim: int | None = None
         try:
-            active = await storage.get_active_embed_version(modality="multimodal")
+            active_text = await storage.get_active_embed_version(modality="text")
         except NotSupported as e:
             logger.warning(
-                "storage backend doesn't support multimodal versioning "
-                "(%s); querying with text-only retrieval",
+                "storage backend doesn't support text versioning (%s); "
+                "querying with the cfg embedding_model unchecked",
                 e,
             )
-            active = None
-        if active is not None and active.version_id is not None:
-            mm_embedder = multimodal_embedder
-            if mm_embedder is None:
-                mm_embedder = build_multimodal_embedder(
-                    mm_cfg.provider,
-                    base_url=mm_cfg.base_url,
-                    batch=mm_cfg.batch,
-                )
-                owned_mm = mm_embedder  # caller will close it
-            # Use the model recorded on the active version, not the
-            # current cfg model — if the user just edited dikw.yml to
-            # point at a new model but hasn't re-ingested yet, the
-            # asset vectors in vec_assets_v<active> were produced by
-            # the OLD model; querying with the new model would either
-            # mismatch dim or rank against an incompatible space.
-            mm_search = MultimodalSearch(
-                embedder=mm_embedder,
-                model=active.model,
-                asset_version_id=active.version_id,
-            )
+            active_text = None
+        if active_text is not None and active_text.version_id is not None:
+            text_version_id = active_text.version_id
+            text_query_model = active_text.model
+            text_query_dim = active_text.dim
 
-    searcher = HybridSearcher.from_config(
-        storage,
-        _embedder,
-        cfg.retrieval,
-        embedding_model=text_query_model,
-        text_version_id=text_version_id,
-        multimodal=mm_search,
-    )
-    hits = await searcher.search(q, limit=limit)
-    # Strip ``text`` from the partial event — clients consuming
-    # ``retrieval_done`` for live citation rendering only need
-    # snippet/path/score; the full chunk body lives on
-    # ``final.result.chunks`` for retrieve callers that actually need
-    # it. Halves the wire payload at limit=100 with ~1 KB chunks.
-    await _reporter.partial(
-        "retrieval_done",
-        {"hits": [h.model_dump(mode="json", exclude={"text"}) for h in hits]},
-    )
-    return hits, owned_mm
+        _embedder = embedder
+        if _embedder is None:
+            _embedder = build_embedder(cfg.provider, dim_override=text_query_dim)
+
+        mm_search: MultimodalSearch | None = None
+        mm_cfg = cfg.assets.multimodal
+        if mm_cfg is not None:
+            try:
+                active = await storage.get_active_embed_version(
+                    modality="multimodal"
+                )
+            except NotSupported as e:
+                logger.warning(
+                    "storage backend doesn't support multimodal versioning "
+                    "(%s); querying with text-only retrieval",
+                    e,
+                )
+                active = None
+            if active is not None and active.version_id is not None:
+                mm_embedder = multimodal_embedder
+                if mm_embedder is None:
+                    mm_embedder = build_multimodal_embedder(
+                        mm_cfg.provider,
+                        base_url=mm_cfg.base_url,
+                        batch=mm_cfg.batch,
+                    )
+                    # Assign immediately so an exception between here and
+                    # the `return` below still goes through this scope's
+                    # cleanup — caller's finally only sees ``owned_mm``
+                    # after a successful return.
+                    owned_mm = mm_embedder
+                # Use the model recorded on the active version, not the
+                # current cfg model — if the user just edited dikw.yml to
+                # point at a new model but hasn't re-ingested yet, the
+                # asset vectors in vec_assets_v<active> were produced by
+                # the OLD model; querying with the new model would either
+                # mismatch dim or rank against an incompatible space.
+                mm_search = MultimodalSearch(
+                    embedder=mm_embedder,
+                    model=active.model,
+                    asset_version_id=active.version_id,
+                )
+
+        searcher = HybridSearcher.from_config(
+            storage,
+            _embedder,
+            cfg.retrieval,
+            embedding_model=text_query_model,
+            text_version_id=text_version_id,
+            multimodal=mm_search,
+        )
+        hits = await searcher.search(q, limit=limit)
+        # Strip ``text`` from the partial event — clients consuming
+        # ``retrieval_done`` for live citation rendering only need
+        # snippet/path/score; the full chunk body lives on
+        # ``final.result.chunks`` for retrieve callers that actually need
+        # it. Halves the wire payload at limit=100 with ~1 KB chunks.
+        await _reporter.partial(
+            "retrieval_done",
+            {"hits": [h.model_dump(mode="json", exclude={"text"}) for h in hits]},
+        )
+        return hits, owned_mm
+    except BaseException:
+        # Catch ``BaseException`` (not just ``Exception``) so the cleanup
+        # runs on ``asyncio.CancelledError`` too — a cancelled retrieve
+        # mid-flight must not leak the multimodal embedder we just
+        # built. ``aclose`` exceptions are logged but never mask the
+        # original error.
+        if owned_mm is not None and hasattr(owned_mm, "aclose"):
+            try:
+                await owned_mm.aclose()
+            except Exception:
+                logger.exception(
+                    "multimodal embedder aclose failed during _retrieve_inner cleanup"
+                )
+        raise
 
 
 def _build_page_refs(hits: list[Hit]) -> list[PageRef]:

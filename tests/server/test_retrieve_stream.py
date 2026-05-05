@@ -224,3 +224,105 @@ async def test_retrieve_rejects_out_of_range_limit(
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "bad_request"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_stream_keeps_alive_during_slow_engine(
+    server_client: httpx.AsyncClient,
+    ingested_wiki: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow ``api.retrieve`` (e.g. cold embedder + large multimodal
+    table) would otherwise leave the wire silent past the client's read
+    timeout. The route must inject heartbeat events in the gap."""
+    import asyncio as _asyncio
+
+    from dikw_core.server import routes_retrieve
+
+    real_retrieve = api_module.retrieve
+
+    async def _slow_retrieve(*args: object, **kwargs: object) -> object:
+        await _asyncio.sleep(0.2)
+        return await real_retrieve(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(api_module, "retrieve", _slow_retrieve)
+    monkeypatch.setattr(routes_retrieve, "HEARTBEAT_INTERVAL", 0.05)
+    _patch_embedder(monkeypatch)
+
+    async with server_client.stream(
+        "POST",
+        "/v1/retrieve",
+        json={"q": "scoping?", "limit": 3},
+    ) as resp:
+        events = [
+            json.loads(line)
+            for line in [ln async for ln in resp.aiter_lines()]
+            if line.strip()
+        ]
+
+    types = [e["type"] for e in events]
+    assert "heartbeat" in types, (
+        f"slow engine must trigger at least one heartbeat; got types={types}"
+    )
+    assert types[-1] == "final"
+    assert events[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_stream_emits_final_failed_on_engine_error(
+    server_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker exception must surface as ``final{failed}`` with an error
+    envelope rather than tearing the streaming response down with a 500."""
+
+    async def _broken_retrieve(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("simulated engine crash")
+
+    monkeypatch.setattr(api_module, "retrieve", _broken_retrieve)
+
+    async with server_client.stream(
+        "POST",
+        "/v1/retrieve",
+        json={"q": "anything", "limit": 3},
+    ) as resp:
+        assert resp.status_code == 200
+        events = [
+            json.loads(line)
+            for line in [ln async for ln in resp.aiter_lines()]
+            if line.strip()
+        ]
+
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["status"] == "failed"
+    assert final["error"]["code"] == "engine_error"
+    assert "simulated engine crash" in final["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_accepts_limit_boundary_values(
+    server_client: httpx.AsyncClient,
+    ingested_wiki: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``limit=1`` and ``limit=100`` are inclusive bounds — must succeed
+    where 0 / 101 fail. Guards against an off-by-one regression in the
+    route's range check."""
+    _patch_embedder(monkeypatch)
+
+    for limit in (1, 100):
+        async with server_client.stream(
+            "POST",
+            "/v1/retrieve",
+            json={"q": "wiki", "limit": limit},
+        ) as resp:
+            assert resp.status_code == 200, f"limit={limit} unexpectedly rejected"
+            events = [
+                json.loads(line)
+                for line in [ln async for ln in resp.aiter_lines()]
+                if line.strip()
+            ]
+
+        assert events[-1]["status"] == "succeeded", f"limit={limit} engine failure"
+        assert isinstance(events[-1]["result"]["chunks"], list)

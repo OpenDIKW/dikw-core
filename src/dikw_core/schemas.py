@@ -181,10 +181,11 @@ class RetrieveResult(BaseModel):
 
     Mirrors the wire-shape twin of ``QueryResult`` but without an LLM
     answer: the caller (typically an AI agent) is expected to assemble
-    its own answer from ``chunks`` + ``page_refs``. ``chunks`` is the
-    same list emitted earlier as the ``retrieval_done`` partial; we
-    return it again on ``final.result`` so a non-streaming caller can
-    pick a single event and drop the rest.
+    its own answer from ``chunks`` + ``page_refs``. ``chunks`` is a
+    superset of the same hits emitted earlier on the ``retrieval_done``
+    partial — that intermediate event omits ``text`` to keep the
+    streaming preview light, so callers needing the full chunk body
+    must read ``final.result.chunks`` (here).
     """
 
     chunks: list[Hit] = Field(default_factory=list)
