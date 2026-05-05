@@ -130,7 +130,7 @@ different mechanisms:
 
 | Where text indexing lives | SQLite | Postgres |
 |---|---|---|
-| Search index | separate FTS5 virtual table `documents_fts` (body-only; `rowid` aligns with `chunks.chunk_id`) | generated `chunks.fts tsvector` column over `chunks.text` with a `GIN` index |
+| Search index | separate FTS5 virtual table `documents_fts` (body-only; `rowid` aligns with `chunks.chunk_id`) | plain `chunks.fts tsvector NOT NULL` column populated by the Python adapter via `to_tsvector('simple', preprocess_for_fts(text, tokenizer=cjk_tokenizer))`, indexed by `GIN` |
 
 Both adapters expose the same `fts_search` method on the `Storage`
 Protocol returning the same `FTSHit` DTOs — the engine never sees the
@@ -143,11 +143,15 @@ index only chunk body text.
 remove_diacritics 0` (the `0` is explicit because the unicode61
 default is `1`, which still strips diacritics) so `café` and `cafe`
 are different tokens — same byte-level behavior as PG's
-`to_tsvector('simple', text)`. CJK input on the SQLite adapter flows
-through `info.tokenize.preprocess_for_fts` (jieba when
-`cjk_tokenizer="jieba"`) on both ingest and query; PG does its
-tokenization inside `to_tsvector` and is unaffected by the Python-
-side preprocessor.
+`to_tsvector('simple', text)`. CJK input flows through
+`info.tokenize.preprocess_for_fts` (jieba when
+`cjk_tokenizer="jieba"`) on both adapters: SQLite inserts the
+segmented body into `documents_fts`; PG feeds the same segmented
+string through `to_tsvector('simple', …)` into a plain `chunks.fts
+tsvector NOT NULL` column populated by the Python adapter on INSERT.
+A `GENERATED ALWAYS AS to_tsvector('simple', text)` column would
+bypass Python's jieba and silently regress CJK BM25 — see
+`storage/migrations/postgres/schema.sql` for the rationale.
 
 The PG `fts_search` consumes the `info/search.py:_sanitize_fts`
 output via `to_tsquery` (with a small `_fts_to_tsquery_string`
