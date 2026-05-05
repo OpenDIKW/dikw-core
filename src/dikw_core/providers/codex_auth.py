@@ -30,15 +30,25 @@ from typing import Any
 
 from .base import ProviderError
 
-try:
-    import fcntl as _fcntl
-except ImportError:  # pragma: no cover — Windows
-    _fcntl = None  # type: ignore[assignment]
+# Annotate as Any|None so mypy treats attribute access uniformly across
+# platforms — fcntl is POSIX-only and msvcrt is Windows-only, so leaving
+# the import-as type would force per-platform `# type: ignore[attr-defined]`
+# and per-platform `unused-ignore` churn. The runtime ``is not None`` checks
+# below carry the actual platform dispatch.
+_fcntl: Any | None = None
+_msvcrt: Any | None = None
 
 try:
-    import msvcrt as _msvcrt
+    import fcntl
+    _fcntl = fcntl
+except ImportError:  # pragma: no cover — Windows
+    pass
+
+try:
+    import msvcrt
+    _msvcrt = msvcrt
 except ImportError:  # pragma: no cover — POSIX
-    _msvcrt = None  # type: ignore[assignment]
+    pass
 
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -161,10 +171,7 @@ def _try_os_lock_acquire(lock_file: Any) -> None:
     """Single non-blocking acquire attempt. Raises BlockingIOError /
     OSError / PermissionError on contention; returns silently on success."""
     if _fcntl is not None:
-        _fcntl.flock(  # type: ignore[attr-defined]
-            lock_file.fileno(),
-            _fcntl.LOCK_EX | _fcntl.LOCK_NB,  # type: ignore[attr-defined]
-        )
+        _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         return
     assert _msvcrt is not None
     lock_file.seek(0)
@@ -173,10 +180,7 @@ def _try_os_lock_acquire(lock_file: Any) -> None:
 
 def _release_os_lock(lock_file: Any) -> None:
     if _fcntl is not None:
-        _fcntl.flock(  # type: ignore[attr-defined]
-            lock_file.fileno(),
-            _fcntl.LOCK_UN,  # type: ignore[attr-defined]
-        )
+        _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
         return
     if _msvcrt is not None:
         try:
