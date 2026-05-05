@@ -161,9 +161,19 @@ def _auth_file_lock(path: Path, *, timeout: float) -> Iterator[None]:
         return
 
     # Windows ``msvcrt.locking`` requires the file to have at least 1 byte
-    # at offset 0. Pre-seed the lock file when needed.
-    if _msvcrt and (not path.exists() or path.stat().st_size == 0):
-        path.write_text(" ", encoding="utf-8")
+    # at offset 0. Pre-seed the lock file when needed — using append mode
+    # so a concurrent worker holding an open handle on it isn't blocked
+    # (write_text would call open("w") which collides with the other
+    # worker's r+ handle and raises PermissionError on Windows).
+    if _msvcrt is not None:
+        try:
+            if not path.exists() or path.stat().st_size == 0:
+                with path.open("a", encoding="utf-8") as seed:
+                    seed.write(" ")
+        except (PermissionError, OSError):
+            # Another worker raced us and already seeded the file — that's
+            # the desired end state, just continue to the lock acquire.
+            pass
 
     open_mode = "r+" if _msvcrt else "a+"
     with path.open(open_mode) as lock_file:
@@ -300,3 +310,154 @@ def save_codex_tokens(tokens: dict[str, str]) -> None:
             datetime.now(UTC).isoformat().replace("+00:00", "Z")
         )
         path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# OAuth refresh (HTTP) + resolve_access_token orchestration
+# --------------------------------------------------------------------------- #
+
+
+_RELOGIN_ERROR_CODES = frozenset({"invalid_grant", "invalid_token", "invalid_request"})
+
+
+def _extract_oauth_error(payload: Any) -> tuple[str, str | None]:
+    """Pull (code, description) out of an OAuth token-endpoint error body.
+
+    Handles both the spec shape ``{"error":"code","error_description":"..."}``
+    and OpenAI's nested ``{"error":{"code":"...","message":"..."}}``.
+    """
+    if not isinstance(payload, dict):
+        return "codex_refresh_failed", None
+    err = payload.get("error")
+    if isinstance(err, dict):
+        code = err.get("code") or err.get("type") or "codex_refresh_failed"
+        desc = err.get("message")
+        return (
+            str(code) if isinstance(code, str) else "codex_refresh_failed",
+            desc if isinstance(desc, str) and desc.strip() else None,
+        )
+    if isinstance(err, str) and err.strip():
+        desc = payload.get("error_description") or payload.get("message")
+        return (
+            err.strip(),
+            desc if isinstance(desc, str) and desc.strip() else None,
+        )
+    return "codex_refresh_failed", None
+
+
+def refresh_codex_tokens(
+    *, refresh_token: str, timeout_seconds: float = 20.0
+) -> dict[str, str]:
+    """Exchange a refresh_token for a fresh access_token at the OpenAI
+    OAuth token endpoint.
+
+    Returns ``{access_token, refresh_token}`` — when the response carries a
+    rotated refresh_token we use it, otherwise the input is preserved
+    (some token endpoints omit the field on no-rotation refreshes).
+
+    Raises ``CodexAuthError`` on failure with ``relogin_required=True`` for
+    the codes that mean "the refresh_token can never recover" (invalid_grant
+    / refresh_token_reused / 401-without-known-code), and
+    ``relogin_required=False`` for transient 5xx so the user isn't told to
+    re-login because of an upstream blip.
+    """
+    # Lazy import: httpx is already a project dep, but isolating it here
+    # keeps the rest of the module importable in environments that stub it.
+    import httpx
+
+    timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+        response = client.post(
+            CODEX_OAUTH_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": CODEX_OAUTH_CLIENT_ID,
+            },
+        )
+
+    if response.status_code != 200:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        code, description = _extract_oauth_error(payload)
+        relogin = code in _RELOGIN_ERROR_CODES
+        if code == "refresh_token_reused":
+            relogin = True
+            message = (
+                "Codex refresh token was already consumed by another client "
+                "(e.g. codex CLI or another dikw process). Run `codex` to "
+                "generate fresh tokens."
+            )
+        elif description:
+            message = f"Codex token refresh failed: {description}"
+        else:
+            message = (
+                f"Codex token refresh failed with status {response.status_code}."
+            )
+        # 401/403 from the OAuth endpoint always means the refresh token
+        # is bad — force relogin even if the body's error code wasn't one
+        # of the known relogin strings.
+        if response.status_code in (401, 403):
+            relogin = True
+        raise CodexAuthError(message, code=code, relogin_required=relogin)
+
+    try:
+        body = response.json()
+    except Exception as exc:  # pragma: no cover — JSON parse fault
+        raise CodexAuthError(
+            "Codex token refresh returned invalid JSON.",
+            code="codex_refresh_invalid_json",
+            relogin_required=True,
+        ) from exc
+
+    new_access = body.get("access_token") if isinstance(body, dict) else None
+    if not isinstance(new_access, str) or not new_access.strip():
+        raise CodexAuthError(
+            "Codex token refresh response was missing access_token.",
+            code="codex_refresh_missing_access_token",
+            relogin_required=True,
+        )
+    new_refresh = body.get("refresh_token") if isinstance(body, dict) else None
+    if isinstance(new_refresh, str) and new_refresh.strip():
+        rotated = new_refresh.strip()
+    else:
+        # Some token endpoints don't rotate on every call — keep the old
+        # refresh_token rather than nulling out the long-term credential.
+        rotated = refresh_token
+    return {"access_token": new_access.strip(), "refresh_token": rotated}
+
+
+def resolve_access_token(
+    *,
+    refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    refresh_timeout_seconds: float = 20.0,
+) -> str:
+    """Single entrypoint for the LLM provider: load tokens, refresh if
+    expiring, write back the fresh pair, return the active access_token.
+
+    Re-reads the file under lock before refreshing so two parallel dikw
+    workers each seeing a near-expiring token will only fire one network
+    refresh — the second worker grabs the lock, re-reads, and finds the
+    first worker's freshly-written token already valid.
+    """
+    tokens = read_codex_tokens()
+    if not _is_expiring(tokens["access_token"], skew_seconds=refresh_skew_seconds):
+        return tokens["access_token"]
+
+    with _auth_file_lock(_auth_lock_path(), timeout=CODEX_AUTH_LOCK_TIMEOUT_SECONDS):
+        # Re-check under lock: the holder of this lock right before us may
+        # have just refreshed.
+        tokens = read_codex_tokens()
+        if not _is_expiring(
+            tokens["access_token"], skew_seconds=refresh_skew_seconds
+        ):
+            return tokens["access_token"]
+        refreshed = refresh_codex_tokens(
+            refresh_token=tokens["refresh_token"],
+            timeout_seconds=refresh_timeout_seconds,
+        )
+        save_codex_tokens(refreshed)
+        return refreshed["access_token"]
