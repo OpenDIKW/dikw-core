@@ -14,6 +14,7 @@ from .base import (
     ToolSpec,
 )
 from .gitee_multimodal import GiteeMultimodalEmbedding
+from .openai_codex import OpenAICodexLLM
 from .openai_compat import OpenAICompatEmbeddings, OpenAICompatLLM
 
 
@@ -26,6 +27,16 @@ def build_llm(config: ProviderConfig) -> LLMProvider:
         )
     if config.llm == "openai_compat":
         return OpenAICompatLLM(
+            base_url=config.llm_base_url,
+            max_retries=config.llm_max_retries,
+            timeout_seconds=config.llm_timeout_seconds,
+        )
+    if config.llm == "openai_codex":
+        # The validator on ProviderConfig already required llm_base_url to
+        # be set when llm == "openai_codex", so the assert here is a typing
+        # narrow rather than runtime defence.
+        assert config.llm_base_url is not None
+        return OpenAICodexLLM(
             base_url=config.llm_base_url,
             max_retries=config.llm_max_retries,
             timeout_seconds=config.llm_timeout_seconds,

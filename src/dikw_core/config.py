@@ -11,18 +11,23 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .domains.info.tokenize import CjkTokenizer
 
 
 class ProviderConfig(BaseModel):
-    # ``anthropic_compat`` / ``openai_compat`` are protocol names, not vendor
-    # names — pick the wire protocol the SDK speaks, then pin the vendor via
-    # ``llm_base_url`` (e.g., ``anthropic_compat`` + MiniMax's
-    # https://api.minimaxi.com/anthropic). Defaults to ``anthropic_compat``
-    # so a fresh ``dikw init`` against api.anthropic.com is one key away.
-    llm: Literal["anthropic_compat", "openai_compat"] = "anthropic_compat"
+    # ``anthropic_compat`` / ``openai_compat`` / ``openai_codex`` are protocol
+    # names, not vendor names — pick the wire protocol the SDK speaks, then
+    # pin the vendor via ``llm_base_url`` (e.g., ``anthropic_compat`` +
+    # MiniMax's https://api.minimaxi.com/anthropic). ``openai_codex`` is
+    # hard-bound to the ChatGPT backend (the validator below requires a
+    # matching ``llm_base_url``); it speaks the OpenAI Responses API, not
+    # Chat Completions, and rotates an OAuth access_token from
+    # ``~/.codex/auth.json`` instead of an ``OPENAI_API_KEY``. Defaults to
+    # ``anthropic_compat`` so a fresh ``dikw init`` against api.anthropic.com
+    # is one key away.
+    llm: Literal["anthropic_compat", "openai_compat", "openai_codex"] = "anthropic_compat"
     llm_model: str = "claude-sonnet-4-6"
     embedding: Literal["openai_compat"] = "openai_compat"
     embedding_model: str = "text-embedding-3-small"
@@ -77,6 +82,27 @@ class ProviderConfig(BaseModel):
     # establishes a fresh connection on the next attempt.
     llm_timeout_seconds: float = 120.0
     embedding_timeout_seconds: float = 60.0
+
+    @model_validator(mode="after")
+    def _require_codex_base_url(self) -> ProviderConfig:
+        # ``openai_codex`` is the only protocol that has no SDK-default
+        # endpoint — Codex models live on chatgpt.com/backend-api/codex
+        # exclusively. Surface a missing or blank ``llm_base_url`` at
+        # config-load time rather than at first ``complete()`` call so
+        # ``dikw check`` fails fast and the error message tells the user
+        # what to paste. ``None`` and empty/whitespace strings are both
+        # rejected — yaml ``llm_base_url: ""`` would otherwise reach the
+        # SDK as a malformed URL and surface as a low-level connection
+        # error instead.
+        if self.llm == "openai_codex" and (
+            self.llm_base_url is None or not self.llm_base_url.strip()
+        ):
+            raise ValueError(
+                "openai_codex requires llm_base_url to be set explicitly. "
+                "Use https://chatgpt.com/backend-api/codex unless your "
+                "deployment fronts a custom Codex-protocol gateway."
+            )
+        return self
 
 
 class RetrievalConfig(BaseModel):

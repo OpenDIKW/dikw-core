@@ -8,7 +8,9 @@ imports; new code should reach into ``dikw_core.eval.fake_embedder``.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,10 +27,29 @@ __all__ = [
     "FakeLLM",
     "FakeMultimodalEmbedding",
     "init_test_wiki",
+    "make_jwt",
     "make_provider_cfg",
     "register_text_version",
     "register_text_version_or_skip",
 ]
+
+
+def make_jwt(claims: dict[str, Any]) -> str:
+    """Build a 3-segment JWT with the given payload claims.
+
+    Header is fixed (``{"alg":"none","typ":"JWT"}``) and the signature
+    segment is a placeholder string — the codex_auth helpers under test
+    never verify the signature, only base64url-decode the payload. Used
+    by tests that want to construct tokens with specific ``exp`` /
+    ``chatgpt_account_id`` claims without depending on PyJWT.
+    """
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    header = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8"))
+    payload = _b64url(json.dumps(claims).encode("utf-8"))
+    return f"{header}.{payload}.sig"
 
 
 def init_test_wiki(path: Any, *, description: str = "test wiki", dim: int = EMBED_DIM) -> None:
@@ -157,10 +178,17 @@ class FakeLLM:
     With ``stream_chunks=None`` the default Phase-1 behaviour holds and
     ``complete_stream`` raises ``NotImplementedError``, matching the
     real provider stubs.
+
+    ``reasoning_chunks`` (optional) emits ``LLMStreamEvent(type="reasoning")``
+    events ahead of the token stream — used by tests that want to verify
+    downstream consumers tolerate (or surface) reasoning fragments emitted
+    by reasoning-capable providers like ``OpenAICodexLLM``. Requires
+    ``stream_chunks`` to also be set.
     """
 
     response_text: str = "STUB: wired up."
     stream_chunks: list[str] | None = None
+    reasoning_chunks: list[str] | None = None
     last_system: str | None = field(default=None, init=False)
     last_user: str | None = field(default=None, init=False)
     last_max_tokens: int | None = field(default=None, init=False)
@@ -201,7 +229,12 @@ class FakeLLM:
                 "FakeLLM.complete_stream requires stream_chunks to be set"
             )
 
+        reasoning = self.reasoning_chunks
+
         async def _gen() -> AsyncIterator[LLMStreamEvent]:
+            if reasoning is not None:
+                for r_chunk in reasoning:
+                    yield LLMStreamEvent(type="reasoning", delta=r_chunk)
             for chunk in chunks:
                 yield LLMStreamEvent(type="token", delta=chunk)
             yield LLMStreamEvent(

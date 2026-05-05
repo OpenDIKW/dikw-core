@@ -6,7 +6,7 @@ you don't need to touch any.
 
 ## The design seam
 
-`dikw-core` ships with two protocol-level providers, both pluggable via
+`dikw-core` ships with three protocol-level providers, all pluggable via
 `dikw.yml` alone. The `llm` field names the **protocol** (which SDK
 to speak), not the vendor — vendor is whatever `llm_base_url` points at:
 
@@ -20,9 +20,22 @@ to speak), not the vendor — vendor is whatever `llm_base_url` points at:
   `llm_base_url` that speaks the OpenAI HTTP surface. Covers OpenAI,
   Azure, Ollama, vLLM, TEI, DeepSeek, GLM, Gemini (OpenAI-compat mode),
   Gitee AI, and most others.
+- **`openai_codex`** — uses the `openai` async SDK against the **OpenAI
+  Responses API** (not Chat Completions) hosted at the ChatGPT backend.
+  Targets the codex model family (`gpt-5.5` / `gpt-5.4-mini` /
+  `gpt-5.3-codex` / …) which lives only on `chatgpt.com/backend-api/codex`
+  and isn't reachable through the public `api.openai.com`. Authenticates
+  with a ChatGPT OAuth `access_token` loaded from `~/.codex/auth.json`
+  (the same file `codex` CLI maintains) — dikw refreshes it before each
+  call when it's near expiry and writes the rotated tokens back. **No
+  `OPENAI_API_KEY` involved.** `llm_base_url` is required (no SDK default
+  exists); a `ProviderConfig` validator enforces this at config load.
 
-Every vendor falls under one of these two. **To add a new vendor you
-don't write code; you edit `dikw.yml` and the right two env vars.**
+`anthropic_compat` and `openai_compat` cover most vendors. **`openai_codex`
+is the dedicated path for ChatGPT-only models** — the wire shape, auth
+mechanism, and required Cloudflare headers all diverge from
+`openai_compat`, which is why it's a sibling protocol rather than an
+`openai_compat` base_url variant.
 
 ## Vendor cookbook
 
@@ -32,6 +45,7 @@ cross-check the vendor's own docs.
 | Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | LLM key env | Embed key env |
 |---|---|---|---|---|---|---|
 | **OpenAI** (default) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
+| **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *OAuth via `~/.codex/auth.json`* | — |
 | **Anthropic** | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **MiniMax** | `anthropic_compat` | `https://api.minimaxi.com/anthropic` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
@@ -175,6 +189,43 @@ produces a mismatch between indexed and queried tokens, silently
 dropping CJK hits. To change: wipe `.dikw/index.sqlite` and `dikw
 ingest` fresh.
 
+### 8. `openai_codex` has its own auth & endpoint rules
+
+The codex protocol differs from the other two on every axis worth
+flagging — keep these in mind before flipping `llm: openai_codex`:
+
+- **OAuth instead of API key.** dikw reads the access_token + refresh_token
+  pair codex CLI writes to `~/.codex/auth.json`, refreshes through
+  `https://auth.openai.com/oauth/token` when the access_token is within
+  120s of expiry (the `exp` JWT claim), and writes the rotated pair back.
+  No `OPENAI_API_KEY` / `CODEX_API_KEY` env is consulted — you authenticate
+  by running `codex` once, then dikw self-maintains the credential.
+- **refresh_token rotates per refresh.** ChatGPT's OAuth issuer mints a
+  fresh refresh_token on every successful refresh. If two clients (codex
+  CLI + dikw, or two parallel dikw deployments pointed at the same
+  `~/.codex/auth.json`) both refresh, **the loser ends up with an
+  invalidated refresh_token** and surfaces a `relogin_required` error on
+  the next call — recovery is a fresh `codex` login.
+- **`llm_base_url` is required.** No SDK default exists for the ChatGPT
+  backend. The `ProviderConfig` validator rejects `llm: openai_codex` +
+  `llm_base_url: null` at config load with a message telling you what to
+  paste. Override only if you front the protocol with a custom gateway.
+- **gpt-5.5 / gpt-5.4-mini / gpt-5.3-codex are ChatGPT-only.** They are
+  not exposed at `api.openai.com`; pointing `llm_base_url` at the public
+  OpenAI API will return `model_not_found`.
+- **No prompt caching.** Repeated synth / query / distill within the same
+  session pay full input-token cost — same caveat as `openai_compat`,
+  unlike `anthropic_compat`'s `cache_control: ephemeral`.
+- **Reasoning fragments are dropped today.** dikw's `LLMStreamEvent`
+  Protocol carries a `reasoning` event type and the codex provider emits
+  it for `response.reasoning_summary_text.delta` events, but the
+  query/synth NDJSON renderer only forwards `token` / `done`. Switch to
+  reasoning models freely — the chain-of-thought just isn't surfaced to
+  the user yet (a follow-up PR will add a `--show-reasoning` toggle).
+- **`$CODEX_HOME` overrides the auth-file location** for unusual setups
+  (containerised deploys, multi-account testing). Defaults to `~/.codex`
+  to match codex CLI's standard.
+
 ## Public-benchmark calibration with Gitee AI
 
 Reproducible workflow for running BEIR / CMTEB benchmarks against
@@ -302,6 +353,56 @@ full command. **Before running any CJK eval**, flip
 report 0.03 nDCG@10 regardless of fusion tuning, because FTS5's
 default tokenizer doesn't segment Chinese.
 
+## OpenAI Codex (ChatGPT-backend GPT-5 series)
+
+The codex protocol picks up `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex`,
+and the rest of the ChatGPT-only model family. Authentication is OAuth
+via the same `~/.codex/auth.json` file the official `codex` CLI writes
+and refreshes.
+
+**Prerequisite — install the codex CLI and log in once:**
+
+```bash
+# Install codex CLI from https://github.com/openai/codex
+codex                       # opens the browser OAuth flow
+                            # writes ~/.codex/auth.json on success
+```
+
+After that, point `dikw.yml` at the codex protocol:
+
+```yaml
+provider:
+  llm: openai_codex
+  llm_model: gpt-5.5                   # or gpt-5.4-mini / gpt-5.3-codex
+  llm_base_url: https://chatgpt.com/backend-api/codex   # required
+  embedding: openai_compat             # codex doesn't ship embeddings
+  embedding_model: text-embedding-3-small
+  embedding_base_url: https://api.openai.com/v1
+  embedding_dim: 1536
+  embedding_revision: ""
+  embedding_normalize: true
+  embedding_distance: cosine
+```
+
+`.env`:
+
+```
+DIKW_EMBEDDING_API_KEY=<your embedding-vendor key>
+# CODEX_HOME=/custom/path              # optional — defaults to ~/.codex
+```
+
+Verify before running ingest:
+
+```bash
+uv run --env-file .env dikw check --path . --llm-only
+# Expected:
+# LLM | https://chatgpt.com/backend-api/codex | OK | <ms>ms
+```
+
+If `dikw check` reports `relogin_required`, the OAuth refresh_token has
+been rotated by another client (codex CLI, another dikw process). Rerun
+`codex` to mint a fresh pair, then retry.
+
 ## Pre-flight checklist for a new vendor
 
 Before running `dikw ingest` against a real corpus with a new vendor
@@ -315,6 +416,8 @@ config:
       deleted (see gotcha #1).
 - [ ] Costs understood: if the LLM leg is `openai_compat`, you pay full
       input-token price on every synth / query — no prompt caching.
+- [ ] If the LLM leg is `openai_codex`, you've already run `codex` once
+      to populate `~/.codex/auth.json` (gotcha #8).
 
 ## See also
 

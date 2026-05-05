@@ -10,17 +10,13 @@ import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from ._http import build_no_keepalive_async_client
 from .base import LLMResponse, LLMStreamEvent, ProviderError, ToolSpec
 
 if TYPE_CHECKING:  # avoid importing openai at module load for envs without it
     from openai import AsyncOpenAI
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
-# Bounded read/write defaults — the SDK's 600s default lets a stale
-# keepalive connection hang a whole batch pipeline. Connect is left short
-# because TLS handshake either succeeds quickly or signals an unhealthy
-# endpoint; pool is short to surface client-side congestion immediately.
-_DEFAULT_TIMEOUT_SECONDS = 60.0
 
 
 def _resolve_api_key(explicit: str | None) -> str:
@@ -56,29 +52,13 @@ def _client(
     max_retries: int | None = None,
     timeout_seconds: float | None = None,
 ) -> AsyncOpenAI:
-    import httpx
     from openai import AsyncOpenAI
 
     kwargs: dict[str, Any] = {"base_url": base_url, "api_key": api_key}
     if max_retries is not None:
         kwargs["max_retries"] = max_retries
-    # ``timeout`` covers the read/write/pool legs separately so a healthy
-    # connection isn't strangled by a tight overall budget while a dead
-    # one still surfaces fast. The retry policy on the SDK reconnects
-    # after a ReadTimeout fires.
-    seconds = timeout_seconds if timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
-    timeout = httpx.Timeout(connect=10.0, read=seconds, write=seconds, pool=5.0)
-    # Hand the SDK a custom httpx client that disables connection keepalive
-    # entirely. Provider endpoints commonly used for batch embedding (Gitee
-    # AI's Qwen3-* family in particular) silently drop idle TCP keepalives
-    # mid-batch; the OpenAI SDK's retry path then loops on the same dead
-    # socket from the pool until the read timeout fires N+1 times. Forcing
-    # a fresh connection per request adds ~50ms TLS handshake overhead but
-    # eliminates the multi-minute-per-batch retry storm.
-    kwargs["http_client"] = httpx.AsyncClient(
-        timeout=timeout,
-        limits=httpx.Limits(max_keepalive_connections=0),
-    )
+    timeout, http_client = build_no_keepalive_async_client(timeout_seconds)
+    kwargs["http_client"] = http_client
     kwargs["timeout"] = timeout
     return AsyncOpenAI(**kwargs)
 

@@ -32,15 +32,19 @@ class LLMStreamEvent(BaseModel):
     """One event in a streaming LLM completion.
 
     ``type == "token"``: incremental text fragment in ``delta``.
+    ``type == "reasoning"``: thinking-process fragment in ``delta``. Optional;
+    only emitted by reasoning-capable providers (OpenAI Codex Responses API).
+    Consumers that only know ``token`` / ``done`` must tolerate this type as
+    unrecognized and ignore it — that matches ``api.query``'s if/elif dispatch.
     ``type == "done"``: terminal event with the full assembled ``text`` and
-    ``finish_reason``/``usage`` mirroring ``LLMResponse``. Stream consumers
-    should expect exactly one ``done`` event after zero or more ``token``
-    events; providers that don't support streaming raise
-    ``NotImplementedError`` from ``complete_stream`` and callers fall back
-    to ``complete``.
+    ``finish_reason``/``usage`` mirroring ``LLMResponse``. Sequence contract:
+    zero or more ``token`` / ``reasoning`` events in any interleaving,
+    followed by exactly one ``done``. Providers that don't support streaming
+    raise ``NotImplementedError`` from ``complete_stream`` and callers fall
+    back to ``complete``.
     """
 
-    type: Literal["token", "done"]
+    type: Literal["token", "reasoning", "done"]
     delta: str | None = None
     text: str | None = None
     finish_reason: str | None = None
