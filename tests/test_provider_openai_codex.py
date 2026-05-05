@@ -12,8 +12,6 @@ the call.
 
 from __future__ import annotations
 
-import base64
-import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,15 +21,7 @@ from dikw_core.providers.base import LLMResponse
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import OpenAICodexLLM
 
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _make_jwt(claims: dict[str, Any]) -> str:
-    header = _b64url(json.dumps({"alg": "none"}).encode("utf-8"))
-    payload = _b64url(json.dumps(claims).encode("utf-8"))
-    return f"{header}.{payload}.sig"
+from .fakes import make_jwt as _make_jwt
 
 
 def _make_response(

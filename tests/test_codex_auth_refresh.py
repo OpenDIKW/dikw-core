@@ -12,7 +12,6 @@ is touched. Covers:
 
 from __future__ import annotations
 
-import base64
 import json
 import time
 from pathlib import Path
@@ -29,23 +28,15 @@ from dikw_core.providers.codex_auth import (
     resolve_access_token,
 )
 
-
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _make_jwt(claims: dict[str, Any]) -> str:
-    header = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8"))
-    payload = _b64url(json.dumps(claims).encode("utf-8"))
-    return f"{header}.{payload}.sig"
+from .fakes import make_jwt
 
 
 def _fresh_jwt() -> str:
-    return _make_jwt({"exp": int(time.time()) + 3600})
+    return make_jwt({"exp": int(time.time()) + 3600})
 
 
 def _expiring_jwt() -> str:
-    return _make_jwt({"exp": int(time.time()) + 30})
+    return make_jwt({"exp": int(time.time()) + 30})
 
 
 @pytest.fixture()

@@ -29,17 +29,13 @@ from dikw_core.providers.codex_auth import (
     save_codex_tokens,
 )
 
+from .fakes import make_jwt as _make_jwt
+
 
 def _b64url(data: bytes) -> str:
+    """One-off helper for the padding-tolerance test below — every other
+    JWT-shaped value comes from ``make_jwt`` (in tests/fakes.py)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _make_jwt(claims: dict) -> str:
-    header = _b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8"))
-    payload = _b64url(json.dumps(claims).encode("utf-8"))
-    # Signature segment is mandatory for the 3-part shape but the helpers
-    # under test never verify it.
-    return f"{header}.{payload}.signature-not-checked"
 
 
 # ---------------------------- codex_home --------------------------------- #
