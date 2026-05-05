@@ -45,6 +45,10 @@ from dikw_core.api import _sanitize_base_url
             "http://localhost:11434/v1",
             "http://localhost:11434/v1",
         ),
+        # IPv6 literal — must keep brackets so the URL is still parseable
+        # by httpx / the OpenAI SDK after round-tripping.
+        ("http://[::1]:8080/v1", "http://[::1]:8080/v1"),
+        ("http://[::1]/v1", "http://[::1]/v1"),
         # Empty path is OK (just scheme + host).
         ("https://api.example.com", "https://api.example.com"),
     ],
@@ -65,6 +69,11 @@ def test_sanitize_base_url_strips_credentials_keeps_endpoint(
         "api.example.com/v1",
         # Garbage scheme-less string.
         "not a url",
+        # Out-of-range port — ``urlsplit().port`` raises ``ValueError``;
+        # we must catch and drop rather than 5xx the health probe.
+        "http://api.example.com:99999/v1",
+        # Non-numeric port — same surface; verify the helper survives.
+        "http://api.example.com:abc/v1",
     ],
 )
 def test_sanitize_base_url_drops_unparseable_or_empty(raw: str | None) -> None:

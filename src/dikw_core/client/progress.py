@@ -468,16 +468,22 @@ def render_health_report(console: Console, report: Mapping[str, Any]) -> None:
     overview.add_row("storage_engine", str(report.get("storage_engine") or ""))
     console.print(overview)
 
-    counts = report.get("layer_counts") or {}
+    counts = report.get("layer_counts")
+    counts_table = Table(
+        title="layer counts", show_header=True, header_style="bold"
+    )
+    counts_table.add_column("layer")
+    counts_table.add_column("count", justify="right")
     if isinstance(counts, dict):
-        counts_table = Table(
-            title="layer counts", show_header=True, header_style="bold"
-        )
-        counts_table.add_column("layer")
-        counts_table.add_column("count", justify="right")
         for key in ("sources", "wiki_pages", "wisdom_items", "chunks"):
-            counts_table.add_row(key, str(int(counts.get(key) or 0)))
-        console.print(counts_table)
+            raw = counts.get(key)
+            counts_table.add_row(
+                key, str(int(raw)) if isinstance(raw, int | float) else "?"
+            )
+    else:
+        # Surface schema drift instead of silently skipping the section.
+        counts_table.add_row("(unavailable)", "?")
+    console.print(counts_table)
 
     providers = report.get("providers") or {}
     if isinstance(providers, dict):

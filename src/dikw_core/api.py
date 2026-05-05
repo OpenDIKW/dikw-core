@@ -578,13 +578,20 @@ def _sanitize_base_url(url: str | None) -> str | None:
         return None
     try:
         parts = urlsplit(url)
+        # ``hostname`` and ``port`` are properties that can raise on
+        # malformed input (e.g. ``port`` raises ``ValueError`` for an
+        # out-of-range or non-numeric port); pull them inside the try.
+        host = parts.hostname
+        port = parts.port
     except (ValueError, TypeError):
         return None
-    if not parts.scheme or not parts.hostname:
+    if not parts.scheme or not host:
         return None
-    netloc = parts.hostname
-    if parts.port is not None:
-        netloc = f"{netloc}:{parts.port}"
+    # ``urlsplit.hostname`` strips IPv6 brackets — re-bracket so
+    # ``http://[::1]:8080/v1`` doesn't round-trip as ``http://::1:8080/v1``.
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
@@ -625,10 +632,15 @@ async def health(path: str | Path | None = None) -> HealthReport:
         await storage.close()
 
     by_layer = counts.documents_by_layer
+    # Wisdom items are *not* stored as documents (there is no row in
+    # ``documents`` with ``layer = wisdom``) — they live in
+    # ``wisdom_items`` and surface via ``wisdom_by_status``. Sum across
+    # statuses so the count reflects total wisdom regardless of review
+    # state (candidate / approved / archived).
     layer_counts = LayerCounts(
         sources=int(by_layer.get(Layer.SOURCE.value, 0)),
         wiki_pages=int(by_layer.get(Layer.WIKI.value, 0)),
-        wisdom_items=int(by_layer.get(Layer.WISDOM.value, 0)),
+        wisdom_items=sum(int(v) for v in counts.wisdom_by_status.values()),
         chunks=counts.chunks,
     )
 

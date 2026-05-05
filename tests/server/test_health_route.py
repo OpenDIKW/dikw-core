@@ -155,6 +155,47 @@ async def test_health_storage_engine_omits_dsn_and_path(
 
 
 @pytest.mark.asyncio
+async def test_health_wisdom_items_count_reflects_wisdom_by_status(
+    server_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wisdom items live in the ``wisdom_items`` table — they don't
+    appear as documents with ``layer = wisdom``. Sourcing the count from
+    ``documents_by_layer`` (the obvious-but-wrong place) silently always
+    returns 0. This guards the seam by injecting a non-empty
+    ``wisdom_by_status`` and asserting the total surfaces on /v1/health.
+    """
+    from dikw_core.schemas import StorageCounts
+
+    original_with_storage = api_module._with_storage
+
+    async def _patched_with_storage(path: object) -> object:
+        cfg, root, storage = await original_with_storage(path)  # type: ignore[arg-type]
+        original_counts = storage.counts
+
+        async def _patched_counts() -> StorageCounts:
+            base = await original_counts()
+            return base.model_copy(
+                update={
+                    "wisdom_by_status": {
+                        "candidate": 2,
+                        "approved": 1,
+                        "archived": 1,
+                    }
+                }
+            )
+
+        storage.counts = _patched_counts  # type: ignore[method-assign]
+        return cfg, root, storage
+
+    monkeypatch.setattr(api_module, "_with_storage", _patched_with_storage)
+
+    resp = await server_client.get("/v1/health")
+    body = resp.json()
+    assert body["layer_counts"]["wisdom_items"] == 4
+
+
+@pytest.mark.asyncio
 async def test_health_strips_credentials_from_base_url(
     server_client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
