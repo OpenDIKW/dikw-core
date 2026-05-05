@@ -46,7 +46,13 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def close(self) -> None:
             return None
 
+    async def _fake_resolve() -> str:
+        return "test-token"
+
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(
+        "dikw_core.providers.openai_codex.resolve_access_token", _fake_resolve
+    )
     return rec
 
 
@@ -58,11 +64,7 @@ async def _exercise(provider: OpenAICodexLLM) -> None:
 async def test_codex_client_passes_max_retries_when_set(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL,
-        max_retries=6,
-        access_token_override="t",
-    )
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, max_retries=6)
     await _exercise(provider)
     assert captured["init_kwargs"]["max_retries"] == 6
 
@@ -70,18 +72,14 @@ async def test_codex_client_passes_max_retries_when_set(
 async def test_codex_client_omits_max_retries_when_none(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
-    )
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await _exercise(provider)
     assert "max_retries" not in captured["init_kwargs"]
 
 
 async def test_codex_client_passes_timeout(captured: dict[str, Any]) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL,
-        timeout_seconds=42.0,
-        access_token_override="t",
+        base_url=DEFAULT_CODEX_BASE_URL, timeout_seconds=42.0
     )
     await _exercise(provider)
     timeout = captured["init_kwargs"]["timeout"]
@@ -100,7 +98,6 @@ async def test_build_llm_wires_max_retries_from_config(
     )
     provider = build_llm(cfg)
     assert isinstance(provider, OpenAICodexLLM)
-    provider._access_token_override = "t"
     await _exercise(provider)
     assert captured["init_kwargs"]["max_retries"] == 3
 
@@ -115,7 +112,6 @@ async def test_build_llm_wires_timeout_from_config(
     )
     provider = build_llm(cfg)
     assert isinstance(provider, OpenAICodexLLM)
-    provider._access_token_override = "t"
     await _exercise(provider)
     timeout = captured["init_kwargs"]["timeout"]
     assert isinstance(timeout, httpx.Timeout)

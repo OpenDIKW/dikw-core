@@ -78,19 +78,19 @@ class _StubResponse:
         return self._json
 
 
-class _StubClient:
+class _StubAsyncClient:
     def __init__(self, *, response: _StubResponse, **kwargs: Any) -> None:
         self.init_kwargs = kwargs
         self._response = response
         self.post_calls: list[dict[str, Any]] = []
 
-    def __enter__(self) -> _StubClient:
+    async def __aenter__(self) -> _StubAsyncClient:
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    async def __aexit__(self, *_: Any) -> None:
         return None
 
-    def post(self, url: str, **kwargs: Any) -> _StubResponse:
+    async def post(self, url: str, **kwargs: Any) -> _StubResponse:
         self.post_calls.append({"url": url, **kwargs})
         return self._response
 
@@ -99,7 +99,7 @@ class _StubClient:
 def patched_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
-    """Patch ``httpx.Client`` to return a configurable stub. Tests set
+    """Patch ``httpx.AsyncClient`` to return a configurable stub. Tests set
     ``rec['next_response']`` before calling refresh_codex_tokens."""
     rec: dict[str, Any] = {
         "next_response": _StubResponse(
@@ -109,12 +109,12 @@ def patched_http(
         "last_client": None,
     }
 
-    def _factory(**kwargs: Any) -> _StubClient:
-        client = _StubClient(response=rec["next_response"], **kwargs)
+    def _factory(**kwargs: Any) -> _StubAsyncClient:
+        client = _StubAsyncClient(response=rec["next_response"], **kwargs)
         rec["last_client"] = client
         return client
 
-    monkeypatch.setattr(httpx, "Client", _factory)
+    monkeypatch.setattr(httpx, "AsyncClient", _factory)
     return rec
 
 
@@ -123,8 +123,8 @@ def patched_http(
 # --------------------------------------------------------------------------- #
 
 
-def test_refresh_posts_to_openai_oauth_token_url(patched_http: dict[str, Any]) -> None:
-    refresh_codex_tokens(refresh_token="rt-old")
+async def test_refresh_posts_to_openai_oauth_token_url(patched_http: dict[str, Any]) -> None:
+    await refresh_codex_tokens(refresh_token="rt-old")
     client = patched_http["last_client"]
     assert client is not None
     assert len(client.post_calls) == 1
@@ -132,10 +132,10 @@ def test_refresh_posts_to_openai_oauth_token_url(patched_http: dict[str, Any]) -
     assert CODEX_OAUTH_TOKEN_URL == "https://auth.openai.com/oauth/token"
 
 
-def test_refresh_sends_form_encoded_grant_with_codex_client_id(
+async def test_refresh_sends_form_encoded_grant_with_codex_client_id(
     patched_http: dict[str, Any],
 ) -> None:
-    refresh_codex_tokens(refresh_token="rt-old")
+    await refresh_codex_tokens(refresh_token="rt-old")
     call = patched_http["last_client"].post_calls[0]
     headers = call.get("headers") or {}
     assert headers.get("Content-Type") == "application/x-www-form-urlencoded"
@@ -145,25 +145,25 @@ def test_refresh_sends_form_encoded_grant_with_codex_client_id(
     assert data["client_id"] == CODEX_OAUTH_CLIENT_ID
 
 
-def test_refresh_returns_new_access_and_refresh_tokens(
+async def test_refresh_returns_new_access_and_refresh_tokens(
     patched_http: dict[str, Any],
 ) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=200,
         json_body={"access_token": "at-rotated", "refresh_token": "rt-rotated"},
     )
-    new = refresh_codex_tokens(refresh_token="rt-old")
+    new = await refresh_codex_tokens(refresh_token="rt-old")
     assert new["access_token"] == "at-rotated"
     assert new["refresh_token"] == "rt-rotated"
 
 
-def test_refresh_keeps_existing_refresh_when_response_omits_one(
+async def test_refresh_keeps_existing_refresh_when_response_omits_one(
     patched_http: dict[str, Any],
 ) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=200, json_body={"access_token": "at-rotated"}
     )
-    new = refresh_codex_tokens(refresh_token="rt-keep")
+    new = await refresh_codex_tokens(refresh_token="rt-keep")
     assert new["access_token"] == "at-rotated"
     assert new["refresh_token"] == "rt-keep"
 
@@ -173,7 +173,7 @@ def test_refresh_keeps_existing_refresh_when_response_omits_one(
 # --------------------------------------------------------------------------- #
 
 
-def test_refresh_invalid_grant_marks_relogin(patched_http: dict[str, Any]) -> None:
+async def test_refresh_invalid_grant_marks_relogin(patched_http: dict[str, Any]) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=400,
         json_body={
@@ -182,19 +182,19 @@ def test_refresh_invalid_grant_marks_relogin(patched_http: dict[str, Any]) -> No
         },
     )
     with pytest.raises(CodexAuthError) as excinfo:
-        refresh_codex_tokens(refresh_token="rt-bad")
+        await refresh_codex_tokens(refresh_token="rt-bad")
     err = excinfo.value
     assert err.code == "invalid_grant"
     assert err.relogin_required is True
 
 
-def test_refresh_token_reused_marks_relogin(patched_http: dict[str, Any]) -> None:
+async def test_refresh_token_reused_marks_relogin(patched_http: dict[str, Any]) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=400,
         json_body={"error": "refresh_token_reused"},
     )
     with pytest.raises(CodexAuthError) as excinfo:
-        refresh_codex_tokens(refresh_token="rt-stale")
+        await refresh_codex_tokens(refresh_token="rt-stale")
     err = excinfo.value
     assert err.code == "refresh_token_reused"
     assert err.relogin_required is True
@@ -202,34 +202,34 @@ def test_refresh_token_reused_marks_relogin(patched_http: dict[str, Any]) -> Non
     assert "codex" in str(err).lower()
 
 
-def test_refresh_401_forces_relogin_even_without_known_code(
+async def test_refresh_401_forces_relogin_even_without_known_code(
     patched_http: dict[str, Any],
 ) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=401, json_body={"error": "unauthorized_client"}
     )
     with pytest.raises(CodexAuthError) as excinfo:
-        refresh_codex_tokens(refresh_token="rt-x")
+        await refresh_codex_tokens(refresh_token="rt-x")
     assert excinfo.value.relogin_required is True
 
 
-def test_refresh_500_does_not_mark_relogin(patched_http: dict[str, Any]) -> None:
+async def test_refresh_500_does_not_mark_relogin(patched_http: dict[str, Any]) -> None:
     """5xx is transient (server-side); the user shouldn't be told to relogin
     because of a flaky upstream."""
     patched_http["next_response"] = _StubResponse(status_code=500, json_body={})
     with pytest.raises(CodexAuthError) as excinfo:
-        refresh_codex_tokens(refresh_token="rt-x")
+        await refresh_codex_tokens(refresh_token="rt-x")
     assert excinfo.value.relogin_required is False
 
 
-def test_refresh_missing_access_token_in_response_raises(
+async def test_refresh_missing_access_token_in_response_raises(
     patched_http: dict[str, Any],
 ) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=200, json_body={"refresh_token": "rt-only"}
     )
     with pytest.raises(CodexAuthError) as excinfo:
-        refresh_codex_tokens(refresh_token="rt-old")
+        await refresh_codex_tokens(refresh_token="rt-old")
     assert excinfo.value.code == "codex_refresh_missing_access_token"
     assert excinfo.value.relogin_required is True
 
@@ -239,7 +239,7 @@ def test_refresh_missing_access_token_in_response_raises(
 # --------------------------------------------------------------------------- #
 
 
-def test_resolve_returns_existing_when_fresh(
+async def test_resolve_returns_existing_when_fresh(
     codex_dir: Path, patched_http: dict[str, Any]
 ) -> None:
     fresh = _fresh_jwt()
@@ -247,13 +247,13 @@ def test_resolve_returns_existing_when_fresh(
         codex_dir, {"tokens": {"access_token": fresh, "refresh_token": "rt-1"}}
     )
 
-    token = resolve_access_token()
+    token = await resolve_access_token()
     assert token == fresh
     # No HTTP call should have fired.
     assert patched_http["last_client"] is None
 
 
-def test_resolve_refreshes_when_expiring_and_writes_back(
+async def test_resolve_refreshes_when_expiring_and_writes_back(
     codex_dir: Path, patched_http: dict[str, Any]
 ) -> None:
     new_fresh = _fresh_jwt()
@@ -267,7 +267,7 @@ def test_resolve_refreshes_when_expiring_and_writes_back(
         {"tokens": {"access_token": _expiring_jwt(), "refresh_token": "rt-old"}},
     )
 
-    token = resolve_access_token()
+    token = await resolve_access_token()
     assert token == new_fresh
 
     on_disk = _read_auth_json(codex_dir)
@@ -278,7 +278,7 @@ def test_resolve_refreshes_when_expiring_and_writes_back(
     assert call["data"]["refresh_token"] == "rt-old"
 
 
-def test_resolve_propagates_relogin_required_on_invalid_grant(
+async def test_resolve_propagates_relogin_required_on_invalid_grant(
     codex_dir: Path, patched_http: dict[str, Any]
 ) -> None:
     patched_http["next_response"] = _StubResponse(
@@ -290,13 +290,13 @@ def test_resolve_propagates_relogin_required_on_invalid_grant(
     )
 
     with pytest.raises(CodexAuthError) as excinfo:
-        resolve_access_token()
+        await resolve_access_token()
     assert excinfo.value.relogin_required is True
 
 
-def test_resolve_raises_codex_auth_missing_when_file_absent(
+async def test_resolve_raises_codex_auth_missing_when_file_absent(
     codex_dir: Path, patched_http: dict[str, Any]
 ) -> None:
     with pytest.raises(CodexAuthError) as excinfo:
-        resolve_access_token()
+        await resolve_access_token()
     assert excinfo.value.code == "codex_auth_missing"

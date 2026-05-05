@@ -3,9 +3,11 @@
 Mirrors the shape of ``test_provider_openai_compat_retries.py``:
 monkeypatch ``openai.AsyncOpenAI`` with a stub that captures init
 kwargs + ``responses.create`` calls so we never touch the network.
-``access_token_override`` is the production-time test seam — passing it
-bypasses ``codex_auth.resolve_access_token`` entirely so these tests
-don't need a fake ``~/.codex/auth.json``.
+The ``captured`` / ``stream_captured`` fixtures also monkeypatch
+``codex_auth.resolve_access_token`` so the auth path doesn't reach
+``~/.codex/auth.json`` — tests that need a specific token shape
+(JWT vs plain string) just mutate ``captured['access_token']`` before
+the call.
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "create_kwargs": None,
         "next_response": _make_response(),
         "close_calls": 0,
+        "access_token": "test-token",
     }
 
     class FakeResponses:
@@ -79,7 +82,13 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def close(self) -> None:
             rec["close_calls"] += 1
 
+    async def _fake_resolve() -> str:
+        return rec["access_token"]
+
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(
+        "dikw_core.providers.openai_codex.resolve_access_token", _fake_resolve
+    )
     return rec
 
 
@@ -89,9 +98,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 async def test_complete_passes_explicit_base_url(captured: dict[str, Any]) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="test-token"
-    )
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert captured["init_kwargs"]["base_url"] == DEFAULT_CODEX_BASE_URL
 
@@ -99,9 +106,8 @@ async def test_complete_passes_explicit_base_url(captured: dict[str, Any]) -> No
 async def test_complete_passes_access_token_as_api_key(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="my-secret-token"
-    )
+    captured["access_token"] = "my-secret-token"
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert captured["init_kwargs"]["api_key"] == "my-secret-token"
 
@@ -109,9 +115,7 @@ async def test_complete_passes_access_token_as_api_key(
 async def test_complete_passes_codex_cloudflare_headers(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="plain-token"
-    )
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert headers["originator"] == "codex_cli_rs"
@@ -122,9 +126,8 @@ async def test_complete_includes_account_id_when_token_is_jwt(
     captured: dict[str, Any],
 ) -> None:
     token = _make_jwt({"chatgpt_account_id": "acc-42", "exp": 9_999_999_999})
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override=token
-    )
+    captured["access_token"] = token
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert headers["ChatGPT-Account-ID"] == "acc-42"
@@ -133,9 +136,8 @@ async def test_complete_includes_account_id_when_token_is_jwt(
 async def test_complete_omits_account_id_for_non_jwt_token(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="plain-not-jwt"
-    )
+    captured["access_token"] = "plain-not-jwt"
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert "ChatGPT-Account-ID" not in headers
@@ -150,7 +152,7 @@ async def test_complete_calls_responses_create_with_responses_api_shape(
     captured: dict[str, Any],
 ) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     await provider.complete(
         system="be helpful",
@@ -179,7 +181,7 @@ async def test_complete_does_not_pass_messages_kwarg(
 ) -> None:
     """Regression: Responses API uses `instructions` + `input`, NOT `messages`."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert "messages" not in captured["create_kwargs"]
@@ -195,7 +197,7 @@ async def test_complete_returns_text_from_output_messages(
 ) -> None:
     captured["next_response"] = _make_response(text="hello world")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert isinstance(resp, LLMResponse)
@@ -219,7 +221,7 @@ async def test_complete_concatenates_multiple_output_text_parts(
         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.text == "hello world"
@@ -241,7 +243,7 @@ async def test_complete_skips_non_message_output_items(
         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.text == "answer"
@@ -252,7 +254,7 @@ async def test_complete_maps_status_completed_to_stop(
 ) -> None:
     captured["next_response"] = _make_response(status="completed")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "stop"
@@ -263,7 +265,7 @@ async def test_complete_maps_status_incomplete_to_length(
 ) -> None:
     captured["next_response"] = _make_response(status="incomplete")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "length"
@@ -274,7 +276,7 @@ async def test_complete_extracts_usage_input_output_tokens(
 ) -> None:
     captured["next_response"] = _make_response(input_tokens=42, output_tokens=99)
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.usage == {"input_tokens": 42, "output_tokens": 99}
@@ -294,7 +296,7 @@ async def test_complete_handles_response_without_usage(
         usage=None,
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.usage == {}
@@ -343,6 +345,7 @@ def stream_captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "stream_kwargs": None,
         "events": [],
         "final": _make_response(text="full text", input_tokens=3, output_tokens=4),
+        "access_token": "test-token",
     }
 
     class FakeResponses:
@@ -358,7 +361,13 @@ def stream_captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def close(self) -> None:
             return None
 
+    async def _fake_resolve() -> str:
+        return rec["access_token"]
+
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(
+        "dikw_core.providers.openai_codex.resolve_access_token", _fake_resolve
+    )
     return rec
 
 
@@ -381,7 +390,7 @@ async def test_complete_stream_yields_token_for_output_text_delta(
     ]
     stream_captured["final"] = _make_response(text="hello")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     tokens = [e for e in events if e.type == "token"]
@@ -399,7 +408,7 @@ async def test_complete_stream_yields_reasoning_for_summary_delta(
     ]
     stream_captured["final"] = _make_response(text="answer")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     reasoning = [e for e in events if e.type == "reasoning"]
@@ -419,7 +428,7 @@ async def test_complete_stream_yields_done_with_assembled_text(
         text="hello", status="completed", input_tokens=3, output_tokens=4
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     assert events[-1].type == "done"
@@ -435,7 +444,7 @@ async def test_complete_stream_emits_exactly_one_done_event(
         SimpleNamespace(type="response.output_text.delta", delta="x"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     done_events = [e for e in events if e.type == "done"]
@@ -452,7 +461,7 @@ async def test_complete_stream_skips_unknown_event_types(
         SimpleNamespace(type="response.completed"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     # Two events emitted: token + done. Unknown types are silently dropped.
@@ -468,7 +477,7 @@ async def test_complete_stream_skips_empty_deltas(
         SimpleNamespace(type="response.output_text.delta", delta="real"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     tokens = [e for e in events if e.type == "token"]
@@ -479,7 +488,7 @@ async def test_complete_stream_passes_responses_api_shape(
     stream_captured: dict[str, Any],
 ) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     await _drain(
         provider, system="be helpful", user="hello", model="gpt-5.5", max_tokens=128
@@ -501,7 +510,7 @@ async def test_complete_stream_injects_codex_headers(
     stream_captured: dict[str, Any],
 ) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, access_token_override="t"
+        base_url=DEFAULT_CODEX_BASE_URL
     )
     await _drain(provider, system="s", user="u", model="gpt-5.5")
     headers = stream_captured["init_kwargs"]["default_headers"]

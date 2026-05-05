@@ -1,8 +1,8 @@
 """``build_llm`` resolves ``llm: openai_codex`` to ``OpenAICodexLLM``.
 
-Mirrors ``test_provider_openai_compat_retries.py``'s factory-wiring
-checks: assert that the cfg fields the factory reads land on the
-provider instance via the path the engine actually traverses.
+The base_url / max_retries / timeout flow from cfg → SDK constructor is
+covered end-to-end in ``test_provider_openai_codex_retries.py`` (which
+mocks ``openai.AsyncOpenAI``); this file just pins the dispatch table.
 """
 
 from __future__ import annotations
@@ -20,27 +20,3 @@ def test_build_llm_returns_openai_codex_instance() -> None:
     )
     provider = build_llm(cfg)
     assert isinstance(provider, OpenAICodexLLM)
-
-
-def test_build_llm_threads_base_url() -> None:
-    cfg = make_provider_cfg(
-        llm="openai_codex", llm_base_url=DEFAULT_CODEX_BASE_URL
-    )
-    provider = build_llm(cfg)
-    assert isinstance(provider, OpenAICodexLLM)
-    # Read through the documented test seam — _base_url is the attribute the
-    # provider hands to AsyncOpenAI, asserting that link is enough.
-    assert provider._base_url == DEFAULT_CODEX_BASE_URL
-
-
-def test_build_llm_threads_max_retries_and_timeout() -> None:
-    cfg = make_provider_cfg(
-        llm="openai_codex",
-        llm_base_url=DEFAULT_CODEX_BASE_URL,
-        llm_max_retries=7,
-        llm_timeout_seconds=42.0,
-    )
-    provider = build_llm(cfg)
-    assert isinstance(provider, OpenAICodexLLM)
-    assert provider._max_retries == 7
-    assert provider._timeout_seconds == 42.0

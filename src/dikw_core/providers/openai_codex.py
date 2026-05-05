@@ -123,21 +123,10 @@ class OpenAICodexLLM:
         base_url: str,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
-        # Test seam: pre-resolved access_token bypasses ~/.codex/auth.json
-        # I/O entirely. Production callers leave this None and
-        # resolve_access_token() walks the standard codex_home flow on
-        # every request.
-        access_token_override: str | None = None,
     ) -> None:
         self._base_url = base_url
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
-        self._access_token_override = access_token_override
-
-    def _resolve_token(self) -> str:
-        if self._access_token_override is not None:
-            return self._access_token_override
-        return resolve_access_token()
 
     async def complete(
         self,
@@ -153,7 +142,7 @@ class OpenAICodexLLM:
         # yet — synth/distill/query are plain-text completions today, same
         # as the other two providers.
         _ = tools
-        token = self._resolve_token()
+        token = await resolve_access_token()
         client = _build_async_client(
             base_url=self._base_url,
             access_token=token,
@@ -198,7 +187,7 @@ class OpenAICodexLLM:
         _ = tools
 
         async def _gen() -> AsyncIterator[LLMStreamEvent]:
-            token = self._resolve_token()
+            token = await resolve_access_token()
             client = _build_async_client(
                 base_url=self._base_url,
                 access_token=token,

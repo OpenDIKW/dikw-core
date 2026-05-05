@@ -345,7 +345,7 @@ def _extract_oauth_error(payload: Any) -> tuple[str, str | None]:
     return "codex_refresh_failed", None
 
 
-def refresh_codex_tokens(
+async def refresh_codex_tokens(
     *, refresh_token: str, timeout_seconds: float = 20.0
 ) -> dict[str, str]:
     """Exchange a refresh_token for a fresh access_token at the OpenAI
@@ -360,14 +360,19 @@ def refresh_codex_tokens(
     / refresh_token_reused / 401-without-known-code), and
     ``relogin_required=False`` for transient 5xx so the user isn't told to
     re-login because of an upstream blip.
+
+    Async because the only caller (resolve_access_token) runs inside the
+    LLM provider's async path — a sync httpx.Client.post would block the
+    asyncio event loop for the whole OAuth round-trip (200-800ms typical),
+    stalling every other in-flight task.
     """
-    # Lazy import: httpx is already a project dep, but isolating it here
-    # keeps the rest of the module importable in environments that stub it.
     import httpx
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
+    async with httpx.AsyncClient(
+        timeout=timeout, headers={"Accept": "application/json"}
+    ) as client:
+        response = await client.post(
             CODEX_OAUTH_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -430,7 +435,7 @@ def refresh_codex_tokens(
     return {"access_token": new_access.strip(), "refresh_token": rotated}
 
 
-def resolve_access_token(
+async def resolve_access_token(
     *,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     refresh_timeout_seconds: float = 20.0,
@@ -455,7 +460,7 @@ def resolve_access_token(
             tokens["access_token"], skew_seconds=refresh_skew_seconds
         ):
             return tokens["access_token"]
-        refreshed = refresh_codex_tokens(
+        refreshed = await refresh_codex_tokens(
             refresh_token=tokens["refresh_token"],
             timeout_seconds=refresh_timeout_seconds,
         )
