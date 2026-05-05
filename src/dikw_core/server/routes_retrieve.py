@@ -9,8 +9,11 @@ spending a provider round-trip on the engine side. Wire shape:
   {"type":"retrieval_done","hits":[...]}
   {"type":"final","status":"succeeded","result":{...RetrieveResult...}}
 
-On error, the final event has ``status:"failed"`` with an ``error`` body.
-The hit list is intentionally repeated on ``final.result.chunks`` so a
+Validation errors (empty ``q``, out-of-range ``limit``) return HTTP 4xx
+*before* the stream starts — clients branching on status code stay
+simple. Worker / runtime errors produce ``final{status:"failed"}`` with
+an ``error`` body so a partial stream is never surfaced as success. The
+hit list is intentionally repeated on ``final.result.chunks`` so a
 non-streaming caller can pick the single ``final`` event and drop the
 intermediate ``retrieval_done``. Cancellation: when the client
 disconnects, the StreamingResponse generator's ``finally`` cancels the

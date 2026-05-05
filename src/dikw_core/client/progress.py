@@ -314,6 +314,12 @@ class RetrieveStreamRenderer:
         return FinalEvent(status="failed", result=None, error=None)
 
 
+# Excerpt length cap for the retrieve table preview. Keeps each row to
+# roughly one terminal line; full text remains in ``--format json``
+# output for agents that need it.
+_RETRIEVE_TABLE_EXCERPT_CHARS = 120
+
+
 def render_retrieve_table(
     console: Console, result: Mapping[str, Any]
 ) -> None:
@@ -341,13 +347,16 @@ def render_retrieve_table(
             seq = c.get("seq")
             score = c.get("score")
             excerpt = str(c.get("snippet") or c.get("text") or "")
+            preview = excerpt[:_RETRIEVE_TABLE_EXCERPT_CHARS] + (
+                "…" if len(excerpt) > _RETRIEVE_TABLE_EXCERPT_CHARS else ""
+            )
             chunks_table.add_row(
                 str(i),
                 str(c.get("layer") or ""),
                 str(c.get("path") or ""),
                 "" if seq is None else str(seq),
                 "" if score is None else f"{float(score):.3f}",
-                excerpt[:120] + ("…" if len(excerpt) > 120 else ""),
+                preview,
             )
     console.print(chunks_table)
 
