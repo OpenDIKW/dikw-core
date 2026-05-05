@@ -416,7 +416,7 @@ class LlmInfo(BaseModel):
     or ``OPENAI_API_KEY``) is selected by ``provider``.
     """
 
-    provider: Literal["anthropic_compat", "openai_compat"]
+    provider: Literal["anthropic_compat", "openai_compat", "openai_codex"]
     model: str
     base_url: str | None
     max_retries: int = Field(ge=0)
@@ -595,23 +595,34 @@ def _sanitize_base_url(url: str | None) -> str | None:
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
-def _llm_api_key_env(provider: Literal["anthropic_compat", "openai_compat"]) -> str:
-    """Env-var lookup for the LLM leg's API key, sourced from the
-    provider modules so health and the runtime read the same constant.
+def _llm_credentials_present(
+    provider: Literal["anthropic_compat", "openai_compat", "openai_codex"],
+) -> bool:
+    """Whether credentials for the given LLM provider are resolvable.
+
+    Env-keyed providers (anthropic_compat, openai_compat) check the
+    matching ``API_KEY_ENV`` constant; the codex protocol uses ChatGPT's
+    OAuth flow and checks for ``codex_home()/auth.json`` instead — the
+    same seam the runtime uses, so /v1/health and `dikw check` agree
+    on what "credentials present" means.
 
     Explicit per-provider branch (rather than ``else: openai_compat``)
     so adding a new LLM provider surfaces as a typed mypy error here +
     a runtime ``ValueError`` instead of silently reporting the wrong
-    env var's presence on /v1/health.
+    credentials shape.
     """
     if provider == "anthropic_compat":
         from .providers.anthropic_compat import API_KEY_ENV
 
-        return API_KEY_ENV
+        return bool(os.environ.get(API_KEY_ENV))
     if provider == "openai_compat":
         from .providers.openai_compat import API_KEY_ENV
 
-        return API_KEY_ENV
+        return bool(os.environ.get(API_KEY_ENV))
+    if provider == "openai_codex":
+        from .providers.codex_auth import codex_home
+
+        return (codex_home() / "auth.json").exists()
     raise ValueError(f"unknown llm provider: {provider!r}")
 
 
@@ -654,7 +665,7 @@ async def health(path: str | Path | None = None) -> HealthReport:
         max_tokens_synth=p.llm_max_tokens_synth,
         max_tokens_distill=p.llm_max_tokens_distill,
         timeout_seconds=p.llm_timeout_seconds,
-        api_key_present=bool(os.environ.get(_llm_api_key_env(p.llm))),
+        api_key_present=_llm_credentials_present(p.llm),
     )
 
     mm_info: MultimodalInfo | None = None

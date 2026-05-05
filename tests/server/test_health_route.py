@@ -66,7 +66,11 @@ async def test_health_providers_block_exposes_resolved_config(
     providers = body["providers"]
 
     llm = providers["llm"]
-    assert llm["provider"] in ("anthropic_compat", "openai_compat")
+    assert llm["provider"] in (
+        "anthropic_compat",
+        "openai_compat",
+        "openai_codex",
+    )
     assert isinstance(llm["model"], str) and llm["model"]
     assert "base_url" in llm  # nullable but field must be present
     assert isinstance(llm["max_retries"], int)
