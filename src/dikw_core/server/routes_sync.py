@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request
@@ -23,7 +22,6 @@ from ..domains.wisdom.review import ReviewError, ReviewResult
 from ..providers import build_embedder
 from ..schemas import (
     ChunkRecord,
-    DocumentRecord,
     Hit,
     Layer,
     StorageCounts,
@@ -52,11 +50,6 @@ class InitRequest(BaseModel):
 
 class InitResponse(BaseModel):
     root: str
-
-
-class WikiPageResponse(BaseModel):
-    path: str
-    body: str
 
 
 class DocSearchRequest(BaseModel):
@@ -166,58 +159,6 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         return InitResponse(root=str(root))
 
     # ---- wiki + doc ---------------------------------------------------
-
-    @router.get("/wiki/pages", response_model=list[DocumentRecord])
-    async def list_wiki_pages(
-        request: Request,
-        active: bool | None = Query(default=True),
-        since_ts: float | None = Query(default=None),
-    ) -> list[DocumentRecord]:
-        rt: ServerRuntime = get_runtime(request.app)
-        # Each route opens its own storage handle for stateless safety;
-        # the server's main storage handle stays connected for migrations
-        # / status, but route-level reads use a fresh handle to keep one
-        # transaction-per-request semantics.
-        cfg, _root, storage = await api._with_storage(rt.root)
-        del cfg
-        try:
-            docs = await storage.list_documents(
-                layer=Layer.WIKI, active=active, since_ts=since_ts
-            )
-            return list(docs)
-        finally:
-            await storage.close()
-
-    @router.get("/wiki/pages/{page_path:path}", response_model=WikiPageResponse)
-    async def get_wiki_page(
-        request: Request, page_path: str
-    ) -> WikiPageResponse:
-        rt: ServerRuntime = get_runtime(request.app)
-        # Scope to the ``wiki/`` subtree (not the wiki root). Resolving
-        # against ``rt.root`` would let an authenticated caller fetch
-        # ``dikw.yml``, ``sources/...``, ``wisdom/...``, etc. through
-        # this endpoint — page_path is meant to address K-layer pages
-        # only. ``page_path`` may be ``"wiki/notes/foo.md"`` (matching
-        # ``DocumentRecord.path``) or ``"notes/foo.md"`` (raw page-path
-        # under ``wiki/``); we accept both by stripping a leading
-        # ``"wiki/"`` before resolving.
-        wiki_dir = (rt.root / "wiki").resolve()
-        rel = page_path[5:] if page_path.startswith("wiki/") else page_path
-        abs_path = (wiki_dir / rel).resolve()
-        try:
-            abs_path.relative_to(wiki_dir)
-        except ValueError as e:
-            raise BadRequest(
-                f"page_path escapes the wiki/ subtree: {page_path!r}"
-            ) from e
-        if abs_path.suffix != ".md":
-            raise BadRequest(
-                f"only .md pages are addressable here: {page_path!r}"
-            )
-        if not abs_path.is_file():
-            raise NotFoundError(f"wiki page not found: {page_path!r}")
-        body = abs_path.read_text(encoding="utf-8")
-        return WikiPageResponse(path=page_path, body=body)
 
     @router.post("/doc/search", response_model=list[Hit])
     async def doc_search(
@@ -354,8 +295,5 @@ def make_router(*, auth_dep: Any) -> APIRouter:
 
     return router
 
-
-# Re-export Path so nothing higher up needs a sibling import.
-_ = Path
 
 __all__ = ["make_router"]

@@ -173,6 +173,110 @@ def test_health_rejects_invalid_format(
     assert "must be 'json' or 'table'" in result.stdout
 
 
+def _ingest_fixtures(rt: ServerRuntime) -> None:
+    """Drop the standard ``tests/fixtures/notes`` corpus into the server's
+    ``sources/`` and ingest via the engine. Used by pages-CLI tests that
+    need a base with both documents and chunks."""
+    import asyncio
+
+    src_dir = rt.root / "sources" / "notes"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, src_dir / src.name)
+    asyncio.run(api.ingest(rt.root, embedder=FakeEmbeddings()))
+
+
+def test_pages_list_emits_documents(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``dikw client pages list`` returns the same DocumentRecord array as
+    ``GET /v1/base/pages``."""
+    import json as _json
+
+    _, rt = asgi_client
+    _ingest_fixtures(rt)
+    patch_transport_factory()
+    result = _run(["client", "pages", "list", "--format", "json"])
+    assert result.exit_code == 0, result.stdout
+    rows = _json.loads(result.stdout)
+    assert any(r["layer"] == "source" for r in rows)
+
+
+def test_pages_list_layer_filter(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    import json as _json
+
+    _, rt = asgi_client
+    _ingest_fixtures(rt)
+    patch_transport_factory()
+    result = _run(
+        ["client", "pages", "list", "--layer", "source", "--format", "json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    rows = _json.loads(result.stdout)
+    assert rows and all(r["layer"] == "source" for r in rows)
+
+
+def test_pages_list_table_mode(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    _, rt = asgi_client
+    _ingest_fixtures(rt)
+    patch_transport_factory()
+    result = _run(["client", "pages", "list", "--format", "table"])
+    assert result.exit_code == 0, result.stdout
+    assert "pages" in result.stdout
+    assert "layer" in result.stdout
+
+
+def test_pages_list_rejects_invalid_format(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    patch_transport_factory()
+    result = _run(["client", "pages", "list", "--format", "csv"])
+    assert result.exit_code == 2
+    assert "must be 'json' or 'table'" in result.stdout
+
+
+def test_pages_get_emits_body_and_anchors(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """End-to-end pages get: list to discover an indexed path, then get
+    that path and verify body + non-empty anchors land in stdout JSON."""
+    import json as _json
+
+    _, rt = asgi_client
+    _ingest_fixtures(rt)
+    patch_transport_factory()
+    listed = _run(["client", "pages", "list", "--format", "json"])
+    target = next(
+        r for r in _json.loads(listed.stdout) if r["layer"] == "source"
+    )
+
+    result = _run(["client", "pages", "get", target["path"]])
+    assert result.exit_code == 0, result.stdout
+    body = _json.loads(result.stdout)
+    assert body["doc_id"] == target["doc_id"]
+    assert isinstance(body["body"], str) and body["body"]
+    assert isinstance(body["anchors"], list) and body["anchors"]
+
+
+def test_pages_get_unknown_exits_one(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    patch_transport_factory()
+    result = _run(["client", "pages", "get", "sources/missing.md"])
+    assert result.exit_code == 1
+    assert "page_not_found" in result.stdout or "404" in result.stdout
+
+
 def test_review_list_empty_on_fresh_wiki(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],

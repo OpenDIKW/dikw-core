@@ -20,11 +20,13 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from ..schemas import Layer
 from . import serve_and_run as _sar
 from .config import ClientConfig, resolve
 from .progress import (
@@ -76,6 +78,19 @@ def _token_option() -> Any:
 
 def _resolve(server: str | None, token: str | None) -> ClientConfig:
     return resolve(server_url=server, token=token)
+
+
+def _validate_format(fmt: str) -> None:
+    """Reject a ``--format`` value outside the json/table contract.
+
+    Three commands (``health``, ``retrieve``, ``pages list``) share the
+    exact same json-or-table contract — keep the validation in one
+    place so the error message and exit code stay consistent."""
+    if fmt not in ("json", "table"):
+        console.print(
+            f"[red]error[/red]: --format must be 'json' or 'table', got {fmt!r}"
+        )
+        raise typer.Exit(code=2)
 
 
 def _on_error(err: ClientError) -> None:
@@ -159,11 +174,7 @@ def health_cmd(
     it points at, and exposes the resolved provider config (model /
     base_url / dim / ``api_key_present``) without leaking secrets.
     """
-    if fmt not in ("json", "table"):
-        console.print(
-            f"[red]error[/red]: --format must be 'json' or 'table', got {fmt!r}"
-        )
-        raise typer.Exit(code=2)
+    _validate_format(fmt)
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
@@ -318,11 +329,7 @@ def retrieve_cmd(
     ``final.result`` (chunks + page_refs) so the caller can pipe it into
     ``jq`` or another tool.
     """
-    if fmt not in ("json", "table"):
-        console.print(
-            f"[red]error[/red]: --format must be 'json' or 'table', got {fmt!r}"
-        )
-        raise typer.Exit(code=2)
+    _validate_format(fmt)
 
     async def _go() -> None:
         renderer = RetrieveStreamRenderer(console, plain=plain)
@@ -724,6 +731,93 @@ def review_reject_cmd(
             f"[yellow]{result.get('item_id')} -> "
             f"{result.get('new_status')}[/yellow]"
         )
+
+    _run(_go())
+
+
+# ---- pages subcommands ------------------------------------------------
+
+pages_app = typer.Typer(
+    help="Read pages (D / K / W) directly from the server's base.",
+    no_args_is_help=True,
+)
+app.add_typer(pages_app, name="pages")
+
+
+@pages_app.command("list")
+def pages_list_cmd(
+    layer: Annotated[
+        Layer | None,
+        typer.Option(
+            "--layer",
+            help="Filter by layer. Default: all layers.",
+        ),
+    ] = None,
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+        ),
+    ] = "json",
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """List pages registered under the server's base."""
+    _validate_format(fmt)
+
+    async def _go() -> None:
+        params: dict[str, str] | None = (
+            {"layer": layer.value} if layer is not None else None
+        )
+        async with Transport.from_config(_resolve(server, token)) as t:
+            rows = await t.get_json("/v1/base/pages", params=params)
+        if fmt == "json":
+            console.print_json(json.dumps(rows, ensure_ascii=False))
+            return
+        table = Table(title="pages", show_header=True, header_style="bold")
+        table.add_column("layer")
+        table.add_column("path")
+        table.add_column("title")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            table.add_row(
+                str(row.get("layer") or ""),
+                str(row.get("path") or ""),
+                str(row.get("title") or ""),
+            )
+        console.print(table)
+
+    _run(_go())
+
+
+@pages_app.command("get")
+def pages_get_cmd(
+    path: Annotated[
+        str,
+        typer.Argument(help="Page path under the base (e.g. sources/foo.md)."),
+    ],
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Read a page (body + chunk anchors) by its registered path.
+
+    The path must already exist as a ``DocumentRecord`` in the server's
+    base — paths that aren't indexed return 404 (use ``dikw client pages
+    list`` to discover registered paths)."""
+
+    # Percent-encode each segment so paths with ``?`` ``#`` ``%`` ``&``
+    # or whitespace (all legal in markdown filenames) don't get parsed
+    # as URL query / fragment / spec-violation by httpx. ``safe="/"``
+    # preserves the path-segment separator so FastAPI's ``{path:path}``
+    # still sees the correct hierarchy.
+    encoded = quote(path, safe="/")
+
+    async def _go() -> None:
+        async with Transport.from_config(_resolve(server, token)) as t:
+            payload = await t.get_json(f"/v1/base/pages/{encoded}")
+        console.print_json(json.dumps(payload, ensure_ascii=False))
 
     _run(_go())
 

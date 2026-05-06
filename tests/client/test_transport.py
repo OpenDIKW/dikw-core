@@ -31,10 +31,10 @@ async def test_404_raises_client_error_with_code(
     client_transport: Transport,
 ) -> None:
     with pytest.raises(ClientError) as excinfo:
-        await client_transport.get_json("/v1/wiki/pages/does-not-exist.md")
+        await client_transport.get_json("/v1/base/pages/does-not-exist.md")
     err = excinfo.value
     assert err.status == 404
-    assert err.code == "not_found"
+    assert err.code == "page_not_found"
 
 
 @pytest.mark.asyncio

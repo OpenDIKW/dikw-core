@@ -67,49 +67,6 @@ async def test_lint_runs_against_empty_wiki(
 
 
 @pytest.mark.asyncio
-async def test_wiki_pages_listing_empty(
-    server_client: httpx.AsyncClient,
-) -> None:
-    resp = await server_client.get("/v1/wiki/pages")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-
-
-@pytest.mark.asyncio
-async def test_wiki_page_path_traversal_rejected(
-    server_client: httpx.AsyncClient,
-) -> None:
-    # Resolves outside the wiki root.
-    resp = await server_client.get("/v1/wiki/pages/../../../etc/passwd")
-    assert resp.status_code in (400, 404)
-
-
-@pytest.mark.asyncio
-async def test_wiki_page_cannot_read_non_wiki_files(
-    server_client: httpx.AsyncClient,
-) -> None:
-    """The endpoint addresses K-layer wiki pages — not ``dikw.yml``,
-    ``sources/...``, or ``wisdom/...``. An authenticated caller must
-    not be able to fetch those by passing a path that resolves under
-    ``<root>`` but outside ``<root>/wiki/``."""
-    for path in ("dikw.yml", "sources/anything.md", "wisdom/anything.md"):
-        resp = await server_client.get(f"/v1/wiki/pages/{path}")
-        # 400 (escapes wiki/) is the strict answer; 404 is acceptable
-        # if the resolver short-circuits on missing-file. What we
-        # forbid is 200 with the file contents.
-        assert resp.status_code in (400, 404), (path, resp.status_code)
-
-
-@pytest.mark.asyncio
-async def test_wiki_page_rejects_non_md_extension(
-    server_client: httpx.AsyncClient,
-) -> None:
-    resp = await server_client.get("/v1/wiki/pages/notes/foo.txt")
-    assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
 async def test_unknown_chunk_returns_404(
     server_client: httpx.AsyncClient,
 ) -> None:

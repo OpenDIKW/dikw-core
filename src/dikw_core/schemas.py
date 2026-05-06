@@ -192,6 +192,37 @@ class RetrieveResult(BaseModel):
     page_refs: list[PageRef] = Field(default_factory=list)
 
 
+class PageAnchor(BaseModel):
+    """One chunk's location inside a page body.
+
+    Mirrors the ``Hit.chunk_id`` / ``seq`` / ``start`` / ``end`` quadruple
+    from ``/v1/retrieve`` so an agent that hit a chunk can resolve which
+    region of the full page that hit covers without re-running search.
+    """
+
+    chunk_id: int
+    seq: int
+    start: int
+    end: int
+
+
+class PageReadResult(BaseModel):
+    """Final payload for ``GET /v1/base/pages/{path}``.
+
+    ``body`` is the on-disk file content (unchunked); ``anchors`` are the
+    chunk boundaries the engine produced at last ingest, in ``seq`` order.
+    A page that has never been chunked (e.g. a just-uploaded source not
+    yet ingested) returns an empty ``anchors`` list.
+    """
+
+    doc_id: str
+    path: str
+    layer: Layer
+    title: str | None = None
+    body: str
+    anchors: list[PageAnchor] = Field(default_factory=list)
+
+
 class LinkRecord(BaseModel):
     src_doc_id: str
     dst_path: str

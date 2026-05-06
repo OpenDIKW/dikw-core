@@ -62,7 +62,6 @@ from .config import (
 from .domains.data.assets import materialize_asset
 from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
-from .domains.data.backends.markdown import content_hash
 from .domains.data.sources import iter_source_files
 from .domains.info.chunk import chunk_markdown
 from .domains.info.embed import (
@@ -108,6 +107,8 @@ from .schemas import (
     ImageContent,
     Layer,
     MultimodalInput,
+    PageAnchor,
+    PageReadResult,
     PageRef,
     RetrieveResult,
     StorageCounts,
@@ -132,6 +133,9 @@ __all__ = [
     "LayerCounts",
     "LlmInfo",
     "MultimodalInfo",
+    "PageAnchor",
+    "PageNotFound",
+    "PageReadResult",
     "PageRef",
     "ProbeResult",
     "ProvidersInfo",
@@ -149,13 +153,23 @@ __all__ = [
     "init_wiki",
     "lint",
     "list_candidates",
+    "list_pages",
     "load_wiki",
     "query",
+    "read_page",
     "reject_wisdom",
     "retrieve",
     "status",
     "synthesize",
 ]
+
+
+class PageNotFound(LookupError):
+    """Raised by :func:`read_page` when the given path is not a registered
+    document in the base. Path-escape attempts (``..``, files outside the
+    base root) and unindexed files (``dikw.yml``) all surface here so the
+    server route can map a single exception type to a uniform 404.
+    """
 
 WIKI_INIT_FILES: dict[str, str] = {
     "sources/.gitkeep": "",
@@ -1482,6 +1496,149 @@ def _build_page_refs(hits: list[Hit]) -> list[PageRef]:
     return refs
 
 
+async def list_pages(
+    root: str | Path | None,
+    *,
+    layer: Layer | None = None,
+    active: bool | None = True,
+    since_ts: float | None = None,
+) -> list[DocumentRecord]:
+    """Return registered documents (D / K layer pages) under ``root``.
+
+    Thin facade around :meth:`Storage.list_documents` so server routes
+    don't reach into :func:`_with_storage` directly — keeps the
+    engine/server boundary symmetric with :func:`read_page`. Default
+    ``active=True`` matches the list endpoint's wire contract (deactivated
+    docs are not surfaced).
+
+    The W (wisdom) layer is reachable here via ``layer=Layer.WISDOM``
+    only as a forward-compat hook — Phase 1 never registers wisdom
+    files as documents (they live in the separate ``wisdom_items``
+    table), so the result is empty until that pipeline lands.
+    """
+    cfg, _root, storage = await _with_storage(root)
+    del cfg
+    try:
+        docs = await storage.list_documents(
+            layer=layer, active=active, since_ts=since_ts
+        )
+        return list(docs)
+    finally:
+        await storage.close()
+
+
+async def read_page(
+    root: str | Path | None, path: str
+) -> PageReadResult:
+    """Read a registered page (D or K layer) + its chunk anchors.
+
+    Path safety is index-driven: only paths present in the ``documents``
+    table are reachable, so unindexed files (``dikw.yml``, files outside
+    the base root, ``..`` traversal attempts) all get a uniform
+    :class:`PageNotFound`.
+
+    ``body`` is the **parsed** body — front-matter stripped — because
+    chunk anchors live in that coordinate space (see
+    ``markdown.parse_text`` which strips ``---`` front-matter before
+    chunking). Returning the raw on-disk text would put anchors at
+    wrong offsets when a file has YAML front-matter.
+
+    ``anchors`` is empty if the file has been edited since ingest
+    (current parsed-body hash differs from ``match.hash``) — stale
+    anchors would silently misalign, so we drop them and let the caller
+    re-ingest. Empty is also returned for docs that produced zero
+    chunks at ingest time.
+
+    Used by ``GET /v1/base/pages/{path}`` to let an agent that hit a
+    chunk via ``/v1/retrieve`` fetch the full page body and align hit
+    chunks back onto it via ``Hit.chunk_id`` / ``Hit.seq``.
+
+    The W (wisdom) layer is **not** probed: wisdom items live in the
+    separate ``wisdom_items`` table, never as ``DocumentRecord`` rows,
+    so a wisdom probe would always miss and just waste a PK lookup.
+    """
+    # Reject obviously-malformed paths up front so a bare ``Path()``
+    # call later doesn't surface as a 500 (``\x00`` raises ValueError on
+    # Linux). Empty / whitespace-only also can't legitimately match a
+    # document.
+    if not path or not path.strip() or "\x00" in path:
+        raise PageNotFound(path)
+
+    cfg, base_root, storage = await _with_storage(root)
+    del cfg
+    try:
+        # ``_doc_id_for`` is deterministic over ``(layer, normalize_path(path))``,
+        # and ``doc_id`` is the PK on ``documents``. Probing each
+        # registered layer turns the lookup into N indexed point
+        # queries — versus a full-table scan if we went via
+        # ``list_documents`` + Python filter. Inactive docs are excluded
+        # so the read-by-path policy matches the list endpoint's
+        # ``active=True`` default.
+        match: DocumentRecord | None = None
+        for layer in (Layer.SOURCE, Layer.WIKI):
+            candidate = await storage.get_document(_doc_id_for(layer, path))
+            if candidate is not None and candidate.active:
+                match = candidate
+                break
+        if match is None:
+            raise PageNotFound(path)
+        chunks = await storage.list_chunks(match.doc_id)
+    finally:
+        await storage.close()
+
+    base_resolved = base_root.resolve()
+    abs_path = (base_resolved / match.path).resolve()
+    try:
+        abs_path.relative_to(base_resolved)
+    except ValueError as e:
+        # Defence in depth: a doc registered with a path that escapes
+        # the base root is corruption — refuse to read.
+        raise PageNotFound(path) from e
+
+    # File I/O + parsing is sync; offload so a slow disk / large file
+    # doesn't stall the event loop alongside other in-flight requests
+    # (retrieve, query stream). ``body_hash=None`` signals a parse
+    # failure (e.g. user broke the YAML front-matter externally) — the
+    # natural hash-mismatch path then drops anchors instead of 500-ing
+    # the route.
+    def _read_and_parse() -> tuple[str, str | None]:
+        if not abs_path.is_file():
+            # Document row exists but the file is gone (mid-flight
+            # delete, or an inactive doc whose file was removed).
+            raise PageNotFound(path)
+        try:
+            parsed = parse_any(abs_path, rel_path=match.path)
+            return parsed.body, parsed.hash
+        except Exception:
+            return abs_path.read_text(encoding="utf-8"), None
+
+    body, body_hash = await asyncio.to_thread(_read_and_parse)
+
+    # If the file was edited (or its front-matter broken) since ingest,
+    # the indexed chunk offsets no longer line up with the current
+    # parsed body — silently serving stale anchors would produce
+    # off-by-N slicing in agent callers. Drop them and let the caller
+    # re-ingest.
+    anchors_valid = body_hash is not None and body_hash == match.hash
+    anchors = (
+        [
+            PageAnchor(chunk_id=c.chunk_id, seq=c.seq, start=c.start, end=c.end)
+            for c in chunks
+            if c.chunk_id is not None
+        ]
+        if anchors_valid
+        else []
+    )
+    return PageReadResult(
+        doc_id=match.doc_id,
+        path=match.path,
+        layer=match.layer,
+        title=match.title,
+        body=body,
+        anchors=anchors,
+    )
+
+
 async def retrieve(
     q: str,
     path: str | Path | None = None,
@@ -1860,25 +2017,34 @@ async def _persist_wiki_page(
     text_version_id: int | None,
     cjk_tokenizer: CjkTokenizer = "none",
 ) -> None:
-    """Index ``page`` into the K layer: document, chunks, embeddings, links."""
+    """Index ``page`` into the K layer: document, chunks, embeddings, links.
+
+    The caller writes ``page`` to disk via ``write_page`` *before*
+    invoking this function — we then re-parse the file so the stored
+    hash and chunk offsets match what ``read_page`` will compute on
+    read. ``frontmatter.dumps`` + ``frontmatter.loads`` is not always
+    byte-stable on the body portion, so hashing ``page.body`` directly
+    and chunking ``page.body`` would silently diverge from the
+    read-back parsed body, causing ``read_page`` to falsely flag every
+    K-layer page as stale (empty anchors).
+    """
     doc_id = _doc_id_for(Layer.WIKI, page.path)
-    body_hash = content_hash(page.body)
     abs_path = (root / page.path).resolve()
-    mtime = abs_path.stat().st_mtime if abs_path.is_file() else time.time()
+    parsed = parse_any(abs_path, rel_path=page.path)
 
     await storage.upsert_document(
         DocumentRecord(
             doc_id=doc_id,
             path=page.path,
             title=page.title,
-            hash=body_hash,
-            mtime=mtime,
+            hash=parsed.hash,
+            mtime=parsed.mtime,
             layer=Layer.WIKI,
             active=True,
         )
     )
 
-    chunks = chunk_markdown(page.body, cjk_tokenizer=cjk_tokenizer)
+    chunks = chunk_markdown(parsed.body, cjk_tokenizer=cjk_tokenizer)
     records = [
         ChunkRecord(doc_id=doc_id, seq=c.seq, start=c.start, end=c.end, text=c.text)
         for c in chunks
@@ -1907,7 +2073,7 @@ async def _persist_wiki_page(
     for d in k_docs:
         if d.title and d.title not in title_to_path:
             title_to_path[d.title] = d.path
-    parsed_links = parse_links(page.body)
+    parsed_links = parse_links(parsed.body)
     resolved, _unresolved = resolve_links(doc_id, parsed_links, title_to_path=title_to_path)
     for link in resolved:
         await storage.upsert_link(link)

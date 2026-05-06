@@ -29,7 +29,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 
 | family | examples | shape |
 |---|---|---|
-| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/wiki/pages`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
+| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
 | **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval}` → `task_id`; `GET /v1/tasks/{id}/events` (NDJSON); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → stream NDJSON → final JSON |
 | **Streaming query** | `POST /v1/query` | NDJSON: `query_started → retrieval_done → llm_token* → final` |
 | **Upload** | `POST /v1/upload/sources` | multipart: tar.gz payload + manifest JSON |
