@@ -33,15 +33,9 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         since_ts: float | None = Query(default=None),
     ) -> list[DocumentRecord]:
         rt: ServerRuntime = get_runtime(request.app)
-        cfg, _root, storage = await api._with_storage(rt.root)
-        del cfg
-        try:
-            docs = await storage.list_documents(
-                layer=layer, active=active, since_ts=since_ts
-            )
-            return list(docs)
-        finally:
-            await storage.close()
+        return await api.list_pages(
+            rt.root, layer=layer, active=active, since_ts=since_ts
+        )
 
     @router.get("/base/pages/{path:path}", response_model=PageReadResult)
     async def get_page(request: Request, path: str) -> PageReadResult:

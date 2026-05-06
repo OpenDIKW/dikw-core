@@ -108,3 +108,61 @@ async def test_read_page_unindexed_file_raises(tmp_path: Path) -> None:
     assert (tmp_path / "dikw.yml").is_file()
     with pytest.raises(api.PageNotFound):
         await api.read_page(tmp_path, "dikw.yml")
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "",
+        "   ",  # whitespace-only
+        "foo\x00bar.md",  # null byte — Path() raises ValueError on Linux
+    ],
+)
+@pytest.mark.asyncio
+async def test_read_page_rejects_malformed_path(
+    tmp_path: Path, bad_path: str
+) -> None:
+    """Empty / whitespace-only / null-byte paths must surface as
+    ``PageNotFound``, NOT as a 500 from a deeper Path/storage error."""
+    init_test_wiki(tmp_path)
+    with pytest.raises(api.PageNotFound):
+        await api.read_page(tmp_path, bad_path)
+
+
+@pytest.mark.asyncio
+async def test_read_page_relative_to_guard_traps_corrupt_doc(
+    tmp_path: Path,
+) -> None:
+    """Defence in depth: if the documents table somehow ended up with a
+    row whose ``path`` resolves outside the base root (corruption, a
+    direct DB write, a future ingest bug), :func:`read_page` MUST refuse
+    to read the file — the ``relative_to`` check is the last line.
+
+    The HTTP-layer ``..``-traversal test in
+    ``tests/server/test_routes_pages.py`` doesn't actually reach this
+    code path because httpx normalises ``..`` segments client-side; this
+    test plants the corrupt doc directly into storage instead.
+    """
+    init_test_wiki(tmp_path)
+
+    cfg, _root, storage = await api._with_storage(tmp_path)
+    del cfg
+    try:
+        from dikw_core.schemas import DocumentRecord, Layer
+
+        bad_path = "../etc/secret.md"
+        await storage.upsert_document(
+            DocumentRecord(
+                doc_id=api._doc_id_for(Layer.SOURCE, bad_path),
+                path=bad_path,
+                hash="0" * 64,
+                mtime=0.0,
+                layer=Layer.SOURCE,
+                active=True,
+            )
+        )
+    finally:
+        await storage.close()
+
+    with pytest.raises(api.PageNotFound):
+        await api.read_page(tmp_path, bad_path)

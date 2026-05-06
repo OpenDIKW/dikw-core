@@ -20,6 +20,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -806,9 +807,16 @@ def pages_get_cmd(
     base — paths that aren't indexed return 404 (use ``dikw client pages
     list`` to discover registered paths)."""
 
+    # Percent-encode each segment so paths with ``?`` ``#`` ``%`` ``&``
+    # or whitespace (all legal in markdown filenames) don't get parsed
+    # as URL query / fragment / spec-violation by httpx. ``safe="/"``
+    # preserves the path-segment separator so FastAPI's ``{path:path}``
+    # still sees the correct hierarchy.
+    encoded = quote(path, safe="/")
+
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
-            payload = await t.get_json(f"/v1/base/pages/{path}")
+            payload = await t.get_json(f"/v1/base/pages/{encoded}")
         console.print_json(json.dumps(payload, ensure_ascii=False))
 
     _run(_go())

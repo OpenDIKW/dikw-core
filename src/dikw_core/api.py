@@ -154,6 +154,7 @@ __all__ = [
     "init_wiki",
     "lint",
     "list_candidates",
+    "list_pages",
     "load_wiki",
     "query",
     "read_page",
@@ -1496,6 +1497,32 @@ def _build_page_refs(hits: list[Hit]) -> list[PageRef]:
     return refs
 
 
+async def list_pages(
+    root: str | Path | None,
+    *,
+    layer: Layer | None = None,
+    active: bool | None = True,
+    since_ts: float | None = None,
+) -> list[DocumentRecord]:
+    """Return registered documents (D / K / W layer pages) under ``root``.
+
+    Thin facade around :meth:`Storage.list_documents` so server routes
+    don't reach into :func:`_with_storage` directly — keeps the
+    engine/server boundary symmetric with :func:`read_page`. Default
+    ``active=True`` matches the list endpoint's wire contract (deactivated
+    docs are not surfaced).
+    """
+    cfg, _root, storage = await _with_storage(root)
+    del cfg
+    try:
+        docs = await storage.list_documents(
+            layer=layer, active=active, since_ts=since_ts
+        )
+        return list(docs)
+    finally:
+        await storage.close()
+
+
 async def read_page(
     root: str | Path | None, path: str
 ) -> PageReadResult:
@@ -1512,6 +1539,13 @@ async def read_page(
     chunk via ``/v1/retrieve`` fetch the full page body and align hit
     chunks back onto it via ``Hit.chunk_id`` / ``Hit.seq``.
     """
+    # Reject obviously-malformed paths up front so a bare ``Path()``
+    # call later doesn't surface as a 500 (``\x00`` raises ValueError on
+    # Linux). Empty / whitespace-only also can't legitimately match a
+    # document.
+    if not path or not path.strip() or "\x00" in path:
+        raise PageNotFound(path)
+
     cfg, base_root, storage = await _with_storage(root)
     del cfg
     try:
@@ -1541,11 +1575,17 @@ async def read_page(
         # Defence in depth: a doc registered with a path that escapes
         # the base root is corruption — refuse to read.
         raise PageNotFound(path) from e
-    if not abs_path.is_file():
-        # Document row exists but the file is gone (mid-flight delete,
-        # or an inactive doc whose file was removed). Same uniform 404.
-        raise PageNotFound(path)
-    body = abs_path.read_text(encoding="utf-8")
+
+    # File I/O is sync; offload so a slow disk doesn't stall the event
+    # loop alongside other in-flight requests (retrieve, query stream).
+    def _read_body() -> str:
+        if not abs_path.is_file():
+            # Document row exists but the file is gone (mid-flight
+            # delete, or an inactive doc whose file was removed).
+            raise PageNotFound(path)
+        return abs_path.read_text(encoding="utf-8")
+
+    body = await asyncio.to_thread(_read_body)
 
     anchors = [
         PageAnchor(chunk_id=c.chunk_id, seq=c.seq, start=c.start, end=c.end)
