@@ -981,6 +981,51 @@ async def test_vec_search_layer_filter(storage: Storage) -> None:
     assert [h.chunk_id for h in src_hits] == [src_ids[0]]
 
 
+async def test_vec_search_excludes_deactivated_doc(storage: Storage) -> None:
+    """``deactivate_document`` must hide the doc's chunks from vec_search.
+
+    The fts_search path (and the Postgres adapter's vec path) already
+    filter ``documents.active``; the SQLite vec path was not — so a
+    doc parked inactive by an ``api.ingest`` storage_error retry could
+    leak its stale chunks into ``/v1/retrieve`` results until re-ingest.
+    This test locks the contract on both adapters.
+    """
+    keep_doc = _make_doc("sources/keep.md", layer=Layer.SOURCE)
+    drop_doc = _make_doc("sources/drop.md", layer=Layer.SOURCE)
+    for d in (keep_doc, drop_doc):
+        await storage.upsert_document(d)
+    keep_ids = await storage.replace_chunks(
+        keep_doc.doc_id,
+        [ChunkRecord(doc_id=keep_doc.doc_id, seq=0, start=0, end=4, text="keep")],
+    )
+    drop_ids = await storage.replace_chunks(
+        drop_doc.doc_id,
+        [ChunkRecord(doc_id=drop_doc.doc_id, seq=0, start=0, end=4, text="drop")],
+    )
+    try:
+        version_id = await register_text_version(storage, dim=4, model="test-embed")
+    except NotSupported:
+        pytest.skip("backend doesn't implement embed versioning yet")
+    await storage.upsert_embeddings(
+        [
+            EmbeddingRow(
+                chunk_id=keep_ids[0], version_id=version_id, embedding=[1.0, 0.0, 0.0, 0.0]
+            ),
+            EmbeddingRow(
+                chunk_id=drop_ids[0], version_id=version_id, embedding=[1.0, 0.0, 0.0, 0.0]
+            ),
+        ]
+    )
+    # Both surface while both are active.
+    pre = await storage.vec_search([1.0, 0.0, 0.0, 0.0], limit=10)
+    assert {h.chunk_id for h in pre} == {keep_ids[0], drop_ids[0]}
+
+    # Deactivate one — its chunk must vanish from vec_search results.
+    await storage.deactivate_document(drop_doc.doc_id)
+    post = await storage.vec_search([1.0, 0.0, 0.0, 0.0], limit=10)
+    assert [h.chunk_id for h in post] == [keep_ids[0]]
+
+
 async def test_link_graph(storage: Storage) -> None:
     src_doc = _make_doc("wiki/a.md", layer=Layer.WIKI)
     dst_doc = _make_doc("wiki/b.md", layer=Layer.WIKI)

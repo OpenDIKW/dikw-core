@@ -1066,10 +1066,13 @@ async def ingest(
                 # config. ``parse_error`` / ``read_error`` / ``storage_error``
                 # are the user-actionable surfaces this PR opens up.
                 continue
-            except OSError as e:
-                # Filesystem refused the read (permission denied, file
-                # disappeared mid-scan, decode error from a binary file
-                # opened as text).
+            except (OSError, UnicodeError) as e:
+                # OSError covers filesystem refusals (permission denied,
+                # file disappeared mid-scan); UnicodeError catches the
+                # not-UTF-8 case — ``Path.read_text`` raises that one as
+                # a ``ValueError`` subclass that would otherwise fall
+                # into the parse_error catch-all and mislead callers
+                # branching on ``kind``. Both are read-side failures.
                 report = await _record_ingest_error(
                     report,
                     _reporter,

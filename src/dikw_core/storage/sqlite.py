@@ -578,10 +578,16 @@ class SQLiteStorage:
                 return []
             chunk_ids = [cid for cid, _ in ranked]
             placeholders = ",".join("?" * len(chunk_ids))
+            # ``d.active = 1`` mirrors fts_search above (line 506) and the
+            # postgres adapter — without it, chunks of a doc deactivated
+            # by ``api.ingest``'s storage_error retry path would still
+            # leak into retrieve / query results until the doc is
+            # re-ingested or the chunks fall out of cache. The fts side
+            # already filters; this brings the dense leg in line.
             join_sql = (
                 f"SELECT c.chunk_id, c.doc_id FROM chunks c "
                 f"JOIN documents d ON d.doc_id = c.doc_id "
-                f"WHERE c.chunk_id IN ({placeholders})"
+                f"WHERE c.chunk_id IN ({placeholders}) AND d.active = 1"
             )
             join_params: list[Any] = list(chunk_ids)
             if layer is not None:

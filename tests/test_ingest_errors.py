@@ -150,6 +150,34 @@ async def test_ingest_records_storage_error_via_monkeypatch(
 
 
 @pytest.mark.asyncio
+async def test_ingest_records_read_error_for_invalid_utf8(
+    tmp_path: Path,
+) -> None:
+    """A ``.md`` file containing non-UTF-8 bytes raises
+    ``UnicodeDecodeError`` (a ``ValueError`` subclass, not ``OSError``).
+    Without explicit handling it lands in the ``parse_error`` catch-all,
+    which misleads callers branching on ``kind`` — UTF-8 decode failure
+    is a read-side problem (the file as bytes can't be turned into text),
+    not a parser-side syntax problem."""
+    src_dir = _seed_wiki(tmp_path)
+    # Latin-1 byte 0xA1 (¡) is invalid UTF-8 lead.
+    (src_dir / "binary.md").write_bytes(
+        b"# Title\n\nbody with bad byte: \xa1 here\n"
+    )
+    (src_dir / "good.md").write_text("# OK\n", encoding="utf-8")
+
+    report = await api.ingest(tmp_path, embedder=FakeEmbeddings())
+
+    assert report.added == 1
+    assert len(report.errors) == 1
+    err = report.errors[0]
+    assert err.kind == "read_error", (
+        f"UnicodeDecodeError must surface as read_error, got {err.kind}"
+    )
+    assert err.path.endswith("binary.md")
+
+
+@pytest.mark.asyncio
 async def test_storage_error_deactivates_doc_so_retry_reprocesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
