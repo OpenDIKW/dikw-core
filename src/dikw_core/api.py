@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import struct
@@ -338,37 +339,25 @@ async def _register_text_version(
 # ---- public result models ------------------------------------------------
 
 
-IngestErrorKind = Literal[
-    "unsupported_format",
-    "parse_error",
-    "read_error",
-    "storage_error",
-]
+IngestErrorKind = Literal["parse_error", "read_error", "storage_error"]
 
 
 @dataclass(frozen=True)
 class IngestError:
     """One per-file ingest failure surfaced on the report.
 
-    The error is non-fatal by default — ingest continues with the next
-    file so a single bad markdown doesn't kill a 1000-file run. Callers
-    that want strict semantics check ``IngestReport.errors`` and bail
-    themselves (the CLI's ``--strict`` flag does this).
+    Non-fatal by default — ingest continues with the next file so a
+    single bad markdown doesn't kill a 1000-file run; the CLI's
+    ``--strict`` flag opts into exit-on-error semantics.
 
-    ``kind`` partitions the failure surface so callers can branch
-    without pattern-matching on ``message``:
-
-    * ``unsupported_format`` — extension not handled by any registered
-      backend (markdown today). Almost always benign — a glob swept up
-      a non-md file.
-    * ``parse_error`` — parser raised on the file content (broken YAML
-      front-matter, invalid encoding declared in the file, etc.).
-    * ``read_error`` — file system refused the read (permission denied,
-      file disappeared mid-scan).
-    * ``storage_error`` — the per-file work that follows parsing
-      (chunking, asset materialisation, storage writes) raised. The
-      document may be in a partial state (row written but no chunks);
-      a re-ingest with the same content hash will retry.
+    ``kind`` is a discriminator chosen so callers can branch without
+    regex-matching ``message``: ``parse_error`` (parser rejected the
+    content), ``read_error`` (filesystem refused the read), or
+    ``storage_error`` (post-parse pipeline raised; the engine
+    deactivates the doc so the next run re-processes it).
+    Unsupported-extension files are silently skipped — the prior
+    behaviour — to keep wide-glob configs from drowning the error
+    channel.
     """
 
     path: str
@@ -1069,17 +1058,13 @@ async def ingest(
             _reporter.cancel_token().raise_if_cancelled()
             try:
                 parsed = parse_any(abs_path, rel_path=logical_path)
-            except UnsupportedFormat as e:
-                # User's glob swept up a file we can't parse — record so
-                # ``--strict`` callers can fail the run, but keep going
-                # so a mixed-glob directory doesn't explode.
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="unsupported_format",
-                    message=str(e) or "unsupported file extension",
-                )
+            except UnsupportedFormat:
+                # Glob swept up a non-md file (asset binary, .git/*, etc.).
+                # Skip silently — surfacing every one would balloon the
+                # error tape on a wide ``**/*`` glob without telling the
+                # user anything they didn't already know about their
+                # config. ``parse_error`` / ``read_error`` / ``storage_error``
+                # are the user-actionable surfaces this PR opens up.
                 continue
             except OSError as e:
                 # Filesystem refused the read (permission denied, file
@@ -1109,11 +1094,14 @@ async def ingest(
 
             scanned = report.scanned + 1
             # Skip the chunk/embed pipeline only when the doc body is
-            # unchanged AND the doc has no asset references — the latter
-            # would otherwise leave assets stale when the binary was
-            # replaced on disk or the multimodal version bumped.
+            # unchanged AND the doc has no asset references AND the
+            # row is currently active. A row deactivated by a prior
+            # ``storage_error`` arm carries the same hash but a
+            # half-indexed state — falling through re-runs the whole
+            # pipeline and re-upserts ``active=True``.
             if (
                 existing is not None
+                and existing.active
                 and existing.hash == parsed.hash
                 and not parsed.asset_refs
             ):
@@ -1221,10 +1209,14 @@ async def ingest(
             except Exception as e:
                 # Storage / chunking / asset materialisation raised
                 # mid-file. ``upsert_document`` may already have landed
-                # the doc row before the failure point — a re-ingest
-                # under the same content hash will retry, and the
-                # content-hash skip on a successful re-ingest will heal
-                # the partial state.
+                # the doc row before the failure point — without an
+                # explicit deactivation, the next ingest under an
+                # unchanged content hash would hit the early-skip arm
+                # above and the orphaned doc would stay half-indexed
+                # forever. Deactivating bypasses the skip on retry so
+                # the doc gets re-processed end-to-end.
+                with contextlib.suppress(Exception):
+                    await storage.deactivate_document(doc_id)
                 report = await _record_ingest_error(
                     report,
                     _reporter,
@@ -1408,18 +1400,11 @@ def _to_document(parsed: ParsedDocument, *, doc_id: str) -> DocumentRecord:
     )
 
 
-def _replace(r: IngestReport, **kwargs: int) -> IngestReport:
-    return IngestReport(
-        scanned=kwargs.get("scanned", r.scanned),
-        added=kwargs.get("added", r.added),
-        updated=kwargs.get("updated", r.updated),
-        unchanged=kwargs.get("unchanged", r.unchanged),
-        chunks=kwargs.get("chunks", r.chunks),
-        embedded=kwargs.get("embedded", r.embedded),
-        assets=kwargs.get("assets", r.assets),
-        asset_embedded=kwargs.get("asset_embedded", r.asset_embedded),
-        errors=r.errors,
-    )
+def _replace(r: IngestReport, **kwargs: Any) -> IngestReport:
+    # Thin wrapper around ``dataclasses.replace`` — kept for grep-ability
+    # and to keep call-sites reading "_replace(report, scanned=…)" rather
+    # than reaching for a stdlib import.
+    return dataclasses.replace(r, **kwargs)
 
 
 async def _record_ingest_error(

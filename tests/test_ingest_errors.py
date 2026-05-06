@@ -69,23 +69,25 @@ async def test_ingest_records_parse_error_and_continues(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest_records_unsupported_format(tmp_path: Path) -> None:
-    """When the configured pattern sweeps in a non-markdown file,
-    ``parse_any`` raises ``UnsupportedFormat`` — the engine must
-    record it instead of skipping silently (the prior behaviour, which
-    hid every glob-too-wide accident)."""
+async def test_ingest_silently_skips_unsupported_format(tmp_path: Path) -> None:
+    """A wide glob (``**/*``) sweeping non-markdown files into the run
+    must NOT inflate ``report.errors`` — the prior behaviour was to
+    skip silently, and a vault with thousands of asset files would
+    otherwise drown the error channel. ``parse_error`` / ``read_error``
+    / ``storage_error`` are the user-actionable surfaces this PR
+    opens up."""
     src_dir = _seed_wiki(tmp_path)
     _widen_pattern_to_all(tmp_path)
     (src_dir / "good.md").write_text("# OK\n", encoding="utf-8")
     (src_dir / "data.txt").write_text("plain text\n", encoding="utf-8")
+    (src_dir / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     report = await api.ingest(tmp_path, embedder=FakeEmbeddings())
 
-    kinds = [e.kind for e in report.errors]
-    paths = [e.path for e in report.errors]
-    assert "unsupported_format" in kinds
-    assert any(p.endswith("data.txt") for p in paths)
-    # Good file still gets through.
+    assert report.errors == ()
+    # Only the .md file landed in scanned — preserves the prior wire
+    # contract where ``scanned`` matches "supported files we tried".
+    assert report.scanned == 1
     assert report.added == 1
 
 
@@ -145,6 +147,59 @@ async def test_ingest_records_storage_error_via_monkeypatch(
     assert err.kind == "storage_error"
     assert err.path.endswith("boom.md")
     assert "simulated storage outage" in err.message
+
+
+@pytest.mark.asyncio
+async def test_storage_error_deactivates_doc_so_retry_reprocesses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``storage_error`` mid-file leaves the doc row written but its
+    chunks not. Without explicit deactivation, the next ingest under
+    an unchanged content hash hits the early-skip arm and the doc
+    stays half-indexed forever. The fix: deactivate on storage_error
+    so the skip arm falls through and re-runs the pipeline.
+    """
+    src_dir = _seed_wiki(tmp_path)
+    (src_dir / "boom.md").write_text("# Doom\n\nbody.\n", encoding="utf-8")
+
+    original = api._with_storage
+    fail_chunks = True
+
+    async def patched(path: object) -> object:
+        cfg, root, storage = await original(path)  # type: ignore[arg-type]
+        original_replace_chunks = storage.replace_chunks
+
+        async def maybe_boom(doc_id: object, chunks: object) -> object:
+            if fail_chunks:
+                raise RuntimeError("simulated storage outage")
+            return await original_replace_chunks(doc_id, chunks)
+
+        storage.replace_chunks = maybe_boom  # type: ignore[method-assign]
+        return cfg, root, storage
+
+    monkeypatch.setattr(api, "_with_storage", patched)
+
+    first = await api.ingest(tmp_path, embedder=FakeEmbeddings())
+    assert len(first.errors) == 1
+    assert first.errors[0].kind == "storage_error"
+
+    # Confirm the doc is parked as inactive.
+    cfg, _root, storage = await original(tmp_path)
+    del cfg
+    try:
+        doc_id = api._doc_id_for(api.Layer.SOURCE, "sources/demo/boom.md")
+        existing = await storage.get_document(doc_id)
+        assert existing is not None and existing.active is False
+    finally:
+        await storage.close()
+
+    # Lift the failure and retry — the early-skip must NOT silently
+    # treat the inactive doc as "unchanged"; the pipeline must re-run.
+    fail_chunks = False
+    second = await api.ingest(tmp_path, embedder=FakeEmbeddings())
+    assert second.errors == ()
+    assert second.added + second.updated == 1
+    assert second.chunks >= 1
 
 
 @pytest.mark.asyncio

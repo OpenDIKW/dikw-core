@@ -37,6 +37,7 @@ from .progress import (
     render_distill_report,
     render_eval_report,
     render_health_report,
+    render_ingest_errors,
     render_ingest_report,
     render_lint_report,
     render_retrieve_table,
@@ -512,17 +513,7 @@ def ingest_cmd(
             render_ingest_report(console, result)
             errors = result.get("errors") or []
             if errors:
-                console.print(
-                    f"[yellow]ingest finished with {len(errors)} "
-                    f"file error(s):[/yellow]"
-                )
-                for e in errors:
-                    if not isinstance(e, dict):
-                        continue
-                    console.print(
-                        f"  [red]{e.get('kind', '?')}[/red] "
-                        f"{e.get('path', '?')} — {e.get('message', '')}"
-                    )
+                render_ingest_errors(console, errors)
                 if strict:
                     raise typer.Exit(code=1)
         _exit_on_failure(status, error)
