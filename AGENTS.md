@@ -42,17 +42,24 @@ ask the user to run `dikw serve` (don't try to start it yourself).
 | `POST /v1/ingest` | ingest the on-disk `sources/` (or an uploaded tar) | when the user adds/edits markdown and wants the index refreshed |
 | `GET /v1/status`, `POST /v1/lint`, `POST /v1/check` | counts, lint issues, provider connectivity | sanity checks the user may ask for |
 
-CLI equivalents (sync commands support `--format json|table` for piping;
-streaming ops `query` / `ingest` always emit NDJSON):
+CLI equivalents (sync commands ship `--format json|table` for piping
+into `jq` or an agent loop; the long-running commands `query` and
+`ingest` consume NDJSON internally and render rich progress to stdout —
+talk to the HTTP endpoint directly if you need the raw event stream):
 
 ```
 dikw client health --format json
-dikw client retrieve "your question" --format json
+dikw client retrieve "your question" --plain --format json
 dikw client pages list --format json
 dikw client pages get sources/notes/alpha.md
-dikw client ingest --from ./local-sources
-dikw client query "your question"           # streams NDJSON
+dikw client ingest --from ./local-sources    # rendered progress; NOT pipeable
+dikw client query "your question"            # rendered tokens; NOT pipeable
 ```
+
+`retrieve` needs `--plain` whenever you pipe its output, otherwise the
+"retrieving…" rich banner lands on stdout and breaks `jq`. The
+`--format json` and `--plain` toggles are orthogonal: `--format` picks
+the *final* shape, `--plain` suppresses the *intermediate* status.
 
 ## A typical retrieval-augmented loop
 
