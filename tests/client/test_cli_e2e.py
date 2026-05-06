@@ -110,7 +110,7 @@ def test_query_streams_tokens_and_renders_answer(
         stream_chunks=["Karpathy ", "says ", "scoping ", "is ", "deterministic."],
     )
     monkeypatch.setattr(
-        "dikw_core.api.build_llm", lambda _cfg: fake_llm
+        "dikw_core.api.build_llm", lambda _cfg, **_kw: fake_llm
     )
     monkeypatch.setattr(
         "dikw_core.api.build_embedder",
@@ -222,7 +222,7 @@ def test_distill_runs_through_task_pipeline(
     so the report has zero candidates_added (the stub doesn't parse
     into a candidate), but the report shape itself is the contract we
     care about."""
-    monkeypatch.setattr(synth_op, "build_llm", lambda _cfg: FakeLLM())
+    monkeypatch.setattr(synth_op, "build_llm", lambda _cfg, **_kw: FakeLLM())
     monkeypatch.setattr(
         synth_op, "build_embedder", lambda _cfg: FakeEmbeddings()
     )

@@ -45,7 +45,7 @@ async def _wait_terminal(
 def _patch_synth_factories(
     monkeypatch: pytest.MonkeyPatch, *, llm: FakeLLM
 ) -> None:
-    monkeypatch.setattr(synth_op_module, "build_llm", lambda _cfg: llm)
+    monkeypatch.setattr(synth_op_module, "build_llm", lambda _cfg, **_kw: llm)
     monkeypatch.setattr(
         synth_op_module, "build_embedder", lambda _cfg: FakeEmbeddings()
     )
@@ -112,7 +112,7 @@ async def test_synth_task_emits_per_source_progress_and_final_report(
     )
     # Override build_llm to return the scripted stub for synth.
     monkeypatch.setattr(
-        synth_op_module, "build_llm", lambda _cfg: _ScriptedSynthLLM(script)
+        synth_op_module, "build_llm", lambda _cfg, **_kw: _ScriptedSynthLLM(script)
     )
 
     submit = await server_client.post(
@@ -199,7 +199,7 @@ async def test_distill_task_emits_per_batch_progress(
     # candidates, but the per-batch progress events still fire so we can
     # verify the task wrapper.
     monkeypatch.setattr(
-        synth_op_module, "build_llm", lambda _cfg: FakeLLM()
+        synth_op_module, "build_llm", lambda _cfg, **_kw: FakeLLM()
     )
 
     submit = await server_client.post(

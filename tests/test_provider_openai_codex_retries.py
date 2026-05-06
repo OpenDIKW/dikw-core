@@ -8,6 +8,7 @@ the way to the SDK constructor.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,8 @@ from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import OpenAICodexLLM
 
 from .fakes import make_provider_cfg
+
+_DUMMY_BASE = Path("dummy-wiki")
 
 
 @pytest.fixture()
@@ -46,7 +49,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         async def close(self) -> None:
             return None
 
-    async def _fake_resolve() -> str:
+    async def _fake_resolve(_base: Path, **_kwargs: Any) -> str:
         return "test-token"
 
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
@@ -64,7 +67,9 @@ async def _exercise(provider: OpenAICodexLLM) -> None:
 async def test_codex_client_passes_max_retries_when_set(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, max_retries=6)
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE, max_retries=6
+    )
     await _exercise(provider)
     assert captured["init_kwargs"]["max_retries"] == 6
 
@@ -72,14 +77,14 @@ async def test_codex_client_passes_max_retries_when_set(
 async def test_codex_client_omits_max_retries_when_none(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
     await _exercise(provider)
     assert "max_retries" not in captured["init_kwargs"]
 
 
 async def test_codex_client_passes_timeout(captured: dict[str, Any]) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, timeout_seconds=42.0
+        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE, timeout_seconds=42.0
     )
     await _exercise(provider)
     timeout = captured["init_kwargs"]["timeout"]
@@ -96,7 +101,7 @@ async def test_build_llm_wires_max_retries_from_config(
         llm_base_url=DEFAULT_CODEX_BASE_URL,
         llm_max_retries=3,
     )
-    provider = build_llm(cfg)
+    provider = build_llm(cfg, wiki_base=_DUMMY_BASE)
     assert isinstance(provider, OpenAICodexLLM)
     await _exercise(provider)
     assert captured["init_kwargs"]["max_retries"] == 3
@@ -110,7 +115,7 @@ async def test_build_llm_wires_timeout_from_config(
         llm_base_url=DEFAULT_CODEX_BASE_URL,
         llm_timeout_seconds=99.0,
     )
-    provider = build_llm(cfg)
+    provider = build_llm(cfg, wiki_base=_DUMMY_BASE)
     assert isinstance(provider, OpenAICodexLLM)
     await _exercise(provider)
     timeout = captured["init_kwargs"]["timeout"]

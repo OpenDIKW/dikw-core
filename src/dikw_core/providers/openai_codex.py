@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._http import build_no_keepalive_async_client
@@ -129,10 +130,16 @@ class OpenAICodexLLM:
         self,
         *,
         base_url: str,
+        wiki_base: Path,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
+        # ``wiki_base`` is the wiki root that owns the OAuth token store
+        # at ``<wiki_base>/.dikw/auth.json``. Multiple wikis on the same
+        # machine each carry their own credentials so a refresh in one
+        # doesn't invalidate the other.
         self._base_url = base_url
+        self._wiki_base = wiki_base
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
 
@@ -140,7 +147,7 @@ class OpenAICodexLLM:
     async def _client(self) -> AsyncIterator[AsyncOpenAI]:
         """Resolve a fresh access_token, build a per-request AsyncOpenAI,
         guarantee close() runs even if the body raises."""
-        token = await resolve_access_token()
+        token = await resolve_access_token(self._wiki_base)
         client = _build_async_client(
             base_url=self._base_url,
             access_token=token,

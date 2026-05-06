@@ -98,7 +98,7 @@ async def test_retrieve_stream_works_without_llm_provider(
     can still call retrieve productively.
     """
 
-    def _broken_llm_factory(_cfg: object) -> object:
+    def _broken_llm_factory(_cfg: object, **_kw: object) -> object:
         raise RuntimeError(
             "build_llm should not be called on the retrieve path"
         )

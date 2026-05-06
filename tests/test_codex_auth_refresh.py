@@ -1,8 +1,7 @@
 """Codex OAuth refresh + resolve_access_token orchestration.
 
-Mocks ``httpx.Client.post`` so no real network call ever fires; uses
-``tmp_path`` + ``monkeypatch`` ``CODEX_HOME`` so no real ``~/.codex/auth.json``
-is touched. Covers:
+Mocks ``httpx.AsyncClient.post`` so no real network call ever fires; uses
+``dikw_base`` so no real ``~/.dikw/auth.json`` is touched. Covers:
 
 * The POST shape (URL, content-type, form data, client_id)
 * refresh_token rotation (new vs. reused)
@@ -24,10 +23,12 @@ from dikw_core.providers.codex_auth import (
     CODEX_OAUTH_CLIENT_ID,
     CODEX_OAUTH_TOKEN_URL,
     CodexAuthError,
+    dikw_auth_path,
     refresh_codex_tokens,
     resolve_access_token,
 )
 
+from .conftest import make_dikw_auth_store
 from .fakes import make_jwt
 
 
@@ -39,22 +40,12 @@ def _expiring_jwt() -> str:
     return make_jwt({"exp": int(time.time()) + 30})
 
 
-@pytest.fixture()
-def codex_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    return tmp_path
-
-
-def _write_auth_json(home: Path, payload: dict[str, Any]) -> None:
-    (home / "auth.json").write_text(json.dumps(payload), encoding="utf-8")
-
-
-def _read_auth_json(home: Path) -> dict[str, Any]:
-    return json.loads((home / "auth.json").read_text(encoding="utf-8"))
+def _read_dikw_store(base: Path) -> dict[str, Any]:
+    return json.loads(dikw_auth_path(base).read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #
-# httpx.Client mocking
+# httpx.AsyncClient mocking
 # --------------------------------------------------------------------------- #
 
 
@@ -189,8 +180,8 @@ async def test_refresh_token_reused_marks_relogin(patched_http: dict[str, Any]) 
     err = excinfo.value
     assert err.code == "refresh_token_reused"
     assert err.relogin_required is True
-    # Message tells the user they need to re-run codex.
-    assert "codex" in str(err).lower()
+    # Message tells the user how to recover.
+    assert "dikw auth login" in str(err).lower()
 
 
 async def test_refresh_401_forces_relogin_even_without_known_code(
@@ -231,21 +222,19 @@ async def test_refresh_missing_access_token_in_response_raises(
 
 
 async def test_resolve_returns_existing_when_fresh(
-    codex_dir: Path, patched_http: dict[str, Any]
+    dikw_base: Path, patched_http: dict[str, Any]
 ) -> None:
     fresh = _fresh_jwt()
-    _write_auth_json(
-        codex_dir, {"tokens": {"access_token": fresh, "refresh_token": "rt-1"}}
-    )
+    make_dikw_auth_store(dikw_base, access_token=fresh, refresh_token="rt-1")
 
-    token = await resolve_access_token()
+    token = await resolve_access_token(dikw_base)
     assert token == fresh
     # No HTTP call should have fired.
     assert patched_http["last_client"] is None
 
 
 async def test_resolve_refreshes_when_expiring_and_writes_back(
-    codex_dir: Path, patched_http: dict[str, Any]
+    dikw_base: Path, patched_http: dict[str, Any]
 ) -> None:
     new_fresh = _fresh_jwt()
     patched_http["next_response"] = _StubResponse(
@@ -253,48 +242,47 @@ async def test_resolve_refreshes_when_expiring_and_writes_back(
         json_body={"access_token": new_fresh, "refresh_token": "rt-rotated"},
     )
 
-    _write_auth_json(
-        codex_dir,
-        {"tokens": {"access_token": _expiring_jwt(), "refresh_token": "rt-old"}},
+    make_dikw_auth_store(
+        dikw_base, access_token=_expiring_jwt(), refresh_token="rt-old"
     )
 
-    token = await resolve_access_token()
+    token = await resolve_access_token(dikw_base)
     assert token == new_fresh
 
-    on_disk = _read_auth_json(codex_dir)
-    assert on_disk["tokens"]["access_token"] == new_fresh
-    assert on_disk["tokens"]["refresh_token"] == "rt-rotated"
+    on_disk = _read_dikw_store(dikw_base)
+    codex_node = on_disk["providers"]["openai-codex"]
+    assert codex_node["tokens"]["access_token"] == new_fresh
+    assert codex_node["tokens"]["refresh_token"] == "rt-rotated"
     # POST was called exactly once with the OLD refresh_token.
     call = patched_http["last_client"].post_calls[0]
     assert call["data"]["refresh_token"] == "rt-old"
 
 
 async def test_resolve_propagates_relogin_required_on_invalid_grant(
-    codex_dir: Path, patched_http: dict[str, Any]
+    dikw_base: Path, patched_http: dict[str, Any]
 ) -> None:
     patched_http["next_response"] = _StubResponse(
         status_code=400, json_body={"error": "invalid_grant"}
     )
-    _write_auth_json(
-        codex_dir,
-        {"tokens": {"access_token": _expiring_jwt(), "refresh_token": "rt-stale"}},
+    make_dikw_auth_store(
+        dikw_base, access_token=_expiring_jwt(), refresh_token="rt-stale"
     )
 
     with pytest.raises(CodexAuthError) as excinfo:
-        await resolve_access_token()
+        await resolve_access_token(dikw_base)
     assert excinfo.value.relogin_required is True
 
 
 async def test_resolve_raises_codex_auth_missing_when_file_absent(
-    codex_dir: Path, patched_http: dict[str, Any]
+    dikw_base: Path, patched_http: dict[str, Any]
 ) -> None:
     with pytest.raises(CodexAuthError) as excinfo:
-        await resolve_access_token()
+        await resolve_access_token(dikw_base)
     assert excinfo.value.code == "codex_auth_missing"
 
 
 async def test_resolve_serialises_concurrent_refreshes_on_one_event_loop(
-    codex_dir: Path, monkeypatch: pytest.MonkeyPatch
+    dikw_base: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two coroutines on the same event loop racing for the same expiring
     token must not both fire OAuth refresh.
@@ -333,14 +321,11 @@ async def test_resolve_serialises_concurrent_refreshes_on_one_event_loop(
     monkeypatch.setattr(httpx, "AsyncClient", _SlowAsyncClient)
 
     expiring = _expiring_jwt()
-    _write_auth_json(
-        codex_dir,
-        {"tokens": {"access_token": expiring, "refresh_token": "rt-old"}},
-    )
+    make_dikw_auth_store(dikw_base, access_token=expiring, refresh_token="rt-old")
 
     a, b = await asyncio.gather(
-        resolve_access_token(refresh_timeout_seconds=2.0),
-        resolve_access_token(refresh_timeout_seconds=2.0),
+        resolve_access_token(dikw_base, refresh_timeout_seconds=2.0),
+        resolve_access_token(dikw_base, refresh_timeout_seconds=2.0),
     )
 
     # Both tasks return the freshly refreshed access_token, but only one

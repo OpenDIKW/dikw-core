@@ -25,10 +25,13 @@ from dikw_core.providers.codex_auth import (
     _is_expiring,
     account_id_from_jwt,
     codex_home,
+    dikw_auth_dir,
+    dikw_auth_path,
     read_codex_tokens,
     save_codex_tokens,
 )
 
+from .conftest import make_dikw_auth_store
 from .fakes import make_jwt as _make_jwt
 
 
@@ -151,127 +154,163 @@ def test_account_id_from_jwt_returns_none_when_claim_not_string() -> None:
 # ---------------------------- read_codex_tokens -------------------------- #
 
 
-@pytest.fixture()
-def codex_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Isolate every test's $CODEX_HOME to a fresh tmp_path."""
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    return tmp_path
-
-
-def _write_auth_json(home: Path, payload: dict[str, Any]) -> Path:
-    auth_path = home / "auth.json"
+def _write_dikw_store(base: Path, payload: dict[str, Any]) -> Path:
+    """Write an arbitrary store payload directly — used by the malformed /
+    missing-block tests below to skip ``make_dikw_auth_store``'s well-formed
+    contract."""
+    auth_path = dikw_auth_path(base)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
     auth_path.write_text(json.dumps(payload), encoding="utf-8")
     return auth_path
 
 
 def test_read_codex_tokens_missing_file_raises_with_relogin_hint(
-    codex_dir: Path,
+    dikw_base: Path,
 ) -> None:
     with pytest.raises(CodexAuthError) as excinfo:
-        read_codex_tokens()
+        read_codex_tokens(dikw_base)
     err = excinfo.value
     assert err.code == "codex_auth_missing"
     assert err.relogin_required is True
     # Error message tells the user how to recover.
-    assert "codex" in str(err).lower()
+    assert "dikw auth login" in str(err).lower() or "dikw auth import" in str(err).lower()
 
 
-def test_read_codex_tokens_returns_access_and_refresh(
-    codex_dir: Path,
-) -> None:
-    _write_auth_json(
-        codex_dir,
-        {"tokens": {"access_token": "at-1", "refresh_token": "rt-1"}},
-    )
-    tokens = read_codex_tokens()
+def test_read_codex_tokens_returns_access_and_refresh(dikw_base: Path) -> None:
+    make_dikw_auth_store(dikw_base, access_token="at-1", refresh_token="rt-1")
+    tokens = read_codex_tokens(dikw_base)
     assert tokens["access_token"] == "at-1"
     assert tokens["refresh_token"] == "rt-1"
 
 
-def test_read_codex_tokens_malformed_json_raises(codex_dir: Path) -> None:
-    (codex_dir / "auth.json").write_text("{not-json", encoding="utf-8")
+def test_read_codex_tokens_malformed_json_raises(dikw_base: Path) -> None:
+    auth_path = dikw_auth_path(dikw_base)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text("{not-json", encoding="utf-8")
     with pytest.raises(CodexAuthError) as excinfo:
-        read_codex_tokens()
+        read_codex_tokens(dikw_base)
     assert excinfo.value.code == "codex_auth_invalid_json"
 
 
-def test_read_codex_tokens_missing_access_token_raises(
-    codex_dir: Path,
-) -> None:
-    _write_auth_json(codex_dir, {"tokens": {"refresh_token": "rt-1"}})
+def test_read_codex_tokens_unsupported_version_raises(dikw_base: Path) -> None:
+    """A future-version store written by a newer dikw must error rather
+    than silently misread; readers refuse versions they don't recognise."""
+    _write_dikw_store(
+        dikw_base,
+        {
+            "version": 99,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "at", "refresh_token": "rt"}
+                }
+            },
+        },
+    )
     with pytest.raises(CodexAuthError) as excinfo:
-        read_codex_tokens()
+        read_codex_tokens(dikw_base)
+    assert excinfo.value.code == "codex_auth_unsupported_version"
+
+
+def test_read_codex_tokens_missing_provider_node_raises(dikw_base: Path) -> None:
+    """Auth store exists but no openai-codex entry → codex_auth_missing
+    so the CLI surfaces the right ``dikw auth login`` hint."""
+    _write_dikw_store(dikw_base, {"version": 1, "providers": {}})
+    with pytest.raises(CodexAuthError) as excinfo:
+        read_codex_tokens(dikw_base)
+    assert excinfo.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_missing_access_token_raises(dikw_base: Path) -> None:
+    _write_dikw_store(
+        dikw_base,
+        {
+            "version": 1,
+            "providers": {"openai-codex": {"tokens": {"refresh_token": "rt-1"}}},
+        },
+    )
+    with pytest.raises(CodexAuthError) as excinfo:
+        read_codex_tokens(dikw_base)
     assert excinfo.value.code == "codex_auth_missing_access_token"
     assert excinfo.value.relogin_required is True
 
 
-def test_read_codex_tokens_missing_refresh_token_raises(
-    codex_dir: Path,
-) -> None:
-    _write_auth_json(codex_dir, {"tokens": {"access_token": "at-1"}})
+def test_read_codex_tokens_missing_refresh_token_raises(dikw_base: Path) -> None:
+    _write_dikw_store(
+        dikw_base,
+        {
+            "version": 1,
+            "providers": {"openai-codex": {"tokens": {"access_token": "at-1"}}},
+        },
+    )
     with pytest.raises(CodexAuthError) as excinfo:
-        read_codex_tokens()
+        read_codex_tokens(dikw_base)
     assert excinfo.value.code == "codex_auth_missing_refresh_token"
     assert excinfo.value.relogin_required is True
 
 
-def test_read_codex_tokens_missing_tokens_block_raises(codex_dir: Path) -> None:
-    _write_auth_json(codex_dir, {"some_other_key": True})
+def test_read_codex_tokens_missing_tokens_block_raises(dikw_base: Path) -> None:
+    _write_dikw_store(
+        dikw_base,
+        {"version": 1, "providers": {"openai-codex": {"some_other_key": True}}},
+    )
     with pytest.raises(CodexAuthError) as excinfo:
-        read_codex_tokens()
+        read_codex_tokens(dikw_base)
     assert excinfo.value.code == "codex_auth_invalid_shape"
 
 
 # ---------------------------- save_codex_tokens -------------------------- #
 
 
-def test_save_codex_tokens_round_trip(codex_dir: Path) -> None:
-    save_codex_tokens({"access_token": "at-2", "refresh_token": "rt-2"})
-    tokens = read_codex_tokens()
+def test_save_codex_tokens_round_trip(dikw_base: Path) -> None:
+    save_codex_tokens(dikw_base, {"access_token": "at-2", "refresh_token": "rt-2"})
+    tokens = read_codex_tokens(dikw_base)
     assert tokens == {"access_token": "at-2", "refresh_token": "rt-2"}
 
 
-def test_save_codex_tokens_preserves_unrelated_top_level_keys(
-    codex_dir: Path,
+def test_save_codex_tokens_preserves_other_provider_entries(
+    dikw_base: Path,
 ) -> None:
-    """codex CLI writes additional top-level fields (last_refresh,
-    OPENAI_API_KEY shim, …) — replacing tokens must not wipe them."""
-    _write_auth_json(
-        codex_dir,
-        {
-            "tokens": {"access_token": "old", "refresh_token": "rt-old"},
-            "OPENAI_API_KEY": "sk-shim",
-            "last_refresh": "2026-04-01T00:00:00Z",
+    """Multi-provider read-modify-write: anthropic / future provider nodes
+    co-exist with openai-codex and must survive a refresh-write."""
+    make_dikw_auth_store(
+        dikw_base,
+        access_token="old",
+        refresh_token="rt-old",
+        extra_providers={
+            "anthropic": {
+                "tokens": {"access_token": "anth-at", "refresh_token": "anth-rt"},
+                "last_refresh": "2026-04-01T00:00:00Z",
+                "auth_mode": "claude",
+            }
         },
     )
-    save_codex_tokens({"access_token": "at-new", "refresh_token": "rt-new"})
+    save_codex_tokens(dikw_base, {"access_token": "at-new", "refresh_token": "rt-new"})
 
-    on_disk = json.loads((codex_dir / "auth.json").read_text(encoding="utf-8"))
-    assert on_disk["tokens"]["access_token"] == "at-new"
-    assert on_disk["tokens"]["refresh_token"] == "rt-new"
-    assert on_disk["OPENAI_API_KEY"] == "sk-shim"
-    # last_refresh is bumped on write so we don't pin its value, just its
-    # presence and shape.
-    assert isinstance(on_disk["last_refresh"], str)
-    assert on_disk["last_refresh"] != "2026-04-01T00:00:00Z"
+    on_disk = json.loads(dikw_auth_path(dikw_base).read_text(encoding="utf-8"))
+    assert on_disk["version"] == 1
+    assert on_disk["providers"]["openai-codex"]["tokens"]["access_token"] == "at-new"
+    assert on_disk["providers"]["openai-codex"]["tokens"]["refresh_token"] == "rt-new"
+    # Other provider entry is untouched.
+    assert on_disk["providers"]["anthropic"]["tokens"]["access_token"] == "anth-at"
+    assert on_disk["providers"]["anthropic"]["last_refresh"] == "2026-04-01T00:00:00Z"
+    # last_refresh on the openai-codex node is bumped on write.
+    assert isinstance(on_disk["providers"]["openai-codex"]["last_refresh"], str)
 
 
-def test_save_codex_tokens_creates_codex_home_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    target = tmp_path / "nested" / "codex-home"
-    monkeypatch.setenv("CODEX_HOME", str(target))
-    save_codex_tokens({"access_token": "at-3", "refresh_token": "rt-3"})
-    assert (target / "auth.json").is_file()
+def test_save_codex_tokens_creates_dikw_dir(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "wiki"
+    save_codex_tokens(target, {"access_token": "at-3", "refresh_token": "rt-3"})
+    assert dikw_auth_path(target).is_file()
+    assert dikw_auth_dir(target).is_dir()
 
 
 # ---------------------------- _auth_file_lock --------------------------- #
 
 
-def test_auth_file_lock_serializes_concurrent_writers(codex_dir: Path) -> None:
+def test_auth_file_lock_serializes_concurrent_writers(dikw_base: Path) -> None:
     """Two threads both try to enter the lock while holding it for a brief
     sleep; their critical sections must not overlap."""
-    lock_path = codex_dir / "auth.lock"
+    lock_path = dikw_base / ".dikw" / "auth.lock"
     in_section: list[bool] = [False]
     overlap_observed: list[bool] = [False]
     barrier = threading.Barrier(2)
@@ -295,29 +334,29 @@ def test_auth_file_lock_serializes_concurrent_writers(codex_dir: Path) -> None:
     assert not overlap_observed[0]
 
 
-def test_auth_file_lock_is_strictly_os_level_no_reentry(codex_dir: Path) -> None:
+def test_auth_file_lock_is_strictly_os_level_no_reentry(dikw_base: Path) -> None:
     """Reentrancy was removed because asyncio's ``threading.local``-based
     depth counter would let two coroutines on the same event loop bypass
     the OS lock and refresh the same OAuth refresh_token concurrently.
     Nested acquisition on the same thread must time out instead of
     silently re-entering."""
-    lock_path = codex_dir / "auth.lock"
+    lock_path = dikw_base / ".dikw" / "auth.lock"
     with _auth_file_lock(lock_path, timeout=10.0):
         with pytest.raises(TimeoutError):
             with _auth_file_lock(lock_path, timeout=1.0):
                 pytest.fail("nested acquire should have timed out")
 
 
-def test_save_codex_tokens_writes_atomically(codex_dir: Path) -> None:
+def test_save_codex_tokens_writes_atomically(dikw_base: Path) -> None:
     """Replace-via-rename leaves no observable partial state. After a
     successful save the .tmp scratch file must be gone."""
-    save_codex_tokens({"access_token": "at-1", "refresh_token": "rt-1"})
-    assert (codex_dir / "auth.json").is_file()
-    assert not (codex_dir / "auth.json.tmp").exists()
+    save_codex_tokens(dikw_base, {"access_token": "at-1", "refresh_token": "rt-1"})
+    assert dikw_auth_path(dikw_base).is_file()
+    assert not (dikw_base / ".dikw" / "auth.json.tmp").exists()
 
 
 def test_save_codex_tokens_writes_with_owner_only_permissions(
-    codex_dir: Path,
+    dikw_base: Path,
 ) -> None:
     """OAuth tokens must not leak to other local users. The atomic-write
     helper opens auth.json.tmp with mode 0o600, so even on POSIX with a
@@ -329,8 +368,8 @@ def test_save_codex_tokens_writes_with_owner_only_permissions(
     import stat
     import sys
 
-    save_codex_tokens({"access_token": "at-secret", "refresh_token": "rt-secret"})
-    auth_path = codex_dir / "auth.json"
+    save_codex_tokens(dikw_base, {"access_token": "at-secret", "refresh_token": "rt-secret"})
+    auth_path = dikw_auth_path(dikw_base)
     assert auth_path.is_file()
     if sys.platform != "win32":
         mode = stat.S_IMODE(os.stat(auth_path).st_mode)
@@ -338,7 +377,7 @@ def test_save_codex_tokens_writes_with_owner_only_permissions(
 
 
 def test_save_codex_tokens_overrides_leftover_tmp_permissions(
-    codex_dir: Path,
+    dikw_base: Path,
 ) -> None:
     """A leftover ``auth.json.tmp`` from a previous crashed writer (or a
     manual touch) used to be reused by O_CREAT|O_TRUNC, which silently
@@ -349,13 +388,14 @@ def test_save_codex_tokens_overrides_leftover_tmp_permissions(
     import stat
     import sys
 
-    leftover = codex_dir / "auth.json.tmp"
+    leftover = dikw_base / ".dikw" / "auth.json.tmp"
+    leftover.parent.mkdir(parents=True, exist_ok=True)
     leftover.write_text("{}", encoding="utf-8")
     if sys.platform != "win32":
         os.chmod(leftover, 0o644)
 
-    save_codex_tokens({"access_token": "at", "refresh_token": "rt"})
-    auth_path = codex_dir / "auth.json"
+    save_codex_tokens(dikw_base, {"access_token": "at", "refresh_token": "rt"})
+    auth_path = dikw_auth_path(dikw_base)
     assert auth_path.is_file()
     assert not leftover.exists()
     if sys.platform != "win32":

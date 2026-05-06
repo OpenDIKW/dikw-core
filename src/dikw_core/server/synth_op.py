@@ -43,7 +43,7 @@ def make_synth_runner(
         # See ``ingest_op.make_ingest_runner`` for the full reasoning.
         cfg = load_config(wiki_root / CONFIG_FILENAME)
         try:
-            llm = build_llm(cfg.provider)
+            llm = build_llm(cfg.provider, wiki_base=wiki_root)
         except Exception as e:
             raise BadRequest(
                 f"could not build LLM: {e}", code="llm_unavailable"
@@ -85,7 +85,7 @@ def make_distill_runner(
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
         cfg = load_config(wiki_root / CONFIG_FILENAME)
         try:
-            llm = build_llm(cfg.provider)
+            llm = build_llm(cfg.provider, wiki_base=wiki_root)
         except Exception as e:
             raise BadRequest(
                 f"could not build LLM: {e}", code="llm_unavailable"

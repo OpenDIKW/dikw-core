@@ -22,6 +22,7 @@ import typer
 from rich.console import Console
 
 from . import __version__, api
+from .auth_cli import app as auth_app
 from .client.cli_app import app as client_app
 
 app = typer.Typer(
@@ -138,6 +139,14 @@ def serve_cmd(
         port=port,
         log_level=log_level,
     )
+
+
+# ---- mount local auth subcommands --------------------------------------
+
+# ``dikw auth login|import|status|list|logout`` — manage the local OAuth
+# token store at ``<wiki>/.dikw/auth.json``. Local-only (does not talk
+# to ``dikw serve``); must run on the same host as the server process.
+app.add_typer(auth_app, name="auth")
 
 
 # ---- mount remote CLI commands -----------------------------------------

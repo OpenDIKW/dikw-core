@@ -597,14 +597,20 @@ def _sanitize_base_url(url: str | None) -> str | None:
 
 def _llm_credentials_present(
     provider: Literal["anthropic_compat", "openai_compat", "openai_codex"],
+    *,
+    wiki_base: Path,
 ) -> bool:
     """Whether credentials for the given LLM provider are resolvable.
 
     Env-keyed providers (anthropic_compat, openai_compat) check the
-    matching ``API_KEY_ENV`` constant; the codex protocol uses ChatGPT's
-    OAuth flow and checks for ``codex_home()/auth.json`` instead — the
-    same seam the runtime uses, so /v1/health and `dikw check` agree
-    on what "credentials present" means.
+    matching ``API_KEY_ENV`` constant; the codex protocol checks the
+    dikw-managed store at ``<wiki_base>/.dikw/auth.json``, falling back
+    to the codex CLI store iff lazy migration would succeed there
+    (fresh, non-expired tokens). That predicts what
+    ``resolve_access_token`` will do, so /v1/health agrees with the
+    runtime even right before the first LLM call triggers migration —
+    and a logged-out dikw store with a stale codex CLI file still
+    reports false rather than silently relying on the leftover.
 
     Explicit per-provider branch (rather than ``else: openai_compat``)
     so adding a new LLM provider surfaces as a typed mypy error here +
@@ -620,9 +626,19 @@ def _llm_credentials_present(
 
         return bool(os.environ.get(API_KEY_ENV))
     if provider == "openai_codex":
-        from .providers.codex_auth import codex_home
+        from .providers.codex_auth import (
+            _read_codex_cli_tokens_if_valid,
+            list_providers,
+        )
 
-        return (codex_home() / "auth.json").exists()
+        if "openai-codex" in list_providers(wiki_base):
+            return True
+        # Lazy migration: if the dikw store is empty but the codex CLI
+        # store has fresh tokens, the next ``resolve_access_token`` call
+        # will populate the dikw store automatically. Surface that as
+        # "credentials present" so /v1/health doesn't false-negative on
+        # upgraded users who haven't issued an LLM call yet.
+        return _read_codex_cli_tokens_if_valid() is not None
     raise ValueError(f"unknown llm provider: {provider!r}")
 
 
@@ -665,7 +681,7 @@ async def health(path: str | Path | None = None) -> HealthReport:
         max_tokens_synth=p.llm_max_tokens_synth,
         max_tokens_distill=p.llm_max_tokens_distill,
         timeout_seconds=p.llm_timeout_seconds,
-        api_key_present=_llm_credentials_present(p.llm),
+        api_key_present=_llm_credentials_present(p.llm, wiki_base=root),
     )
 
     mm_info: MultimodalInfo | None = None
@@ -873,7 +889,7 @@ async def check_providers(
     owned_mm: MultimodalEmbeddingProvider | None = None
 
     if not embed_only:
-        llm_inst = llm if llm is not None else build_llm(cfg.provider)
+        llm_inst = llm if llm is not None else build_llm(cfg.provider, wiki_base=_root)
     if not llm_only:
         if mm_cfg is not None:
             if multimodal_embedder is not None:
@@ -1550,7 +1566,7 @@ async def query(
     try:
         _llm = llm
         if _llm is None:
-            _llm = build_llm(cfg.provider)
+            _llm = build_llm(cfg.provider, wiki_base=_root)
 
         hits, owned_mm = await _retrieve_inner(
             storage,
@@ -1693,7 +1709,7 @@ async def synthesize(
     cfg, root, storage = await _with_storage(path)
     _reporter: ProgressReporter = reporter or NoopReporter()
     try:
-        _llm = llm or build_llm(cfg.provider)
+        _llm = llm or build_llm(cfg.provider, wiki_base=root)
 
         text_version_id: int | None = None
         text_embed_model = cfg.provider.embedding_model
@@ -1944,7 +1960,7 @@ async def distill(
     cfg, root, storage = await _with_storage(path)
     _reporter: ProgressReporter = reporter or NoopReporter()
     try:
-        _llm = llm or build_llm(cfg.provider)
+        _llm = llm or build_llm(cfg.provider, wiki_base=root)
 
         k_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
         # Aggregate pages we can cite later — D and K together count as evidence sources
