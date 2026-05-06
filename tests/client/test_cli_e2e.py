@@ -173,6 +173,54 @@ def test_health_rejects_invalid_format(
     assert "must be 'json' or 'table'" in result.stdout
 
 
+def _drop_broken_markdown(rt: ServerRuntime) -> None:
+    """Plant one valid + one YAML-broken file under the server's
+    sources tree, ready for an in-place ingest (no upload bundle
+    needed). Used by both --strict tests."""
+    src_dir = rt.root / "sources" / "notes"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "good.md").write_text("# Good\n\nbody.\n", encoding="utf-8")
+    (src_dir / "broken.md").write_text(
+        "---\nbroken: : :\n---\n# T\n", encoding="utf-8"
+    )
+
+
+def test_ingest_default_treats_file_errors_as_warnings(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``--strict``, a per-file failure should NOT fail the
+    overall CLI invocation — the file shows in the warning summary
+    but exit code stays 0 so a flaky markdown can't break CI."""
+    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    _, rt = asgi_client
+    _drop_broken_markdown(rt)
+    patch_transport_factory()
+
+    result = _run(["ingest", "--no-embed", "--plain"])
+    assert result.exit_code == 0, result.stdout
+    assert "file error" in result.stdout.lower()
+    assert "broken.md" in result.stdout
+
+
+def test_ingest_strict_exits_one_when_any_file_errors(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--strict`` flips the same per-file failure into a non-zero
+    exit so CI can branch on it."""
+    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    _, rt = asgi_client
+    _drop_broken_markdown(rt)
+    patch_transport_factory()
+
+    result = _run(["ingest", "--no-embed", "--plain", "--strict"])
+    assert result.exit_code == 1, result.stdout
+    assert "broken.md" in result.stdout
+
+
 def _ingest_fixtures(rt: ServerRuntime) -> None:
     """Drop the standard ``tests/fixtures/notes`` corpus into the server's
     ``sources/`` and ingest via the engine. Used by pages-CLI tests that

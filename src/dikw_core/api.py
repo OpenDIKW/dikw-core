@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import struct
@@ -129,6 +130,8 @@ __all__ = [
     "DistillReport",
     "EmbeddingInfo",
     "HealthReport",
+    "IngestError",
+    "IngestErrorKind",
     "IngestReport",
     "LayerCounts",
     "LlmInfo",
@@ -336,6 +339,32 @@ async def _register_text_version(
 # ---- public result models ------------------------------------------------
 
 
+IngestErrorKind = Literal["parse_error", "read_error", "storage_error"]
+
+
+@dataclass(frozen=True)
+class IngestError:
+    """One per-file ingest failure surfaced on the report.
+
+    Non-fatal by default — ingest continues with the next file so a
+    single bad markdown doesn't kill a 1000-file run; the CLI's
+    ``--strict`` flag opts into exit-on-error semantics.
+
+    ``kind`` is a discriminator chosen so callers can branch without
+    regex-matching ``message``: ``parse_error`` (parser rejected the
+    content), ``read_error`` (filesystem refused the read), or
+    ``storage_error`` (post-parse pipeline raised; the engine
+    deactivates the doc so the next run re-processes it).
+    Unsupported-extension files are silently skipped — the prior
+    behaviour — to keep wide-glob configs from drowning the error
+    channel.
+    """
+
+    path: str
+    kind: IngestErrorKind
+    message: str
+
+
 @dataclass(frozen=True)
 class IngestReport:
     scanned: int = 0
@@ -346,6 +375,7 @@ class IngestReport:
     embedded: int = 0
     assets: int = 0  # NEW assets materialized this run
     asset_embedded: int = 0  # asset-level vectors written this run
+    errors: tuple[IngestError, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1029,19 +1059,52 @@ async def ingest(
             try:
                 parsed = parse_any(abs_path, rel_path=logical_path)
             except UnsupportedFormat:
-                # User's glob swept up a file we can't parse; skip quietly so
-                # mixed-glob directories don't explode the run.
+                # Glob swept up a non-md file (asset binary, .git/*, etc.).
+                # Skip silently — surfacing every one would balloon the
+                # error tape on a wide ``**/*`` glob without telling the
+                # user anything they didn't already know about their
+                # config. ``parse_error`` / ``read_error`` / ``storage_error``
+                # are the user-actionable surfaces this PR opens up.
+                continue
+            except (OSError, UnicodeError) as e:
+                # OSError covers filesystem refusals (permission denied,
+                # file disappeared mid-scan); UnicodeError catches the
+                # not-UTF-8 case — ``Path.read_text`` raises that one as
+                # a ``ValueError`` subclass that would otherwise fall
+                # into the parse_error catch-all and mislead callers
+                # branching on ``kind``. Both are read-side failures.
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="read_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
+                continue
+            except Exception as e:
+                # Parser-side failure: invalid YAML front-matter,
+                # malformed inline syntax our backend can't tolerate, etc.
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="parse_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
                 continue
             doc_id = _doc_id_for(Layer.SOURCE, logical_path)
             existing = await storage.get_document(doc_id)
 
             scanned = report.scanned + 1
             # Skip the chunk/embed pipeline only when the doc body is
-            # unchanged AND the doc has no asset references — the latter
-            # would otherwise leave assets stale when the binary was
-            # replaced on disk or the multimodal version bumped.
+            # unchanged AND the doc has no asset references AND the
+            # row is currently active. A row deactivated by a prior
+            # ``storage_error`` arm carries the same hash but a
+            # half-indexed state — falling through re-runs the whole
+            # pipeline and re-upserts ``active=True``.
             if (
                 existing is not None
+                and existing.active
                 and existing.hash == parsed.hash
                 and not parsed.asset_refs
             ):
@@ -1052,95 +1115,120 @@ async def ingest(
                 )
                 continue
 
-            await storage.upsert_document(_to_document(parsed, doc_id=doc_id))
+            try:
+                await storage.upsert_document(_to_document(parsed, doc_id=doc_id))
 
-            # Materialize image references before chunking so asset_ids
-            # are available when chunk_asset_refs land. Decoupled from
-            # mm_cfg so eval rigs see the chunk ↔ asset bridge even
-            # without multimodal embedding configured.
-            ref_assets: dict[int, AssetRecord] = {}
-            if parsed.asset_refs:
-                by_original_path: dict[str, AssetRecord] = {}
-                try:
-                    for ref_idx, ref in enumerate(parsed.asset_refs):
-                        cached = by_original_path.get(ref.original_path)
-                        if cached is not None:
-                            ref_assets[ref_idx] = cached
-                            continue
-                        result = await materialize_asset(
-                            ref,
-                            source_md_path=abs_path,
-                            project_root=root,
-                            get_asset=storage.get_asset,
-                            upsert_asset=storage.upsert_asset,
-                            dir_=cfg.assets.dir,
-                        )
-                        if result is not None:
-                            rec, was_new = result
-                            ref_assets[ref_idx] = rec
-                            by_original_path[ref.original_path] = rec
-                            # Only new binaries need an embedding pass;
-                            # existing rows keep their cached vector.
-                            if was_new and mm_cfg is not None:
-                                new_assets_by_id.setdefault(rec.asset_id, rec)
-                except NotSupported:
-                    ref_assets = {}
+                # Materialize image references before chunking so asset_ids
+                # are available when chunk_asset_refs land. Decoupled from
+                # mm_cfg so eval rigs see the chunk ↔ asset bridge even
+                # without multimodal embedding configured.
+                ref_assets: dict[int, AssetRecord] = {}
+                if parsed.asset_refs:
+                    by_original_path: dict[str, AssetRecord] = {}
+                    try:
+                        for ref_idx, ref in enumerate(parsed.asset_refs):
+                            cached = by_original_path.get(ref.original_path)
+                            if cached is not None:
+                                ref_assets[ref_idx] = cached
+                                continue
+                            result = await materialize_asset(
+                                ref,
+                                source_md_path=abs_path,
+                                project_root=root,
+                                get_asset=storage.get_asset,
+                                upsert_asset=storage.upsert_asset,
+                                dir_=cfg.assets.dir,
+                            )
+                            if result is not None:
+                                rec, was_new = result
+                                ref_assets[ref_idx] = rec
+                                by_original_path[ref.original_path] = rec
+                                # Only new binaries need an embedding pass;
+                                # existing rows keep their cached vector.
+                                if was_new and mm_cfg is not None:
+                                    new_assets_by_id.setdefault(rec.asset_id, rec)
+                    except NotSupported:
+                        ref_assets = {}
 
-            atomic_spans = [(r.start, r.end) for r in parsed.asset_refs]
-            chunks = chunk_markdown(
-                parsed.body,
-                atomic_spans=atomic_spans,
-                cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-            )
-            chunk_records = [
-                ChunkRecord(
-                    doc_id=doc_id, seq=c.seq, start=c.start, end=c.end, text=c.text
+                atomic_spans = [(r.start, r.end) for r in parsed.asset_refs]
+                chunks = chunk_markdown(
+                    parsed.body,
+                    atomic_spans=atomic_spans,
+                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                 )
-                for c in chunks
-            ]
-            chunk_ids = await storage.replace_chunks(doc_id, chunk_records)
-
-            # Project body-relative ref offsets into chunk-relative offsets
-            # and persist the chunk ↔ asset bridge rows.
-            for chunk_record, chunk_id in zip(chunk_records, chunk_ids, strict=True):
-                chunk_refs: list[ChunkAssetRef] = []
-                ord_counter = 0
-                for ref_idx, ref in enumerate(parsed.asset_refs):
-                    if not (
-                        chunk_record.start <= ref.start
-                        and ref.end <= chunk_record.end
-                    ):
-                        continue
-                    asset = ref_assets.get(ref_idx)
-                    if asset is None:
-                        continue  # unresolved (remote URL, missing file) — already logged
-                    chunk_refs.append(
-                        ChunkAssetRef(
-                            chunk_id=chunk_id,
-                            asset_id=asset.asset_id,
-                            ord=ord_counter,
-                            alt=ref.alt,
-                            start_in_chunk=ref.start - chunk_record.start,
-                            end_in_chunk=ref.end - chunk_record.start,
-                        )
+                chunk_records = [
+                    ChunkRecord(
+                        doc_id=doc_id, seq=c.seq, start=c.start, end=c.end, text=c.text
                     )
-                    ord_counter += 1
-                if chunk_refs:
-                    await storage.replace_chunk_asset_refs(chunk_id, chunk_refs)
+                    for c in chunks
+                ]
+                chunk_ids = await storage.replace_chunks(doc_id, chunk_records)
 
-            # Queue chunks for embedding only when a text embedder + version
-            # is wired up. Chunk vectors live exclusively in the text
-            # channel (vec_chunks_v<text_id>); the multimodal channel
-            # owns assets, not chunks.
-            if embedder is not None and text_version_id is not None and chunk_records:
-                to_embed.extend(
-                    ChunkToEmbed(chunk_id=cid, text=r.text)
-                    for cid, r in zip(chunk_ids, chunk_records, strict=True)
+                # Project body-relative ref offsets into chunk-relative offsets
+                # and persist the chunk ↔ asset bridge rows.
+                for chunk_record, chunk_id in zip(chunk_records, chunk_ids, strict=True):
+                    chunk_refs: list[ChunkAssetRef] = []
+                    ord_counter = 0
+                    for ref_idx, ref in enumerate(parsed.asset_refs):
+                        if not (
+                            chunk_record.start <= ref.start
+                            and ref.end <= chunk_record.end
+                        ):
+                            continue
+                        asset = ref_assets.get(ref_idx)
+                        if asset is None:
+                            continue  # unresolved (remote URL, missing file) — already logged
+                        chunk_refs.append(
+                            ChunkAssetRef(
+                                chunk_id=chunk_id,
+                                asset_id=asset.asset_id,
+                                ord=ord_counter,
+                                alt=ref.alt,
+                                start_in_chunk=ref.start - chunk_record.start,
+                                end_in_chunk=ref.end - chunk_record.start,
+                            )
+                        )
+                        ord_counter += 1
+                    if chunk_refs:
+                        await storage.replace_chunk_asset_refs(chunk_id, chunk_refs)
+
+                # Queue chunks for embedding only when a text embedder + version
+                # is wired up. Chunk vectors live exclusively in the text
+                # channel (vec_chunks_v<text_id>); the multimodal channel
+                # owns assets, not chunks.
+                if (
+                    embedder is not None
+                    and text_version_id is not None
+                    and chunk_records
+                ):
+                    to_embed.extend(
+                        ChunkToEmbed(chunk_id=cid, text=r.text)
+                        for cid, r in zip(chunk_ids, chunk_records, strict=True)
+                    )
+
+                await storage.append_wiki_log(
+                    WikiLogEntry(ts=time.time(), action="ingest", src=logical_path)
                 )
+            except Exception as e:
+                # Storage / chunking / asset materialisation raised
+                # mid-file. ``upsert_document`` may already have landed
+                # the doc row before the failure point — without an
+                # explicit deactivation, the next ingest under an
+                # unchanged content hash would hit the early-skip arm
+                # above and the orphaned doc would stay half-indexed
+                # forever. Deactivating bypasses the skip on retry so
+                # the doc gets re-processed end-to-end.
+                with contextlib.suppress(Exception):
+                    await storage.deactivate_document(doc_id)
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="storage_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
+                continue
 
-            await storage.append_wiki_log(
-                WikiLogEntry(ts=time.time(), action="ingest", src=logical_path)
-            )
             report = _replace(
                 report,
                 scanned=scanned,
@@ -1315,16 +1403,45 @@ def _to_document(parsed: ParsedDocument, *, doc_id: str) -> DocumentRecord:
     )
 
 
-def _replace(r: IngestReport, **kwargs: int) -> IngestReport:
+def _replace(r: IngestReport, **kwargs: Any) -> IngestReport:
+    # Thin wrapper around ``dataclasses.replace`` — kept for grep-ability
+    # and to keep call-sites reading "_replace(report, scanned=…)" rather
+    # than reaching for a stdlib import.
+    return dataclasses.replace(r, **kwargs)
+
+
+async def _record_ingest_error(
+    report: IngestReport,
+    reporter: ProgressReporter,
+    *,
+    path: str,
+    kind: IngestErrorKind,
+    message: str,
+) -> IngestReport:
+    """Append a per-file failure to the report and emit a wire event.
+
+    Counts the failed file as scanned (so the report's ``scanned``
+    matches "files we tried to process"), appends an :class:`IngestError`
+    to ``report.errors``, and pushes a ``partial("file_error", …)``
+    event so streaming subscribers (the CLI's progress widget, the task
+    NDJSON stream) can surface the failure live instead of waiting for
+    the final report.
+    """
+    err = IngestError(path=path, kind=kind, message=message)
+    await reporter.partial(
+        "file_error",
+        {"path": path, "kind": kind, "message": message},
+    )
     return IngestReport(
-        scanned=kwargs.get("scanned", r.scanned),
-        added=kwargs.get("added", r.added),
-        updated=kwargs.get("updated", r.updated),
-        unchanged=kwargs.get("unchanged", r.unchanged),
-        chunks=kwargs.get("chunks", r.chunks),
-        embedded=kwargs.get("embedded", r.embedded),
-        assets=kwargs.get("assets", r.assets),
-        asset_embedded=kwargs.get("asset_embedded", r.asset_embedded),
+        scanned=report.scanned + 1,
+        added=report.added,
+        updated=report.updated,
+        unchanged=report.unchanged,
+        chunks=report.chunks,
+        embedded=report.embedded,
+        assets=report.assets,
+        asset_embedded=report.asset_embedded,
+        errors=(*report.errors, err),
     )
 
 

@@ -399,6 +399,34 @@ def render_ingest_report(console: Console, report: Mapping[str, Any]) -> None:
     console.print(table)
 
 
+def render_ingest_errors(
+    console: Console, errors: list[Mapping[str, Any]]
+) -> None:
+    """Render the per-file failure list emitted by ``api.ingest`` as a
+    ``kind | path | message`` table — same vocabulary as the other
+    report renderers in this module."""
+    if not errors:
+        return
+    table = Table(
+        title=f"file errors ({len(errors)})",
+        show_header=True,
+        header_style="bold",
+        title_style="yellow",
+    )
+    table.add_column("kind", style="red")
+    table.add_column("path")
+    table.add_column("message", overflow="fold")
+    for err in errors:
+        if not isinstance(err, Mapping):
+            continue
+        table.add_row(
+            str(err.get("kind") or "?"),
+            str(err.get("path") or "?"),
+            str(err.get("message") or ""),
+        )
+    console.print(table)
+
+
 def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     table = Table(title="dikw synth", show_header=True, header_style="bold")
     table.add_column("metric", justify="left")

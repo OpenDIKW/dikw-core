@@ -228,6 +228,67 @@ async def test_resume_from_seq_returns_tail_only(
     assert tail[-1]["type"] == "final"
 
 
+# ---- per-file error surface --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_file_error_event_lands_on_event_tape(
+    server_client: httpx.AsyncClient,
+    wiki_root: Path,
+) -> None:
+    """Per-file failures during ingest must surface on the event tape
+    as ``partial`` events with ``kind=file_error`` so a client tailing
+    the NDJSON stream sees the failure live, and must also land on
+    ``IngestReport.errors`` in the final result so a non-streaming
+    poller sees the same information."""
+    src_dir = wiki_root / "sources" / "notes"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "good.md").write_text("# Good\n\nbody.\n", encoding="utf-8")
+    # Broken YAML front-matter — frontmatter.loads → yaml.YAMLError →
+    # caught by the engine's parse_error branch.
+    (src_dir / "broken.md").write_text(
+        "---\nbroken: : :\n---\n# T\n", encoding="utf-8"
+    )
+
+    submit = await server_client.post(
+        "/v1/ingest", json={"no_embed": True}
+    )
+    task_id = submit.json()["task_id"]
+    row = await _wait_terminal(server_client, task_id)
+    # The run as a whole succeeds — per-file errors are non-fatal.
+    assert row["status"] == "succeeded"
+
+    # Wire-event coverage.
+    async with server_client.stream(
+        "GET", f"/v1/tasks/{task_id}/events"
+    ) as resp:
+        events = [
+            json.loads(ln)
+            for ln in [line async for line in resp.aiter_lines()]
+            if ln.strip()
+        ]
+    file_error_events = [
+        e for e in events
+        if e["type"] == "partial" and e.get("kind") == "file_error"
+    ]
+    assert len(file_error_events) == 1, file_error_events
+    payload = file_error_events[0]["payload"]
+    assert payload["kind"] == "parse_error"
+    assert payload["path"].endswith("broken.md")
+    assert payload["message"]
+
+    # Final-report coverage.
+    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]
+    assert isinstance(result["errors"], list) and len(result["errors"]) == 1
+    err = result["errors"][0]
+    assert err["kind"] == "parse_error"
+    assert err["path"].endswith("broken.md")
+    # ``good.md`` still ingested cleanly.
+    assert result["added"] == 1
+
+
 # ---- failure paths ------------------------------------------------------
 
 

@@ -37,6 +37,7 @@ from .progress import (
     render_distill_report,
     render_eval_report,
     render_health_report,
+    render_ingest_errors,
     render_ingest_report,
     render_lint_report,
     render_retrieve_table,
@@ -460,6 +461,17 @@ def ingest_cmd(
         bool,
         typer.Option("--no-embed", help="Skip the dense embedding pass."),
     ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help=(
+                "Exit non-zero if any file errored during ingest. "
+                "Default behaviour treats per-file errors as warnings "
+                "so a single bad file doesn't fail a CI run."
+            ),
+        ),
+    ] = False,
     plain: Annotated[
         bool,
         typer.Option("--plain", help="Disable progress widget."),
@@ -499,6 +511,11 @@ def ingest_cmd(
             )
         if status == "succeeded" and result is not None:
             render_ingest_report(console, result)
+            errors = result.get("errors") or []
+            if errors:
+                render_ingest_errors(console, errors)
+                if strict:
+                    raise typer.Exit(code=1)
         _exit_on_failure(status, error)
 
     _run(_go())
