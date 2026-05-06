@@ -460,6 +460,17 @@ def ingest_cmd(
         bool,
         typer.Option("--no-embed", help="Skip the dense embedding pass."),
     ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help=(
+                "Exit non-zero if any file errored during ingest. "
+                "Default behaviour treats per-file errors as warnings "
+                "so a single bad file doesn't fail a CI run."
+            ),
+        ),
+    ] = False,
     plain: Annotated[
         bool,
         typer.Option("--plain", help="Disable progress widget."),
@@ -499,6 +510,21 @@ def ingest_cmd(
             )
         if status == "succeeded" and result is not None:
             render_ingest_report(console, result)
+            errors = result.get("errors") or []
+            if errors:
+                console.print(
+                    f"[yellow]ingest finished with {len(errors)} "
+                    f"file error(s):[/yellow]"
+                )
+                for e in errors:
+                    if not isinstance(e, dict):
+                        continue
+                    console.print(
+                        f"  [red]{e.get('kind', '?')}[/red] "
+                        f"{e.get('path', '?')} — {e.get('message', '')}"
+                    )
+                if strict:
+                    raise typer.Exit(code=1)
         _exit_on_failure(status, error)
 
     _run(_go())
