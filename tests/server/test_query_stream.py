@@ -36,7 +36,7 @@ def _patch_providers(
     for the embedder build path so the route's hermetic pipeline doesn't
     need API keys."""
 
-    def _llm_factory(_cfg: object) -> FakeLLM:
+    def _llm_factory(_cfg: object, **_kw: object) -> FakeLLM:
         return llm
 
     monkeypatch.setattr(api_module, "build_llm", _llm_factory)

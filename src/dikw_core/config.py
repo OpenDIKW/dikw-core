@@ -24,9 +24,10 @@ class ProviderConfig(BaseModel):
     # hard-bound to the ChatGPT backend (the validator below requires a
     # matching ``llm_base_url``); it speaks the OpenAI Responses API, not
     # Chat Completions, and rotates an OAuth access_token from
-    # ``~/.codex/auth.json`` instead of an ``OPENAI_API_KEY``. Defaults to
-    # ``anthropic_compat`` so a fresh ``dikw init`` against api.anthropic.com
-    # is one key away.
+    # ``<wiki>/.dikw/auth.json`` (dikw self-managed; bootstrap with
+    # ``dikw auth login openai-codex`` or ``dikw auth import openai-codex``)
+    # instead of an ``OPENAI_API_KEY``. Defaults to ``anthropic_compat`` so a
+    # fresh ``dikw init`` against api.anthropic.com is one key away.
     llm: Literal["anthropic_compat", "openai_compat", "openai_codex"] = "anthropic_compat"
     llm_model: str = "claude-sonnet-4-6"
     embedding: Literal["openai_compat"] = "openai_compat"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..config import ProviderConfig
 from .anthropic_compat import AnthropicCompatLLM
 from .base import (
@@ -18,7 +20,15 @@ from .openai_codex import OpenAICodexLLM
 from .openai_compat import OpenAICompatEmbeddings, OpenAICompatLLM
 
 
-def build_llm(config: ProviderConfig) -> LLMProvider:
+def build_llm(config: ProviderConfig, *, wiki_base: Path | None = None) -> LLMProvider:
+    """Build an LLM provider from config.
+
+    ``wiki_base`` is required when ``config.llm == "openai_codex"`` because
+    that provider stores its OAuth tokens at
+    ``<wiki_base>/.dikw/auth.json``. Other LLMs ignore the parameter.
+    Engine call sites already have the wiki root in scope (returned by
+    ``api._with_storage``) so threading it down is a one-liner per site.
+    """
     if config.llm == "anthropic_compat":
         return AnthropicCompatLLM(
             base_url=config.llm_base_url,
@@ -36,8 +46,15 @@ def build_llm(config: ProviderConfig) -> LLMProvider:
         # be set when llm == "openai_codex", so the assert here is a typing
         # narrow rather than runtime defence.
         assert config.llm_base_url is not None
+        if wiki_base is None:
+            raise ProviderError(
+                "build_llm: wiki_base is required for the openai_codex provider — "
+                "tokens live at <wiki_base>/.dikw/auth.json. Pass the wiki root "
+                "from api._with_storage's `root` return value."
+            )
         return OpenAICodexLLM(
             base_url=config.llm_base_url,
+            wiki_base=wiki_base,
             max_retries=config.llm_max_retries,
             timeout_seconds=config.llm_timeout_seconds,
         )

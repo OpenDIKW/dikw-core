@@ -15,6 +15,7 @@ a pure client unit test — can pull them in too.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -25,6 +26,7 @@ import pytest
 
 from dikw_core.client.config import ClientConfig
 from dikw_core.client.transport import Transport
+from dikw_core.providers.codex_auth import dikw_auth_path
 from dikw_core.server.app import build_app
 from dikw_core.server.auth import AuthConfig
 from dikw_core.server.runtime import ServerRuntime, build_runtime, teardown_runtime
@@ -33,6 +35,88 @@ from .fakes import init_test_wiki
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+# --------------------------------------------------------------------------- #
+# Codex auth fixtures — every codex test gets an isolated wiki base, with
+# its own ``<base>/.dikw/auth.json``. ``CODEX_HOME`` is also redirected to a
+# scratch dir so the lazy migration / ``dikw auth import`` paths can't
+# accidentally read the developer's real ``~/.codex/auth.json``.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def dikw_base(tmp_path: Path) -> Path:
+    """Return a tmp path role-playing as a wiki base. ``.dikw/`` is
+    pre-created so the auth store can be written without bootstrapping a
+    full wiki."""
+    base = tmp_path / "wiki"
+    (base / ".dikw").mkdir(parents=True, exist_ok=True)
+    return base
+
+
+@pytest.fixture(autouse=True)
+def _isolated_codex_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Path:
+    """Redirect ``$CODEX_HOME`` to an empty scratch dir for every test.
+
+    Tests that exercise the codex CLI import path opt in by writing into
+    the returned path; everything else stays oblivious. Without this the
+    developer's real ``~/.codex/auth.json`` would influence test outcomes
+    on Windows boxes that have it (lazy migration would silently kick in
+    during tests that don't expect it).
+    """
+    home = tmp_path / "codex-home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    return home
+
+
+def make_dikw_auth_store(
+    base: Path,
+    *,
+    access_token: str,
+    refresh_token: str,
+    last_refresh: str = "2026-05-06T03:14:22Z",
+    auth_mode: str = "chatgpt",
+    extra_providers: dict[str, dict[str, Any]] | None = None,
+) -> Path:
+    """Helper for tests: write a v1 dikw auth store with the given codex tokens.
+
+    ``extra_providers`` (e.g. ``{"anthropic": {...}}``) is preserved
+    verbatim so tests can verify the multi-provider read-modify-write
+    contract.
+    """
+    auth_path = dikw_auth_path(base)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    providers: dict[str, dict[str, Any]] = dict(extra_providers or {})
+    providers["openai-codex"] = {
+        "tokens": {"access_token": access_token, "refresh_token": refresh_token},
+        "last_refresh": last_refresh,
+        "auth_mode": auth_mode,
+    }
+    auth_path.write_text(
+        json.dumps({"version": 1, "providers": providers}, indent=2),
+        encoding="utf-8",
+    )
+    return auth_path
+
+
+def make_codex_cli_auth_store(
+    home: Path,
+    *,
+    access_token: str,
+    refresh_token: str,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    """Write codex CLI's flat ``auth.json`` schema for import-path tests."""
+    home.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = dict(extra or {})
+    payload["tokens"] = {"access_token": access_token, "refresh_token": refresh_token}
+    auth_path = home / "auth.json"
+    auth_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return auth_path
 
 
 @pytest.fixture()

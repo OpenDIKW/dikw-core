@@ -93,7 +93,7 @@ def test_cli_check_exits_nonzero_on_failure(
     """Server-routed: the engine inside the in-memory server picks up the
     monkeypatched ``api.build_llm`` and fails — the CLI's exit code
     mirrors the report's ``ok`` field."""
-    monkeypatch.setattr("dikw_core.api.build_llm", lambda cfg: BrokenLLM())
+    monkeypatch.setattr("dikw_core.api.build_llm", lambda cfg, **_kw: BrokenLLM())
     monkeypatch.setattr("dikw_core.api.build_embedder", lambda cfg: FakeEmbeddings())
     patch_transport_factory()
     result = CliRunner().invoke(app, ["check"])
@@ -105,7 +105,7 @@ def test_cli_check_exits_zero_on_success(
     patch_transport_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("dikw_core.api.build_llm", lambda _cfg: FakeLLM())
+    monkeypatch.setattr("dikw_core.api.build_llm", lambda _cfg, **_kw: FakeLLM())
     monkeypatch.setattr(
         "dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings()
     )
@@ -180,7 +180,7 @@ def test_cli_check_llm_only_exits_zero_when_embed_would_fail(
 ) -> None:
     """``--llm-only`` skips the embedder factory inside the server, so a
     broken embedder factory must not fail the probe."""
-    monkeypatch.setattr("dikw_core.api.build_llm", lambda _cfg: FakeLLM())
+    monkeypatch.setattr("dikw_core.api.build_llm", lambda _cfg, **_kw: FakeLLM())
 
     def _boom(_cfg: Any) -> Any:
         raise RuntimeError("boom")
