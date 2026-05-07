@@ -9,7 +9,6 @@ the way to the SDK constructor.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -19,9 +18,15 @@ from dikw_core.providers import build_llm
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import OpenAICodexLLM
 
-from .fakes import make_provider_cfg
+from .fakes import (
+    CodexResponsesStreamStub,
+    codex_create_sentinel,
+    make_codex_response,
+    make_provider_cfg,
+)
 
 _DUMMY_BASE = Path("dummy-wiki")
+_EMPTY_FINAL = make_codex_response()
 
 
 @pytest.fixture()
@@ -29,17 +34,10 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     rec: dict[str, Any] = {"init_kwargs": None}
 
     class FakeResponses:
-        async def create(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(
-                output=[
-                    SimpleNamespace(
-                        type="message",
-                        content=[SimpleNamespace(type="output_text", text="ok")],
-                    )
-                ],
-                status="completed",
-                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
-            )
+        def stream(self, **_kwargs: Any) -> CodexResponsesStreamStub:
+            return CodexResponsesStreamStub([], final=_EMPTY_FINAL)
+
+        create = codex_create_sentinel
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs: Any) -> None:

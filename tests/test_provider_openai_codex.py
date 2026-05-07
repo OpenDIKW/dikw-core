@@ -1,13 +1,17 @@
 """``OpenAICodexLLM.complete()`` and the SDK plumbing around it.
 
-Mirrors the shape of ``test_provider_openai_compat_retries.py``:
-monkeypatch ``openai.AsyncOpenAI`` with a stub that captures init
-kwargs + ``responses.create`` calls so we never touch the network.
-The ``captured`` / ``stream_captured`` fixtures also monkeypatch
-``codex_auth.resolve_access_token`` so the auth path doesn't reach
-``~/.codex/auth.json`` — tests that need a specific token shape
-(JWT vs plain string) just mutate ``captured['access_token']`` before
-the call.
+ChatGPT's codex backend rejects non-streaming Responses calls with
+``Stream must be set to true``, so ``complete()`` is implemented as a
+collapse of ``complete_stream()``. Both fixtures consequently fake
+``responses.stream`` (not ``responses.create``); ``captured`` runs an
+empty event list so ``complete()`` reads its ``LLMResponse`` straight
+from the ``final`` payload, while ``stream_captured`` lets streaming
+tests script real delta events.
+
+The fixtures monkeypatch ``codex_auth.resolve_access_token`` so the
+auth path doesn't reach ``~/.codex/auth.json`` — tests that need a
+specific token shape (JWT vs plain string) just mutate
+``captured['access_token']`` before the call.
 """
 
 from __future__ import annotations
@@ -18,10 +22,15 @@ from typing import Any
 
 import pytest
 
-from dikw_core.providers.base import LLMResponse
+from dikw_core.providers.base import LLMResponse, LLMStreamEvent
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import OpenAICodexLLM
 
+from .fakes import (
+    CodexResponsesStreamStub,
+    codex_create_sentinel,
+    make_codex_response,
+)
 from .fakes import make_jwt as _make_jwt
 
 # All tests in this module monkeypatch ``resolve_access_token`` so the
@@ -30,45 +39,24 @@ from .fakes import make_jwt as _make_jwt
 _DUMMY_BASE = Path("dummy-wiki")
 
 
-def _make_response(
-    *,
-    text: str = "hello",
-    status: str = "completed",
-    input_tokens: int = 5,
-    output_tokens: int = 7,
-    output: list[Any] | None = None,
-) -> SimpleNamespace:
-    """Build a SimpleNamespace shaped like ``openai.types.responses.Response``."""
-    if output is None:
-        output = [
-            SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text=text)],
-            )
-        ]
-    return SimpleNamespace(
-        output=output,
-        status=status,
-        usage=SimpleNamespace(
-            input_tokens=input_tokens, output_tokens=output_tokens
-        ),
-    )
-
-
 @pytest.fixture()
 def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     rec: dict[str, Any] = {
         "init_kwargs": None,
-        "create_kwargs": None,
-        "next_response": _make_response(),
+        "stream_kwargs": None,
+        "next_response": make_codex_response(
+            text="hello", input_tokens=5, output_tokens=7
+        ),
         "close_calls": 0,
         "access_token": "test-token",
     }
 
     class FakeResponses:
-        async def create(self, **kwargs: Any) -> Any:
-            rec["create_kwargs"] = kwargs
-            return rec["next_response"]
+        def stream(self, **kwargs: Any) -> CodexResponsesStreamStub:
+            rec["stream_kwargs"] = kwargs
+            return CodexResponsesStreamStub([], final=rec["next_response"])
+
+        create = codex_create_sentinel
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs: Any) -> None:
@@ -144,9 +132,12 @@ async def test_complete_omits_account_id_for_non_jwt_token(
 # --------------------------------------------------------------------------- #
 
 
-async def test_complete_calls_responses_create_with_responses_api_shape(
+async def test_complete_calls_responses_stream_with_responses_api_shape(
     captured: dict[str, Any],
 ) -> None:
+    """``complete()`` collapses ``complete_stream()``, so the SDK call
+    underneath is ``responses.stream`` — the codex backend rejects the
+    non-streaming variant with ``Stream must be set to true``."""
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -157,7 +148,7 @@ async def test_complete_calls_responses_create_with_responses_api_shape(
         max_tokens=512,
         temperature=0.4,
     )
-    kwargs = captured["create_kwargs"]
+    kwargs = captured["stream_kwargs"]
     assert kwargs["model"] == "gpt-5.5"
     assert kwargs["instructions"] == "be helpful"
     assert kwargs["store"] is False
@@ -180,7 +171,22 @@ async def test_complete_does_not_pass_messages_kwarg(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
     await provider.complete(system="s", user="u", model="gpt-5.5")
-    assert "messages" not in captured["create_kwargs"]
+    assert "messages" not in captured["stream_kwargs"]
+
+
+async def test_complete_uses_streaming_responses_endpoint_only(
+    captured: dict[str, Any],
+) -> None:
+    """``complete()`` must reach the model via ``responses.stream`` —
+    codex rejects non-streaming Responses. The fixture's
+    ``responses.create`` is a ``codex_create_sentinel`` that fails on
+    invocation, so this test passes only if the streaming path was
+    taken."""
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+    )
+    await provider.complete(system="s", user="u", model="gpt-5.5")
+    assert captured["stream_kwargs"] is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +197,7 @@ async def test_complete_does_not_pass_messages_kwarg(
 async def test_complete_returns_text_from_output_messages(
     captured: dict[str, Any],
 ) -> None:
-    captured["next_response"] = _make_response(text="hello world")
+    captured["next_response"] = make_codex_response(text="hello world")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -248,7 +254,7 @@ async def test_complete_skips_non_message_output_items(
 async def test_complete_maps_status_completed_to_stop(
     captured: dict[str, Any],
 ) -> None:
-    captured["next_response"] = _make_response(status="completed")
+    captured["next_response"] = make_codex_response(status="completed")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -259,7 +265,7 @@ async def test_complete_maps_status_completed_to_stop(
 async def test_complete_maps_status_incomplete_to_length(
     captured: dict[str, Any],
 ) -> None:
-    captured["next_response"] = _make_response(status="incomplete")
+    captured["next_response"] = make_codex_response(status="incomplete")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -270,7 +276,7 @@ async def test_complete_maps_status_incomplete_to_length(
 async def test_complete_extracts_usage_input_output_tokens(
     captured: dict[str, Any],
 ) -> None:
-    captured["next_response"] = _make_response(input_tokens=42, output_tokens=99)
+    captured["next_response"] = make_codex_response(input_tokens=42, output_tokens=99)
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -303,53 +309,22 @@ async def test_complete_handles_response_without_usage(
 # --------------------------------------------------------------------------- #
 
 
-class _StubStream:
-    """Mimics the async context manager openai SDK returns from
-    ``responses.stream(...)``: yields events, then exposes a
-    ``get_final_response()`` for the terminal payload."""
-
-    def __init__(
-        self, events: list[Any], *, final: SimpleNamespace
-    ) -> None:
-        self._events = events
-        self._final = final
-
-    async def __aenter__(self) -> _StubStream:
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
-
-    def __aiter__(self) -> _StubStream:
-        self._iter = iter(self._events)
-        return self
-
-    async def __anext__(self) -> Any:
-        try:
-            return next(self._iter)
-        except StopIteration:
-            raise StopAsyncIteration from None
-
-    async def get_final_response(self) -> SimpleNamespace:
-        # Mirrors openai SDK's AsyncResponseStream — final response is awaitable
-        # because the SDK may need one more network round-trip to assemble it.
-        return self._final
-
-
 @pytest.fixture()
 def stream_captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     rec: dict[str, Any] = {
         "init_kwargs": None,
         "stream_kwargs": None,
         "events": [],
-        "final": _make_response(text="full text", input_tokens=3, output_tokens=4),
+        "final": make_codex_response(text="full text", input_tokens=3, output_tokens=4),
         "access_token": "test-token",
     }
 
     class FakeResponses:
-        def stream(self, **kwargs: Any) -> _StubStream:
+        def stream(self, **kwargs: Any) -> CodexResponsesStreamStub:
             rec["stream_kwargs"] = kwargs
-            return _StubStream(rec["events"], final=rec["final"])
+            return CodexResponsesStreamStub(rec["events"], final=rec["final"])
+
+        create = codex_create_sentinel
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs: Any) -> None:
@@ -376,9 +351,6 @@ async def _drain(provider: OpenAICodexLLM, **kwargs: Any) -> list[LLMStreamEvent
     return events
 
 
-from dikw_core.providers.base import LLMStreamEvent  # noqa: E402
-
-
 async def test_complete_stream_yields_token_for_output_text_delta(
     stream_captured: dict[str, Any],
 ) -> None:
@@ -386,7 +358,7 @@ async def test_complete_stream_yields_token_for_output_text_delta(
         SimpleNamespace(type="response.output_text.delta", delta="hel"),
         SimpleNamespace(type="response.output_text.delta", delta="lo"),
     ]
-    stream_captured["final"] = _make_response(text="hello")
+    stream_captured["final"] = make_codex_response(text="hello")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -404,7 +376,7 @@ async def test_complete_stream_yields_reasoning_for_summary_delta(
         ),
         SimpleNamespace(type="response.output_text.delta", delta="answer"),
     ]
-    stream_captured["final"] = _make_response(text="answer")
+    stream_captured["final"] = make_codex_response(text="answer")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
     )
@@ -422,7 +394,7 @@ async def test_complete_stream_yields_done_with_assembled_text(
         SimpleNamespace(type="response.output_text.delta", delta="hel"),
         SimpleNamespace(type="response.output_text.delta", delta="lo"),
     ]
-    stream_captured["final"] = _make_response(
+    stream_captured["final"] = make_codex_response(
         text="hello", status="completed", input_tokens=3, output_tokens=4
     )
     provider = OpenAICodexLLM(

@@ -13,7 +13,10 @@ import hashlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from dikw_core.config import ProviderConfig
 from dikw_core.eval.fake_embedder import EMBED_DIM, FakeEmbeddings
@@ -21,17 +24,100 @@ from dikw_core.providers import LLMResponse, LLMStreamEvent, ToolSpec
 from dikw_core.schemas import EmbeddingVersion, MultimodalInput
 
 __all__ = [
+    "CODEX_NO_CREATE_MSG",
     "EMBED_DIM",
+    "CodexResponsesStreamStub",
     "CountingEmbedder",
     "FakeEmbeddings",
     "FakeLLM",
     "FakeMultimodalEmbedding",
+    "codex_create_sentinel",
     "init_test_wiki",
+    "make_codex_response",
     "make_jwt",
     "make_provider_cfg",
     "register_text_version",
     "register_text_version_or_skip",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Codex Responses API SDK stubs
+#
+# ChatGPT's codex backend rejects non-streaming Responses calls; every codex
+# fixture stands up the same async-context stream stub + the same sentinel
+# on ``responses.create``. Centralising them here keeps the contract in one
+# place and lets new codex tests reach for them by name.
+# --------------------------------------------------------------------------- #
+
+
+CODEX_NO_CREATE_MSG = (
+    "OpenAICodexLLM must never call responses.create — codex rejects "
+    "non-streaming Responses with `Stream must be set to true`."
+)
+
+
+async def codex_create_sentinel(*_args: Any, **_kwargs: Any) -> Any:
+    """Async stand-in for ``responses.create``: fails any test that
+    invokes it. Assign as a method on a FakeResponses class to enforce
+    the codex streaming-only contract at the SDK boundary."""
+    pytest.fail(CODEX_NO_CREATE_MSG)
+
+
+def make_codex_response(
+    *,
+    text: str = "ok",
+    status: str = "completed",
+    input_tokens: int = 1,
+    output_tokens: int = 1,
+    output: list[Any] | None = None,
+) -> SimpleNamespace:
+    """SimpleNamespace shaped like ``openai.types.responses.Response``:
+    a heterogeneous ``output`` list (only ``message`` items contribute
+    to text), a status string, and a usage namespace. Used as the
+    terminal payload returned by ``stream.get_final_response()``."""
+    if output is None:
+        output = [
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ]
+    return SimpleNamespace(
+        output=output,
+        status=status,
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
+
+
+class CodexResponsesStreamStub:
+    """Async context manager + iterator standing in for what the openai
+    SDK returns from ``client.responses.stream(...)``: yields scripted
+    events while in-context, then exposes ``get_final_response()`` for
+    the terminal payload."""
+
+    def __init__(self, events: list[Any], *, final: SimpleNamespace) -> None:
+        self._events = events
+        self._final = final
+
+    async def __aenter__(self) -> CodexResponsesStreamStub:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+    def __aiter__(self) -> CodexResponsesStreamStub:
+        self._iter = iter(self._events)
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def get_final_response(self) -> SimpleNamespace:
+        return self._final
 
 
 def make_jwt(claims: dict[str, Any]) -> str:

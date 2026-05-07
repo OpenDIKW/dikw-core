@@ -171,24 +171,26 @@ class OpenAICodexLLM:
         temperature: float = 0.2,
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
-        # Tools aren't translated into Responses API function-call format
-        # yet — synth/distill/query are plain-text completions today, same
-        # as the other two providers.
-        _ = tools
-        async with self._client() as client:
-            response = await client.responses.create(
-                **_request_kwargs(
-                    system=system,
-                    user=user,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            )
-        text = _extract_text_from_response(response)
-        status = str(getattr(response, "status", "") or "")
-        finish_reason = _FINISH_REASON_MAP.get(status, "stop")
-        usage = _extract_usage(response)
+        # ChatGPT's codex backend rejects non-streaming Responses calls
+        # with ``Stream must be set to true``, so ``complete`` is a
+        # collapse of ``complete_stream``: iterate the event stream and
+        # read the terminal ``done`` event, which already carries the
+        # assembled text, finish_reason, and usage.
+        text = ""
+        finish_reason: str | None = None
+        usage: dict[str, int] = {}
+        async for event in self.complete_stream(
+            system=system,
+            user=user,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        ):
+            if event.type == "done":
+                text = event.text or ""
+                finish_reason = event.finish_reason
+                usage = event.usage
         return LLMResponse(text=text, finish_reason=finish_reason, usage=usage)
 
     def complete_stream(
