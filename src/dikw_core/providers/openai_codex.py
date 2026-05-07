@@ -111,13 +111,15 @@ def _request_kwargs(
 ) -> dict[str, Any]:
     """Wire payload for ``client.responses.stream(...)``.
 
-    ChatGPT's codex backend exposes a stricter parameter set than the
-    public Responses API: ``max_output_tokens`` is rejected with
-    ``400 Unsupported parameter`` (generation length is managed
-    server-side by the user's plan/model). ``max_tokens`` stays in the
-    signature for ``LLMProvider`` parity but is dropped on the wire.
+    ChatGPT's codex backend exposes a stricter parameter whitelist than
+    the public Responses API: ``max_output_tokens`` and ``temperature``
+    both come back ``400 Unsupported parameter`` — generation length and
+    sampling are managed server-side by the user's plan/model. The two
+    knobs stay in the LLMProvider signature for protocol parity but are
+    dropped on the wire; ``tests/fakes._CODEX_REJECTED_PARAMS`` keeps
+    the test-side guard in lockstep with this list.
     """
-    _ = max_tokens
+    _ = max_tokens, temperature
     return {
         "model": model,
         "instructions": system,
@@ -128,7 +130,6 @@ def _request_kwargs(
             }
         ],
         "store": False,
-        "temperature": temperature,
     }
 
 

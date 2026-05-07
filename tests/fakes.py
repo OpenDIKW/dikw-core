@@ -69,7 +69,7 @@ async def codex_create_sentinel(*_args: Any, **_kwargs: Any) -> Any:
 # ``400 Unsupported parameter``. The endpoint is a stricter subset of
 # the public Responses API; extend this tuple as new rejections are
 # discovered against the real backend.
-_CODEX_REJECTED_PARAMS: tuple[str, ...] = ("max_output_tokens",)
+_CODEX_REJECTED_PARAMS: tuple[str, ...] = ("max_output_tokens", "temperature")
 
 
 def assert_codex_request_kwargs_clean(kwargs: dict[str, Any]) -> None:

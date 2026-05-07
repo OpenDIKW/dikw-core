@@ -154,7 +154,6 @@ async def test_complete_calls_responses_stream_with_responses_api_shape(
     assert kwargs["model"] == "gpt-5.5"
     assert kwargs["instructions"] == "be helpful"
     assert kwargs["store"] is False
-    assert kwargs["temperature"] == 0.4
     # Input is the Responses API shape — list of items with content parts.
     assert kwargs["input"] == [
         {
@@ -191,6 +190,22 @@ async def test_complete_does_not_pass_max_output_tokens_kwarg(
         system="s", user="u", model="gpt-5.5", max_tokens=512
     )
     assert "max_output_tokens" not in captured["stream_kwargs"]
+
+
+async def test_complete_does_not_pass_temperature_kwarg(
+    captured: dict[str, Any],
+) -> None:
+    """Regression: ChatGPT codex backend rejects ``temperature`` with a
+    400 ``Unsupported parameter`` — sampling is managed server-side.
+    The provider accepts the kwarg for protocol parity but drops it
+    from the wire payload."""
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+    )
+    await provider.complete(
+        system="s", user="u", model="gpt-5.5", temperature=0.7
+    )
+    assert "temperature" not in captured["stream_kwargs"]
 
 
 async def test_complete_uses_streaming_responses_endpoint_only(
