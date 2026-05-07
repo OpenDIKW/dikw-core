@@ -109,7 +109,17 @@ def _extract_usage(response: Any) -> dict[str, int]:
 def _request_kwargs(
     *, system: str, user: str, model: str, max_tokens: int, temperature: float
 ) -> dict[str, Any]:
-    """Shared payload shape for ``responses.create`` and ``responses.stream``."""
+    """Wire payload for ``client.responses.stream(...)``.
+
+    ChatGPT's codex backend exposes a stricter parameter whitelist than
+    the public Responses API: ``max_output_tokens`` and ``temperature``
+    both come back ``400 Unsupported parameter`` — generation length and
+    sampling are managed server-side by the user's plan/model. The two
+    knobs stay in the LLMProvider signature for protocol parity but are
+    dropped on the wire; ``tests/fakes._CODEX_REJECTED_PARAMS`` keeps
+    the test-side guard in lockstep with this list.
+    """
+    _ = max_tokens, temperature
     return {
         "model": model,
         "instructions": system,
@@ -120,8 +130,6 @@ def _request_kwargs(
             }
         ],
         "store": False,
-        "max_output_tokens": max_tokens,
-        "temperature": temperature,
     }
 
 
@@ -171,24 +179,26 @@ class OpenAICodexLLM:
         temperature: float = 0.2,
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
-        # Tools aren't translated into Responses API function-call format
-        # yet — synth/distill/query are plain-text completions today, same
-        # as the other two providers.
-        _ = tools
-        async with self._client() as client:
-            response = await client.responses.create(
-                **_request_kwargs(
-                    system=system,
-                    user=user,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            )
-        text = _extract_text_from_response(response)
-        status = str(getattr(response, "status", "") or "")
-        finish_reason = _FINISH_REASON_MAP.get(status, "stop")
-        usage = _extract_usage(response)
+        # ChatGPT's codex backend rejects non-streaming Responses calls
+        # with ``Stream must be set to true``, so ``complete`` is a
+        # collapse of ``complete_stream``: iterate the event stream and
+        # read the terminal ``done`` event, which already carries the
+        # assembled text, finish_reason, and usage.
+        text = ""
+        finish_reason: str | None = None
+        usage: dict[str, int] = {}
+        async for event in self.complete_stream(
+            system=system,
+            user=user,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        ):
+            if event.type == "done":
+                text = event.text or ""
+                finish_reason = event.finish_reason
+                usage = event.usage
         return LLMResponse(text=text, finish_reason=finish_reason, usage=usage)
 
     def complete_stream(
