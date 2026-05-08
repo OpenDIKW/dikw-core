@@ -26,13 +26,21 @@ from typing import Any
 import frontmatter
 
 _DEFAULT_TYPES: tuple[str, ...] = ("entity", "concept", "note")
-# Explicit folder map so ``entity`` -> ``entities`` instead of ``entitys``.
+# Explicit folder map for the irregular built-in plurals (``entity`` →
+# ``entities``, not ``entitys``). Custom page types added via
+# ``SchemaConfig.page_types`` (e.g. ``topic`` → ``topics``) get a simple
+# ``<type>s`` fallback so the Obsidian vault layout stays predictable.
 _TYPE_FOLDERS: dict[str, str] = {
     "entity": "entities",
     "concept": "concepts",
     "note": "notes",
 }
 _SLUG_ILLEGAL = re.compile(r"[^a-z0-9]+")
+
+
+def type_to_folder(type_: str) -> str:
+    """Resolve a page ``type`` to its directory under ``wiki/``."""
+    return _TYPE_FOLDERS.get(type_, f"{type_}s")
 
 
 @dataclass(frozen=True)
@@ -68,8 +76,7 @@ def slugify(title: str) -> str:
 
 def default_page_path(type_: str, title: str) -> str:
     """Return the wiki-relative path the engine writes a new page to."""
-    folder = _TYPE_FOLDERS.get(type_, "notes")
-    return f"wiki/{folder}/{slugify(title)}.md"
+    return f"wiki/{type_to_folder(type_)}/{slugify(title)}.md"
 
 
 def read_page(root: Path, path: str) -> WikiPage:

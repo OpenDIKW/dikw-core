@@ -239,7 +239,14 @@ class WikiLogEntry(BaseModel):
     # order matches insert order even within a sub-second burst.
     id: int | None = None
     ts: float
-    action: Literal["ingest", "synth", "distill", "review", "lint", "delete"]
+    # ``synth_source_done`` is the per-source completion marker the
+    # fan-out synth pipeline writes after every group for a source has
+    # been processed without a hard parse error. Lets default ``synth``
+    # skip done sources without misfiring on partial-failure or legal
+    # zero-page responses (which never write a per-page ``synth`` row).
+    action: Literal[
+        "ingest", "synth", "synth_source_done", "distill", "review", "lint", "delete"
+    ]
     src: str | None = None
     dst: str | None = None
     note: str | None = None

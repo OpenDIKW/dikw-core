@@ -30,7 +30,10 @@ def test_default_page_path_buckets_by_type() -> None:
     assert default_page_path("concept", "DIKW Pyramid") == "wiki/concepts/dikw-pyramid.md"
     assert default_page_path("entity", "Andrej Karpathy") == "wiki/entities/andrej-karpathy.md"
     assert default_page_path("note", "Random thought") == "wiki/notes/random-thought.md"
-    assert default_page_path("unknown", "Foo") == "wiki/notes/foo.md"
+    # Custom types declared in SchemaConfig.page_types pluralize as <type>s
+    # so a "topic" bucket lands under wiki/topics/ without needing
+    # _TYPE_FOLDERS to be expanded for every new type the user declares.
+    assert default_page_path("topic", "SpaceX") == "wiki/topics/spacex.md"
 
 
 def test_write_then_read_roundtrip(tmp_path: Path) -> None:

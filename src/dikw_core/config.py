@@ -202,6 +202,22 @@ class SourceConfig(BaseModel):
     ignore: list[str] = Field(default_factory=list)
 
 
+class SynthConfig(BaseModel):
+    """Knobs for the K-layer ``dikw synth`` pipeline.
+
+    Synth consumes the D-layer chunks already produced by ``ingest`` —
+    ``target_tokens_per_group`` controls how many adjacent chunks the engine
+    bundles into one LLM call (heading-aware), and ``max_pages_per_group``
+    caps how many ``<page>`` blocks the LLM may emit per call. The page-type
+    whitelist lives on ``SchemaConfig.page_types`` to avoid a second source
+    of truth.
+    """
+
+    target_tokens_per_group: int = 3600
+    max_pages_per_group: int = 4
+    slug_dedup: Literal["merge_body", "keep_first"] = "merge_body"
+
+
 class MultimodalEmbedConfig(BaseModel):
     """Native multimodal embedding configuration.
 
@@ -249,6 +265,7 @@ class DikwConfig(BaseModel):
     schema_: SchemaConfig = Field(default_factory=SchemaConfig, alias="schema")
     sources: list[SourceConfig] = Field(default_factory=list)
     assets: AssetsConfig = Field(default_factory=AssetsConfig)
+    synth: SynthConfig = Field(default_factory=SynthConfig)
 
     model_config = {"populate_by_name": True}
 

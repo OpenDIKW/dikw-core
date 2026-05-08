@@ -73,11 +73,20 @@ from .domains.info.embed import (
 )
 from .domains.info.search import HybridSearcher, MultimodalSearch
 from .domains.info.tokenize import CjkTokenizer
+from .domains.knowledge.grouping import (
+    derive_sections_from_chunks,
+    group_sections,
+)
 from .domains.knowledge.indexgen import regenerate_index
 from .domains.knowledge.links import parse_links, resolve_links
 from .domains.knowledge.lint import LintReport, run_lint
 from .domains.knowledge.log import render_log
-from .domains.knowledge.synthesize import SynthesisError, parse_synthesis_response
+from .domains.knowledge.synthesize import (
+    SynthesisError,
+    SynthesisPartialError,
+    dedup_pages_by_slug,
+    parse_synthesis_response,
+)
 from .domains.knowledge.wiki import WikiPage, now_iso, write_page
 from .domains.wisdom.apply import ApplicableWisdom, pick_applicable
 from .domains.wisdom.distill import WisdomCandidate, parse_distill_response
@@ -88,7 +97,7 @@ from .domains.wisdom.review import (
 )
 from .domains.wisdom.review import approve as _approve_item
 from .domains.wisdom.review import reject as _reject_item
-from .progress import NoopReporter, ProgressReporter
+from .progress import CancelToken, NoopReporter, ProgressReporter
 from .providers import (
     EmbeddingProvider,
     LLMProvider,
@@ -380,7 +389,14 @@ class IngestReport:
 
 @dataclass(frozen=True)
 class SynthReport:
+    # ``candidates`` and ``skipped`` count *sources* (the unit synth iterates
+    # at the outer level); ``created`` / ``updated`` / ``errors`` count
+    # *pages* (the unit synth produces after fan-out + dedup). Mixing the
+    # two units in one report would have been clearer if Stage A were
+    # post-1.0 — pre-alpha just adds the per-unit ones explicitly.
     candidates: int = 0
+    sources_processed: int = 0
+    groups_processed: int = 0
     created: int = 0
     updated: int = 0
     skipped: int = 0
@@ -2005,9 +2021,57 @@ async def synthesize(
         sources = list(await storage.list_documents(layer=Layer.SOURCE, active=True))
         already: set[str] = set()
         if not force_all:
+            # ``synth_source_done`` is the post-fan-out source-completion
+            # marker: per-page ``synth`` log rows can no longer be used
+            # because (a) a fan-out source with one failed group + one
+            # successful group writes a ``dst`` row but is NOT done, and
+            # (b) a source with a legal zero-page response writes no
+            # ``dst`` row at all but IS done.
+            #
+            # Upgrade compatibility uses a sentinel row
+            # (``src=_LEGACY_BACKFILL_SENTINEL``) to record "this base has
+            # already gone through the legacy-row backfill at least once".
+            # Without the sentinel we can't distinguish a *legacy* dst row
+            # from a *post-fan-out crash* dst row — and treating the latter
+            # as legacy would silently mark crashed sources done. The
+            # sentinel is written unconditionally on the first post-fan-out
+            # run so any later crash leaves us in the "sentinel already
+            # exists, do not backfill" state.
+            has_legacy_backfill_sentinel = False
+            legacy_dst_sources: set[str] = set()
             for entry in await storage.list_wiki_log():
-                if entry.action == "synth" and entry.src and entry.dst:
-                    already.add(entry.src)
+                if entry.action == "synth_source_done":
+                    if entry.src == _LEGACY_BACKFILL_SENTINEL:
+                        has_legacy_backfill_sentinel = True
+                    elif entry.src:
+                        already.add(entry.src)
+                elif entry.action == "synth" and entry.src and entry.dst:
+                    legacy_dst_sources.add(entry.src)
+            if not has_legacy_backfill_sentinel:
+                ts = time.time()
+                # Write the sentinel FIRST so even if the backfill loop
+                # below crashes we never re-enter the backfill arm.
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=ts,
+                        action="synth_source_done",
+                        src=_LEGACY_BACKFILL_SENTINEL,
+                        note=(
+                            "fan-out pipeline initialised — subsequent runs "
+                            "will not backfill legacy per-page synth rows"
+                        ),
+                    )
+                )
+                for src_path in sorted(legacy_dst_sources):
+                    await storage.append_wiki_log(
+                        WikiLogEntry(
+                            ts=ts,
+                            action="synth_source_done",
+                            src=src_path,
+                            note="backfilled from legacy per-page synth rows",
+                        )
+                    )
+                already |= legacy_dst_sources
 
         report = SynthReport()
         tmpl = prompts.load("synthesize")
@@ -2027,8 +2091,8 @@ async def synthesize(
                 )
                 continue
 
-            body = _read_source_body(root, src)
-            if body is None:
+            parsed = _read_source_parsed(root, src)
+            if parsed is None:
                 report = _sr_replace(report, errors=report.errors + 1)
                 await storage.append_wiki_log(
                     WikiLogEntry(
@@ -2046,64 +2110,175 @@ async def synthesize(
                 )
                 continue
 
-            user_prompt = tmpl.format(source_path=src.path, source_body=body)
-            response = await _llm.complete(
-                system="You synthesise K-layer wiki pages for dikw-core.",
-                user=user_prompt,
-                model=cfg.provider.llm_model,
-                max_tokens=cfg.provider.llm_max_tokens_synth,
-                temperature=0.3,
-            )
-
-            try:
-                page = parse_synthesis_response(response.text, source_path=src.path)
-            except SynthesisError as e:
+            # If the source on disk drifted since ingest (user edited it
+            # without re-running ``dikw ingest``), the cached chunk offsets
+            # would slice the new body at stale boundaries — silently
+            # dropping appended content and marking the source done. Bail
+            # out with a clear log and let the user re-ingest.
+            if parsed.hash != src.hash:
                 report = _sr_replace(report, errors=report.errors + 1)
                 await storage.append_wiki_log(
                     WikiLogEntry(
                         ts=time.time(),
                         action="synth",
                         src=src.path,
-                        note=f"parse error: {e}",
+                        note=(
+                            "source body changed since last ingest — "
+                            "re-run `dikw ingest` before `dikw synth`"
+                        ),
                     )
                 )
                 await _reporter.progress(
                     phase="synth",
                     current=idx,
                     total=total_sources,
-                    detail={"path": src.path, "outcome": "parse_error"},
+                    detail={"path": src.path, "outcome": "stale_chunks"},
                 )
                 continue
 
-            pre_existing = await storage.get_document(
-                _doc_id_for(Layer.WIKI, page.path)
+            body = parsed.body
+            src_chunks = await storage.list_chunks(
+                _doc_id_for(Layer.SOURCE, src.path)
             )
-            write_page(root, page)
-            await _persist_wiki_page(
-                storage=storage,
-                root=root,
-                page=page,
-                embedder=embedder,
-                embedding_model=text_embed_model,
-                text_version_id=text_version_id,
-                cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+            outcome = await _synth_pages_from_source(
+                llm=_llm,
+                template=tmpl,
+                cfg=cfg,
+                source_path=src.path,
+                source_body=body,
+                chunks=src_chunks,
+                cancel=_reporter.cancel_token(),
             )
-            await storage.append_wiki_log(
-                WikiLogEntry(
-                    ts=time.time(), action="synth", src=src.path, dst=page.path
+            report = _sr_replace(
+                report,
+                groups_processed=report.groups_processed + outcome.groups_processed,
+                errors=report.errors + outcome.parse_errors,
+            )
+            for note in outcome.log_notes:
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=time.time(), action="synth", src=src.path, note=note
+                    )
                 )
+
+            if outcome.groups_processed == 0:
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=time.time(),
+                        action="synth",
+                        src=src.path,
+                        note="no chunks to synthesise from",
+                    )
+                )
+                # Source is "done" — re-running synth on a source that
+                # has no chunks would just hit the same dead-end. Mark
+                # it complete so default ``synth`` skips it next time.
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=time.time(),
+                        action="synth_source_done",
+                        src=src.path,
+                    )
+                )
+                report = _sr_replace(
+                    report, sources_processed=report.sources_processed + 1
+                )
+                await _reporter.progress(
+                    phase="synth",
+                    current=idx,
+                    total=total_sources,
+                    detail={"path": src.path, "outcome": "no_chunks"},
+                )
+                continue
+
+            deduped = dedup_pages_by_slug(
+                outcome.pages, strategy=cfg.synth.slug_dedup
             )
-            persisted_any = True
-            outcome = "created" if pre_existing is None else "updated"
-            if pre_existing is None:
-                report = _sr_replace(report, created=report.created + 1)
+
+            # Build the title→path index ONCE for this batch and seed it
+            # with the deduped pages — without that seeding, page A → page B
+            # wikilinks fan-out produces from the same source would only
+            # resolve after B was already upserted.
+            title_to_path: dict[str, str] = {}
+            if deduped:
+                for d in await storage.list_documents(
+                    layer=Layer.WIKI, active=True
+                ):
+                    if d.title and d.title not in title_to_path:
+                        title_to_path[d.title] = d.path
+                for page in deduped:
+                    title_to_path.setdefault(page.title, page.path)
+
+            created_for_src = 0
+            updated_for_src = 0
+            for page in deduped:
+                pre_existing = await storage.get_document(
+                    _doc_id_for(Layer.WIKI, page.path)
+                )
+                write_page(root, page)
+                await _persist_wiki_page(
+                    storage=storage,
+                    root=root,
+                    page=page,
+                    embedder=embedder,
+                    embedding_model=text_embed_model,
+                    text_version_id=text_version_id,
+                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                    title_to_path=title_to_path,
+                )
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=time.time(),
+                        action="synth",
+                        src=src.path,
+                        dst=page.path,
+                    )
+                )
+                persisted_any = True
+                if pre_existing is None:
+                    created_for_src += 1
+                    report = _sr_replace(report, created=report.created + 1)
+                else:
+                    updated_for_src += 1
+                    report = _sr_replace(report, updated=report.updated + 1)
+
+            persisted_for_src = created_for_src + updated_for_src
+            report = _sr_replace(
+                report, sources_processed=report.sources_processed + 1
+            )
+            # Mark the source as fully synthesised so default ``synth``
+            # skips it next run. Skip the marker when any group raised
+            # a hard ``SynthesisError`` — those failures should be
+            # retried (the LLM may produce parseable output next time).
+            # Partial-parse outcomes don't count: the surviving pages
+            # were persisted, retrying would just hit the same partial
+            # response and re-emit the warning to ``wiki_log``.
+            if outcome.parse_errors == 0:
+                await storage.append_wiki_log(
+                    WikiLogEntry(
+                        ts=time.time(),
+                        action="synth_source_done",
+                        src=src.path,
+                    )
+                )
+            # ``outcome`` string keeps the pre-fan-out vocabulary so
+            # client-side event consumers don't need to learn new strings.
+            if persisted_for_src == 0:
+                outcome_str = "no_pages"
+            elif created_for_src > 0:
+                outcome_str = "created"
             else:
-                report = _sr_replace(report, updated=report.updated + 1)
+                outcome_str = "updated"
             await _reporter.progress(
                 phase="synth",
                 current=idx,
                 total=total_sources,
-                detail={"path": src.path, "dst": page.path, "outcome": outcome},
+                detail={
+                    "path": src.path,
+                    "outcome": outcome_str,
+                    "pages_persisted": persisted_for_src,
+                    "groups": outcome.groups_processed,
+                },
             )
 
         # Refresh the human-readable views after the batch so a partial run
@@ -2127,17 +2302,22 @@ async def lint(path: str | Path | None = None) -> LintReport:
         await storage.close()
 
 
-def _read_source_body(root: Path, doc: DocumentRecord) -> str | None:
+def _read_source_parsed(root: Path, doc: DocumentRecord) -> ParsedDocument | None:
+    """Re-parse a source from disk, returning the full ``ParsedDocument``.
+
+    Synth needs both the body and the hash: the body to feed the LLM and
+    the hash to detect drift since ingest (a user-edited file would
+    otherwise be sliced at stale chunk offsets).
+    """
     abs_path = (root / doc.path).resolve()
     if not abs_path.is_file():
         return None
     # Route through the backend registry so HTML (and future) sources flow
     # through synth the same way markdown does.
     try:
-        parsed = parse_any(abs_path, rel_path=doc.path)
+        return parse_any(abs_path, rel_path=doc.path)
     except (OSError, UnsupportedFormat):
         return None
-    return parsed.body
 
 
 async def _persist_wiki_page(
@@ -2149,6 +2329,7 @@ async def _persist_wiki_page(
     embedding_model: str,
     text_version_id: int | None,
     cjk_tokenizer: CjkTokenizer = "none",
+    title_to_path: dict[str, str] | None = None,
 ) -> None:
     """Index ``page`` into the K layer: document, chunks, embeddings, links.
 
@@ -2201,25 +2382,128 @@ async def _persist_wiki_page(
         )
 
     # Link graph — resolve against the current K-layer title index.
-    k_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
-    title_to_path: dict[str, str] = {}
-    for d in k_docs:
-        if d.title and d.title not in title_to_path:
-            title_to_path[d.title] = d.path
+    # ``title_to_path`` may be supplied by the caller to skip the per-page
+    # ``list_documents`` round-trip when persisting many pages in a row
+    # (Stage A fan-out persists N deduped pages per source — without this,
+    # each ``_persist_wiki_page`` would re-pull the whole K-layer doc list).
+    if title_to_path is None:
+        k_docs = await storage.list_documents(layer=Layer.WIKI, active=True)
+        title_to_path = {}
+        for d in k_docs:
+            if d.title and d.title not in title_to_path:
+                title_to_path[d.title] = d.path
     parsed_links = parse_links(parsed.body)
     resolved, _unresolved = resolve_links(doc_id, parsed_links, title_to_path=title_to_path)
     for link in resolved:
         await storage.upsert_link(link)
 
 
-def _sr_replace(r: SynthReport, **kw: int) -> SynthReport:
-    return SynthReport(
-        candidates=kw.get("candidates", r.candidates),
-        created=kw.get("created", r.created),
-        updated=kw.get("updated", r.updated),
-        skipped=kw.get("skipped", r.skipped),
-        errors=kw.get("errors", r.errors),
+# A wiki_log row with ``action="synth_source_done"`` and this sentinel
+# value in ``src`` records "this base has been touched by the fan-out
+# synth pipeline at least once". On the very first post-fan-out run we
+# always write this sentinel BEFORE the legacy backfill loop, so a later
+# crash mid-fan-out can never be misread as legacy data on the next run.
+# The string is intentionally not a valid file path.
+_LEGACY_BACKFILL_SENTINEL = "__dikw_legacy_backfill_complete__"
+
+
+@dataclass(frozen=True)
+class _SourceSynthOutcome:
+    """Per-source aggregate of all the LLM calls Stage A made for that source."""
+
+    pages: list[WikiPage]
+    groups_processed: int
+    parse_errors: int
+    log_notes: list[str]
+
+
+async def _synth_pages_from_source(
+    *,
+    llm: LLMProvider,
+    template: str,
+    cfg: DikwConfig,
+    source_path: str,
+    source_body: str,
+    chunks: list[ChunkRecord],
+    cancel: CancelToken,
+) -> _SourceSynthOutcome:
+    """Fan a single source out into ChunkGroups and call the LLM per group.
+
+    The caller persists the returned pages and writes ``log_notes`` /
+    counts to ``wiki_log`` and the ``SynthReport``. Keeping this helper
+    free of storage and reporter dependencies lets the synth loop stay
+    flat (one for-loop per source instead of nested for-source / for-group).
+    """
+    sections = derive_sections_from_chunks(
+        source_body, chunks, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
     )
+    groups = group_sections(
+        sections, target_tokens=cfg.synth.target_tokens_per_group
+    )
+    if not groups:
+        return _SourceSynthOutcome(
+            pages=[], groups_processed=0, parse_errors=0, log_notes=[]
+        )
+
+    page_types = tuple(cfg.schema_.page_types)
+    allowed_types_str = " | ".join(page_types)
+    pages: list[WikiPage] = []
+    notes: list[str] = []
+    errors = 0
+    for group in groups:
+        cancel.raise_if_cancelled()
+        user_prompt = template.format(
+            source_path=source_path,
+            source_body=group.text,
+            group_outline=", ".join(group.headings)
+            if group.headings
+            else "(no headings)",
+            group_index=group.index + 1,
+            group_total=len(groups),
+            max_pages=cfg.synth.max_pages_per_group,
+            allowed_types=allowed_types_str,
+        )
+        response = await llm.complete(
+            system="You synthesise K-layer wiki pages for dikw-core.",
+            user=user_prompt,
+            model=cfg.provider.llm_model,
+            max_tokens=cfg.provider.llm_max_tokens_synth,
+            temperature=0.3,
+        )
+        try:
+            new_pages = parse_synthesis_response(
+                response.text,
+                source_path=source_path,
+                allowed_types=page_types,
+            )
+        except SynthesisPartialError as pe:
+            notes.append(
+                f"group {group.index + 1}/{len(groups)} partial parse: "
+                f"{len(pe.errors)} issue(s); first: {pe.errors[0]}"
+            )
+            # Truncation is recoverable next run — count it as a parse
+            # error so the source-done marker is NOT written.
+            if pe.retry:
+                errors += 1
+            new_pages = pe.pages
+        except SynthesisError as e:
+            errors += 1
+            notes.append(
+                f"group {group.index + 1}/{len(groups)} parse error: {e}"
+            )
+            continue
+        pages.extend(new_pages)
+
+    return _SourceSynthOutcome(
+        pages=pages,
+        groups_processed=len(groups),
+        parse_errors=errors,
+        log_notes=notes,
+    )
+
+
+def _sr_replace(r: SynthReport, **kw: int) -> SynthReport:
+    return dataclasses.replace(r, **kw)
 
 
 # ---- Phase 3: distill + review ------------------------------------------
