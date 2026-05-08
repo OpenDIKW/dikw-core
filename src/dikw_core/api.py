@@ -2528,6 +2528,13 @@ async def _synth_pages_from_source(
             if pe.retry:
                 errors += 1
             new_pages = pe.pages
+            logger.warning(
+                "  group %d/%d PARTIAL: %d issue(s); first: %s",
+                group_pos,
+                total_groups,
+                len(pe.errors),
+                pe.errors[0],
+            )
             await _reporter.progress(
                 phase="synth_llm",
                 current=group_pos,

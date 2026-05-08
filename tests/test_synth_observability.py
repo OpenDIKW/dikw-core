@@ -18,6 +18,11 @@ from .test_progress_reporter import ListReporter
 
 _VALID_PAGE = '<page path="wiki/x.md" type="concept">\n# X\n\nbody\n</page>'
 _UNPARSEABLE = "not a <page> block"
+# One closed page + one truncated opener → SynthesisPartialError.
+_PARTIAL_PAGE = (
+    '<page path="wiki/x.md" type="concept">\n# X\n\nbody\n</page>\n'
+    '<page path="wiki/y.md" type="concept">\n# Y'
+)
 
 
 def _build_cfg(target_tokens: int = 40) -> DikwConfig:
@@ -227,10 +232,22 @@ async def test_synth_logs_per_group_at_debug(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "marker"),
+    [
+        (_UNPARSEABLE, "FAILED"),  # SynthesisError branch
+        (_PARTIAL_PAGE, "PARTIAL"),  # SynthesisPartialError branch
+    ],
+    ids=["full-failure", "partial-failure"],
+)
 async def test_synth_logs_group_failure_at_warning(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, response: str, marker: str
 ) -> None:
-    """Parser failure surfaces at WARNING — visible at default INFO."""
+    """Both parser failure variants surface at WARNING — visible at
+    default INFO. SynthesisPartialError is a subclass of SynthesisError
+    but carries surviving pages; without its own WARNING log, operators
+    miss truncated/malformed pages while the loop silently keeps the
+    survivors."""
     import logging
 
     caplog.set_level(logging.WARNING, logger="dikw_core.api")
@@ -238,7 +255,7 @@ async def test_synth_logs_group_failure_at_warning(
     cfg = _build_cfg()
 
     await api._synth_pages_from_source(
-        llm=FakeLLM(response_text=_UNPARSEABLE),
+        llm=FakeLLM(response_text=response),
         template=_TEMPLATE,
         cfg=cfg,
         source_path="sources/multi.md",
@@ -251,4 +268,4 @@ async def test_synth_logs_group_failure_at_warning(
         r.getMessage() for r in caplog.records
         if r.levelno == logging.WARNING and r.name == "dikw_core.api"
     ]
-    assert any("group" in m and "FAILED" in m for m in warning_msgs), warning_msgs
+    assert any("group" in m and marker in m for m in warning_msgs), warning_msgs
