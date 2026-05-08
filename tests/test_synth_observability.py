@@ -96,11 +96,26 @@ async def test_emits_calling_and_returned_event_per_group() -> None:
     assert calling >= 2, (
         f"expected ≥2 groups (forced via tiny target_tokens), got {calling}"
     )
-    currents = [
+    # `calling` events report COMPLETED groups (group_pos - 1) so a
+    # progress widget treating current as "completed" doesn't flip to
+    # 100% the moment a long LLM call starts. `returned` events bump
+    # current to group_pos. The semantic group identifier stays in
+    # detail.group_pos.
+    calling_currents = [
         e.payload["current"] for e in llm_events
         if e.payload["detail"]["status"] == "calling"
     ]
-    assert currents == list(range(1, outcome.groups_processed + 1))
+    returned_currents = [
+        e.payload["current"] for e in llm_events
+        if e.payload["detail"]["status"] == "returned"
+    ]
+    assert calling_currents == list(range(0, outcome.groups_processed))
+    assert returned_currents == list(range(1, outcome.groups_processed + 1))
+    calling_group_pos = [
+        e.payload["detail"]["group_pos"] for e in llm_events
+        if e.payload["detail"]["status"] == "calling"
+    ]
+    assert calling_group_pos == list(range(1, outcome.groups_processed + 1))
     totals = {e.payload["total"] for e in llm_events}
     assert totals == {outcome.groups_processed}
 
@@ -134,15 +149,17 @@ async def test_synth_llm_event_payload_contract() -> None:
     )
 
     assert {
-        "source_path", "model", "status", "section_count", "approx_tokens",
+        "source_path", "group_pos", "model", "status",
+        "section_count", "approx_tokens",
     } <= set(calling.payload["detail"]), calling.payload["detail"]
     assert calling.payload["detail"]["source_path"] == "sources/multi.md"
+    assert calling.payload["detail"]["group_pos"] == 1
     assert calling.payload["detail"]["model"] == cfg.provider.llm_model
     assert calling.payload["detail"]["section_count"] >= 1
     assert calling.payload["detail"]["approx_tokens"] >= 1
 
     assert {
-        "source_path", "status", "response_chars",
+        "source_path", "group_pos", "status", "response_chars",
     } <= set(returned.payload["detail"]), returned.payload["detail"]
     assert returned.payload["detail"]["response_chars"] == len(_VALID_PAGE)
 

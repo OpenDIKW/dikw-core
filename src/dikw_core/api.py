@@ -2469,12 +2469,18 @@ async def _synth_pages_from_source(
             max_pages=cfg.synth.max_pages_per_group,
             allowed_types=allowed_types_str,
         )
+        # `current` reports groups COMPLETED — Rich's TaskProgressRenderer
+        # passes it as `completed`, so a `calling` event must show one
+        # less than the in-flight group_pos. Otherwise a single-group
+        # source flips to 100% the moment the LLM call starts, recreating
+        # the "looks finished but isn't" symptom this PR exists to fix.
         await _reporter.progress(
             phase="synth_llm",
-            current=group_pos,
+            current=group_pos - 1,
             total=total_groups,
             detail={
                 "source_path": source_path,
+                "group_pos": group_pos,
                 "model": cfg.provider.llm_model,
                 "status": "calling",
                 "section_count": len(group.section_starts),
@@ -2502,6 +2508,7 @@ async def _synth_pages_from_source(
             total=total_groups,
             detail={
                 "source_path": source_path,
+                "group_pos": group_pos,
                 "status": "returned",
                 "response_chars": len(response.text),
             },
@@ -2541,6 +2548,7 @@ async def _synth_pages_from_source(
                 total=total_groups,
                 detail={
                     "source_path": source_path,
+                    "group_pos": group_pos,
                     "status": "error",
                     "error_kind": type(pe).__name__,
                     "error_msg": str(pe)[:200],
@@ -2564,6 +2572,7 @@ async def _synth_pages_from_source(
                 total=total_groups,
                 detail={
                     "source_path": source_path,
+                    "group_pos": group_pos,
                     "status": "error",
                     "error_kind": type(e).__name__,
                     "error_msg": str(e)[:200],
