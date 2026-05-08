@@ -24,6 +24,7 @@ from rich.console import Console
 from . import __version__, api
 from .auth_cli import app as auth_app
 from .client.cli_app import app as client_app
+from .logging import init_logging
 
 app = typer.Typer(
     name="dikw",
@@ -32,6 +33,13 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+@app.callback()
+def _root(ctx: typer.Context) -> None:
+    """Configure logging from DIKW_LOG_LEVEL before any subcommand runs."""
+    _ = ctx
+    init_logging()
 
 
 # ---- local-only commands ------------------------------------------------

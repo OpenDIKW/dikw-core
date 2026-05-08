@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from ..logging import init_logging
 from .auth import AuthConfig, load_auth_config, make_dependency
 from .errors import install_handlers
 from .routes_pages import make_router as make_pages_router
@@ -37,6 +38,7 @@ def build_app(
     wanting an in-memory engine pass a factory that returns a
     pre-stubbed ``ServerRuntime``.
     """
+    init_logging()
     app = FastAPI(
         title="dikw-core",
         version="0.1",  # bump when the wire contract changes
