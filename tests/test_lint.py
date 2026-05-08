@@ -117,16 +117,38 @@ async def test_many_h2_sections_trigger_non_atomic(empty_wiki: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_many_wikilinks_trigger_non_atomic(empty_wiki: Path) -> None:
+    """16 wikilinks in one short body — true MOC-style aggregation,
+    not a single-event entity-rich page (those routinely cite 8-12)."""
     body = (
         "# Hub Page\n\n"
         "References [[A]], [[B]], [[C]], [[D]], [[E]], [[F]], "
-        "[[G]], [[H]], [[I]] all in one breath.\n"
+        "[[G]], [[H]], [[I]], [[J]], [[K]], [[L]], [[M]], "
+        "[[N]], [[O]], [[P]] all in one breath.\n"
     )
     await _seed_page(wiki_root=empty_wiki, title="Hub Page", body=body)
     report = await _run_lint(empty_wiki)
     issues = [i for i in report.issues if i.kind == "non_atomic_page"]
     assert len(issues) == 1
     assert "wikilinks" in issues[0].detail
+
+
+@pytest.mark.asyncio
+async def test_event_page_with_many_entities_does_not_trigger(empty_wiki: Path) -> None:
+    """Real elon-musk.md baseline (2026-05-08): event pages routinely
+    cite 8-12 entities (PayPal coup, Tesla funding round) — these are
+    atomic by topic but entity-rich. Threshold 15 keeps these clean."""
+    body = (
+        "# Tesla 2006 Funding Round\n\n"
+        "[[Elon Musk]], [[Kimbal Musk]], [[Marc Tarpenning]], "
+        "[[Antonio Gracias]], [[Sergey Brin]], [[Larry Page]], "
+        "[[Jeff Skoll]], [[Nick Pritzker]], [[Steve Jurvetson]], "
+        "[[Sequoia Capital]], [[VantagePoint Capital Partners]] all "
+        "took part in the round around [[Tesla Roadster]] development.\n"
+    )
+    await _seed_page(wiki_root=empty_wiki, title="Tesla 2006 Funding Round", body=body)
+    report = await _run_lint(empty_wiki)
+    issues = [i for i in report.issues if i.kind == "non_atomic_page"]
+    assert issues == []
 
 
 @pytest.mark.asyncio
@@ -221,7 +243,8 @@ async def test_multiple_violations_collapse_to_one_issue(empty_wiki: Path) -> No
         "# Mega Page\n\n"
         + ("paragraph filler " * 200)
         + "\n\n## A\n\nbody\n\n## B\n\nbody\n\n## C\n\nbody\n\n## D\n\nbody\n\n"
-        + "Links: [[a]] [[b]] [[c]] [[d]] [[e]] [[f]] [[g]] [[h]] [[i]].\n"
+        + "Links: [[a]] [[b]] [[c]] [[d]] [[e]] [[f]] [[g]] [[h]] "
+        + "[[i]] [[j]] [[k]] [[l]] [[m]] [[n]] [[o]] [[p]].\n"
     )
     await _seed_page(wiki_root=empty_wiki, title="Mega Page", body=body)
     report = await _run_lint(empty_wiki)

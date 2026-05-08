@@ -29,11 +29,18 @@ from .links import parse_links
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
-# really N pages glued together". Tuned against Stage A fan-out output;
-# revisit once we have eval data on real K-layer corpora.
-_ATOMIC_BODY_CHARS = 1500
+# really N pages glued together". Calibrated 2026-05-08 against
+# elon-musk.md (1500-line subset, 70 LLM-synthesised K pages):
+# - body 2500 chars: catches multi-language duplicate content (bilingual
+#   pages); permissive enough that single-topic notes with substantive
+#   narrative don't false-trigger
+# - H2 ≥ 4: rare in atomic notes, common in MOC-style aggregations
+# - wikilinks ≥ 15: entity-rich event pages routinely cite 8-12
+#   participants without being non-atomic; only true index pages
+#   accumulate 15+ distinct references
+_ATOMIC_BODY_CHARS = 2500
 _ATOMIC_H2_COUNT = 3
-_ATOMIC_WIKILINK_COUNT = 8
+_ATOMIC_WIKILINK_COUNT = 15
 # Tags using namespaces (``area/topic`` form) that span > 1 top-level
 # area suggest the page straddles unrelated knowledge domains — almost
 # always N atomic notes glued together. Flat tags (no "/") are *ignored*
