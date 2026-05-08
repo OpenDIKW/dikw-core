@@ -26,13 +26,14 @@ async def _seed_page(
     title: str,
     body: str,
     type_: str = "concept",
+    tags: list[str] | None = None,
 ) -> str:
     """Write ``page`` to disk + register it in storage so lint can see it."""
     page = build_page(
         title=title,
         body=body,
         type_=type_,
-        tags=[],
+        tags=list(tags or []),
         sources=[],
         path=None,
         extras={},
@@ -126,6 +127,70 @@ async def test_many_wikilinks_trigger_non_atomic(empty_wiki: Path) -> None:
     issues = [i for i in report.issues if i.kind == "non_atomic_page"]
     assert len(issues) == 1
     assert "wikilinks" in issues[0].detail
+
+
+@pytest.mark.asyncio
+async def test_tags_across_domains_trigger_non_atomic(empty_wiki: Path) -> None:
+    """A page tagged across two top-level namespaces (ml/* and biz/*) is
+    almost certainly N atomic notes glued together. The Stage A prompt
+    can't easily catch this — lint as a backstop must."""
+    body = (
+        "# Cross-Domain Page\n\n"
+        "Discusses both ML research and startup operations in one breath.\n"
+    )
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Cross-Domain Page",
+        body=body,
+        tags=["ml/research", "biz/startup"],
+    )
+    report = await _run_lint(empty_wiki)
+    issues = [i for i in report.issues if i.kind == "non_atomic_page"]
+    assert len(issues) == 1
+    assert "tags span" in issues[0].detail
+
+
+@pytest.mark.asyncio
+async def test_tags_single_domain_does_not_trigger(empty_wiki: Path) -> None:
+    """Multiple tags within ONE top-level namespace is normal taxonomy
+    practice (ml/research + ml/eval), not a cross-domain violation."""
+    body = "# Single-Domain Page\n\nA focused page on ML research.\n"
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Single-Domain Page",
+        body=body,
+        tags=["ml/research", "ml/eval"],
+    )
+    report = await _run_lint(empty_wiki)
+    issues = [i for i in report.issues if i.kind == "non_atomic_page"]
+    assert issues == []
+
+
+@pytest.mark.asyncio
+async def test_no_tags_does_not_trigger_tag_violation(empty_wiki: Path) -> None:
+    """Empty tag list must never trigger the cross-domain heuristic."""
+    body = "# Untagged Page\n\nNo frontmatter tags.\n"
+    await _seed_page(wiki_root=empty_wiki, title="Untagged Page", body=body, tags=[])
+    report = await _run_lint(empty_wiki)
+    issues = [i for i in report.issues if i.kind == "non_atomic_page"]
+    assert issues == []
+
+
+@pytest.mark.asyncio
+async def test_tags_no_namespace_treats_each_as_domain(empty_wiki: Path) -> None:
+    """Flat tags without ``/`` separators are treated as separate domains
+    each — being conservative pushes the user toward namespaced tags."""
+    body = "# Flat-Tagged Page\n\nMixes unrelated flat tags.\n"
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Flat-Tagged Page",
+        body=body,
+        tags=["foo", "bar"],
+    )
+    report = await _run_lint(empty_wiki)
+    issues = [i for i in report.issues if i.kind == "non_atomic_page"]
+    assert len(issues) == 1
+    assert "tags span" in issues[0].detail
 
 
 @pytest.mark.asyncio

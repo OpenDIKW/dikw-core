@@ -34,6 +34,11 @@ from .links import parse_links
 _ATOMIC_BODY_CHARS = 1500
 _ATOMIC_H2_COUNT = 3
 _ATOMIC_WIKILINK_COUNT = 8
+# Tags spanning > 1 top-level namespace (split on "/") suggests the page
+# straddles unrelated knowledge areas — almost always N atomic notes
+# glued together. Flat tags without "/" each count as their own domain
+# (conservative: pushes users toward namespaced taxonomies).
+_ATOMIC_TAG_DOMAIN_COUNT = 1
 
 _H2_LINE = re.compile(r"^\s{0,3}##\s+\S", flags=re.MULTILINE)
 
@@ -118,6 +123,11 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             violations.append(
                 f"{wikilink_count} wikilinks > {_ATOMIC_WIKILINK_COUNT}"
             )
+        raw_tags = post.metadata.get("tags") or []
+        tag_list = [t for t in raw_tags if isinstance(t, str) and t.strip()]
+        domains = sorted({t.split("/", 1)[0].strip() for t in tag_list})
+        if len(domains) > _ATOMIC_TAG_DOMAIN_COUNT:
+            violations.append(f"tags span {len(domains)} domains: {', '.join(domains)}")
         if violations:
             issues.append(
                 LintIssue(
