@@ -34,6 +34,7 @@ from ..schemas import (
     AssetVecHit,
     CachedEmbeddingRow,
     ChunkAssetRef,
+    ChunkNeighborRecord,
     ChunkRecord,
     DocumentRecord,
     EmbeddingRow,
@@ -594,6 +595,47 @@ class PostgresStorage:
             )
             rows = await cur.fetchall()
         return [_row_to_link(r) for r in rows]
+
+    async def neighbor_chunks_via_links(
+        self,
+        seed_chunk_ids: Sequence[int],
+        *,
+        layer: Layer | None = None,
+        limit: int = 200,
+    ) -> list[ChunkNeighborRecord]:
+        if not seed_chunk_ids:
+            return []
+        seed_list = list(seed_chunk_ids)
+        params: list[object] = [seed_list, seed_list]
+        sql = (
+            "SELECT c2.chunk_id, c2.doc_id, COUNT(*) AS edge_count "
+            "FROM chunks c1 "
+            "JOIN documents d1 ON c1.doc_id = d1.doc_id "
+            "JOIN links l ON l.src_doc_id = d1.doc_id "
+            "    AND l.link_type = 'wikilink' "
+            "JOIN documents d2 ON l.dst_path = d2.path AND d2.active = TRUE "
+            "JOIN chunks c2 ON c2.doc_id = d2.doc_id "
+            "WHERE c1.chunk_id = ANY(%s::bigint[]) "
+            "  AND c2.chunk_id <> ALL(%s::bigint[]) "
+        )
+        if layer is not None:
+            sql += "AND d2.layer = %s "
+            params.append(layer.value)
+        sql += (
+            "GROUP BY c2.chunk_id, c2.doc_id "
+            "ORDER BY edge_count DESC, c2.chunk_id "
+            "LIMIT %s"
+        )
+        params.append(limit)
+        async with self._acquire() as conn, conn.cursor() as cur:
+            await cur.execute(sql, params)
+            rows = await cur.fetchall()
+        return [
+            ChunkNeighborRecord(
+                chunk_id=row[0], doc_id=row[1], edge_count=row[2], hop=1
+            )
+            for row in rows
+        ]
 
     async def append_wiki_log(self, entry: WikiLogEntry) -> None:
         async with self._acquire() as conn:

@@ -165,6 +165,16 @@ class RetrievalConfig(BaseModel):
     # dominance without hard-collapsing it. Tuned empirically per
     # corpus via Phase 3 dogfood (see plan A/B/baseline matrix).
     same_doc_penalty_alpha: float = Field(default=0.3, ge=0.0)
+    # Wikilink-graph retrieval leg. When ``graph_enabled`` is True, the
+    # searcher takes the top ``graph_seed_top_k`` chunks from the
+    # BM25+vector fused result, asks storage for chunks reachable via
+    # K-layer wikilinks, and folds them in as a fourth RRF leg with
+    # ``graph_weight``. Default-off until eval evidence shows the leg
+    # actually moves nDCG — wikilink graphs need to be dense enough for
+    # one-hop neighbor expansion to be informative.
+    graph_enabled: bool = False
+    graph_seed_top_k: int = Field(default=20, ge=1)
+    graph_weight: float = Field(default=0.5, ge=0.0)
 
 
 class SQLiteStorageConfig(BaseModel):

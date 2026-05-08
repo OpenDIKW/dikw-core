@@ -231,6 +231,24 @@ class LinkRecord(BaseModel):
     line: int
 
 
+class ChunkNeighborRecord(BaseModel):
+    """A chunk reachable from a seed chunk via the K-layer link graph.
+
+    ``edge_count`` counts how many seed-side links land on this neighbor —
+    a popular page reached from many seeds ranks higher than one reached
+    from a single seed. ``doc_id`` is included so the search-side
+    same-doc diversity penalty applies to graph-only chunks too.
+    Returned by ``Storage.neighbor_chunks_via_links`` in
+    ``edge_count``-descending order so callers can RRF-fuse with one
+    more leg without resorting.
+    """
+
+    chunk_id: int
+    doc_id: str
+    edge_count: int
+    hop: int = 1
+
+
 class WikiLogEntry(BaseModel):
     # ``id`` is None on construction; the storage layer assigns it on
     # insert via SQLite AUTOINCREMENT / Postgres BIGSERIAL. Acts as a

@@ -22,6 +22,7 @@ from ..schemas import (
     AssetVecHit,
     CachedEmbeddingRow,
     ChunkAssetRef,
+    ChunkNeighborRecord,
     ChunkRecord,
     DocumentRecord,
     EmbeddingRow,
@@ -189,6 +190,25 @@ class Storage(Protocol):
     async def upsert_link(self, link: LinkRecord) -> None: ...
     async def links_from(self, src_doc_id: str) -> list[LinkRecord]: ...
     async def links_to(self, dst_path: str) -> list[LinkRecord]: ...
+
+    async def neighbor_chunks_via_links(
+        self,
+        seed_chunk_ids: Sequence[int],
+        *,
+        layer: Layer | None = None,
+        limit: int = 200,
+    ) -> list[ChunkNeighborRecord]:
+        """Return chunks reachable from ``seed_chunk_ids`` via K-layer links.
+
+        Walks one hop: seed chunk → its document → that document's
+        outgoing wikilinks (resolved) → target document(s) → those
+        documents' chunks. Seeds themselves are excluded from the
+        result. Returns chunks in descending ``edge_count`` order
+        (most-cross-referenced first), capped at ``limit``. ``layer``
+        filters the *neighbor* chunks (not the seeds), letting the
+        caller keep fan-out inside e.g. WIKI pages only.
+        """
+        ...
     async def append_wiki_log(self, entry: WikiLogEntry) -> None: ...
     async def list_wiki_log(
         self, *, since_ts: float | None = None, limit: int | None = None

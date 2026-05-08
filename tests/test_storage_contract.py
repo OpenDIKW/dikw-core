@@ -1047,6 +1047,196 @@ async def test_link_graph(storage: Storage) -> None:
     assert out[0].dst_path == "wiki/b.md"
 
 
+async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
+    """Wikilink-graph leg of HybridSearcher: from a seed chunk in
+    ``page_a``, get to the chunks of ``page_b`` and ``page_c`` via
+    the wikilinks ``page_a -> page_b`` and ``page_a -> page_c``."""
+    page_a = _make_doc("wiki/a.md", layer=Layer.WIKI)
+    page_b = _make_doc("wiki/b.md", layer=Layer.WIKI)
+    page_c = _make_doc("wiki/c.md", layer=Layer.WIKI)
+    unlinked = _make_doc("wiki/d.md", layer=Layer.WIKI)
+    for d in (page_a, page_b, page_c, unlinked):
+        await storage.upsert_document(d)
+
+    a_chunks = await storage.replace_chunks(
+        page_a.doc_id,
+        [
+            ChunkRecord(doc_id=page_a.doc_id, seq=0, start=0, end=10, text="a-0"),
+        ],
+    )
+    b_chunks = await storage.replace_chunks(
+        page_b.doc_id,
+        [
+            ChunkRecord(doc_id=page_b.doc_id, seq=0, start=0, end=10, text="b-0"),
+            ChunkRecord(doc_id=page_b.doc_id, seq=1, start=10, end=20, text="b-1"),
+        ],
+    )
+    c_chunks = await storage.replace_chunks(
+        page_c.doc_id,
+        [
+            ChunkRecord(doc_id=page_c.doc_id, seq=0, start=0, end=10, text="c-0"),
+        ],
+    )
+    await storage.replace_chunks(
+        unlinked.doc_id,
+        [
+            ChunkRecord(doc_id=unlinked.doc_id, seq=0, start=0, end=10, text="d-0"),
+        ],
+    )
+
+    for dst in ("wiki/b.md", "wiki/c.md"):
+        await storage.upsert_link(
+            LinkRecord(
+                src_doc_id=page_a.doc_id,
+                dst_path=dst,
+                link_type=LinkType.WIKILINK,
+                anchor=None,
+                line=1,
+            )
+        )
+    # Markdown-style link should NOT pull anything in (we only walk wikilinks).
+    await storage.upsert_link(
+        LinkRecord(
+            src_doc_id=page_a.doc_id,
+            dst_path="wiki/d.md",
+            link_type=LinkType.MARKDOWN,
+            anchor=None,
+            line=2,
+        )
+    )
+
+    seed_id = a_chunks[0]
+    assert seed_id is not None
+    neighbors = await storage.neighbor_chunks_via_links([seed_id])
+    neighbor_ids = {n.chunk_id for n in neighbors}
+
+    assert neighbor_ids == set(b_chunks) | set(c_chunks)
+    # Seed itself is excluded.
+    assert seed_id not in neighbor_ids
+    # The markdown-link-only target ``wiki/d.md`` is NOT pulled in.
+    assert all(d.doc_id != unlinked.doc_id for d in [
+        await storage.get_document(page_a.doc_id),
+    ])
+    for n in neighbors:
+        assert n.hop == 1
+        assert n.edge_count >= 1
+        assert n.doc_id in {page_b.doc_id, page_c.doc_id}
+
+
+async def test_neighbor_chunks_via_links_edge_count_ranking(
+    storage: Storage,
+) -> None:
+    """edge_count counts links from the seed set to each neighbor —
+    a neighbor reached from many seeds outranks one reached from few.
+    """
+    pages = {
+        name: _make_doc(f"wiki/{name}.md", layer=Layer.WIKI)
+        for name in ("p1", "p2", "p3", "popular", "lonely")
+    }
+    for d in pages.values():
+        await storage.upsert_document(d)
+
+    seed_chunks: list[int] = []
+    for key in ("p1", "p2", "p3"):
+        cids = await storage.replace_chunks(
+            pages[key].doc_id,
+            [ChunkRecord(
+                doc_id=pages[key].doc_id, seq=0, start=0, end=10, text=key
+            )],
+        )
+        seed_chunks.extend(cids)
+    pop_chunks = await storage.replace_chunks(
+        pages["popular"].doc_id,
+        [ChunkRecord(
+            doc_id=pages["popular"].doc_id, seq=0, start=0, end=10, text="pop"
+        )],
+    )
+    lonely_chunks = await storage.replace_chunks(
+        pages["lonely"].doc_id,
+        [ChunkRecord(
+            doc_id=pages["lonely"].doc_id, seq=0, start=0, end=10, text="lo"
+        )],
+    )
+
+    # All three seeds link to ``popular``; only p1 links to ``lonely``.
+    for src in ("p1", "p2", "p3"):
+        await storage.upsert_link(
+            LinkRecord(
+                src_doc_id=pages[src].doc_id,
+                dst_path="wiki/popular.md",
+                link_type=LinkType.WIKILINK,
+                anchor=None,
+                line=1,
+            )
+        )
+    await storage.upsert_link(
+        LinkRecord(
+            src_doc_id=pages["p1"].doc_id,
+            dst_path="wiki/lonely.md",
+            link_type=LinkType.WIKILINK,
+            anchor=None,
+            line=2,
+        )
+    )
+
+    neighbors = await storage.neighbor_chunks_via_links(seed_chunks)
+    by_chunk = {n.chunk_id: n for n in neighbors}
+    assert by_chunk[pop_chunks[0]].edge_count == 3
+    assert by_chunk[lonely_chunks[0]].edge_count == 1
+    # Returned in edge_count desc order.
+    assert neighbors[0].chunk_id == pop_chunks[0]
+    assert neighbors[-1].chunk_id == lonely_chunks[0]
+
+
+async def test_neighbor_chunks_via_links_layer_filter(storage: Storage) -> None:
+    """``layer`` filters the *neighbor* docs — useful when the caller
+    wants the graph leg constrained to WIKI pages.
+    """
+    src_page = _make_doc("wiki/src.md", layer=Layer.WIKI)
+    wiki_target = _make_doc("wiki/target.md", layer=Layer.WIKI)
+    source_target = _make_doc("sources/target.md", layer=Layer.SOURCE)
+    for d in (src_page, wiki_target, source_target):
+        await storage.upsert_document(d)
+
+    src_chunk = (await storage.replace_chunks(
+        src_page.doc_id,
+        [ChunkRecord(doc_id=src_page.doc_id, seq=0, start=0, end=10, text="x")],
+    ))[0]
+    wiki_chunk = (await storage.replace_chunks(
+        wiki_target.doc_id,
+        [ChunkRecord(
+            doc_id=wiki_target.doc_id, seq=0, start=0, end=10, text="w"
+        )],
+    ))[0]
+    source_chunk = (await storage.replace_chunks(
+        source_target.doc_id,
+        [ChunkRecord(
+            doc_id=source_target.doc_id, seq=0, start=0, end=10, text="s"
+        )],
+    ))[0]
+
+    for dst in ("wiki/target.md", "sources/target.md"):
+        await storage.upsert_link(
+            LinkRecord(
+                src_doc_id=src_page.doc_id,
+                dst_path=dst,
+                link_type=LinkType.WIKILINK,
+                anchor=None,
+                line=1,
+            )
+        )
+
+    wiki_only = await storage.neighbor_chunks_via_links(
+        [src_chunk], layer=Layer.WIKI
+    )
+    assert {n.chunk_id for n in wiki_only} == {wiki_chunk}
+    assert source_chunk not in {n.chunk_id for n in wiki_only}
+
+
+async def test_neighbor_chunks_via_links_empty_seeds(storage: Storage) -> None:
+    assert await storage.neighbor_chunks_via_links([]) == []
+
+
 async def test_wiki_log_append(storage: Storage) -> None:
     ts = time.time()
     await storage.append_wiki_log(

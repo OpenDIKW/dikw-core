@@ -36,6 +36,7 @@ from ...providers import EmbeddingProvider, MultimodalEmbeddingProvider
 from ...schemas import (
     AssetRecord,
     AssetVecHit,
+    ChunkNeighborRecord,
     ChunkRecord,
     FTSHit,
     Hit,
@@ -56,6 +57,9 @@ class RetrievalConfigLike(Protocol):
     fusion: FusionMode
     cjk_tokenizer: CjkTokenizer
     same_doc_penalty_alpha: float
+    graph_enabled: bool
+    graph_seed_top_k: int
+    graph_weight: float
 
 
 @dataclass(frozen=True)
@@ -265,6 +269,9 @@ class HybridSearcher:
         fusion: FusionMode = "rrf",
         cjk_tokenizer: CjkTokenizer = "none",
         same_doc_penalty_alpha: float = 0.3,
+        graph_enabled: bool = False,
+        graph_seed_top_k: int = 20,
+        graph_weight: float = 0.5,
     ) -> None:
         self._storage = storage
         self._embedder = embedder
@@ -283,6 +290,9 @@ class HybridSearcher:
         # mismatch silently drops CJK hits.
         self._cjk_tokenizer: CjkTokenizer = cjk_tokenizer
         self._same_doc_penalty_alpha = same_doc_penalty_alpha
+        self._graph_enabled = graph_enabled
+        self._graph_seed_top_k = graph_seed_top_k
+        self._graph_weight = graph_weight
 
     @classmethod
     def from_config(
@@ -313,6 +323,9 @@ class HybridSearcher:
             fusion=cfg.fusion,
             cjk_tokenizer=cfg.cjk_tokenizer,
             same_doc_penalty_alpha=cfg.same_doc_penalty_alpha,
+            graph_enabled=cfg.graph_enabled,
+            graph_seed_top_k=cfg.graph_seed_top_k,
+            graph_weight=cfg.graph_weight,
         )
 
     async def search(
@@ -434,17 +447,54 @@ class HybridSearcher:
         # but defensively skip any None to keep fusion keys homogeneous.
         fts_ranked = [h.chunk_id for h in fts_hits if h.chunk_id is not None]
         vec_ranked = [h.chunk_id for h in vec_hits]
+
+        # Optional 4th leg: K-layer wikilink graph. Seed from the BM25 +
+        # vector top-K (rank lists, not yet fused — keeps the seeding
+        # deterministic across fusion-mode changes), ask storage for
+        # one-hop neighbors via the wikilink graph, fold them in as a
+        # ranked list ordered by edge_count desc. Default-off until eval
+        # confirms link density on real corpora makes this leg helpful.
+        graph_neighbors: list[ChunkNeighborRecord] = []
+        if self._graph_enabled:
+            seeds: list[int] = []
+            seen_seeds: set[int] = set()
+            for cid in (
+                *vec_ranked[: self._graph_seed_top_k],
+                *fts_ranked[: self._graph_seed_top_k],
+            ):
+                if cid in seen_seeds:
+                    continue
+                seeds.append(cid)
+                seen_seeds.add(cid)
+                if len(seeds) >= self._graph_seed_top_k:
+                    break
+            if seeds:
+                try:
+                    graph_neighbors = await self._storage.neighbor_chunks_via_links(
+                        seeds, limit=per_leg_limit
+                    )
+                except NotSupported:
+                    graph_neighbors = []
+
         # Asset channel rides the vector weight — same family of signal
         # (semantic similarity in the multimodal space), distinct only in
-        # what's embedded (chunk text vs asset bytes).
+        # what's embedded (chunk text vs asset bytes). Graph leg lands at
+        # the end so it never reorders the historical 3-leg defaults.
         fusion_weights = [
             self._bm25_weight,
             self._vector_weight,
             self._vector_weight,
         ]
+        if graph_neighbors:
+            fusion_weights = [*fusion_weights, self._graph_weight]
         if self._fusion == "rrf":
+            ranked_lists: list[list[int]] = [
+                fts_ranked, vec_ranked, asset_chunk_ranked
+            ]
+            if graph_neighbors:
+                ranked_lists.append([n.chunk_id for n in graph_neighbors])
             fused = reciprocal_rank_fusion(
-                [fts_ranked, vec_ranked, asset_chunk_ranked],
+                ranked_lists,
                 k=self._rrf_k,
                 weights=fusion_weights,
             )
@@ -463,11 +513,20 @@ class HybridSearcher:
             asset_scored: list[tuple[int, float]] = [
                 (cid, -asset_dist_by_chunk[cid]) for cid in asset_chunk_ranked
             ]
+            scored_lists: list[list[tuple[int, float]]] = [
+                fts_scored, vec_scored, asset_scored
+            ]
+            if graph_neighbors:
+                # Graph leg uses ``edge_count`` as its raw score — popular
+                # neighbors land near top after per-leg min-max normalises.
+                scored_lists.append(
+                    [(n.chunk_id, float(n.edge_count)) for n in graph_neighbors]
+                )
             fuser = (
                 comb_sum_fusion if self._fusion == "combsum" else comb_mnz_fusion
             )
             fused = fuser(
-                [fts_scored, vec_scored, asset_scored],
+                scored_lists,
                 weights=fusion_weights,
             )
         else:
@@ -482,8 +541,8 @@ class HybridSearcher:
             )
 
         # Per-chunk doc_id lookup, sourced from every leg that knows it.
-        # Vec/asset legs always carry doc_id; FTS hits do too. The first
-        # writer wins because every leg agrees on chunk_id -> doc_id.
+        # Vec/asset/graph legs always carry doc_id; FTS hits do too. The
+        # first writer wins because every leg agrees on chunk_id -> doc_id.
         doc_id_by_chunk: dict[int, str] = {}
         for vh in vec_hits:
             doc_id_by_chunk.setdefault(vh.chunk_id, vh.doc_id)
@@ -492,6 +551,8 @@ class HybridSearcher:
                 doc_id_by_chunk.setdefault(fh.chunk_id, fh.doc_id)
         for cid, did in asset_chunk_doc_ids.items():
             doc_id_by_chunk.setdefault(cid, did)
+        for n in graph_neighbors:
+            doc_id_by_chunk.setdefault(n.chunk_id, n.doc_id)
 
         # Stage 3 source-diversity demotion. alpha=0 is a no-op; alpha>0
         # demotes later same-doc chunks via diminishing returns.
