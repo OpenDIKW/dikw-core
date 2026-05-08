@@ -57,6 +57,44 @@ async def test_task_progress_renderer_returns_final_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_progress_renderer_renders_multi_phase_streams_distinctly() -> None:
+    """Outer (``synth`` source counter) and inner (``synth_llm`` group
+    counter) phases must each get their own line — without phase-keyed
+    rows the inner counter would overwrite the outer one and the user
+    would lose the ``2/43`` source progress as soon as group events fire."""
+    console = Console(record=True, width=80, force_terminal=False)
+    renderer = TaskProgressRenderer(console, plain=True)
+    events = [
+        {"type": "progress", "phase": "synth", "current": 1, "total": 3},
+        {
+            "type": "progress",
+            "phase": "synth_llm",
+            "current": 1,
+            "total": 4,
+            "detail": {"status": "calling"},
+        },
+        {
+            "type": "progress",
+            "phase": "synth_llm",
+            "current": 1,
+            "total": 4,
+            "detail": {"status": "returned"},
+        },
+        {
+            "type": "final",
+            "status": "succeeded",
+            "result": {"candidates": 1, "created": 1},
+        },
+    ]
+    with renderer.live():
+        final = await renderer.run(_scripted(events))
+    assert final.status == "succeeded"
+    out = console.export_text()
+    assert "synth: 1/3" in out
+    assert "synth_llm: 1/4" in out
+
+
+@pytest.mark.asyncio
 async def test_task_progress_renderer_falls_back_when_no_final() -> None:
     """A stream that closes without ``final`` surfaces as a synthetic
     ``failed`` so the caller doesn't have to special-case it."""
