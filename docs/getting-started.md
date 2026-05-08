@@ -95,6 +95,21 @@ regenerate automatically. Re-running is a no-op until you add new sources
 
 Run `dikw lint` to check for broken wikilinks, orphans, and duplicate titles.
 
+### Watching synth progress on large sources
+
+A long source (a book-sized markdown) is split into multiple LLM calls
+under the hood. The client streams two layers of progress events:
+
+- `phase="synth"` — outer counter, advances once per source (`2/43`).
+- `phase="synth_llm"` — inner counter, fires `status="calling"` before
+  each LLM round-trip and `status="returned"` after, so you can tell a
+  slow LLM call apart from a deadlock. A parser failure surfaces as
+  `status="error"` with `error_kind` / `error_msg` fields.
+
+If a single source freezes for minutes without inner events you're
+either looking at a provider stall (codex SSE keepalive bug, gateway
+buffering) or a real network hang — not a synth-loop issue.
+
 ## 6. Distil Wisdom (the W layer)
 
 ```bash

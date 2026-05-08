@@ -2148,6 +2148,7 @@ async def synthesize(
                 source_body=body,
                 chunks=src_chunks,
                 cancel=_reporter.cancel_token(),
+                reporter=_reporter,
             )
             report = _sr_replace(
                 report,
@@ -2426,14 +2427,17 @@ async def _synth_pages_from_source(
     source_body: str,
     chunks: list[ChunkRecord],
     cancel: CancelToken,
+    reporter: ProgressReporter | None = None,
 ) -> _SourceSynthOutcome:
     """Fan a single source out into ChunkGroups and call the LLM per group.
 
     The caller persists the returned pages and writes ``log_notes`` /
-    counts to ``wiki_log`` and the ``SynthReport``. Keeping this helper
-    free of storage and reporter dependencies lets the synth loop stay
-    flat (one for-loop per source instead of nested for-source / for-group).
+    counts to ``wiki_log`` and the ``SynthReport``. ``reporter`` (optional)
+    receives a ``synth_llm`` ``calling`` / ``returned`` event pair per
+    group so server clients can render group-level progress instead of
+    freezing on the per-source counter while a multi-group LLM call runs.
     """
+    _reporter: ProgressReporter = reporter or NoopReporter()
     sections = derive_sections_from_chunks(
         source_body, chunks, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
     )
@@ -2450,18 +2454,32 @@ async def _synth_pages_from_source(
     pages: list[WikiPage] = []
     notes: list[str] = []
     errors = 0
+    total_groups = len(groups)
     for group in groups:
         cancel.raise_if_cancelled()
+        group_pos = group.index + 1
         user_prompt = template.format(
             source_path=source_path,
             source_body=group.text,
             group_outline=", ".join(group.headings)
             if group.headings
             else "(no headings)",
-            group_index=group.index + 1,
-            group_total=len(groups),
+            group_index=group_pos,
+            group_total=total_groups,
             max_pages=cfg.synth.max_pages_per_group,
             allowed_types=allowed_types_str,
+        )
+        await _reporter.progress(
+            phase="synth_llm",
+            current=group_pos,
+            total=total_groups,
+            detail={
+                "source_path": source_path,
+                "model": cfg.provider.llm_model,
+                "status": "calling",
+                "section_count": len(group.section_starts),
+                "approx_tokens": group.token_count,
+            },
         )
         response = await llm.complete(
             system="You synthesise K-layer wiki pages for dikw-core.",
@@ -2469,6 +2487,16 @@ async def _synth_pages_from_source(
             model=cfg.provider.llm_model,
             max_tokens=cfg.provider.llm_max_tokens_synth,
             temperature=0.3,
+        )
+        await _reporter.progress(
+            phase="synth_llm",
+            current=group_pos,
+            total=total_groups,
+            detail={
+                "source_path": source_path,
+                "status": "returned",
+                "response_chars": len(response.text),
+            },
         )
         try:
             new_pages = parse_synthesis_response(
@@ -2478,7 +2506,7 @@ async def _synth_pages_from_source(
             )
         except SynthesisPartialError as pe:
             notes.append(
-                f"group {group.index + 1}/{len(groups)} partial parse: "
+                f"group {group_pos}/{total_groups} partial parse: "
                 f"{len(pe.errors)} issue(s); first: {pe.errors[0]}"
             )
             # Truncation is recoverable next run — count it as a parse
@@ -2486,17 +2514,39 @@ async def _synth_pages_from_source(
             if pe.retry:
                 errors += 1
             new_pages = pe.pages
+            await _reporter.progress(
+                phase="synth_llm",
+                current=group_pos,
+                total=total_groups,
+                detail={
+                    "source_path": source_path,
+                    "status": "error",
+                    "error_kind": type(pe).__name__,
+                    "error_msg": str(pe)[:200],
+                },
+            )
         except SynthesisError as e:
             errors += 1
             notes.append(
-                f"group {group.index + 1}/{len(groups)} parse error: {e}"
+                f"group {group_pos}/{total_groups} parse error: {e}"
+            )
+            await _reporter.progress(
+                phase="synth_llm",
+                current=group_pos,
+                total=total_groups,
+                detail={
+                    "source_path": source_path,
+                    "status": "error",
+                    "error_kind": type(e).__name__,
+                    "error_msg": str(e)[:200],
+                },
             )
             continue
         pages.extend(new_pages)
 
     return _SourceSynthOutcome(
         pages=pages,
-        groups_processed=len(groups),
+        groups_processed=total_groups,
         parse_errors=errors,
         log_notes=notes,
     )
