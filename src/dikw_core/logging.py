@@ -46,10 +46,13 @@ def init_logging() -> None:
     setattr(handler, _HANDLER_TAG, True)
     root.addHandler(handler)
     root.setLevel(level)
-    # Quiet noisy third-party libs at our default INFO; they emit one
-    # line per HTTP request and drown the engine's own progress logs.
+    # Quiet noisy third-party libs to at least WARNING (they emit one line
+    # per HTTP request) but never *louder* than the root level — if the
+    # operator asked for ERROR/CRITICAL we honour that. `max` works because
+    # logging level numbers go up as filtering tightens (DEBUG=10 < ERROR=40).
+    noisy_level = max(logging.WARNING, root.level)
     for noisy in ("httpx", "httpcore", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+        logging.getLogger(noisy).setLevel(noisy_level)
     _initialized = True
 
 

@@ -56,3 +56,17 @@ def test_init_logging_quiets_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     init_logging()
     assert logging.getLogger("httpx").level >= logging.WARNING
     assert logging.getLogger("httpcore").level >= logging.WARNING
+
+
+def test_init_logging_does_not_re_amplify_quieted_loggers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``DIKW_LOG_LEVEL=ERROR`` must NOT push noisy loggers back up to
+    WARNING — the operator asked for a quieter floor and unconditional
+    WARNING-clamping would override it."""
+    monkeypatch.setenv("DIKW_LOG_LEVEL", "ERROR")
+    init_logging()
+    assert logging.getLogger().level == logging.ERROR
+    assert logging.getLogger("httpx").level >= logging.ERROR
+    assert logging.getLogger("httpcore").level >= logging.ERROR
+    assert logging.getLogger("urllib3").level >= logging.ERROR
