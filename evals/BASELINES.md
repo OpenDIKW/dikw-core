@@ -7,6 +7,78 @@ regression from a re-run variance.
 Newest first. `dikw eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-05-08 — Wikilink graph leg ablation (default-off, non-destructive proof)
+
+**Status:** ablation for the optional 4th retrieval leg
+(`feat/wikilink-recall`, commit `669a826` after PG-parametrize +
+ranking-quality + fusion-compat tests). Confirms the leg is
+non-destructive on standard retrieval benchmarks (which never produce
+K-layer wikilinks). Ships **default-off**.
+
+### Why not "+0.01 nDCG@10 on scifact + cmteb"?
+
+The original plan's acceptance gate ("graph leg must lift nDCG@10 by
+≥ 0.01 on SciFact + cmteb-t2-subset") is conceptually unmeasurable:
+
+- The graph leg walks the K-layer wikilink graph
+  (`Storage.neighbor_chunks_via_links`). Wikilinks are persisted to
+  storage **only inside K-layer page persistence**
+  (`api.py:_persist_wiki_page` → `parse_links` → `storage.upsert_link`).
+- Retrieval eval datasets (SciFact, cmteb, mvp, wiki-mini-mm) only
+  ingest as D-layer sources — `dikw eval` never invokes synth, so the
+  `links` table stays empty regardless of `[[...]]` syntax in corpus.
+- Therefore `neighbor_chunks_via_links` always returns `[]` on these
+  datasets and the graph leg silently contributes nothing — equivalent
+  to the 3-leg baseline byte-for-byte.
+
+The leg's actual value is measurable only against a wiki-rich corpus
+with synthesised K-layer pages + qrels. Not in scope this PR.
+
+### Run shape (proving non-destructiveness)
+
+`evals/scripts/graph_leg_ablation.py` (one-off, not committed) loops 4
+configs over each dataset, all hermetic (FakeEmbeddings, cache_mode=off
+to avoid the cache-vs-RetrievalConfig invalidation gap):
+
+| Run | graph_enabled | graph_weight | graph_seed_top_k |
+|-----|---------------|--------------|------------------|
+| A   | False         | (n/a)        | (n/a)            |
+| B   | True          | 0.2          | 20               |
+| C   | True          | 0.5          | 20               |
+| D   | True          | 1.0          | 20               |
+
+### Results
+
+| dataset  | A_off  | B_w0.2 | C_w0.5 | D_w1.0 | max delta |
+|----------|--------|--------|--------|--------|-----------|
+| mvp      | 0.8514 | 0.8514 | 0.8514 | 0.8514 | +0.0000   |
+| scifact  | 0.1454 | 0.1454 | 0.1454 | 0.1454 | +0.0000   |
+
+(scifact absolute number is FakeEmbeddings-driven and not comparable to
+the 2026-04-23 baseline of 0.771 with Qwen3-Embedding-0.6B — what
+matters here is the column-wise equality.)
+
+### Conclusion
+
+Ship `RetrievalConfig.graph_enabled=False` as default. The unit-test
+suite (`tests/test_search_graph_leg.py` — 16 tests across sqlite + PG,
+covering ranking-quality + RRF + CombSUM + CombMNZ) locks the
+intended behaviour when the user opts in. Validation of the leg's
+recall improvement on a real K-layer wiki corpus is a separate
+follow-up dependent on building a wiki-rich eval dataset with qrels.
+
+### Cache-vs-RetrievalConfig caveat
+
+`run_eval`'s snapshot cache key (`_corpus_cache_key` in
+`src/dikw_core/eval/runner.py`) covers `(dataset, model, dim,
+corpus_hash, mm_fingerprint)` but NOT `RetrievalConfig`. Re-running
+with a different retrieval config under `cache_mode="read_write"`
+silently reuses the first run's wiki dikw.yml — making 4 different
+configs all run the same baseline. This was a real bug discovered
+during this ablation; ablation harness must use `cache_mode="off"`.
+Architectural fix (include retrieval_cfg fingerprint in key) is a
+separate follow-up.
+
 ## 2026-05-05 — Postgres backend on cmteb, post-CJK-symmetry
 
 **Status:** first PG-backend canonical baseline, paired with the SQLite
