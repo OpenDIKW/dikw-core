@@ -137,6 +137,12 @@ def _corpus_cache_key(
     (provider/model/dim) so a hermetic snapshot built without an asset
     index can't be silently reused by a real-vector multimodal eval.
     ``None`` is rendered as ``0`` for back-compat with pre-mm caches.
+
+    NOTE: ``RetrievalConfig`` (rrf_k, weights, fusion, graph_*, …) is
+    NOT in the key. Re-running with a different retrieval config under
+    ``cache_mode="read_write"`` silently reuses the first run's
+    ``dikw.yml`` — the snapshot's wiki carries the old block. Retrieval
+    ablations must use ``cache_mode="off"`` until this is fixed.
     """
     h = hashlib.sha256()
     for path in sorted(spec.corpus_dir.rglob("*")):

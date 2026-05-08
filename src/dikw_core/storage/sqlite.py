@@ -682,7 +682,7 @@ class SQLiteStorage:
             rows = conn.execute(sql, params).fetchall()
             return [
                 ChunkNeighborRecord(
-                    chunk_id=row[0], doc_id=row[1], edge_count=row[2], hop=1
+                    chunk_id=row[0], doc_id=row[1], edge_count=row[2]
                 )
                 for row in rows
             ]

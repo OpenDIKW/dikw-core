@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -30,11 +31,68 @@ from dikw_core.providers.codex_auth import dikw_auth_path
 from dikw_core.server.app import build_app
 from dikw_core.server.auth import AuthConfig
 from dikw_core.server.runtime import ServerRuntime, build_runtime, teardown_runtime
+from dikw_core.storage.base import Storage
+from dikw_core.storage.sqlite import SQLiteStorage
 
 from .fakes import init_test_wiki
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("sqlite", id="sqlite"),
+        pytest.param(
+            "postgres",
+            id="postgres",
+            marks=pytest.mark.skipif(
+                not os.environ.get("DIKW_TEST_POSTGRES_DSN"),
+                reason="Postgres adapter tests require DIKW_TEST_POSTGRES_DSN",
+            ),
+        ),
+    ]
+)
+async def parametrized_storage(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> AsyncIterator[Storage]:
+    """Yield a connected, migrated Storage instance per backend.
+
+    Parameterised over SQLite + Postgres so adapter-spanning tests
+    (storage contract, hybrid-search graph leg) auto-run on both.
+    Postgres parametrisation skips when ``DIKW_TEST_POSTGRES_DSN`` is
+    unset; CI provides one. Schema name is derived from ``tmp_path``
+    so parallel runs don't collide.
+    """
+    backend = request.param
+    schema: str | None = None
+    if backend == "sqlite":
+        s: Storage = SQLiteStorage(tmp_path / "test.sqlite", cjk_tokenizer="jieba")
+    elif backend == "postgres":
+        from dikw_core.storage.postgres import PostgresStorage
+
+        dsn = os.environ["DIKW_TEST_POSTGRES_DSN"]
+        schema = f"dikw_test_{abs(hash(str(tmp_path))) % 10_000_000:07d}"
+        s = PostgresStorage(dsn, schema=schema, pool_size=2, cjk_tokenizer="jieba")
+    else:
+        raise RuntimeError(f"unreachable: adapter {backend}")
+
+    await s.connect()
+    await s.migrate()
+    try:
+        yield s
+    finally:
+        if backend == "postgres":
+            from psycopg import AsyncConnection
+
+            conn = await AsyncConnection.connect(os.environ["DIKW_TEST_POSTGRES_DSN"])
+            try:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+                await conn.commit()
+            finally:
+                await conn.close()
+        await s.close()
 
 
 # --------------------------------------------------------------------------- #

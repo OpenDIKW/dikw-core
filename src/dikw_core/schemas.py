@@ -246,7 +246,6 @@ class ChunkNeighborRecord(BaseModel):
     chunk_id: int
     doc_id: str
     edge_count: int
-    hop: int = 1
 
 
 class WikiLogEntry(BaseModel):

@@ -11,10 +11,7 @@ on storage primitives, so PG must produce the same hits as SQLite.
 
 from __future__ import annotations
 
-import os
 import time
-from collections.abc import AsyncIterator
-from pathlib import Path
 
 import pytest
 
@@ -26,8 +23,6 @@ from dikw_core.schemas import (
     LinkRecord,
     LinkType,
 )
-from dikw_core.storage.base import Storage
-from dikw_core.storage.sqlite import SQLiteStorage
 
 
 def _doc(path: str) -> DocumentRecord:
@@ -42,58 +37,12 @@ def _doc(path: str) -> DocumentRecord:
     )
 
 
-@pytest.fixture(
-    params=[
-        pytest.param("sqlite", id="sqlite"),
-        pytest.param(
-            "postgres",
-            id="postgres",
-            marks=pytest.mark.skipif(
-                not os.environ.get("DIKW_TEST_POSTGRES_DSN"),
-                reason="Postgres adapter tests require DIKW_TEST_POSTGRES_DSN",
-            ),
-        ),
-    ]
-)
-async def storage(
-    request: pytest.FixtureRequest, tmp_path: Path
-) -> AsyncIterator[Storage]:
-    backend = request.param
-    if backend == "sqlite":
-        s: Storage = SQLiteStorage(tmp_path / "test.sqlite", cjk_tokenizer="jieba")
-        schema: str | None = None
-    elif backend == "postgres":
-        from dikw_core.storage.postgres import PostgresStorage
-
-        dsn = os.environ["DIKW_TEST_POSTGRES_DSN"]
-        schema = f"dikw_test_{abs(hash(str(tmp_path))) % 10_000_000:07d}"
-        s = PostgresStorage(dsn, schema=schema, pool_size=2, cjk_tokenizer="jieba")
-    else:
-        raise RuntimeError(f"unreachable: adapter {backend}")
-
-    await s.connect()
-    await s.migrate()
-    try:
-        yield s
-    finally:
-        if backend == "postgres":
-            from psycopg import AsyncConnection
-
-            conn = await AsyncConnection.connect(os.environ["DIKW_TEST_POSTGRES_DSN"])
-            try:
-                async with conn.cursor() as cur:
-                    await cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-                await conn.commit()
-            finally:
-                await conn.close()
-        await s.close()
-
-
 @pytest.fixture()
-async def linked_wiki(storage):
+async def linked_wiki(parametrized_storage):
     """Three K-layer pages: A links to B and C via wikilinks. Bodies
     are arranged so a search for ``"alpha"`` matches A only — making the
     extra B/C hits a clear graph-leg signal."""
+    storage = parametrized_storage
     page_a = _doc("wiki/concepts/alpha.md")
     page_b = _doc("wiki/concepts/bravo.md")
     page_c = _doc("wiki/concepts/charlie.md")

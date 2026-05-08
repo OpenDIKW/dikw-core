@@ -1111,14 +1111,10 @@ async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
     neighbor_ids = {n.chunk_id for n in neighbors}
 
     assert neighbor_ids == set(b_chunks) | set(c_chunks)
-    # Seed itself is excluded.
     assert seed_id not in neighbor_ids
-    # The markdown-link-only target ``wiki/d.md`` is NOT pulled in.
-    assert all(d.doc_id != unlinked.doc_id for d in [
-        await storage.get_document(page_a.doc_id),
-    ])
+    # ``neighbor_ids`` is exact above — markdown-link-only ``wiki/d.md``
+    # is implicitly excluded — but lock the doc_id projection too.
     for n in neighbors:
-        assert n.hop == 1
         assert n.edge_count >= 1
         assert n.doc_id in {page_b.doc_id, page_c.doc_id}
 

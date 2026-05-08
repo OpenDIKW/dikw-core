@@ -448,33 +448,9 @@ class HybridSearcher:
         fts_ranked = [h.chunk_id for h in fts_hits if h.chunk_id is not None]
         vec_ranked = [h.chunk_id for h in vec_hits]
 
-        # Optional 4th leg: K-layer wikilink graph. Seed from the BM25 +
-        # vector top-K (rank lists, not yet fused — keeps the seeding
-        # deterministic across fusion-mode changes), ask storage for
-        # one-hop neighbors via the wikilink graph, fold them in as a
-        # ranked list ordered by edge_count desc. Default-off until eval
-        # confirms link density on real corpora makes this leg helpful.
-        graph_neighbors: list[ChunkNeighborRecord] = []
-        if self._graph_enabled:
-            seeds: list[int] = []
-            seen_seeds: set[int] = set()
-            for cid in (
-                *vec_ranked[: self._graph_seed_top_k],
-                *fts_ranked[: self._graph_seed_top_k],
-            ):
-                if cid in seen_seeds:
-                    continue
-                seeds.append(cid)
-                seen_seeds.add(cid)
-                if len(seeds) >= self._graph_seed_top_k:
-                    break
-            if seeds:
-                try:
-                    graph_neighbors = await self._storage.neighbor_chunks_via_links(
-                        seeds, limit=per_leg_limit
-                    )
-                except NotSupported:
-                    graph_neighbors = []
+        graph_neighbors = await self._collect_graph_neighbors(
+            vec_ranked, fts_ranked, per_leg_limit
+        )
 
         # Asset channel rides the vector weight — same family of signal
         # (semantic similarity in the multimodal space), distinct only in
@@ -633,6 +609,43 @@ class HybridSearcher:
                 )
             )
         return hits
+
+    async def _collect_graph_neighbors(
+        self,
+        vec_ranked: list[int],
+        fts_ranked: list[int],
+        per_leg_limit: int,
+    ) -> list[ChunkNeighborRecord]:
+        """Optional 4th leg: K-layer wikilink graph.
+
+        Seeds come from the unfused vec + fts top-K (deterministic across
+        fusion-mode changes); storage walks one hop via the wikilink
+        graph and returns neighbors ordered by edge_count desc. Returns
+        an empty list when disabled or when the storage backend lacks
+        the neighbor primitive (older adapters).
+        """
+        if not self._graph_enabled:
+            return []
+        seeds: list[int] = []
+        seen: set[int] = set()
+        for cid in (
+            *vec_ranked[: self._graph_seed_top_k],
+            *fts_ranked[: self._graph_seed_top_k],
+        ):
+            if cid in seen:
+                continue
+            seeds.append(cid)
+            seen.add(cid)
+            if len(seeds) >= self._graph_seed_top_k:
+                break
+        if not seeds:
+            return []
+        try:
+            return await self._storage.neighbor_chunks_via_links(
+                seeds, limit=per_leg_limit
+            )
+        except NotSupported:
+            return []
 
     async def _embed_query_text(self, q: str) -> list[float] | None:
         assert self._embedder is not None
