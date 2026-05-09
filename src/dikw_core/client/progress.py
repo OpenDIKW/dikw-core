@@ -431,7 +431,14 @@ def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     table = Table(title="dikw synth", show_header=True, header_style="bold")
     table.add_column("metric", justify="left")
     table.add_column("count", justify="right")
-    for key in ("candidates", "created", "updated", "skipped", "errors"):
+    for key in (
+        "candidates",
+        "created",
+        "updated",
+        "skipped",
+        "errors",
+        "unresolved_wikilinks",
+    ):
         table.add_row(key, str(int(report.get(key) or 0)))
     console.print(table)
 

@@ -25,11 +25,15 @@ from dikw_core.schemas import Layer, LinkType
 from .fakes import init_test_wiki
 
 
-async def _persist(storage, root: Path, page) -> None:
+async def _persist(storage, root: Path, page) -> int:
     """Thin wrapper — embedder/version pinned to None so the test
     doesn't drag the whole embed pipeline in. ``_persist_wiki_page``
-    skips embedding when either is None."""
-    await api._persist_wiki_page(
+    skips embedding when either is None.
+
+    Returns the count of broken wikilinks (non-resolving ``[[Target]]``
+    references) so observability tests can pin it.
+    """
+    return await api._persist_wiki_page(
         storage=storage,
         root=root,
         page=page,
@@ -140,3 +144,41 @@ async def test_persist_wiki_page_drops_all_wikilinks_when_body_loses_them(
         assert wikilinks_v2 == []
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_returns_unresolved_wikilink_count(
+    tmp_path: Path,
+) -> None:
+    """``_persist_wiki_page`` returns the count of unresolved ``[[wikilinks]]``
+    so the synth caller can fold it into ``SynthReport.unresolved_wikilinks``.
+
+    Without this signal, broken wikilinks are only visible after a
+    separate ``dikw lint`` pass; surfacing the count at synth time gives
+    users an immediate "did the LLM emit references that don't land
+    anywhere?" health check.
+    """
+    wiki_root = tmp_path / "wiki"
+    init_test_wiki(wiki_root)
+    _cfg, root, storage = await api._with_storage(wiki_root)
+    try:
+        page = build_page(
+            title="Src",
+            body="See [[Unknown One]] and [[Unknown Two]] and [[Unknown Three]].\n",
+            type_="concept",
+            path="wiki/src.md",
+        )
+        write_page(root, page)
+        unresolved = await _persist(storage, root, page)
+        assert unresolved == 3
+    finally:
+        await storage.close()
+
+
+def test_synth_report_carries_unresolved_wikilinks_field() -> None:
+    """``SynthReport`` exposes ``unresolved_wikilinks`` so the synth caller
+    can aggregate per-page counts and the CLI can surface the total."""
+    report = api.SynthReport()
+    assert report.unresolved_wikilinks == 0
+    bumped = api._sr_replace(report, unresolved_wikilinks=7)
+    assert bumped.unresolved_wikilinks == 7
