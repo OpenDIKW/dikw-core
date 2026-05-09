@@ -86,6 +86,7 @@ src/dikw_core/
 - **On-disk format is the product.** `wiki/` and `wisdom/` are plain markdown with YAML front-matter and `[[wikilinks]]` — an Obsidian vault the user owns. The engine writes, the user reads/edits with any editor.
 - **Idempotent ingest.** Files whose content hash is unchanged are skipped.
 - **Link reconciliation.** Re-persisting a wiki page **replaces** — not unions — its outgoing link set. `_persist_wiki_page` calls `storage.replace_links_from(doc_id, resolved)` (atomic delete + insert in one transaction, mirrors `replace_chunks`), so removing a `[[wikilink]]` from the body actually drops it from storage. Without this the `links` table accumulates ghost edges as users edit pages, polluting the graph-leg retrieval channel and silently miscounting `orphan_page` / `broken_wikilink` lint.
+- **Wikilink fuzzy resolve.** `resolve_links` falls through three stages: exact title match, then a deterministic fuzzy normalize (NFKC + casefold + ASCII/CJK punctuation strip + ASCII trailing-plural stem) so `[[Neural Networks]]` resolves to `Neural Network`, `[[Elon Musk.]]` to `Elon Musk`, etc. When normalize maps a wikilink to a key whose index entry holds **two or more** distinct paths, we **refuse to resolve** — the link stays broken so `dikw lint` surfaces the ambiguity. Karpathy's rule: wrong-merge is irreversible damage, missed-resolve is a fixable lint warning. The unresolved count surfaces per-run via `SynthReport.unresolved_wikilinks` so users see broken-link drift without waiting for a separate `dikw lint` pass.
 
 ## Conventions
 

@@ -50,7 +50,7 @@ src/dikw_core/
 │   ├── knowledge/
 │   │   ├── wiki.py          WikiPage I/O (Obsidian-compatible front-matter)
 │   │   ├── synthesize.py    LLM -> <page> blocks -> WikiPage
-│   │   ├── links.py         [[wikilinks]] + md + URL parser
+│   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
 │   │   ├── indexgen.py      regenerate wiki/index.md
 │   │   ├── log.py           render wiki/log.md from wiki_log rows
 │   │   └── lint.py          broken wikilinks, orphans, duplicate titles
@@ -189,3 +189,33 @@ We take that seriously. Every navigation step (source listing, chunk
 lookup, link traversal, wisdom retrieval-by-title) is deterministic SQL +
 file I/O. LLM calls only enter at synthesis, distillation, and the
 natural-language answering step of `query`.
+
+### Wikilink resolve, as a concrete example
+
+`resolve_links` (in `domains/knowledge/links.py`) walks three lookup
+stages, all deterministic:
+
+1. **Exact title match** — `[[Tesla]]` against the K-layer title
+   index.
+2. **Fuzzy normalize** — NFKC + casefold + ASCII/CJK punctuation
+   strip + ASCII trailing-plural stem (`-s`/`-es`/`-ies`). This
+   catches the typing variations users hit in practice
+   (`[[Neural Networks]]` to `Neural Network`, `[[Elon Musk.]]` to
+   `Elon Musk`, full-width 中文 punctuation trailing the title) without
+   ever calling an LLM.
+3. **Collision refusal** — when normalize maps a wikilink to a key
+   whose index entry holds two or more distinct paths (e.g., `Tesla`
+   the company and `tesla` the SI unit both normalize to `tesla`),
+   we **refuse to guess** and return the link as `UnresolvedLink`.
+   `dikw lint` then surfaces the ambiguity to the user. Wrong-merge
+   is irreversible; missed-resolve is a fixable lint warning — so
+   we tolerate the latter to avoid the former.
+
+Stronger fuzzy techniques (jaro-winkler, embedding similarity,
+abbreviation dictionaries) are deliberately out of scope: their
+false-merge risk is materially higher and the fixable broken-link
+trade-off is the wrong way for K-layer pages users will edit by hand.
+LLM-aware "is this candidate semantically a duplicate of an existing
+page?" judgement happens upstream at synth time (see PR2 work on
+`{existing_pages_section}`) — the resolve step itself stays
+deterministic.
