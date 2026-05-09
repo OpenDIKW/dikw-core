@@ -443,18 +443,19 @@ async def _apply_one_op(
     that the caller appends to :attr:`ApplyReport.skipped` on failure."""
     abs_path = (wiki_root / op.path).resolve()
 
-    # Sandbox: a malformed proposal whose ``path`` is absolute or
-    # traverses outside the wiki tree (``../../etc/passwd``) must
-    # never reach ``write_page`` / ``unlink``. ``Path.resolve`` already
-    # collapses ``..`` segments, so the relative-to check is a clean
-    # post-resolution boundary.
-    resolved_root = wiki_root.resolve()
+    # Sandbox: confine ops to ``<base>/wiki/``, not the whole base.
+    # ``apply``'s contract is wiki-layer mutation only — a malformed
+    # proposal with a base-relative path like ``sources/foo.md`` or
+    # ``wiki/../dikw.yml`` would resolve inside the base root and
+    # would pass a wider check, but those targets are outside the
+    # K-layer tree we're authorised to mutate.
+    wiki_dir = (wiki_root / "wiki").resolve()
     try:
-        abs_path.relative_to(resolved_root)
+        abs_path.relative_to(wiki_dir)
     except ValueError:
         return _skip(
             proposal_id, op,
-            f"refusing to operate outside wiki root: {op.path!r}",
+            f"refusing to operate outside wiki/ tree: {op.path!r}",
         )
 
     if op.kind in ("update_page", "delete_page"):

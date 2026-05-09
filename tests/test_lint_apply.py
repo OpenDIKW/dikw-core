@@ -381,7 +381,7 @@ async def test_apply_refuses_paths_outside_wiki_root(
     parametrized_storage: Storage, wiki_root: Path,
 ) -> None:
     """A malformed proposal with an absolute path or ``..`` traversal
-    must never reach ``write_page`` / ``unlink`` — sandbox to wiki_root."""
+    must never reach ``write_page`` / ``unlink`` — sandbox to wiki/."""
     storage = parametrized_storage
 
     proposal = FixProposal(
@@ -407,6 +407,44 @@ async def test_apply_refuses_paths_outside_wiki_root(
     assert "outside" in report.skipped[0]["reason"].lower()
     # Confirm nothing landed on disk.
     assert not (wiki_root / "../../../etc/dikw-leak.md").resolve().exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_paths_under_base_but_outside_wiki(
+    parametrized_storage: Storage, wiki_root: Path,
+) -> None:
+    """``apply`` is a K-layer mutation contract — paths under the base
+    but outside ``wiki/`` (sources/, dikw.yml, .dikw/) must be rejected
+    even though they resolve under the resolved base root."""
+    storage = parametrized_storage
+    # Pre-create a sources file the proposal will try to clobber.
+    sources_dir = wiki_root / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    target = sources_dir / "victim.md"
+    target.write_text("original\n", encoding="utf-8")
+
+    proposal = FixProposal(
+        proposal_id="bad", issue_kind="broken_wikilink",
+        issue_path="sources/victim.md", issue_detail="d",
+        operations=[FixOperation(
+            kind="update_page",
+            path="sources/victim.md",   # under base, NOT under wiki/
+            new_frontmatter={"title": "Victim"},
+            new_body="clobbered\n",
+            expected_hash=file_sha256(target),
+        )],
+        rationale="r", source="heuristic",
+    )
+    report = await run_lint_apply(
+        proposal_report=FixProposalReport(proposals=[proposal]),
+        storage=storage, wiki_root=wiki_root,
+        reporter=_NullReporter(),
+    )
+    assert report.applied == []
+    assert len(report.skipped) == 1
+    assert "wiki" in report.skipped[0]["reason"].lower()
+    # The non-wiki file is untouched.
+    assert target.read_text(encoding="utf-8") == "original\n"
 
 
 @pytest.mark.asyncio
