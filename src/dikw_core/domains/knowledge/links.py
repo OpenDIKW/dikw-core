@@ -3,8 +3,11 @@
 Parses three kinds of links out of markdown bodies:
 
 * ``[[Target]]`` / ``[[Target|alias]]`` / ``[[Target#anchor]]`` — Obsidian
-  wikilinks. Target resolution looks first for an exact path match, then
-  for a unique title match across K-layer pages.
+  wikilinks. Target resolution tries exact title match first, then a
+  fuzzy normalize (NFKC + casefold + punctuation strip + trailing-plural
+  stem). When normalize maps the link to a key that resolves to **two or
+  more** distinct pages, we refuse to guess and let the wikilink stay
+  broken so ``dikw lint`` can surface the ambiguity.
 * ``[text](relative/path.md)`` — standard Markdown links. URLs and
   fragment-only references are classified as ``url`` or dropped.
 * Bare URLs in the body — captured as ``url`` links with no target
@@ -19,6 +22,7 @@ surfaces to the user.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from ...schemas import LinkRecord, LinkType
@@ -26,6 +30,65 @@ from ...schemas import LinkRecord, LinkType
 _WIKILINK = re.compile(r"\[\[([^\]\|\n]+?)(?:\|([^\]\n]+?))?\]\]")
 _MD_LINK = re.compile(r"(?<!\!)\[([^\]\n]+?)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _URL = re.compile(r"(?<![\[\(])\b(https?://[^\s\)]+)")
+
+# Punctuation we strip out before fuzzy comparison. NFKC normalizes the
+# common full-width ASCII variants (e.g. fullwidth comma to ASCII comma);
+# we still need to enumerate the CJK-only punctuation that has no ASCII
+# compatibility decomposition (ideographic full stop, ideographic comma,
+# full-width brackets, smart quotes) so a trailing CJK punctuation mark
+# in a wikilink doesn't keep it from resolving.
+_PUNCT_STRIP = set(
+    ".,!?;:\"'()[]{}<>"          # ASCII (NFKC handles full-width forms)
+    "。、《》〈〉「」『』【】"     # CJK
+    + "“”‘’"                     # noqa: RUF001 - intentional smart quotes
+)
+
+
+def _stem_plural(word: str) -> str:
+    """Crude trailing-plural stemmer for ASCII English nouns.
+
+    We deliberately scope this to ASCII so trailing ``s`` on a CJK title
+    is left alone (CJK does not pluralize with ``s``). The rules cover
+    the high-frequency English suffixes that produce wiki-page
+    fragmentation in practice — ``Networks``/``Network``,
+    ``Strategies``/``Strategy``, ``Buses``/``Bus``. Stronger morphology
+    (``children``/``child``) is intentionally out of scope: false-merge
+    risk grows fast and ``dikw lint`` already catches the broken link.
+    """
+    if len(word) <= 3 or not word.isascii() or not word.isalpha():
+        return word
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    for suffix in ("ses", "ches", "shes", "xes", "zes"):
+        if word.endswith(suffix):
+            return word[:-2]  # drop ``-es``, leaving the singular root
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _normalize_for_match(s: str) -> str:
+    """Collapse a title or wikilink target onto a fuzzy-matchable key.
+
+    Layered: NFKC (full-width → ASCII), casefold (Unicode-aware lower),
+    punctuation strip, whitespace collapse, then ASCII trailing-plural
+    stem on the last token. Word boundaries are preserved — ``Neural
+    Network`` never collapses to ``neuralnetwork``.
+
+    Used by ``resolve_links`` as the third lookup stage; a return value
+    of ``""`` (empty after normalization) is treated as "no key" and
+    skipped during index build + lookup.
+    """
+    s = unicodedata.normalize("NFKC", s)
+    s = s.casefold()
+    s = "".join(ch for ch in s if ch not in _PUNCT_STRIP)
+    s = " ".join(s.split())
+    if not s:
+        return ""
+    if " " in s:
+        head, _, last = s.rpartition(" ")
+        return f"{head} {_stem_plural(last)}"
+    return _stem_plural(s)
 
 
 @dataclass(frozen=True)
@@ -132,14 +195,40 @@ def resolve_links(
     ``title_to_path`` maps a K/W page title to its wiki-relative path so
     wikilinks can be resolved deterministically when the title is unique.
     URLs and Markdown links get their target copied verbatim.
+
+    Wikilink resolution falls through three stages:
+
+    1. Exact title match
+    2. Fuzzy normalize match — ``[[Neural Networks]]`` resolves to a
+       page titled ``Neural Network``, ``[[Elon Musk.]]`` to ``Elon
+       Musk``. Casefold subsumes the previous lowercase fallback.
+    3. Collision refusal — when normalize maps the link to a key whose
+       index entry holds **two or more** distinct paths, return it as
+       ``UnresolvedLink`` rather than guess. ``dikw lint`` then surfaces
+       the ambiguity to the user.
     """
+    fuzzy_to_paths: dict[str, list[str]] = {}
+    for title, indexed_path in title_to_path.items():
+        key = _normalize_for_match(title)
+        if not key:
+            continue
+        bucket = fuzzy_to_paths.setdefault(key, [])
+        if indexed_path not in bucket:
+            bucket.append(indexed_path)
+
     resolved: list[LinkRecord] = []
     unresolved: list[UnresolvedLink] = []
 
     for link in links:
         if link.kind is LinkType.WIKILINK:
-            path = title_to_path.get(link.target) or title_to_path.get(link.target.lower())
-            if path is None:
+            target_path: str | None = title_to_path.get(link.target)
+            if target_path is None:
+                key = _normalize_for_match(link.target)
+                candidates = fuzzy_to_paths.get(key, []) if key else []
+                if len(candidates) == 1:
+                    target_path = candidates[0]
+                # 0 candidates → broken; >=2 → collision, refuse
+            if target_path is None:
                 unresolved.append(
                     UnresolvedLink(
                         src_doc_id=src_doc_id, target_text=link.raw, line=link.line
@@ -149,7 +238,7 @@ def resolve_links(
             resolved.append(
                 LinkRecord(
                     src_doc_id=src_doc_id,
-                    dst_path=path,
+                    dst_path=target_path,
                     link_type=LinkType.WIKILINK,
                     anchor=link.anchor,
                     line=link.line,
