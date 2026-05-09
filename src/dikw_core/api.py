@@ -79,7 +79,15 @@ from .domains.knowledge.grouping import (
 )
 from .domains.knowledge.indexgen import regenerate_index
 from .domains.knowledge.links import build_fuzzy_index, parse_links, resolve_links
-from .domains.knowledge.lint import LintReport, run_lint
+from .domains.knowledge.lint import LintKind, LintReport, run_lint
+from .domains.knowledge.lint_fix import (
+    ApplyReport,
+    FixerContext,
+    FixProposalReport,
+    WikiPageMeta,
+    run_lint_apply,
+    run_lint_propose,
+)
 from .domains.knowledge.log import render_log
 from .domains.knowledge.synthesize import (
     SynthesisError,
@@ -2312,6 +2320,80 @@ async def lint(path: str | Path | None = None) -> LintReport:
     _cfg, root, storage = await _with_storage(path)
     try:
         return await run_lint(storage, root=root)
+    finally:
+        await storage.close()
+
+
+async def lint_propose(
+    path: str | Path | None = None,
+    *,
+    rule: LintKind | None = None,
+    limit: int = 10,
+    llm: Any = None,
+    embedder: Any = None,
+    reporter: ProgressReporter | None = None,
+) -> FixProposalReport:
+    """Run lint + dispatch fixers, returning a :class:`FixProposalReport`.
+
+    PR1 ships only ``broken_wikilink`` (heuristic-only), so ``llm`` and
+    ``embedder`` are unused — they're accepted now to keep the call
+    signature stable when PR2 adds the LLM stub fallback. ``rule``
+    filters the lint report before dispatch; ``limit`` caps the issues
+    consumed (the default of 10 keeps a single ``propose`` task short).
+    """
+    _cfg, root, storage = await _with_storage(path)
+    try:
+        report = await run_lint(storage, root=root)
+        # Title + path is enough for every PR1 fixer (broken_wikilink)
+        # and most PR2 fixers; heavy fixers re-read the page body on
+        # demand from disk rather than holding every body in memory.
+        all_pages = [
+            WikiPageMeta(path=doc.path, title=doc.title)
+            for doc in await storage.list_documents(layer=Layer.WIKI, active=True)
+        ]
+        ctx = FixerContext(
+            storage=storage,
+            llm=llm,
+            embedding=embedder,
+            wiki_root=root,
+            all_pages=all_pages,
+        )
+        used_reporter: ProgressReporter = reporter or NoopReporter()
+        return await run_lint_propose(
+            report=report,
+            rule=rule,
+            limit=limit,
+            ctx=ctx,
+            reporter=used_reporter,
+        )
+    finally:
+        await storage.close()
+
+
+async def lint_apply(
+    path: str | Path | None = None,
+    *,
+    proposal_report: FixProposalReport,
+    pick: list[int] | None = None,
+    skip: list[int] | None = None,
+    reporter: ProgressReporter | None = None,
+) -> ApplyReport:
+    """Mutate ``wiki/`` per a previously-produced proposal report.
+
+    ``pick`` / ``skip`` filter the proposal list by index. Both may be
+    set; pick is applied first, then skip removes from that subset.
+    """
+    _cfg, root, storage = await _with_storage(path)
+    try:
+        used_reporter: ProgressReporter = reporter or NoopReporter()
+        return await run_lint_apply(
+            proposal_report=proposal_report,
+            storage=storage,
+            wiki_root=root,
+            pick=pick,
+            skip=skip,
+            reporter=used_reporter,
+        )
     finally:
         await storage.close()
 

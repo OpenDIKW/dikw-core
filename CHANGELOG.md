@@ -7,6 +7,42 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### `lint propose` / `lint apply` — repair closure for broken_wikilink
+
+* **Added**: `dikw client lint propose [--rule <kind>] [--limit N]` runs lint
+  + dispatches per-rule fixers, collecting structured `FixProposal`s.
+  Result lives in the existing `tasks.result` JSON column — no new
+  storage layer, no Storage Protocol changes.
+* **Added**: `dikw client lint apply <proposal-task-id> [--pick a,b] [--skip c]`
+  reads a successful propose task's result, validates each
+  `expected_hash` against the on-disk file (concurrent-edit guard),
+  mutates `wiki/` via `wiki.write_page` / unlink, and reconciles
+  outgoing wikilinks via `storage.replace_links_from`.
+* **Added**: `dikw client lint proposals` lists succeeded propose tasks
+  with proposal counts and an "applied?" derived field.
+* **Added**: `BrokenWikilinkFixer` — heuristic-only path. Normalizes the
+  broken target with Unicode-aware `\w` (CJK / Cyrillic / Greek work,
+  not just ASCII), fuzzy-matches existing K-layer titles via
+  `difflib.SequenceMatcher`, proposes an in-place `[[link]]` rewrite
+  when the ratio crosses 0.85. Targets that the engine's own
+  `resolve_links` fuzzy stage would already handle never reach this
+  fixer — it covers the typo / edit-distance cases beyond the
+  engine's deterministic normalize.
+* **Apply safety**: paths are sandboxed under `<base>/wiki/` (rejects
+  absolute paths, `..` traversal, and base-relative targets like
+  `sources/foo.md`); `update_page` / `delete_page` ops require a
+  non-empty `expected_hash`; multiple ops on the same path within one
+  apply pass are detected and the second one skipped with an explicit
+  "superseded" reason rather than a misleading hash mismatch.
+* **Apply contract**: only `lint.propose` task results are accepted as
+  proposal sources — passing an unrelated SUCCEEDED task id surfaces
+  as `proposal_wrong_op` instead of silently no-op'ing on an empty
+  proposal report.
+* **Followups**: PR2 plans an LLM stub-page fallback for
+  `broken_wikilink` misses + a `non_atomic_page` fixer that reuses
+  the synth 1:N fan-out; PR3 adds `orphan_page` + `duplicate_title`
+  fixers.
+
 ### Agent ergonomics + `--wiki` → `--base` rename
 
 * **BREAKING**: `dikw serve --wiki <path>` is now `dikw serve --base <path>`

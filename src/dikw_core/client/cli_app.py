@@ -299,8 +299,21 @@ def init_cmd(
     _run(_go())
 
 
-@app.command("lint")
-def lint_cmd(
+lint_app = typer.Typer(
+    name="lint",
+    help=(
+        "K-layer hygiene checker. Default action runs the scan; "
+        "`propose` / `apply` produce + execute structured fix proposals."
+    ),
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+app.add_typer(lint_app, name="lint")
+
+
+@lint_app.callback(invoke_without_command=True)
+def lint_root(
+    ctx: typer.Context,
     fmt: Annotated[
         str,
         typer.Option(
@@ -311,7 +324,9 @@ def lint_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Run lint against the server's base."""
+    """Run lint against the server's base (default subaction)."""
+    if ctx.invoked_subcommand is not None:
+        return
     _validate_format(fmt)
 
     async def _go() -> None:
@@ -329,6 +344,182 @@ def lint_cmd(
         issues = report.get("issues") or []
         if isinstance(issues, list) and issues:
             raise typer.Exit(code=1)
+
+    _run(_go())
+
+
+@lint_app.command("propose")
+def lint_propose_cmd(
+    rule: Annotated[
+        str | None,
+        typer.Option(
+            "--rule",
+            help=(
+                "Filter to one lint kind: broken_wikilink | orphan_page | "
+                "duplicate_title | non_atomic_page. "
+                "PR1 only ships a fixer for broken_wikilink; other kinds "
+                "are accepted but every issue lands in `skipped`."
+            ),
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            min=1, max=200,
+            help="Cap the number of lint issues consumed (default 10).",
+        ),
+    ] = 10,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Disable progress widget."),
+    ] = False,
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Propose fixes for the current lint findings.
+
+    Submits a ``lint.propose`` task, follows its event stream, and on
+    success prints the task_id + per-proposal summary. The task_id is
+    what `dikw client lint apply <id>` consumes."""
+
+    async def _go() -> None:
+        body: dict[str, Any] = {"limit": limit}
+        if rule is not None:
+            body["rule"] = rule
+        async with Transport.from_config(_resolve(server, token)) as t:
+            handle = await t.post_json("/v1/lint/propose", json_body=body)
+            task_id = str(handle["task_id"])
+            renderer = TaskProgressRenderer(console, plain=plain)
+            with renderer.live():
+                async with t.stream_ndjson(
+                    "GET", f"/v1/tasks/{task_id}/events"
+                ) as events:
+                    final = await renderer.run(events)
+        if final.status == "succeeded" and final.result is not None:
+            console.print(
+                f"[green]propose task succeeded[/green] — id=[bold]{task_id}[/bold]"
+            )
+            from .progress import render_lint_proposals_summary
+            render_lint_proposals_summary(console, final.result)
+            console.print(
+                f"\n[dim]apply with:[/dim] dikw client lint apply {task_id}"
+            )
+        _exit_on_failure(final.status, final.error)
+
+    _run(_go())
+
+
+@lint_app.command("proposals")
+def lint_proposals_cmd(
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format: 'table' (default) or 'json'.",
+        ),
+    ] = "table",
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """List succeeded ``lint.propose`` tasks (= pending fix proposals)."""
+    _validate_format(fmt)
+
+    async def _go() -> None:
+        async with Transport.from_config(_resolve(server, token)) as t:
+            # Fetch propose + apply listings in parallel — they're
+            # independent reads and the second saves a round trip.
+            tasks_resp, applies_resp = await asyncio.gather(
+                t.get_json("/v1/tasks?op=lint.propose&status=succeeded"),
+                t.get_json("/v1/tasks?op=lint.apply&status=succeeded"),
+            )
+        propose_rows = tasks_resp if isinstance(tasks_resp, list) else []
+        applies = applies_resp if isinstance(applies_resp, list) else []
+        # Cross-reference applies via apply.result.proposal_task_id.
+        # TaskRow exposes only ``params_digest`` (not raw params), so
+        # the cross-reference key has to live in the apply runner's
+        # result payload — which lint_op stamps in before completion.
+        applied_ids: set[str] = set()
+        for r in applies:
+            result = (r or {}).get("result") or {}
+            ref = result.get("proposal_task_id")
+            if isinstance(ref, str):
+                applied_ids.add(ref)
+        from .progress import render_lint_proposals_listing
+        if fmt == "json":
+            console.print_json(
+                json.dumps(
+                    {"proposals": propose_rows, "applied_ids": sorted(applied_ids)},
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            render_lint_proposals_listing(console, propose_rows, applied_ids)
+
+    _run(_go())
+
+
+@lint_app.command("apply")
+def lint_apply_cmd(
+    proposal_task_id: Annotated[
+        str,
+        typer.Argument(
+            help="The task_id of a successful `lint propose` invocation.",
+        ),
+    ],
+    pick: Annotated[
+        str | None,
+        typer.Option(
+            "--pick",
+            help="Comma-separated proposal indices to apply (e.g. '0,2').",
+        ),
+    ] = None,
+    skip: Annotated[
+        str | None,
+        typer.Option(
+            "--skip",
+            help="Comma-separated proposal indices to drop.",
+        ),
+    ] = None,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Disable progress widget."),
+    ] = False,
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Apply a previously-proposed fix to the wiki."""
+
+    def _parse_index_list(v: str | None) -> list[int] | None:
+        if v is None:
+            return None
+        try:
+            return [int(p.strip()) for p in v.split(",") if p.strip()]
+        except ValueError as e:
+            raise typer.BadParameter(f"index list must be comma-separated ints: {e}") from e
+
+    pick_list = _parse_index_list(pick)
+    skip_list = _parse_index_list(skip)
+
+    async def _go() -> None:
+        body: dict[str, Any] = {"proposal_task_id": proposal_task_id}
+        if pick_list is not None:
+            body["pick"] = pick_list
+        if skip_list is not None:
+            body["skip"] = skip_list
+        async with Transport.from_config(_resolve(server, token)) as t:
+            handle = await t.post_json("/v1/lint/apply", json_body=body)
+            task_id = str(handle["task_id"])
+            renderer = TaskProgressRenderer(console, plain=plain)
+            with renderer.live():
+                async with t.stream_ndjson(
+                    "GET", f"/v1/tasks/{task_id}/events"
+                ) as events:
+                    final = await renderer.run(events)
+        if final.status == "succeeded" and final.result is not None:
+            from .progress import render_lint_apply_report
+            render_lint_apply_report(console, final.result)
+        _exit_on_failure(final.status, final.error)
 
     _run(_go())
 

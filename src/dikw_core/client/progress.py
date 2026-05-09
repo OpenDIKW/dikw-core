@@ -488,6 +488,107 @@ def render_lint_report(console: Console, report: Mapping[str, Any]) -> None:
     console.print(table)
 
 
+def render_lint_proposals_summary(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Print the per-proposal summary returned by a ``lint.propose`` task.
+
+    Skips when the result has no proposals so the caller's ``[green]
+    succeeded[/green]`` line still leads the output."""
+    proposals = report.get("proposals") or []
+    skipped = report.get("skipped") or []
+    if not proposals and not skipped:
+        console.print("[yellow]no fix proposals produced[/yellow]")
+        return
+    if proposals:
+        table = Table(title="proposals", show_header=True, header_style="bold")
+        table.add_column("idx", justify="right")
+        table.add_column("kind")
+        table.add_column("path")
+        table.add_column("source")
+        table.add_column("ops", justify="right")
+        for idx, p in enumerate(proposals):
+            if not isinstance(p, dict):
+                continue
+            ops = p.get("operations") or []
+            table.add_row(
+                str(idx),
+                str(p.get("issue_kind") or ""),
+                str(p.get("issue_path") or ""),
+                str(p.get("source") or ""),
+                str(len(ops)),
+            )
+        console.print(table)
+    if skipped:
+        console.print(f"[dim]{len(skipped)} issue(s) skipped[/dim]")
+
+
+def render_lint_proposals_listing(
+    console: Console,
+    rows: list[Mapping[str, Any]],
+    applied_ids: set[str],
+) -> None:
+    """Render the ``dikw client lint proposals`` table.
+
+    Each row is a successful ``lint.propose`` task. ``applied_ids``
+    is the set of propose-task ids referenced by some ``lint.apply``
+    task's ``result.proposal_task_id``."""
+    if not rows:
+        console.print("[green]no pending lint proposals[/green]")
+        return
+    table = Table(title="lint proposals", show_header=True, header_style="bold")
+    table.add_column("task_id")
+    table.add_column("created_at")
+    table.add_column("proposals", justify="right")
+    table.add_column("skipped", justify="right")
+    table.add_column("applied?")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result") or {}
+        task_id = str(row.get("task_id") or "")
+        applied = "yes" if task_id in applied_ids else "no"
+        proposals_count = len(result.get("proposals") or [])
+        skipped_count = len(result.get("skipped") or [])
+        table.add_row(
+            task_id,
+            str(row.get("created_at") or ""),
+            str(proposals_count),
+            str(skipped_count),
+            applied,
+        )
+    console.print(table)
+
+
+def render_lint_apply_report(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Print the per-op summary of a ``lint.apply`` task result."""
+    applied = report.get("applied") or []
+    skipped = report.get("skipped") or []
+    paths = report.get("wiki_paths_changed") or []
+    console.print(
+        f"[green]applied[/green] {len(applied)} op(s); "
+        f"[yellow]skipped[/yellow] {len(skipped)}"
+    )
+    if paths:
+        console.print(f"[dim]paths changed:[/dim] {', '.join(paths)}")
+    if skipped:
+        table = Table(title="skipped ops", show_header=True, header_style="bold")
+        table.add_column("op")
+        table.add_column("path")
+        table.add_column("reason")
+        for s in skipped:
+            if not isinstance(s, dict):
+                continue
+            table.add_row(
+                str(s.get("op") or ""),
+                str(s.get("path") or ""),
+                str(s.get("reason") or ""),
+            )
+        console.print(table)
+
+
 def render_health_report(console: Console, report: Mapping[str, Any]) -> None:
     """Render a ``GET /v1/health`` response as stacked rich tables.
 

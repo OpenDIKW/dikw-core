@@ -21,10 +21,12 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from ..domains.knowledge.lint import LintKind
 from .errors import BadRequest, NotFoundError
 from .ingest_op import make_ingest_runner
+from .lint_op import make_lint_apply_runner, make_lint_propose_runner
 from .ndjson import ndjson_lines, stream_response
 from .runtime import ServerRuntime, get_runtime
 from .synth_op import make_distill_runner, make_eval_runner, make_synth_runner
@@ -111,6 +113,35 @@ class DistillSubmit(BaseModel):
     """
 
     pages_per_call: int = 8
+
+
+class LintProposeSubmit(BaseModel):
+    """Body for ``POST /v1/lint/propose``.
+
+    ``rule`` filters the lint scan to one ``LintKind`` (default: every
+    kind dispatched). ``limit`` caps how many issues the orchestrator
+    consumes — the propose task runs serially over those, so ``limit``
+    is also effectively a wall-clock cap on the LLM-heavy fixers
+    landing in PR2.
+    """
+
+    rule: LintKind | None = None
+    limit: int = Field(default=10, ge=1, le=200)
+
+
+class LintApplySubmit(BaseModel):
+    """Body for ``POST /v1/lint/apply``.
+
+    ``proposal_task_id`` references a ``lint.propose`` task that
+    terminated SUCCEEDED. ``pick`` / ``skip`` index into
+    ``proposal_report.proposals`` so callers can choose to apply a
+    subset (review then partial-accept). Both may be set; pick is
+    applied first, then skip removes from that subset.
+    """
+
+    proposal_task_id: str
+    pick: list[int] | None = None
+    skip: list[int] | None = None
 
 
 class EvalSubmit(BaseModel):
@@ -253,6 +284,48 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             op="distill",
             runner=runner,
             params={"pages_per_call": body.pages_per_call},
+        )
+        return _handle(row)
+
+    @router.post("/lint/propose", response_model=TaskHandle)
+    async def submit_lint_propose(
+        request: Request,
+        body: LintProposeSubmit = Body(default_factory=LintProposeSubmit),
+    ) -> TaskHandle:
+        rt: ServerRuntime = get_runtime(request.app)
+        runner: TaskRunner = make_lint_propose_runner(
+            wiki_root=rt.root,
+            rule=body.rule,
+            limit=body.limit,
+        )
+        row = await rt.manager.submit(
+            op="lint.propose",
+            runner=runner,
+            params={"rule": body.rule, "limit": body.limit},
+        )
+        return _handle(row)
+
+    @router.post("/lint/apply", response_model=TaskHandle)
+    async def submit_lint_apply(
+        request: Request,
+        body: LintApplySubmit = Body(...),
+    ) -> TaskHandle:
+        rt: ServerRuntime = get_runtime(request.app)
+        runner: TaskRunner = make_lint_apply_runner(
+            wiki_root=rt.root,
+            proposal_task_id=body.proposal_task_id,
+            task_store=rt.task_store,
+            pick=body.pick,
+            skip=body.skip,
+        )
+        row = await rt.manager.submit(
+            op="lint.apply",
+            runner=runner,
+            params={
+                "proposal_task_id": body.proposal_task_id,
+                "pick": body.pick,
+                "skip": body.skip,
+            },
         )
         return _handle(row)
 
