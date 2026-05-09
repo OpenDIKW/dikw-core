@@ -2393,10 +2393,14 @@ async def _persist_wiki_page(
         for d in k_docs:
             if d.title and d.title not in title_to_path:
                 title_to_path[d.title] = d.path
+    # Reconcile outgoing links atomically — removing a [[wikilink]]
+    # from the body must drop the edge from storage, not leave a
+    # ghost that pollutes graph-leg retrieval and orphan/broken-link
+    # lint. ``replace_links_from`` no-ops the leading delete on a
+    # fresh page (no prior edges to wipe).
     parsed_links = parse_links(parsed.body)
     resolved, _unresolved = resolve_links(doc_id, parsed_links, title_to_path=title_to_path)
-    for link in resolved:
-        await storage.upsert_link(link)
+    await storage.replace_links_from(doc_id, resolved)
 
 
 # A wiki_log row with ``action="synth_source_done"`` and this sentinel

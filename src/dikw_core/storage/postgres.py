@@ -596,6 +596,36 @@ class PostgresStorage:
             rows = await cur.fetchall()
         return [_row_to_link(r) for r in rows]
 
+    async def replace_links_from(
+        self, src_doc_id: str, links: Sequence[LinkRecord]
+    ) -> None:
+        async with self._acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM links WHERE src_doc_id = %s", (src_doc_id,)
+                )
+                if links:
+                    await cur.executemany(
+                        """
+                        INSERT INTO links(src_doc_id, dst_path, link_type, anchor, line)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (src_doc_id, dst_path, line) DO UPDATE SET
+                            link_type = EXCLUDED.link_type,
+                            anchor = EXCLUDED.anchor
+                        """,
+                        [
+                            (
+                                link.src_doc_id,
+                                link.dst_path,
+                                link.link_type.value,
+                                link.anchor,
+                                link.line,
+                            )
+                            for link in links
+                        ],
+                    )
+            await conn.commit()
+
     async def neighbor_chunks_via_links(
         self,
         seed_chunk_ids: Sequence[int],

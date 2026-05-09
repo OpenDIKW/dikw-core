@@ -85,6 +85,7 @@ src/dikw_core/
 - **W layer gate:** every wisdom item must cite **≥ 2 pieces of evidence** from K or D; state transitions go through `dikw review approve|reject`.
 - **On-disk format is the product.** `wiki/` and `wisdom/` are plain markdown with YAML front-matter and `[[wikilinks]]` — an Obsidian vault the user owns. The engine writes, the user reads/edits with any editor.
 - **Idempotent ingest.** Files whose content hash is unchanged are skipped.
+- **Link reconciliation.** Re-persisting a wiki page **replaces** — not unions — its outgoing link set. `_persist_wiki_page` calls `storage.replace_links_from(doc_id, resolved)` (atomic delete + insert in one transaction, mirrors `replace_chunks`), so removing a `[[wikilink]]` from the body actually drops it from storage. Without this the `links` table accumulates ghost edges as users edit pages, polluting the graph-leg retrieval channel and silently miscounting `orphan_page` / `broken_wikilink` lint.
 
 ## Conventions
 

@@ -191,6 +191,26 @@ class Storage(Protocol):
     async def links_from(self, src_doc_id: str) -> list[LinkRecord]: ...
     async def links_to(self, dst_path: str) -> list[LinkRecord]: ...
 
+    async def replace_links_from(
+        self, src_doc_id: str, links: Sequence[LinkRecord]
+    ) -> None:
+        """Atomically replace every outgoing link from ``src_doc_id``
+        with ``links``. Pass ``[]`` to wipe the source's outgoing
+        edges entirely; pass a fresh source's first link set to no-op
+        the leading delete.
+
+        Used by ``_persist_wiki_page`` to reconcile a wiki page's
+        outgoing edges on every re-persist — removing a ``[[wikilink]]``
+        from the body actually drops it from storage rather than
+        leaving a ghost record that pollutes graph-leg retrieval and
+        orphan/broken-link lint.
+
+        Atomic in one transaction: if the insert phase fails the prior
+        edge set survives. Caller-side contract: every ``link.src_doc_id``
+        equals ``src_doc_id`` (single-source replace).
+        """
+        ...
+
     async def neighbor_chunks_via_links(
         self,
         seed_chunk_ids: Sequence[int],
