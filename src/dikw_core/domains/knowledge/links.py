@@ -26,17 +26,23 @@ import unicodedata
 from dataclasses import dataclass
 
 from ...schemas import LinkRecord, LinkType
-from ..info.tokenize import WORD_OR_CJK_CHARS
 
 _WIKILINK = re.compile(r"\[\[([^\]\|\n]+?)(?:\|([^\]\n]+?))?\]\]")
 _MD_LINK = re.compile(r"(?<!\!)\[([^\]\n]+?)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _URL = re.compile(r"(?<![\[\(])\b(https?://[^\s\)]+)")
 
-# Strip everything that's not a word char (``\w`` is Unicode-aware), a
-# CJK ideograph, or whitespace — same character class the FTS-adjacent
-# code uses (see ``info/tokenize.WORD_OR_CJK_CHARS``). This drops ASCII
-# and CJK punctuation in one rule without us curating both lists.
-_NON_TOKEN_RE = re.compile(rf"[^{WORD_OR_CJK_CHARS}\s]")
+# Strip these from the *boundaries* of each whitespace-separated token,
+# never from the interior. Internal punctuation is load-bearing for
+# technical titles — ``C++``, ``C#``, ``.NET``, ``Node.js`` — and a
+# greedy strip would collapse them onto bare ``c``/``net``/``node`` and
+# fuzzy-resolve to the wrong page when the index has only one of the
+# variants. Trailing-comma / trailing-period style fragmentation is
+# what we actually want to absorb.
+_BOUNDARY_PUNCT = set(
+    ".,!?;:\"'()[]{}<>"          # ASCII sentence + clause separators
+    "。、《》〈〉「」『』【】"     # CJK
+    + "“”‘’"                     # noqa: RUF001 - intentional smart quotes
+)
 
 
 def _stem_plural(word: str) -> str:
@@ -60,24 +66,35 @@ def _stem_plural(word: str) -> str:
     return word
 
 
+def _strip_boundary_punct(token: str) -> str:
+    """Drop boundary punctuation from both ends of a whitespace-bounded token.
+
+    Internal characters are untouched — ``c++``, ``c#``, ``.net`` keep
+    their distinguishing symbols and remain distinct fuzzy keys.
+    """
+    while token and token[0] in _BOUNDARY_PUNCT:
+        token = token[1:]
+    while token and token[-1] in _BOUNDARY_PUNCT:
+        token = token[:-1]
+    return token
+
+
 def _normalize_for_match(s: str) -> str:
     """Collapse a title or wikilink target onto a fuzzy-matchable key.
 
     Word boundaries are preserved (``Neural Network`` never becomes
-    ``neuralnetwork``). Returns ``""`` for input that's all punctuation
-    or whitespace; callers treat empty as "no key" so an all-symbol
-    wikilink can't accidentally collide with an empty-keyed page.
+    ``neuralnetwork``). Returns ``""`` for input that reduces to all
+    boundary punctuation; callers treat empty as "no key" so an
+    all-symbol wikilink can't accidentally collide with an empty-keyed
+    page.
     """
     s = unicodedata.normalize("NFKC", s)
     s = s.casefold()
-    s = _NON_TOKEN_RE.sub("", s)
-    s = " ".join(s.split())
-    if not s:
+    tokens = [t for t in (_strip_boundary_punct(t) for t in s.split()) if t]
+    if not tokens:
         return ""
-    if " " in s:
-        head, _, last = s.rpartition(" ")
-        return f"{head} {_stem_plural(last)}"
-    return _stem_plural(s)
+    tokens[-1] = _stem_plural(tokens[-1])
+    return " ".join(tokens)
 
 
 def build_fuzzy_index(title_to_path: dict[str, str]) -> dict[str, list[str]]:

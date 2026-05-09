@@ -114,3 +114,42 @@ def test_resolve_fuzzy_unicode_full_width_punctuation() -> None:
     )
     assert len(resolved) == 1
     assert resolved[0].dst_path == "wiki/concepts/dikw.md"
+
+
+def test_resolve_fuzzy_preserves_internal_punctuation() -> None:
+    # ``C++`` and bare ``C`` are distinct concepts. The earlier
+    # strip-everything-non-token implementation collapsed both onto
+    # bare "c" and would have falsely cross-linked them. Boundary-only
+    # strip preserves the differentiating ``++`` so each link resolves
+    # to its own page.
+    body = "Compare [[C++]] with bare [[C]]."
+    links = parse_links(body)
+    resolved, _ = resolve_links(
+        "doc:test",
+        links,
+        title_to_path={
+            "C++": "wiki/concepts/cpp.md",
+            "C": "wiki/concepts/c-language.md",
+        },
+    )
+    by_target = {r.dst_path for r in resolved}
+    assert by_target == {
+        "wiki/concepts/cpp.md",
+        "wiki/concepts/c-language.md",
+    }
+
+
+def test_resolve_fuzzy_does_not_invent_link_to_unrelated_technical_title() -> None:
+    # With only ``C++`` in the index, plain ``[[C]]`` must NOT
+    # fuzzy-resolve to it — the strip-everything implementation
+    # collapsed both onto bare "c", inventing an irreversible false
+    # edge from one page to a totally unrelated one.
+    body = "Mention [[C]] alone."
+    links = parse_links(body)
+    resolved, unresolved = resolve_links(
+        "doc:test",
+        links,
+        title_to_path={"C++": "wiki/concepts/cpp.md"},
+    )
+    assert resolved == []
+    assert len(unresolved) == 1

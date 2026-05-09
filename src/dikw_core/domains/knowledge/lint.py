@@ -26,7 +26,7 @@ import frontmatter
 
 from ...schemas import Layer, LinkType
 from ...storage.base import Storage
-from .links import parse_links
+from .links import build_fuzzy_index, parse_links, resolve_links
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
@@ -98,10 +98,16 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         title_to_paths[title].append(doc.path)
         paths.append(doc.path)
 
-    title_set = set(title_to_paths)
+    # Share the same resolve semantics as engine persistence
+    # (``_persist_wiki_page``): exact -> fuzzy normalize -> collision
+    # refusal. Without this lint reports broken_wikilink on plurals that
+    # storage already resolved, and silently swallows fuzzy collisions
+    # that storage refused to guess.
+    title_to_path: dict[str, str] = {
+        t: dup_paths[0] for t, dup_paths in title_to_paths.items()
+    }
+    fuzzy_index = build_fuzzy_index(title_to_path)
 
-    # broken wikilinks — re-parse on-disk bodies; storage.links only records
-    # resolved links, so we must look at the raw text to find unresolved ones.
     for doc in wiki_docs:
         abs_path = (root / doc.path).resolve()
         if not abs_path.is_file():
@@ -112,23 +118,24 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             continue
         body = post.content
         page_links = parse_links(body)
-        wikilink_targets: set[str] = set()
-        for link in page_links:
-            if link.kind is not LinkType.WIKILINK:
-                continue
-            wikilink_targets.add(link.target)
-            if (
-                link.target not in title_set
-                and not any(t.lower() == link.target.lower() for t in title_set)
-            ):
-                issues.append(
-                    LintIssue(
-                        kind="broken_wikilink",
-                        path=doc.path,
-                        detail=f"[[{link.target}]] has no matching wiki page",
-                        line=link.line,
-                    )
+        wikilink_targets: set[str] = {
+            link.target for link in page_links if link.kind is LinkType.WIKILINK
+        }
+        _, unresolved = resolve_links(
+            doc.doc_id,
+            page_links,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+        )
+        for u in unresolved:
+            issues.append(
+                LintIssue(
+                    kind="broken_wikilink",
+                    path=doc.path,
+                    detail=f"{u.target_text} has no matching wiki page",
+                    line=u.line,
                 )
+            )
 
         # atomicity check — independent symptoms; report once per page.
         violations: list[str] = []

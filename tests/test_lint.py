@@ -27,6 +27,7 @@ async def _seed_page(
     body: str,
     type_: str = "concept",
     tags: list[str] | None = None,
+    path: str | None = None,
 ) -> str:
     """Write ``page`` to disk + register it in storage so lint can see it."""
     page = build_page(
@@ -35,7 +36,7 @@ async def _seed_page(
         type_=type_,
         tags=list(tags or []),
         sources=[],
-        path=None,
+        path=path,
         extras={},
     )
     write_page(wiki_root, page)
@@ -353,3 +354,59 @@ async def test_multiple_violations_collapse_to_one_issue(empty_wiki: Path) -> No
     assert "body" in issues[0].detail
     assert "H2 sections" in issues[0].detail
     assert "wikilinks" in issues[0].detail
+
+
+# ---- broken_wikilink shares fuzzy/collision semantics with resolve_links ----
+
+
+@pytest.mark.asyncio
+async def test_lint_broken_wikilink_uses_fuzzy_resolve(empty_wiki: Path) -> None:
+    """``run_lint`` must reuse the same fuzzy normalize that engine
+    persistence uses; otherwise it cries ``broken_wikilink`` over a
+    plural variant that storage already resolved correctly. Pre-fix
+    lint did exact + case-insensitive only, generating false positives
+    for every ``[[Networks]]``-style link."""
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Neural Network",
+        body="# Neural Network\n\nA layered model.\n",
+    )
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Citation Page",
+        body="# Citation Page\n\nSee [[Neural Networks]] for context.\n",
+    )
+    report = await _run_lint(empty_wiki)
+    broken = [i for i in report.issues if i.kind == "broken_wikilink"]
+    assert broken == []
+
+
+@pytest.mark.asyncio
+async def test_lint_broken_wikilink_reports_fuzzy_collision(
+    empty_wiki: Path,
+) -> None:
+    """Mirror invariant: when fuzzy normalize collides on two distinct
+    page paths, lint must report the broken link instead of silently
+    accepting whichever case-insensitive lookup happens to match first.
+    Pre-fix the case-insensitive shortcut hid this ambiguity entirely."""
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Tesla",
+        body="# Tesla\n\nCar company.\n",
+        path="wiki/entities/tesla-company.md",
+    )
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="tesla",
+        body="# tesla\n\nSI unit of magnetic flux density.\n",
+        path="wiki/concepts/tesla-unit.md",
+    )
+    await _seed_page(
+        wiki_root=empty_wiki,
+        title="Citation Page",
+        body="# Citation Page\n\nNote about [[TESLA]] in the Maxwell paper.\n",
+    )
+    report = await _run_lint(empty_wiki)
+    broken = [i for i in report.issues if i.kind == "broken_wikilink"]
+    assert any("TESLA" in i.detail for i in broken)
+
