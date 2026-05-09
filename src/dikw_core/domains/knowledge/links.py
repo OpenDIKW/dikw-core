@@ -69,49 +69,70 @@ def _stem_plural(word: str) -> str:
     return word[:-1]
 
 
-def _strip_boundary_punct(token: str) -> str:
-    """Drop boundary punctuation from both ends of a whitespace-bounded token.
+def _strip_trailing_boundary(token: str) -> str:
+    """Drop trailing boundary punctuation only; leading is preserved.
 
-    Internal characters are untouched — ``c++``, ``c#``, ``.net`` keep
-    their distinguishing symbols and remain distinct fuzzy keys.
+    Trailing strip absorbs sentence-end punctuation in wikilink targets
+    (``Elon Musk.``, full-width comma after a CJK title). Leading strip would erase the
+    distinguishing dot of ``.NET`` / ``.gitignore`` / ``.bashrc`` and
+    let bare ``[[NET]]`` falsely fuzzy-resolve to the ``.NET`` page.
+    Internal characters are always preserved (``C++``, ``C#``,
+    ``Node.js`` keep their distinguishing symbols).
     """
-    while token and token[0] in _BOUNDARY_PUNCT:
-        token = token[1:]
     while token and token[-1] in _BOUNDARY_PUNCT:
         token = token[:-1]
     return token
 
 
-def _normalize_for_match(s: str) -> str:
-    """Collapse a title or wikilink target onto a fuzzy-matchable key.
+def _normalize_base(s: str) -> str:
+    """NFKC + casefold + trailing-boundary strip + whitespace collapse.
 
-    Word boundaries are preserved (``Neural Network`` never becomes
-    ``neuralnetwork``). Returns ``""`` for input that reduces to all
-    boundary punctuation; callers treat empty as "no key" so an
-    all-symbol wikilink can't accidentally collide with an empty-keyed
-    page.
+    Used as the fuzzy-index key for stored page titles. We deliberately
+    skip plural stemming here so a singular page like ``Mars`` indexes
+    as ``mars`` (not ``mar``); otherwise ``[[Mar]]`` would falsely
+    fuzzy-resolve to it. Stemming applies asymmetrically — at lookup
+    time only — so the dominant case (``Network`` page, ``[[Networks]]``
+    reference) still resolves correctly.
     """
     s = unicodedata.normalize("NFKC", s)
     s = s.casefold()
-    tokens = [t for t in (_strip_boundary_punct(t) for t in s.split()) if t]
-    if not tokens:
-        return ""
-    tokens[-1] = _stem_plural(tokens[-1])
+    tokens = [t for t in (_strip_trailing_boundary(t) for t in s.split()) if t]
     return " ".join(tokens)
+
+
+def _normalize_for_match(s: str) -> str:
+    """Lookup-side normalize: ``_normalize_base`` plus a trailing-plural
+    stem on the last token.
+
+    Returns ``""`` for input that reduces to all boundary punctuation;
+    callers treat empty as "no key" so an all-symbol wikilink can't
+    accidentally collide with an empty-keyed page.
+    """
+    base = _normalize_base(s)
+    if not base:
+        return ""
+    if " " in base:
+        head, _, last = base.rpartition(" ")
+        return f"{head} {_stem_plural(last)}"
+    return _stem_plural(base)
 
 
 def build_fuzzy_index(title_to_path: dict[str, str]) -> dict[str, list[str]]:
     """Precompute the normalize-keyed lookup ``resolve_links`` needs.
 
-    Hoisting this out of ``resolve_links`` lets a synth caller building
-    a single ``title_to_path`` for a batch of pages avoid rebuilding
-    the fuzzy index on each per-page resolve call (Stage A 1:N fan-out
-    persists tens-to-hundreds of pages per source against the same
-    title set).
+    Index keys go through ``_normalize_base`` (no plural stemming) so
+    a singular page title that happens to end in ``s`` (``Mars``,
+    ``OS``, ``HTTPS``) keeps its trailing letter and won't be matched
+    by an unrelated bare-stem wikilink. Stemming happens on the lookup
+    side only — see ``_normalize_for_match``.
+
+    Hoisting the index build lets a synth caller persisting many pages
+    against the same title set avoid rebuilding it per call (Stage A
+    1:N fan-out hits this path tens-to-hundreds of times per source).
     """
     index: dict[str, list[str]] = {}
     for title, path in title_to_path.items():
-        key = _normalize_for_match(title)
+        key = _normalize_base(title)
         if not key:
             continue
         bucket = index.setdefault(key, [])

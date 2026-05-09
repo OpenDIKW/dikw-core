@@ -193,3 +193,36 @@ def test_resolve_fuzzy_does_not_invent_us_link_from_uses() -> None:
     )
     assert resolved == []
     assert len(unresolved) == 1
+
+
+def test_resolve_fuzzy_preserves_leading_punctuation() -> None:
+    # ``.NET`` (Microsoft framework) — leading ``.`` is meaningful.
+    # Stripping it would let bare ``[[NET]]`` collapse onto the same
+    # key as ``.NET`` and falsely fuzzy-resolve. Trailing-only strip
+    # preserves the distinguishing dot.
+    body = "Mention [[NET]] alone."
+    links = parse_links(body)
+    resolved, unresolved = resolve_links(
+        "doc:test",
+        links,
+        title_to_path={".NET": "wiki/concepts/dotnet.md"},
+    )
+    assert resolved == []
+    assert len(unresolved) == 1
+
+
+def test_resolve_fuzzy_does_not_stem_index_side() -> None:
+    # A singular page title that happens to end in ``s`` (``Mars`` the
+    # planet, ``OS``, ``HTTPS``) must NOT be indexed under its
+    # plural-stemmed key. Otherwise bare ``[[Mar]]`` would falsely
+    # fuzzy-resolve to the Mars page even though ``Mar`` carries no
+    # plural marker. Index keys skip stemming; lookups still stem.
+    body = "Visit [[Mar]] for context."
+    links = parse_links(body)
+    resolved, unresolved = resolve_links(
+        "doc:test",
+        links,
+        title_to_path={"Mars": "wiki/entities/mars.md"},
+    )
+    assert resolved == []
+    assert len(unresolved) == 1
