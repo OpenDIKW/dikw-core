@@ -121,12 +121,17 @@ class LintProposeSubmit(BaseModel):
     ``rule`` filters the lint scan to one ``LintKind`` (default: every
     kind dispatched). ``limit`` caps how many issues the orchestrator
     consumes — the propose task runs serially over those, so ``limit``
-    is also effectively a wall-clock cap on the LLM-heavy fixers
-    landing in PR2.
+    is also effectively a wall-clock cap on the LLM-heavy fixers.
+
+    ``enable_llm`` opts into LLM-fallback paths (broken_wikilink stub
+    pages, the non_atomic_page splitter). Default False keeps propose
+    runs heuristic-only and free of token spend; users opt in
+    explicitly via ``--enable-llm`` on the CLI.
     """
 
     rule: LintKind | None = None
     limit: int = Field(default=10, ge=1, le=200)
+    enable_llm: bool = False
 
 
 class LintApplySubmit(BaseModel):
@@ -297,11 +302,16 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             wiki_root=rt.root,
             rule=body.rule,
             limit=body.limit,
+            enable_llm=body.enable_llm,
         )
         row = await rt.manager.submit(
             op="lint.propose",
             runner=runner,
-            params={"rule": body.rule, "limit": body.limit},
+            params={
+                "rule": body.rule,
+                "limit": body.limit,
+                "enable_llm": body.enable_llm,
+            },
         )
         return _handle(row)
 

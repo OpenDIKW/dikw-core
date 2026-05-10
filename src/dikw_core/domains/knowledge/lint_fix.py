@@ -25,6 +25,7 @@ The contract is:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from typing import Any, Literal, Protocol
 import frontmatter
 from pydantic import BaseModel, Field
 
+from ...config import DikwConfig
 from ...providers.base import EmbeddingProvider, LLMProvider
 from ...schemas import Layer
 from ...storage.base import Storage
@@ -40,7 +42,14 @@ from ..data.hashing import hash_bytes, hash_file
 from ..data.path_norm import normalize_path
 from .links import parse_links, resolve_links
 from .lint import LintKind
+from .synthesize import (
+    SynthesisError,
+    SynthesisPartialError,
+    synthesize_pages_from_text,
+)
 from .wiki import WikiPage, build_page, write_page
+
+logger = logging.getLogger(__name__)
 
 
 class FixOperation(BaseModel):
@@ -130,6 +139,11 @@ class FixerContext:
     PRs) raise their own ``ValueError`` if asked to run without one.
     ``all_pages`` is pre-built by the orchestrator from
     ``storage.list_documents`` so each fixer doesn't repeat the round-trip.
+
+    ``enable_llm`` gates the LLM-fallback branch in fixers that have
+    one (PR2 broken_wikilink stub-page generation). Default False keeps
+    propose runs heuristic-only — every LLM call costs tokens, and a
+    user must opt in via ``dikw client lint propose --enable-llm``.
     """
 
     storage: Storage | None
@@ -137,6 +151,12 @@ class FixerContext:
     embedding: EmbeddingProvider | None
     wiki_root: Path
     all_pages: list[WikiPageMeta]
+    enable_llm: bool = False
+    # Passed only for fixers that need synth knobs (max_pages_per_group,
+    # page_types, llm_model, llm_max_tokens_synth). Heuristic-only fixers
+    # don't touch it; the orchestrator threads it through anyway so a
+    # later fixer can read it without changing the FixerContext shape.
+    cfg: DikwConfig | None = None
 
 
 class Fixer(Protocol):
@@ -173,6 +193,111 @@ def extract_broken_target(detail: str) -> str | None:
 # while the actual implementation lives in :mod:`domains.data.hashing`.
 file_sha256 = hash_file
 bytes_sha256 = hash_bytes
+
+
+def page_to_op_frontmatter(page: WikiPage) -> dict[str, Any]:
+    """Flatten a :class:`WikiPage` into the dict ``FixOperation`` expects.
+
+    The inverse of :func:`_build_page_from_op` — both fixer-side
+    (forward) and apply-side (read-back) live in this module so the
+    field list (``id`` / ``type`` / ``title`` / ``tags`` / ``sources``
+    / ``created`` / ``updated`` / ``extras``) stays defined in one
+    place. ``write_page`` is the third place that knows these keys;
+    a future cleanup could route through this helper too.
+    """
+    fm: dict[str, Any] = {
+        "id": page.id,
+        "type": page.type,
+        "title": page.title,
+        "tags": list(page.tags),
+        "sources": list(page.sources),
+        "created": page.created,
+        "updated": page.updated,
+    }
+    fm.update(page.extras)
+    return fm
+
+
+async def safe_synthesize_pages(
+    *,
+    user_prompt: str,
+    source_path: str,
+    llm: LLMProvider,
+    model: str,
+    max_tokens: int,
+    allowed_types: tuple[str, ...],
+    system: str,
+    temperature: float = 0.3,
+    log_label: str,
+    strict: bool = False,
+) -> list[WikiPage] | None:
+    """LLM call + parse, with the soft-failure contract every fixer needs.
+
+    Returns the parsed pages on success or ``None`` to signal "fixer
+    should skip this issue":
+
+    * ``SynthesisError`` (no usable ``<page>`` block) → ``None``.
+    * ``SynthesisPartialError`` with ``retry=True`` (max_tokens
+      truncation — re-running with a bigger budget would yield more
+      pages) → ``None``. Always — truncation is recoverable, and
+      destructive splits cannot tell whether the missing content was
+      important.
+    * ``SynthesisPartialError`` with ``retry=False`` (deterministic
+      partial — e.g. one malformed ``<page>`` block among valid ones):
+      - **strict=True (destructive callers)** → ``None``. The
+        non_atomic_page splitter deletes the source after writing
+        children; accepting a 3-block response with 1 malformed
+        block as "2 valid children, good enough" would drop the
+        malformed block's content along with the original page.
+      - **strict=False (additive callers)** → ``pe.pages``. The
+        broken_wikilink stub fixer takes only ``pages[0]``; a
+        malformed sibling block does not represent lost content,
+        just a wasted LLM token budget.
+    * Any other exception (provider outage, network, JSON drift) →
+      log at WARNING + ``None``. Cancellation
+      (:class:`asyncio.CancelledError`) is a ``BaseException`` and is
+      not caught — serial-cancel semantics still hold.
+
+    ``log_label`` identifies the calling fixer in the warning line so
+    operators can grep for which rule blew up.
+    """
+    try:
+        return await synthesize_pages_from_text(
+            user_prompt=user_prompt,
+            source_path=source_path,
+            llm=llm,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            allowed_types=allowed_types,
+            system=system,
+        )
+    except SynthesisPartialError as pe:
+        if pe.retry:
+            logger.info(
+                "%s LLM response was truncated for %s — refusing partial "
+                "result (retry on next propose pass with a larger budget)",
+                log_label,
+                source_path,
+            )
+            return None
+        if strict:
+            logger.info(
+                "%s LLM response was a deterministic partial for %s — "
+                "refusing in strict mode (destructive caller cannot tell "
+                "whether the malformed block carried important content)",
+                log_label,
+                source_path,
+            )
+            return None
+        return pe.pages
+    except SynthesisError:
+        return None
+    except Exception as e:
+        logger.warning(
+            "%s LLM call failed for %s: %s", log_label, source_path, e
+        )
+        return None
 
 
 async def run_lint_propose(
@@ -353,7 +478,54 @@ async def run_lint_apply(
     total_ops = sum(len(p.operations) for p in proposals)
     op_counter = 0
 
-    for proposal in proposals:
+    # Per-proposal preflight: simulate every op against current disk
+    # state before mutating anything. Catches the "create_page #1
+    # succeeds, create_page #2 collides, delete_page wipes the source
+    # we already half-replaced" path. Real all-or-nothing requires
+    # rollback, but preflight catches the common deterministic failures
+    # — collisions, missing files, hash drift — without growing a WAL.
+    # ``touched_paths`` from earlier proposals also feed in: a sibling
+    # proposal that already mutated path X means a later proposal
+    # acting on X will be flagged here.
+    preflight_skips: dict[int, list[dict[str, Any]]] = {}
+    for idx, proposal in enumerate(proposals):
+        preflight_reason = _preflight_proposal(
+            proposal=proposal,
+            wiki_root=wiki_root,
+            already_touched=touched_paths,
+        )
+        if preflight_reason is not None:
+            preflight_skips[idx] = [
+                _skip(proposal.proposal_id, op, preflight_reason)
+                for op in proposal.operations
+            ]
+
+    for idx, proposal in enumerate(proposals):
+        if idx in preflight_skips:
+            for record in preflight_skips[idx]:
+                op_counter += 1
+                await reporter.progress(
+                    phase="lint_apply",
+                    current=op_counter,
+                    total=total_ops,
+                    detail={
+                        "op": record["op"],
+                        "path": record["path"],
+                        "preflight_failed": True,
+                    },
+                )
+                skipped.append(record)
+            continue
+
+        # Per-proposal atomicity: even after preflight, an op can still
+        # fail at apply time (race between preflight and write, OS
+        # error, sandbox refusal). Once any op in a proposal skips,
+        # abandon the rest — half a fix is worse than no fix. The
+        # remaining-ops loop below records them as skipped without
+        # mutating anything else, but earlier successful writes in this
+        # proposal stay on disk (no rollback). Sibling proposals are
+        # unaffected; preflight already isolated them.
+        proposal_aborted = False
         for op in proposal.operations:
             op_counter += 1
             reporter.cancel_token().raise_if_cancelled()
@@ -363,6 +535,15 @@ async def run_lint_apply(
                 total=total_ops,
                 detail={"op": op.kind, "path": op.path},
             )
+            if proposal_aborted:
+                skipped.append(
+                    _skip(
+                        proposal.proposal_id, op,
+                        "skipped — earlier op in the same proposal failed; "
+                        "re-run lint propose to retry this fix as a whole",
+                    )
+                )
+                continue
             if op.path in touched_paths:
                 skipped.append(
                     _skip(
@@ -371,6 +552,7 @@ async def run_lint_apply(
                         "re-run lint propose to refresh remaining fixes",
                     )
                 )
+                proposal_aborted = True
                 continue
             skip_reason = await _apply_one_op(
                 op=op,
@@ -388,6 +570,7 @@ async def run_lint_apply(
                     paths_changed.add(op.path)
             else:
                 skipped.append(skip_reason)
+                proposal_aborted = True
 
     # Reconcile outgoing wikilinks for every still-extant changed page.
     for path in sorted(paths_changed):
@@ -429,6 +612,98 @@ def _filter_proposals(
         for i, p in enumerate(proposals)
         if (pick_set is None or i in pick_set) and i not in skip_set
     ]
+
+
+def _preflight_proposal(
+    *,
+    proposal: FixProposal,
+    wiki_root: Path,
+    already_touched: set[str],
+) -> str | None:
+    """Validate every op of a proposal against current disk state.
+
+    Returns ``None`` when the whole proposal would apply cleanly, or a
+    short reason string explaining the first op that would fail. The
+    real apply pass (:func:`_apply_one_op`) re-checks each condition;
+    this preflight exists so that a multi-op proposal whose 2nd op
+    cannot succeed never lets its 1st op land on disk.
+
+    Simulates op effects within the proposal so a ``create_page`` then
+    ``update_page`` on the same path is recognised as valid (the
+    create makes the file exist for the update). Cross-proposal state
+    is captured via ``already_touched`` — any path mutated by a prior
+    proposal in the same apply pass causes immediate failure here.
+    """
+    wiki_dir = (wiki_root / "wiki").resolve()
+    sim_created: set[str] = set()
+    sim_deleted: set[str] = set()
+
+    def _exists(op_path: str) -> bool:
+        if op_path in sim_deleted:
+            return False
+        if op_path in sim_created:
+            return True
+        abs_path = (wiki_root / op_path).resolve()
+        return abs_path.is_file()
+
+    for op in proposal.operations:
+        abs_path = (wiki_root / op.path).resolve()
+        try:
+            abs_path.relative_to(wiki_dir)
+        except ValueError:
+            return f"op {op.kind} path is outside wiki/ tree: {op.path!r}"
+
+        if op.path in already_touched:
+            return (
+                f"op {op.kind} on {op.path!r} would conflict with a "
+                "sibling proposal that already mutated this path"
+            )
+
+        if op.kind == "create_page":
+            if _exists(op.path):
+                return f"create_page would collide: {op.path!r} already exists"
+            sim_created.add(op.path)
+            sim_deleted.discard(op.path)
+        elif op.kind == "update_page":
+            if not _exists(op.path):
+                return f"update_page target missing: {op.path!r}"
+            if not op.expected_hash:
+                return (
+                    f"update_page on {op.path!r} missing expected_hash "
+                    "— required for safety"
+                )
+            # Hash drift only meaningful against current on-disk bytes.
+            # A simulated post-create file can't have a stable hash to
+            # check against, so skip the hash check on within-proposal
+            # creates. Real apply will compute and verify.
+            if op.path not in sim_created:
+                actual = file_sha256(abs_path)
+                if actual != op.expected_hash:
+                    return (
+                        f"update_page on {op.path!r}: hash mismatch "
+                        "(concurrent edit detected)"
+                    )
+        elif op.kind == "delete_page":
+            if not _exists(op.path):
+                return f"delete_page target missing: {op.path!r}"
+            if not op.expected_hash:
+                return (
+                    f"delete_page on {op.path!r} missing expected_hash "
+                    "— required for safety"
+                )
+            if op.path not in sim_created:
+                actual = file_sha256(abs_path)
+                if actual != op.expected_hash:
+                    return (
+                        f"delete_page on {op.path!r}: hash mismatch "
+                        "(concurrent edit detected)"
+                    )
+            sim_deleted.add(op.path)
+            sim_created.discard(op.path)
+        else:
+            return f"unknown op kind {op.kind!r}"
+
+    return None
 
 
 async def _apply_one_op(

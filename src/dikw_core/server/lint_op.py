@@ -34,6 +34,7 @@ def make_lint_propose_runner(
     wiki_root: Path,
     rule: LintKind | None,
     limit: int,
+    enable_llm: bool = False,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
     """Build a ``TaskRunner`` that drives ``api.lint_propose``."""
 
@@ -42,6 +43,7 @@ def make_lint_propose_runner(
             wiki_root,
             rule=rule,
             limit=limit,
+            enable_llm=enable_llm,
             reporter=reporter,
         )
         return report.model_dump(mode="json")

@@ -370,6 +370,18 @@ def lint_propose_cmd(
             help="Cap the number of lint issues consumed (default 10).",
         ),
     ] = 10,
+    enable_llm: Annotated[
+        bool,
+        typer.Option(
+            "--enable-llm",
+            help=(
+                "Allow fixers to call the configured LLM for fallback "
+                "paths (broken_wikilink stub-page generation, the "
+                "non_atomic_page splitter). Off by default — opt in "
+                "explicitly because each issue may incur a token cost."
+            ),
+        ),
+    ] = False,
     plain: Annotated[
         bool,
         typer.Option("--plain", help="Disable progress widget."),
@@ -384,7 +396,7 @@ def lint_propose_cmd(
     what `dikw client lint apply <id>` consumes."""
 
     async def _go() -> None:
-        body: dict[str, Any] = {"limit": limit}
+        body: dict[str, Any] = {"limit": limit, "enable_llm": enable_llm}
         if rule is not None:
             body["rule"] = rule
         async with Transport.from_config(_resolve(server, token)) as t:

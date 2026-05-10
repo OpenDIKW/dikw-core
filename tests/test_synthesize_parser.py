@@ -7,8 +7,11 @@ from dikw_core.domains.knowledge.synthesize import (
     SynthesisPartialError,
     dedup_pages_by_slug,
     parse_synthesis_response,
+    synthesize_pages_from_text,
 )
 from dikw_core.domains.knowledge.wiki import build_page
+
+from .fakes import FakeLLM
 
 _SINGLE_PAGE_RESPONSE = """
 Here's the page:
@@ -339,3 +342,46 @@ def test_dedup_preserves_input_order_for_distinct_paths() -> None:
     out = dedup_pages_by_slug([p1, p2, p3], strategy="merge_body")
 
     assert [p.title for p in out] == ["B Entity", "A Entity", "C Entity"]
+
+
+# --- synthesize_pages_from_text shared helper -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_synthesize_pages_from_text_returns_parsed_pages() -> None:
+    """Helper drives one ``llm.complete`` call and returns the parsed
+    pages — the shared "text → N pages" primitive that lint fixers
+    (broken_wikilink LLM stub, non_atomic_page splitter) reuse."""
+    fake = FakeLLM(response_text=_SINGLE_PAGE_RESPONSE)
+
+    pages = await synthesize_pages_from_text(
+        user_prompt="dummy prompt body",
+        source_path="sources/notes/dikw.md",
+        llm=fake,  # type: ignore[arg-type]
+        model="fake-model",
+        max_tokens=1024,
+    )
+
+    assert len(pages) == 1
+    assert pages[0].title == "DIKW pyramid"
+    # The helper must thread system + user_prompt + model through to
+    # the provider untouched — fixers tune temperature / max_tokens
+    # via the kwargs.
+    assert fake.last_user == "dummy prompt body"
+    assert fake.last_max_tokens == 1024
+
+
+@pytest.mark.asyncio
+async def test_synthesize_pages_from_text_propagates_parse_errors() -> None:
+    """When the LLM returns no usable ``<page>`` block, the helper
+    surfaces an empty list (legal "nothing to write" signal under the
+    Stage A fan-out contract). Hard parse failures still raise."""
+    fake = FakeLLM(response_text="No page block in here.")
+    pages = await synthesize_pages_from_text(
+        user_prompt="prompt",
+        source_path="src.md",
+        llm=fake,  # type: ignore[arg-type]
+        model="fake-model",
+        max_tokens=512,
+    )
+    assert pages == []

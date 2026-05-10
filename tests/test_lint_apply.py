@@ -588,3 +588,189 @@ async def test_skip_filter_drops_skipped_proposals(
     )
     assert len(report.applied) == 1
     assert report.applied[0].path == "wiki/a.md"
+
+
+@pytest.mark.asyncio
+async def test_proposal_is_atomic_subsequent_ops_skip_after_failure(
+    parametrized_storage: Storage, wiki_root: Path,
+) -> None:
+    """A multi-op proposal (e.g. ``non_atomic_page``: N create + 1
+    delete) must be atomic at apply time. If a create_page op fails
+    because its target path already exists, the delete_page that would
+    drop the original page MUST also skip — otherwise the user ends
+    up with a partial split AND the original deleted, silently losing
+    the content the failed child would have carried.
+
+    Sibling proposals must still apply normally (a failed proposal
+    cannot abort independent fixes)."""
+    storage = parametrized_storage
+    # Pre-existing K-page that will collide with the first child.
+    await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path="wiki/concepts/topic-a.md", title="Topic A",
+        body="# Topic A\n\noriginal content\n",
+    )
+    # The "fat" page being split.
+    await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path="wiki/concepts/grab-bag.md", title="Grab Bag",
+        body="# Grab Bag\n\n## Topic A\n\n## Topic B\n",
+    )
+    grab_hash = file_sha256(wiki_root / "wiki/concepts/grab-bag.md")
+    # An independent broken_wikilink fix on a *different* page that
+    # must NOT be aborted by the non_atomic_page proposal failure.
+    await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path="wiki/sibling.md", title="Sibling",
+        body="# Sibling\n\nlink to [[other]]\n",
+    )
+    sibling_hash = file_sha256(wiki_root / "wiki/sibling.md")
+
+    split_proposal = FixProposal(
+        proposal_id="split", issue_kind="non_atomic_page",
+        issue_path="wiki/concepts/grab-bag.md",
+        issue_detail="page looks like multiple atomic notes glued together",
+        operations=[
+            # First op: create_page that collides with the seeded
+            # ``wiki/concepts/topic-a.md`` — apply will skip it with
+            # "file already exists at create_page path".
+            FixOperation(
+                kind="create_page",
+                path="wiki/concepts/topic-a.md",
+                new_frontmatter={"title": "Topic A", "type": "concept"},
+                new_body="# Topic A\n\nchild a\n",
+                expected_hash=None,
+            ),
+            FixOperation(
+                kind="create_page",
+                path="wiki/concepts/topic-b.md",
+                new_frontmatter={"title": "Topic B", "type": "concept"},
+                new_body="# Topic B\n\nchild b\n",
+                expected_hash=None,
+            ),
+            # Last op: would drop the original AFTER both children.
+            # Atomicity rule: must NOT execute, since op #1 skipped.
+            FixOperation(
+                kind="delete_page",
+                path="wiki/concepts/grab-bag.md",
+                expected_hash=grab_hash,
+            ),
+        ],
+        rationale="LLM split — 2 atomic children + delete original",
+        source="llm",
+    )
+    sibling_proposal = FixProposal(
+        proposal_id="sib", issue_kind="broken_wikilink",
+        issue_path="wiki/sibling.md", issue_detail="[[other]]",
+        operations=[FixOperation(
+            kind="update_page", path="wiki/sibling.md",
+            new_frontmatter={"title": "Sibling"},
+            new_body="# Sibling\n\nlink to [[Other]]\n",
+            expected_hash=sibling_hash,
+        )],
+        rationale="r", source="heuristic",
+    )
+
+    report = await run_lint_apply(
+        proposal_report=FixProposalReport(
+            proposals=[split_proposal, sibling_proposal]
+        ),
+        storage=storage, wiki_root=wiki_root,
+        reporter=_NullReporter(),
+    )
+
+    # The original fat page must still exist on disk — the delete_page
+    # was abandoned because the proposal was aborted after op #1's skip.
+    assert (wiki_root / "wiki/concepts/grab-bag.md").is_file()
+    # The sibling proposal applied independently.
+    sibling_after = (wiki_root / "wiki/sibling.md").read_text(encoding="utf-8")
+    assert "[[Other]]" in sibling_after
+
+    applied_paths = [op.path for op in report.applied]
+    skipped_paths = [s["path"] for s in report.skipped]
+    assert "wiki/concepts/grab-bag.md" not in applied_paths
+    assert "wiki/sibling.md" in applied_paths
+    # All three ops of the split proposal must show as skipped — no
+    # half-applied state on disk, even for the first child whose path
+    # WOULD have been free in isolation. Preflight catches the
+    # collision before any write happens.
+    assert "wiki/concepts/topic-a.md" in skipped_paths
+    assert "wiki/concepts/topic-b.md" in skipped_paths
+    assert "wiki/concepts/grab-bag.md" in skipped_paths
+    # Reasons: every op of the split proposal carries the preflight
+    # collision message; the sibling proposal is unaffected.
+    split_skips = [
+        s for s in report.skipped
+        if s["proposal_id"] == "split"
+    ]
+    assert len(split_skips) == 3
+    assert all("collide" in s["reason"] for s in split_skips), split_skips
+    # The other-child file that would have landed on disk in isolation
+    # must NOT exist (preflight refused before any write).
+    assert not (wiki_root / "wiki/concepts/topic-b.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_preflight_catches_mid_proposal_hash_drift(
+    parametrized_storage: Storage, wiki_root: Path,
+) -> None:
+    """The earlier per-proposal abort guard only stopped *subsequent*
+    ops once one failed — earlier writes already on disk stayed there.
+    Preflight closes that hole: a multi-op proposal whose 2nd op would
+    fail (hash drift on a sibling page) must NOT mutate the 1st op's
+    target either."""
+    storage = parametrized_storage
+    await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path="wiki/page-a.md", title="Page A",
+        body="# Page A\n\noriginal A\n",
+    )
+    await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path="wiki/page-b.md", title="Page B",
+        body="# Page B\n\noriginal B\n",
+    )
+    a_hash_correct = file_sha256(wiki_root / "wiki/page-a.md")
+    # Stale hash for B (as if the proposal was generated against an
+    # earlier version of page-b.md and B was edited externally since).
+    b_hash_stale = "0" * 64
+
+    proposal = FixProposal(
+        proposal_id="multi", issue_kind="orphan_page",
+        issue_path="wiki/page-a.md",
+        issue_detail="multi-op fix",
+        operations=[
+            # Op #1 would succeed in isolation: hash matches A.
+            FixOperation(
+                kind="update_page", path="wiki/page-a.md",
+                new_frontmatter={"title": "Page A"},
+                new_body="# Page A\n\nupdated A\n",
+                expected_hash=a_hash_correct,
+            ),
+            # Op #2 has a stale hash for B → preflight rejects whole proposal.
+            FixOperation(
+                kind="update_page", path="wiki/page-b.md",
+                new_frontmatter={"title": "Page B"},
+                new_body="# Page B\n\nupdated B\n",
+                expected_hash=b_hash_stale,
+            ),
+        ],
+        rationale="multi-op", source="heuristic",
+    )
+
+    report = await run_lint_apply(
+        proposal_report=FixProposalReport(proposals=[proposal]),
+        storage=storage, wiki_root=wiki_root,
+        reporter=_NullReporter(),
+    )
+
+    assert report.applied == []
+    assert len(report.skipped) == 2
+    # Page A on disk must still be the original, even though op #1
+    # would have succeeded in isolation.
+    assert "original A" in (wiki_root / "wiki/page-a.md").read_text(
+        encoding="utf-8"
+    )
+    assert "updated A" not in (wiki_root / "wiki/page-a.md").read_text(
+        encoding="utf-8"
+    )

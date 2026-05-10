@@ -43,6 +43,57 @@ on each entry call out exactly what shape changes break.
   the synth 1:N fan-out; PR3 adds `orphan_page` + `duplicate_title`
   fixers.
 
+### `lint propose` / `lint apply` — PR2: LLM stub fallback + non_atomic_page splitter
+
+* **Added**: `dikw client lint propose --enable-llm` opts the configured
+  LLM into the per-rule fixers. Default off — heuristic-only propose
+  stays free of token spend; users opt in explicitly because each
+  issue may incur a real LLM call.
+* **Added**: `BrokenWikilinkFixer` LLM stub fallback. When the
+  fuzzy-match heuristic misses, the fixer asks the LLM to draft a
+  stub page (matching title + TODO marker, no invented facts) so the
+  wikilink resolves on the next lint pass. Refuses to overwrite
+  existing K-pages and strips Obsidian alias / anchor syntax from
+  the broken target so `[[X|alias]]` and `[[X#section]]` resolve to
+  the bare `X` title the resolver expects.
+* **Added**: `NonAtomicPageFixer` — splits a page flagged as
+  non-atomic into N atomic children + delete the original.
+  LLM-only (no heuristic; `--enable-llm` required). External
+  wikilinks pointing at the original are intentionally NOT rewritten
+  — the next lint pass surfaces them as `broken_wikilink` issues
+  that the stub fallback / fuzzy match handles.
+* **Added**: `synthesize_pages_from_text` shared helper in
+  `domains/knowledge/synthesize.py` and `safe_synthesize_pages`
+  wrapper in `domains/knowledge/lint_fix.py` — single seam for
+  "text → N pages" used by both the LLM-stub and split fixers.
+  Handles `SynthesisPartialError` with a `strict=True` mode for
+  destructive callers (refuse any partial parse) vs `strict=False`
+  for additive callers (return parsed pages).
+* **Apply atomicity**: `run_lint_apply` now preflights every op of
+  every proposal against current disk state (collisions, missing
+  files, hash drift, sandbox refusal). If ANY op would fail, the
+  whole proposal skips at op #0 — no half-applied state on disk.
+  A multi-op proposal where create_page #1 succeeds and create_page
+  #2 collides used to leave child #1 orphaned + the original still
+  present; preflight closes that gap.
+* **Safety guards**:
+  - `non_atomic_page` skips bodies > 32 KB to avoid the openai_codex
+    SSE keepalive timeout on very large prompts.
+  - `non_atomic_page` uses its own 16-child ceiling (decoupled from
+    `cfg.synth.max_pages_per_group`) and refuses any split where the
+    LLM emitted exactly the ceiling — the model voluntarily stops at
+    the cap with no truncation signal, so we can't tell whether
+    topic 17 just didn't exist or got dropped silently.
+  - `safe_synthesize_pages` returns `None` on `retry=True` partials
+    (`max_tokens` truncation — recoverable next run with a bigger
+    budget) regardless of caller mode.
+  - Both LLM fixers refuse `create_page` paths that collide with
+    existing K-pages; the split fixer aborts the entire proposal on
+    any child collision rather than silently dropping the colliding
+    child's content.
+* **Followups**: PR3 still owes `orphan_page` + `duplicate_title`
+  fixers per the original lint-fix closure plan.
+
 ### Agent ergonomics + `--wiki` → `--base` rename
 
 * **BREAKING**: `dikw serve --wiki <path>` is now `dikw serve --base <path>`
