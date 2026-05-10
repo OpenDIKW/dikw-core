@@ -518,7 +518,8 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 **Remote CLI** (`dikw client *`, also reachable via top-level aliases):
 - `dikw client status` — counts per layer
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
-- `dikw client ingest [--from <dir>] [--no-embed]` — upload local sources, run ingest, stream progress
+- `dikw client upload <path>` — pre-flight + upload markdown packages (md + referenced assets) into the server's `sources/`
+- `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` tree, stream progress
 - `dikw client synth [--all]` — K synthesis
 - `dikw client distill` — propose W-layer candidates
 - `dikw client review {list,approve,reject}` — drive the W review state machine

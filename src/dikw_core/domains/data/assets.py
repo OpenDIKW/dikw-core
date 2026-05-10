@@ -19,8 +19,8 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from urllib.parse import urlparse
 
+from ...md_inspect import _is_remote, _resolve_local
 from ...schemas import AssetKind, AssetRecord, AssetRef, ImageMediaMeta
 from .hashing import hash_bytes, hash_file
 
@@ -236,27 +236,6 @@ def _probe_dimensions(data: bytes, mime: str) -> tuple[int | None, int | None]:
 
 
 # ---- Asset materialization -----------------------------------------------
-
-
-def _is_remote(original_path: str) -> bool:
-    """Treat anything with a non-empty scheme (http, https, ftp, data, …)
-    as remote. Plain relative paths and bare filenames stay local."""
-    parsed = urlparse(original_path)
-    return bool(parsed.scheme) and parsed.scheme not in ("file",)
-
-
-def _resolve_local(
-    original_path: str, *, source_md_path: Path, project_root: Path
-) -> Path | None:
-    """Find the binary on disk. Tries source_md_path's parent first
-    (Obsidian-native), then project_root (vault-root fallback)."""
-    candidate = (source_md_path.parent / original_path).resolve()
-    if candidate.is_file():
-        return candidate
-    candidate = (project_root / original_path).resolve()
-    if candidate.is_file():
-        return candidate
-    return None
 
 
 async def _attach_or_return(

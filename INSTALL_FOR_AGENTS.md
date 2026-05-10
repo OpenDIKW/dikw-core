@@ -168,8 +168,9 @@ Drop markdown into `my-base/sources/` (or upload a local tree). Then:
 uv run dikw client ingest --no-embed         # FTS only, no API calls
 uv run dikw client ingest                    # full pipeline (needs embedding key)
 
-# Or upload + ingest a local tree in one shot:
-uv run dikw client ingest --from ./local-sources
+# Or push a local tree to the server's sources/ first, then ingest:
+uv run dikw client upload ./local-sources    # pre-flights md + uploads packages
+uv run dikw client ingest
 ```
 
 Per-file errors are non-fatal by default — the run continues and a list

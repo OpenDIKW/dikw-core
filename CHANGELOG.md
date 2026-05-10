@@ -84,6 +84,47 @@ on each entry call out exactly what shape changes break.
   non-string), so a fixer that omits `title` in `new_frontmatter`
   still gets sibling links resolved correctly.
 
+### Upload decoupled from ingest — new `dikw client upload` command
+
+* **BREAKING**: `dikw client ingest --from <dir>` is removed. Upload
+  is now a separate command (see below); `dikw client ingest` only
+  scans the server's existing `<base>/sources/` tree.
+* **BREAKING**: `POST /v1/ingest` no longer accepts an `upload_id`
+  field (`extra="forbid"` rejects it). `commit_staging` and the old
+  upload→ingest chain in `server/ingest_op.py` are deleted.
+* **BREAKING**: `POST /v1/upload/sources` manifest schema upgrades
+  to `{"files": [...], "packages": [...], "total_bytes": N}`. The
+  legacy files-only shape returns `manifest_packages_missing`.
+  Response gains `committed: list[int]` + `rejected: list[{id, code,
+  detail}]`; the legacy `staging_path` field is removed.
+* **Added**: `dikw client upload <path>` (top-level alias `dikw upload
+  <path>`) — accepts a single `.md` file or a directory whose
+  `**/*.md` becomes one package each. Pre-flight inspection
+  (frontmatter parse, asset-existence, non-empty body, orphan-asset)
+  runs locally; failures exit 2 before the network round trip.
+* **Added**: `src/dikw_core/md_inspect.py` — shared module exposing
+  `extract_image_refs(body)` and `inspect_markdown(path, *,
+  project_root)`. The D-layer `domains/data/backends/markdown.py`
+  re-exports `extract_image_refs` so existing callers stay intact.
+* **Added**: per-package commit semantics — server validates each
+  package's `package_sha256 = sha256(sorted([md_sha, *asset_shas])
+  .join("\n"))`, commits the well-formed packages straight into
+  `<base>/sources/` via `os.replace`, and reports failed packages
+  via `rejected` (still 200, so partial successes don't force a
+  retry of the whole batch).
+* **Added**: server-startup orphan-staging cleanup —
+  `<base>/.dikw/upload-staging/*` is wiped on `build_runtime` to
+  cover crash-recovery (a `finally` rmtree in the upload route
+  handles the normal path).
+* **Added**: server error codes `manifest_packages_missing`,
+  `manifest_orphan_file`, `manifest_duplicate_md_path`,
+  `manifest_package_unknown_file`, `manifest_package_sha256_mismatch`,
+  `package_commit_failed`.
+* **Tightened**: tar `_ALLOWED_TOP_DIRS` reduced to `("sources",)`
+  — assets ride along under `sources/<rel>` to preserve sibling-of-md
+  asset resolution; `assets/` as a top-level archive directory is no
+  longer accepted.
+
 ### `lint propose` / `lint apply` — repair closure for broken_wikilink
 
 * **Added**: `dikw client lint propose [--rule <kind>] [--limit N]` runs lint

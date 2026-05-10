@@ -1,90 +1,55 @@
-"""HTTP-level tests for ``POST /v1/upload/sources``.
+"""HTTP-level tests for ``POST /v1/upload/sources`` — infrastructure layer.
 
-Covers the wire-format validation surface end-to-end via the in-memory
-ASGI transport — every failure path is asserted by ``error.code`` so a
-client implementation can branch on the error machine-readably.
+This file covers the wire-format invariants that hold regardless of
+the per-package commit model:
+
+* tar.gz shape (path traversal, symlinks, allowed top dirs)
+* manifest schema (json well-formed, files-vs-tarball mismatch)
+* size limits
+
+Per-package semantics (``packages``, ``package_sha256``, per-package
+reject, commit-to-sources) live in ``test_upload_packages.py``.
 """
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import tarfile
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
+from ._upload_helpers import packages_manifest, sha256, tar_bytes
 
-def _tar_bytes(files: dict[str, bytes]) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for path, body in files.items():
-            ti = tarfile.TarInfo(path)
-            ti.size = len(body)
-            tf.addfile(ti, io.BytesIO(body))
-    return buf.getvalue()
-
-
-def _manifest_for(files: dict[str, bytes]) -> dict[str, Any]:
-    entries = [
-        {
-            "path": p,
-            "size": len(b),
-            "sha256": hashlib.sha256(b).hexdigest(),
-        }
-        for p, b in files.items()
-    ]
-    return {
-        "files": entries,
-        "total_bytes": sum(len(b) for b in files.values()),
-    }
-
-
-def _post_upload(
-    client: httpx.AsyncClient,
-    files: dict[str, bytes],
-    *,
-    manifest: dict[str, Any] | None = None,
-) -> Any:
-    """Build the multipart parts and POST. Returns the awaitable."""
-    payload = _tar_bytes(files)
-    body = manifest if manifest is not None else _manifest_for(files)
-    return client.post(
-        "/v1/upload/sources",
-        files={"payload": ("u.tar.gz", payload, "application/gzip")},
-        data={"manifest": json.dumps(body)},
-    )
-
-
-# ---- happy path ---------------------------------------------------------
+# ---- happy path --------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_upload_lands_in_staging(
+async def test_upload_commits_into_sources(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    wiki_root: Any,
 ) -> None:
-    files = {
-        "sources/notes/x.md": b"# x\nhello\n",
-        "assets/img/y.png": b"\x89PNG\r\n\x1a\nfake",
-    }
-    resp = await _post_upload(server_client, files)
+    """Single-package upload commits the md straight into
+    ``<base>/sources/`` and returns committed=[0]."""
+    files = {"sources/notes/x.md": b"# x\nhello\n"}
+    manifest = packages_manifest(
+        files,
+        [{"md_path": "sources/notes/x.md", "asset_paths": []}],
+    )
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/upload/sources",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["files_count"] == 2
-    assert body["bytes"] > 0
-    upload_id = body["upload_id"]
-    assert len(upload_id) >= 8
-
-    staging = wiki_root / ".dikw" / "upload-staging" / upload_id
-    assert (staging / "sources" / "notes" / "x.md").read_bytes() == files[
+    assert body["committed"] == [0]
+    assert body["rejected"] == []
+    assert (wiki_root / "sources" / "notes" / "x.md").read_bytes() == files[
         "sources/notes/x.md"
-    ]
-    assert (staging / "assets" / "img" / "y.png").read_bytes() == files[
-        "assets/img/y.png"
     ]
 
 
@@ -92,27 +57,24 @@ async def test_upload_lands_in_staging(
 
 
 @pytest.mark.asyncio
-async def test_manifest_sha256_mismatch_rejected(
-    server_client: httpx.AsyncClient,
-) -> None:
-    files = {"sources/x.md": b"hello"}
-    bad_manifest = _manifest_for(files)
-    bad_manifest["files"][0]["sha256"] = "0" * 64
-    resp = await _post_upload(server_client, files, manifest=bad_manifest)
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "manifest_sha256_mismatch"
-
-
-@pytest.mark.asyncio
 async def test_manifest_missing_file_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
+    """A manifest entry pointing to a path that isn't in the tar fails
+    schema validation — no per-package machinery can recover from it."""
     files = {"sources/x.md": b"hello"}
-    manifest = _manifest_for(files)
+    manifest = packages_manifest(
+        files, [{"md_path": "sources/x.md", "asset_paths": []}]
+    )
     manifest["files"].append(
         {"path": "sources/ghost.md", "size": 5, "sha256": "0" * 64}
     )
-    resp = await _post_upload(server_client, files, manifest=manifest)
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/upload/sources",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "manifest_missing_files"
 
@@ -121,9 +83,19 @@ async def test_manifest_missing_file_rejected(
 async def test_manifest_extra_file_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
+    """A file in the tar but not in the manifest's ``files`` list is a
+    schema-level error (every tar member must be declared)."""
     files = {"sources/x.md": b"hello", "sources/y.md": b"world"}
-    manifest = _manifest_for({"sources/x.md": files["sources/x.md"]})
-    resp = await _post_upload(server_client, files, manifest=manifest)
+    manifest = packages_manifest(
+        {"sources/x.md": files["sources/x.md"]},
+        [{"md_path": "sources/x.md", "asset_paths": []}],
+    )
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/upload/sources",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "manifest_extra_files"
 
@@ -132,7 +104,7 @@ async def test_manifest_extra_file_rejected(
 async def test_manifest_invalid_json_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
-    payload = _tar_bytes({"sources/x.md": b"hello"})
+    payload = tar_bytes({"sources/x.md": b"hello"})
     resp = await server_client.post(
         "/v1/upload/sources",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
@@ -149,8 +121,9 @@ async def test_manifest_invalid_json_rejected(
 async def test_tar_path_traversal_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
-    # Build the tar by hand because tarfile's high-level API normalises
-    # leading separators — we want the literal escape attempt.
+    """A literal ``../escape.md`` member must never write outside the
+    staging root. Build the tar by hand because tarfile's high-level
+    API normalises leading separators — we want the literal escape."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         ti = tarfile.TarInfo("../escape.md")
@@ -158,23 +131,23 @@ async def test_tar_path_traversal_rejected(
         ti.size = len(body)
         tf.addfile(ti, io.BytesIO(body))
     payload = buf.getvalue()
+    files = {"../escape.md": b"nope"}
+    manifest = {
+        "files": [
+            {
+                "path": "../escape.md",
+                "size": 4,
+                "sha256": sha256(b"nope"),
+            }
+        ],
+        "packages": [],
+        "total_bytes": 4,
+    }
+    _ = files
     resp = await server_client.post(
         "/v1/upload/sources",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
-        data={
-            "manifest": json.dumps(
-                {
-                    "files": [
-                        {
-                            "path": "../escape.md",
-                            "size": 4,
-                            "sha256": hashlib.sha256(b"nope").hexdigest(),
-                        }
-                    ],
-                    "total_bytes": 4,
-                }
-            )
-        },
+        data={"manifest": json.dumps(manifest)},
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "tar_path_traversal"
@@ -184,8 +157,27 @@ async def test_tar_path_traversal_rejected(
 async def test_tar_outside_allowed_top_dirs_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
+    """``sources/`` is the only allowed top-level dir in the new
+    packages model (assets get co-located under ``sources/`` to
+    preserve sibling-of-md asset resolution)."""
     files = {"wiki/index.md": b"# index"}
-    resp = await _post_upload(server_client, files)
+    payload = tar_bytes(files)
+    manifest = {
+        "files": [
+            {
+                "path": "wiki/index.md",
+                "size": len(files["wiki/index.md"]),
+                "sha256": sha256(files["wiki/index.md"]),
+            }
+        ],
+        "packages": [],
+        "total_bytes": len(files["wiki/index.md"]),
+    }
+    resp = await server_client.post(
+        "/v1/upload/sources",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "tar_unexpected_path"
 
@@ -206,7 +198,7 @@ async def test_tar_with_symlink_rejected(
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={
             "manifest": json.dumps(
-                {"files": [], "total_bytes": 0}
+                {"files": [], "packages": [], "total_bytes": 0}
             )
         },
     )
@@ -219,10 +211,17 @@ async def test_upload_too_large_rejected(
     server_client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Cap at a tiny size so the test stays cheap.
     monkeypatch.setenv("DIKW_SERVER_MAX_UPLOAD_BYTES", "256")
     big = b"a" * 4096
     files = {"sources/big.md": big}
-    resp = await _post_upload(server_client, files)
+    manifest = packages_manifest(
+        files, [{"md_path": "sources/big.md", "asset_paths": []}]
+    )
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/upload/sources",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "upload_too_large"

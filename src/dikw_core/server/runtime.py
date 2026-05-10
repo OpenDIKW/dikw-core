@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -118,6 +119,13 @@ async def build_runtime(
         )
     cfg = load_config(cfg_path)
 
+    # Crash-recovery: a server killed mid-upload leaves a staging dir
+    # behind. The new packages-aware upload always rmtrees its own
+    # staging when the request returns, so any leftover here means a
+    # process died before that block ran. Wipe wholesale — staging
+    # is purely transient.
+    _cleanup_orphan_staging(root)
+
     storage = build_storage(
         cfg.storage,
         root=root,
@@ -209,6 +217,28 @@ def get_runtime(app: FastAPI) -> ServerRuntime:
     if rt is None:
         raise RuntimeError("server runtime is not initialised")
     return rt  # type: ignore[no-any-return]
+
+
+def _cleanup_orphan_staging(root: Path) -> None:
+    """Wipe ``<root>/.dikw/upload-staging/`` on startup.
+
+    Successful + failed uploads always rmtree their own per-id
+    subdirectory in a ``finally`` block; anything left here means a
+    process died mid-upload (SIGKILL, OOM). The contents are pure
+    transient state — no commit happened, no client is waiting on
+    them — so wipe wholesale rather than per-id.
+
+    String-literal path (rather than ``from .routes_upload import
+    STAGING_DIRNAME``) avoids a circular import — routes_upload
+    imports ``ServerRuntime`` from this module."""
+    staging = root / ".dikw" / "upload-staging"
+    if not staging.exists():
+        return
+    try:
+        for entry in staging.iterdir():
+            shutil.rmtree(entry, ignore_errors=True)
+    except OSError as e:
+        logger.warning("orphan staging cleanup at %s skipped: %s", staging, e)
 
 
 __all__ = [

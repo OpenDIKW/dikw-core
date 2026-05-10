@@ -23,14 +23,13 @@ import asyncio
 import hashlib
 import json
 import logging
-import time
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from ...progress import CancelToken, ProgressReporter
+from .._time import isoformat_utc_ms as _isoformat
 from .bus import ProgressBus
 from .store import TaskRow, TaskStatus, TaskStore
 
@@ -38,16 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 TaskRunner = Callable[[ProgressReporter], Awaitable[dict[str, Any]]]
-
-
-def _isoformat(ts: float | None = None) -> str:
-    if ts is None:
-        ts = time.time()
-    return (
-        datetime.fromtimestamp(ts, tz=UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
 
 
 def _params_digest(params: dict[str, Any] | None) -> str:

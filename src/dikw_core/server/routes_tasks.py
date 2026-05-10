@@ -75,17 +75,16 @@ class EchoSubmit(BaseModel):
 class IngestSubmit(BaseModel):
     """Body for ``POST /v1/ingest``.
 
-    ``upload_id`` (optional) references a successful ``POST /v1/upload/sources``
-    response: the runner commits the staged tree onto ``<wiki>/sources``
-    (overwriting same-name files) before running the ingest pipeline.
-    Without it, the server ingests whatever's already on disk —
-    convenient for local-server-on-same-machine workflows.
-
     ``no_embed`` skips the dense embedding pass; useful for FTS-only
     wikis or when the embedding provider isn't reachable.
+
+    Sources are uploaded separately via ``POST /v1/upload/sources``
+    (which commits straight into ``<base>/sources/``); ingest then
+    walks that tree, hashing for idempotency and chunking + embedding.
     """
 
-    upload_id: str | None = None
+    model_config = {"extra": "forbid"}
+
     no_embed: bool = False
 
 
@@ -236,17 +235,13 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         rt: ServerRuntime = get_runtime(request.app)
         runner: TaskRunner = make_ingest_runner(
             wiki_root=rt.root,
-            upload_id=body.upload_id,
             no_embed=body.no_embed,
             lock=rt.ingest_lock,
         )
         row = await rt.manager.submit(
             op="ingest",
             runner=runner,
-            params={
-                "upload_id": body.upload_id,
-                "no_embed": body.no_embed,
-            },
+            params={"no_embed": body.no_embed},
         )
         return _handle(row)
 

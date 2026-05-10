@@ -7,6 +7,11 @@ Title resolution order:
 1. ``title:`` in front-matter
 2. First ATX heading (``# Title``) in the body
 3. File stem (``my-note`` -> ``my-note``)
+
+The asset-reference regex pair lives in ``dikw_core.md_inspect`` so the
+client upload command (which can't import from ``domains/``) and the
+D-layer parser both share one source of truth. ``extract_image_refs``
+is re-exported here for existing callers.
 """
 
 from __future__ import annotations
@@ -18,29 +23,13 @@ from typing import Any
 
 import frontmatter
 
-from ....schemas import AssetRef
+from ....md_inspect import extract_image_refs
 from .base import ParsedDocument
 
 # Backwards-compatible alias for existing callers.
 ParsedMarkdown = ParsedDocument
 
 _ATX_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
-
-# Standard markdown image: ![alt](path) with optional "title" attribute.
-# Path may contain spaces (Obsidian-style ``![](My Diagram.png)``); the
-# lookahead pins the lazy match at the position where the title or the
-# closing paren begins, so the path captures everything in between
-# without swallowing the title or trailing whitespace.
-_IMG_MD = re.compile(
-    r"!\[([^\]]*)\]\(\s*([^)\n]+?)"
-    r"(?=\s+\"[^\"\n]*\"\s*\)|\s*\))"
-    r"(?:\s+\"[^\"\n]*\")?\s*\)"
-)
-
-# Obsidian image embed: ![[file]] with optional |alias (caption or display
-# dimension like ``150`` / ``150x100``). Both the path part and the alias
-# part are inert against ``]`` and ``|`` so neighbouring embeds don't bleed.
-_IMG_WIKILINK = re.compile(r"!\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]")
 
 
 def content_hash(body: str) -> str:
@@ -51,44 +40,6 @@ def content_hash(body: str) -> str:
 def _first_heading(body: str) -> str | None:
     m = _ATX_HEADING.search(body)
     return m.group(1).strip() if m else None
-
-
-def extract_image_refs(body: str) -> list[AssetRef]:
-    """Find every image embed in ``body`` and return them in source order.
-
-    Both the standard markdown ``![alt](path)`` form (with optional
-    ``"title"`` attribute) and the Obsidian wikilink ``![[file|alias]]``
-    form are recognized. ``start`` / ``end`` are character offsets that
-    cover the literal reference syntax so the chunker can treat them as
-    atomic spans and downstream consumers can rewrite the reference in
-    place without touching surrounding prose.
-
-    Remote URLs are still emitted as ``AssetRef`` here; the materialize
-    layer is what actually decides to skip non-local references.
-    """
-    refs: list[AssetRef] = []
-    for m in _IMG_MD.finditer(body):
-        refs.append(
-            AssetRef(
-                original_path=m.group(2),
-                alt=m.group(1) or "",
-                start=m.start(),
-                end=m.end(),
-                syntax="markdown",
-            )
-        )
-    for m in _IMG_WIKILINK.finditer(body):
-        refs.append(
-            AssetRef(
-                original_path=m.group(1),
-                alt=m.group(2) or "",
-                start=m.start(),
-                end=m.end(),
-                syntax="wikilink",
-            )
-        )
-    refs.sort(key=lambda r: r.start)
-    return refs
 
 
 def parse_text(*, path: str, text: str, mtime: float) -> ParsedDocument:

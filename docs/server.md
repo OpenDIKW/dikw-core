@@ -32,7 +32,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 | **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
 | **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval}` → `task_id`; `GET /v1/tasks/{id}/events` (NDJSON); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → stream NDJSON → final JSON |
 | **Streaming query** | `POST /v1/query` | NDJSON: `query_started → retrieval_done → llm_token* → final` |
-| **Upload** | `POST /v1/upload/sources` | multipart: tar.gz payload + manifest JSON |
+| **Upload** | `POST /v1/upload/sources` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
 Every error follows one envelope:
 
@@ -160,6 +160,64 @@ token comes from the file, and so on.
   operators don't need to do anything special.
 * **Upload size** — `POST /v1/upload/sources` accepts up to 1 GiB by
   default. Override via `DIKW_SERVER_MAX_UPLOAD_BYTES=<int>`.
+
+### Sources upload (`POST /v1/upload/sources`)
+
+Multipart form-data with two parts:
+
+* `payload` — tar.gz; every member's path must start with `sources/`
+  (assets ride along under `sources/<rel>` so the engine's
+  sibling-of-md asset resolution still works).
+* `manifest` — JSON of shape:
+
+  ```json
+  {
+    "files":    [{"path": "sources/...", "size": N, "sha256": "<lc-hex>"}],
+    "packages": [
+      {"id": 0, "md_path": "sources/note.md",
+       "asset_paths": ["sources/diagram.png"],
+       "package_sha256": "<sha256(sorted([md_sha, *asset_shas]).join(\"\\n\"))>"}
+    ],
+    "total_bytes": N
+  }
+  ```
+
+The server stages the tarball under
+`<base>/.dikw/upload-staging/<upload_id>/`, validates schema (orphan
+file, duplicate `md_path`, missing/extra files), recomputes every
+file sha256 + each `package_sha256`, then commits well-formed
+packages straight into `<base>/sources/` via `os.replace` and
+rmtrees the staging tree.
+
+Response:
+
+```json
+{
+  "upload_id": "...", "files_count": N, "bytes": M, "applied_at": "...",
+  "committed": [0, 2, ...],
+  "rejected": [{"id": 1, "code": "...", "detail": {...}}]
+}
+```
+
+Error codes:
+
+| code | layer | meaning |
+|---|---|---|
+| `upload_too_large` | request | exceeds `DIKW_SERVER_MAX_UPLOAD_BYTES` |
+| `tar_path_traversal` / `tar_link_forbidden` / `tar_unexpected_path` / `tar_invalid` | tar safety | refused before extraction |
+| `manifest_malformed` / `manifest_invalid` | schema | manifest JSON / pydantic validation |
+| `manifest_packages_missing` | schema | legacy files-only manifest no longer accepted |
+| `manifest_missing_files` / `manifest_extra_files` | schema | tar / manifest disagree |
+| `manifest_orphan_file` | schema | file in manifest not referenced by any package |
+| `manifest_duplicate_md_path` | schema | one `md_path` in multiple packages |
+| `manifest_package_unknown_file` | schema | a package references a file not declared in `files` |
+| `manifest_sha256_mismatch` | per-package | file-level sha mismatch; affected packages go to `rejected` |
+| `manifest_package_sha256_mismatch` | per-package | package-level sha mismatch |
+| `package_commit_failed` | per-package | `os.replace` failed (disk full, permissions) |
+
+Schema-level failures return 4xx; per-package failures return 200 with
+the failing packages listed in `rejected` so the client can retry just
+those.
 
 ## Disabling lifecycle endpoints
 

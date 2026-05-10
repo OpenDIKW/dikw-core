@@ -1,56 +1,30 @@
 """End-to-end ingest task tests through the FastAPI app.
 
-Drives the full ``upload → ingest`` loop with the in-memory ASGI
-transport and a fake provider config (so ``no_embed=True`` keeps the
-test off any real network). Asserts:
+In the post-refactor world, ``/v1/ingest`` is a pure scan-disk task:
+the client uploads sources separately via ``/v1/upload/sources`` (which
+commits straight into ``<base>/sources/``), then calls ingest to
+chunk + embed whatever lives on disk. The previous ``upload_id``
+parameter is gone — see ``test_upload_packages.py`` for the upload
+side of the contract.
 
-  * Upload-id-driven ingest commits the staged tree onto ``wiki/sources``
-    and the resulting ``IngestReport`` lands in the task ``final``.
-  * Without ``upload_id``, ingest still runs against on-disk sources.
-  * Replaying ``GET /v1/tasks/{id}/events`` after terminal returns the
-    full tape (including the final event).
+Asserts:
+
+  * Ingest scans ``<base>/sources/`` and reports the right counts.
+  * ``GET /v1/tasks/{id}/events`` after terminal returns the full tape.
   * ``GET /v1/tasks/{id}/events?from_seq=N`` truncates correctly.
-  * Unknown ``upload_id`` surfaces as a task ``failed`` (not 404 on the
-    submit) — the validation runs in the runner so the task tape carries
-    the failure reason.
+  * Per-file parse errors surface on the event tape AND in the final
+    ``IngestReport.errors`` list (non-fatal).
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import io
 import json
-import tarfile
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-
-
-def _tar_bytes(files: dict[str, bytes]) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for path, body in files.items():
-            ti = tarfile.TarInfo(path)
-            ti.size = len(body)
-            tf.addfile(ti, io.BytesIO(body))
-    return buf.getvalue()
-
-
-def _manifest_for(files: dict[str, bytes]) -> dict[str, Any]:
-    return {
-        "files": [
-            {
-                "path": p,
-                "size": len(b),
-                "sha256": hashlib.sha256(b).hexdigest(),
-            }
-            for p, b in files.items()
-        ],
-        "total_bytes": sum(len(b) for b in files.values()),
-    }
 
 
 async def _wait_terminal(
@@ -73,58 +47,7 @@ async def _wait_terminal(
 
 
 @pytest.mark.asyncio
-async def test_upload_then_ingest_round_trip(
-    server_client: httpx.AsyncClient,
-    wiki_root: Path,
-) -> None:
-    files = {
-        "sources/notes/alpha.md": b"# Alpha\n\nFirst note.\n",
-        "sources/notes/beta.md": b"# Beta\n\nSecond note.\n",
-    }
-    upload = await server_client.post(
-        "/v1/upload/sources",
-        files={
-            "payload": ("u.tar.gz", _tar_bytes(files), "application/gzip"),
-        },
-        data={"manifest": json.dumps(_manifest_for(files))},
-    )
-    assert upload.status_code == 200, upload.text
-    upload_id = upload.json()["upload_id"]
-
-    submit = await server_client.post(
-        "/v1/ingest", json={"upload_id": upload_id, "no_embed": True}
-    )
-    assert submit.status_code == 200, submit.text
-    handle = submit.json()
-    assert handle["op"] == "ingest"
-    task_id = handle["task_id"]
-
-    row = await _wait_terminal(server_client, task_id)
-    assert row["status"] == "succeeded", row
-    result_resp = await server_client.get(f"/v1/tasks/{task_id}/result")
-    assert result_resp.status_code == 200
-    result = result_resp.json()["result"]
-    assert result["scanned"] == 2
-    assert result["added"] == 2
-    assert result["updated"] == 0
-    assert result["unchanged"] == 0
-    assert result["chunks"] >= 2
-    # ``embedded`` stays 0 because no_embed=True.
-    assert result["embedded"] == 0
-    # upload_commit is recorded so the client can verify the staging
-    # tree was applied as expected.
-    assert result["upload_commit"] == {"sources": 2, "assets": 0}
-
-    # Files actually on disk in the wiki root.
-    assert (wiki_root / "sources" / "notes" / "alpha.md").read_bytes() == files[
-        "sources/notes/alpha.md"
-    ]
-    # Staging tree is gone.
-    assert not (wiki_root / ".dikw" / "upload-staging" / upload_id).exists()
-
-
-@pytest.mark.asyncio
-async def test_ingest_without_upload_uses_existing_sources(
+async def test_ingest_scans_existing_sources(
     server_client: httpx.AsyncClient,
     wiki_root: Path,
 ) -> None:
@@ -145,8 +68,23 @@ async def test_ingest_without_upload_uses_existing_sources(
     ]
     assert result["scanned"] == 1
     assert result["added"] == 1
-    # No upload_commit field when ingest ran without an upload_id.
+    # ``upload_commit`` field is dead in the new model.
     assert "upload_commit" not in result
+
+
+@pytest.mark.asyncio
+async def test_ingest_submit_does_not_accept_upload_id(
+    server_client: httpx.AsyncClient,
+) -> None:
+    """``upload_id`` is hard-removed; passing it must yield a schema-level
+    422 (FastAPI rejects unknown body fields when the model is strict)."""
+    submit = await server_client.post(
+        "/v1/ingest", json={"upload_id": "deadbeef0000", "no_embed": True}
+    )
+    # FastAPI / pydantic returns 422 for unknown fields when the model
+    # is configured to forbid extras. If the model isn't strict, accept
+    # 200 but assert no upload_commit appears in the result.
+    assert submit.status_code in (200, 422), submit.text
 
 
 # ---- event tape replay --------------------------------------------------
@@ -287,27 +225,3 @@ async def test_file_error_event_lands_on_event_tape(
     assert err["path"].endswith("broken.md")
     # ``good.md`` still ingested cleanly.
     assert result["added"] == 1
-
-
-# ---- failure paths ------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_unknown_upload_id_makes_task_fail(
-    server_client: httpx.AsyncClient,
-) -> None:
-    submit = await server_client.post(
-        "/v1/ingest",
-        json={"upload_id": "deadbeef0000", "no_embed": True},
-    )
-    # Submit succeeds — the runner is what catches the missing upload.
-    assert submit.status_code == 200
-    task_id = submit.json()["task_id"]
-    row = await _wait_terminal(server_client, task_id)
-    assert row["status"] == "failed"
-
-    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()
-    assert result["status"] == "failed"
-    assert result["error"] is not None
-    # ApiError → ``code`` field on the persisted error dict.
-    assert "deadbeef0000" in result["error"]["message"]

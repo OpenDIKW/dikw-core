@@ -56,9 +56,20 @@ Leave it running. Every `dikw <op>` shown below is a top-level alias for
 
 ## 3. Add source material and ingest
 
-Drop markdown files anywhere under `sources/`, then:
+Two steps:
+
+* **Upload** — pre-flight + ship markdown packages (each md plus the
+  assets it embeds) into the server's `sources/` tree.
+* **Ingest** — chunk + FTS-index + (optionally) embed the
+  `sources/` tree.
 
 ```bash
+# Send your local notes (file or directory) to the server. Each *.md
+# becomes one package together with the images it references; the
+# pre-flight rejects bad frontmatter, missing assets, and orphan
+# files BEFORE the network round trip.
+uv run dikw upload ./my-notes
+
 # Offline mode — indexes FTS only, no API calls.
 uv run dikw ingest --no-embed
 
@@ -67,6 +78,10 @@ uv run dikw ingest --no-embed
 export DIKW_EMBEDDING_API_KEY=sk-...
 uv run dikw ingest
 ```
+
+If the server runs on the same machine as your notes, you can also
+drop / edit markdown directly under `<base>/sources/` and skip
+`dikw upload` — `dikw ingest` always scans whatever's on disk.
 
 `dikw status` shows document, chunk, and embedding counts per DIKW layer.
 Subsequent ingests are idempotent: files whose content hash hasn't changed

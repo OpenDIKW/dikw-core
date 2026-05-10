@@ -1,20 +1,18 @@
-"""Streaming SHA-256 of on-disk files."""
+"""Hash helpers shared across D layer + server commit + client upload.
+
+``hash_file`` lives in :mod:`dikw_core.md_inspect` so the client (which
+can't import from ``domains/``) and the engine share one implementation.
+This module re-exports it under the historical name so existing callers
+stay intact.
+"""
 
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
-_DEFAULT_CHUNK_SIZE = 1 << 20
+from ...md_inspect import sha256_file as hash_file
 
-
-def hash_file(path: Path, *, chunk_size: int = _DEFAULT_CHUNK_SIZE) -> str:
-    """SHA-256 hex digest of ``path``, with O(chunk_size) peak memory."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(chunk_size), b""):
-            h.update(block)
-    return h.hexdigest()
+__all__ = ["hash_bytes", "hash_file"]
 
 
 def hash_bytes(data: bytes) -> str:

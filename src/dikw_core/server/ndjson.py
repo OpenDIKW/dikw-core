@@ -21,12 +21,12 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.responses import StreamingResponse
 
 from ..progress import CancelToken
+from ._time import isoformat_utc_ms
 from .tasks import TERMINAL_STATUSES, ProgressBus, TaskStore
 
 # Tuned to undercut typical proxy idle timeouts (60s on most CDNs / nginx
@@ -40,13 +40,9 @@ _STORE_POLL_INTERVAL = 0.5
 
 
 def isoformat_now() -> str:
-    """Millisecond-precision UTC timestamp with the trailing ``Z`` suffix
-    used by every NDJSON event the server emits."""
-    return (
-        datetime.fromtimestamp(time.time(), tz=UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    """Backwards-compatible alias for :func:`isoformat_utc_ms` — kept so
+    existing imports of ``isoformat_now`` keep working."""
+    return isoformat_utc_ms()
 
 
 async def ndjson_lines(

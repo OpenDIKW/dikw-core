@@ -43,6 +43,7 @@ from .progress import (
     render_retrieve_table,
     render_status,
     render_synth_report,
+    render_upload_report,
 )
 from .transport import ClientError, Transport
 from .upload import UploadError, build_upload
@@ -112,7 +113,13 @@ def _on_error(err: ClientError) -> None:
 
 
 def _run(coro: Any) -> Any:
-    """Run an async command with a uniform error → exit-code mapping."""
+    """Run an async command with a uniform error → exit-code mapping.
+
+    ``UploadError`` exits 2 (Unix convention for user-supplied bad
+    input — the pre-flight inspection caught a problem the user
+    needs to fix locally). Server-side failures and transport errors
+    exit 1 (operation failed at the remote end).
+    """
     try:
         return asyncio.run(coro)
     except ClientError as e:
@@ -120,7 +127,7 @@ def _run(coro: Any) -> Any:
         raise typer.Exit(code=1) from e
     except UploadError as e:
         console.print(f"[red]upload error:[/red] {e}")
-        raise typer.Exit(code=1) from e
+        raise typer.Exit(code=2) from e
 
 
 # ---- meta + sync commands ---------------------------------------------
@@ -700,28 +707,63 @@ def _exit_on_failure(
 
 
 @app.command(
-    "ingest",
+    "upload",
     epilog=(
         "Examples:\n\n"
-        "  dikw client ingest\n\n"
-        "  dikw client ingest --from ./docs\n\n"
-        "  dikw client ingest --from ./docs --no-embed\n\n"
-        "  dikw client ingest --strict"
+        "  dikw client upload ./inbox\n\n"
+        "  dikw client upload ./note.md"
     ),
 )
-def ingest_cmd(
-    from_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--from",
-            "-f",
+def upload_cmd(
+    path: Annotated[
+        Path,
+        typer.Argument(
             help=(
-                "Local directory to upload as the base's sources before "
-                "ingest. If omitted, the server ingests whatever is "
-                "already on its disk."
+                "Local markdown file or directory to upload. Each ``*.md`` "
+                "becomes one package together with its referenced assets."
             ),
         ),
-    ] = None,
+    ],
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Pre-flight + upload markdown packages into the server's ``sources/``.
+
+    Each markdown file becomes a single package alongside any
+    asset (image, pdf) it embeds. Pre-flight inspection (frontmatter
+    parse, asset existence, non-empty body, no orphan asset) runs
+    locally first; failures exit 2 before any bytes leave the
+    machine.
+
+    On success the server commits well-formed packages straight into
+    ``<base>/sources/`` (per-package via ``os.replace``) and returns
+    a ``committed`` / ``rejected`` summary. Run ``dikw client ingest``
+    afterwards to chunk + embed the new sources.
+    """
+
+    async def _go() -> None:
+        with build_upload(path) as bundle:
+            async with Transport.from_config(_resolve(server, token)) as t:
+                response = await t.post_multipart(
+                    "/v1/upload/sources",
+                    files={
+                        "payload": (
+                            "payload.tar.gz",
+                            bundle.payload,
+                            "application/gzip",
+                        )
+                    },
+                    data={"manifest": bundle.manifest_json},
+                )
+        render_upload_report(console, response)
+        if response.get("rejected"):
+            raise typer.Exit(code=1)
+
+    _run(_go())
+
+
+@app.command("ingest")
+def ingest_cmd(
     no_embed: Annotated[
         bool,
         typer.Option("--no-embed", help="Skip the dense embedding pass."),
@@ -744,34 +786,17 @@ def ingest_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Upload sources (optional) + run ingest, streaming progress."""
+    """Run ingest against the server's ``<base>/sources/`` tree.
+
+    Sources are uploaded separately via ``dikw client upload``.
+    """
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
-            upload_id: str | None = None
-            if from_dir is not None:
-                with build_upload(from_dir) as bundle:
-                    response = await t.post_multipart(
-                        "/v1/upload/sources",
-                        files={
-                            "payload": (
-                                "payload.tar.gz",
-                                bundle.payload,
-                                "application/gzip",
-                            )
-                        },
-                        data={"manifest": bundle.manifest_json},
-                    )
-                upload_id = str(response["upload_id"])
-                console.print(
-                    f"[green]uploaded[/green] {response.get('files_count')} "
-                    f"file(s), {response.get('bytes')} bytes "
-                    f"(id={upload_id})"
-                )
             status, result, error = await _follow_task(
                 t,
                 submit_path="/v1/ingest",
-                body={"upload_id": upload_id, "no_embed": no_embed},
+                body={"no_embed": no_embed},
                 plain=plain,
             )
         if status == "succeeded" and result is not None:

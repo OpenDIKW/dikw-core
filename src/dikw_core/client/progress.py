@@ -427,6 +427,58 @@ def render_ingest_errors(
     console.print(table)
 
 
+def render_upload_report(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Render the ``UploadResponse`` returned by ``POST /v1/upload/sources``.
+
+    Shows the upload summary (files, bytes), the list of committed
+    package ids, and a table of rejected packages with reason codes."""
+    files_count = int(report.get("files_count") or 0)
+    total_bytes = int(report.get("bytes") or 0)
+    committed = list(report.get("committed") or [])
+    rejected = list(report.get("rejected") or [])
+
+    summary = Table(
+        title="dikw upload", show_header=True, header_style="bold"
+    )
+    summary.add_column("metric", justify="left")
+    summary.add_column("count", justify="right")
+    summary.add_row("files", str(files_count))
+    summary.add_row("bytes", str(total_bytes))
+    summary.add_row("packages committed", str(len(committed)))
+    summary.add_row("packages rejected", str(len(rejected)))
+    console.print(summary)
+
+    if committed:
+        ids = ", ".join(str(i) for i in committed)
+        console.print(f"[green]committed[/green]: {ids}")
+
+    if rejected:
+        table = Table(
+            title=f"rejected packages ({len(rejected)})",
+            show_header=True,
+            header_style="bold",
+            title_style="yellow",
+        )
+        table.add_column("id", justify="right")
+        table.add_column("code", style="red")
+        table.add_column("detail", overflow="fold")
+        for r in rejected:
+            if not isinstance(r, Mapping):
+                continue
+            # ``id`` can legitimately be 0 — ``or "?"`` would mask it,
+            # so explicit None / missing check.
+            id_value = r.get("id")
+            id_str = "?" if id_value is None else str(id_value)
+            table.add_row(
+                id_str,
+                str(r.get("code") or "?"),
+                str(r.get("detail") or ""),
+            )
+        console.print(table)
+
+
 def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     table = Table(title="dikw synth", show_header=True, header_style="bold")
     table.add_column("metric", justify="left")

@@ -1,49 +1,63 @@
-"""Local sources/+assets/ → tar.gz + manifest packing.
+"""Local md+assets → tar.gz + per-md packages manifest.
 
-The server's ``POST /v1/upload/sources`` contract requires:
+The post-refactor client packages each markdown file together with its
+referenced assets as a single logical "package" inside one tar.gz +
+manifest. The server's ``POST /v1/upload/sources`` validates each
+package independently, commits the well-formed ones into
+``<base>/sources/`` directly, and reports per-package outcomes.
 
-* a tar.gz whose top-level directories are exactly ``sources/`` and/or
-  ``assets/``;
-* a JSON manifest with one entry per file in the archive
-  (``{path, size, sha256}``); paths must match in-archive paths verbatim.
+Wire shape::
 
-This module turns a local directory that already contains those top-level
-subtrees into the (tarball, manifest) pair the transport ships. Two
-shapes are accepted:
+    {
+      "files":    [{"path": "sources/...", "size": ..., "sha256": ...}, ...],
+      "packages": [
+        {"id": 0, "md_path": "sources/note.md",
+         "asset_paths": ["sources/diagram.png"],
+         "package_sha256": "..."},
+        ...
+      ],
+      "total_bytes": ...
+    }
 
-1. ``<src>/sources/...`` and optionally ``<src>/assets/...`` already in
-   place — most common: the user dropped markdown into a fresh wiki's
-   ``sources/`` and wants to upload it.
-2. ``<src>/`` with markdown files at the top — we re-root them under
-   ``sources/`` automatically so the user doesn't have to mkdir before
-   their first upload.
-
-We **never** silently include files outside the allowed top-level dirs:
-that's the client-side mirror of the server's ``tar_unexpected_path``
-guard, surfaced as a clear local error before the upload starts.
+Pre-flight inspection (frontmatter parse, missing asset, empty body,
+orphan asset, symlink) raises ``UploadError`` before any bytes are
+tarred so a broken input fails locally — no network round trip.
 """
 
 from __future__ import annotations
 
 import contextlib
 import gzip
-import hashlib
-import io
 import json
 import os
+import stat
 import tarfile
-from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from typing import IO
+
+from ..md_inspect import (
+    InspectionResult,
+    inspect_markdown,
+    package_sha256,
+    sha256_file,
+)
 
 # Spooled buffer threshold — 16 MiB matches the plan's recommendation.
 # Below it, the tarball stays in RAM (zero disk I/O); above it, the
 # spooled file rolls to a real tempfile so we don't OOM on big asset
 # bundles.
 _SPOOL_MAX_SIZE = 16 * 1024 * 1024
-_ALLOWED_TOP_DIRS = ("sources", "assets")
+
+# Only ``.md`` is accepted for upload — the default ``dikw.yml``
+# scans ``sources/**/*.md`` and ``.markdown`` files would commit but
+# silently never get ingested. Users needing ``.markdown`` should
+# rename + edit their config glob explicitly.
+_DEFAULT_MD_EXTENSIONS = frozenset({".md"})
+_DEFAULT_ASSET_EXTENSIONS = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".pdf"}
+)
 
 
 @dataclass(frozen=True)
@@ -55,13 +69,23 @@ class ManifestEntry:
     sha256: str  # lowercase hex
 
 
+@dataclass(frozen=True)
+class PackageEntry:
+    """One md + its asset references, with the digest a server can recompute."""
+
+    id: int
+    md_path: str
+    asset_paths: list[str]
+    package_sha256: str
+
+
 @dataclass
 class UploadBundle:
     """A ready-to-send tar.gz + its manifest.
 
-    ``payload`` is a file-like positioned at byte 0; the caller hands it
-    to the transport. ``payload`` is owned by this dataclass — close it
-    via :meth:`close` (or use as a context manager) when done.
+    ``payload`` is a file-like positioned at byte 0; the caller hands
+    it to the transport. Owned by this dataclass — close it via
+    :meth:`close` (or use as a context manager) when done.
     """
 
     payload: IO[bytes]
@@ -70,9 +94,8 @@ class UploadBundle:
     bytes: int
 
     def close(self) -> None:
-        # Tempfile cleanup races with delete-on-close on Windows;
-        # don't let a swallowed cleanup error mask the real upload
-        # error from the surrounding traceback.
+        # Tempfile cleanup races with delete-on-close on Windows; don't
+        # let a swallowed cleanup error mask the real upload error.
         with contextlib.suppress(Exception):
             self.payload.close()
 
@@ -83,264 +106,298 @@ class UploadBundle:
         self.close()
 
 
-def build_upload(
-    src: Path,
-    *,
-    extra_extensions: Iterable[str] = (),
-) -> UploadBundle:
+class UploadError(Exception):
+    """Surface client-side rejection (bad inputs, pre-flight lint, …)
+    before any bytes leave the machine."""
+
+
+def build_upload(src: Path) -> UploadBundle:
     """Pack ``src`` into a tar.gz + manifest the server will accept.
 
-    ``extra_extensions`` lets callers admit additional file types beyond
-    the conservative default (``.md``, image extensions, ``.pdf``). The
-    extension check is the only file-type filter — we don't infer mime
-    types or peek at content, so a ``.md`` file that happens to be
-    binary still ships through.
+    ``src`` may be either a single ``.md`` file or a directory whose
+    ``**/*.md`` tree becomes one package per file. Pre-flight
+    inspection runs on every md (frontmatter parse, asset existence,
+    non-empty body); orphan assets in the input tree are rejected so
+    files don't get silently dropped.
 
-    Raises :class:`UploadError` for empty inputs or unrecognised file
-    types so the user sees the problem before the upload begins.
+    Raises :class:`UploadError` for any pre-flight failure with
+    enough detail (file path, lint kind, missing ref) for the user to
+    fix.
     """
-    src = src.resolve()
-    if not src.is_dir():
-        raise UploadError(f"upload source is not a directory: {src}")
+    project_root, md_files, asset_files = _resolve_input(src)
 
-    allowed_ext = _allowed_extensions(extra_extensions)
-    files = list(_discover(src, allowed_ext=allowed_ext))
-    if not files:
+    # Pre-flight inspection: collect packages or accumulate failures.
+    packages: list[_PendingPackage] = []
+    pre_flight_errors: list[str] = []
+    for md_path in md_files:
+        if md_path.is_symlink():
+            pre_flight_errors.append(
+                f"{md_path}: symlink (target: {os.readlink(md_path)!r}); "
+                "copy the file in place if you really mean to include it"
+            )
+            continue
+        result = inspect_markdown(md_path, project_root=project_root)
+        if not result.ok:
+            for issue in result.issues:
+                pre_flight_errors.append(
+                    f"{md_path}: {issue.kind}: {issue.message}"
+                )
+            continue
+        packages.append(_pending_from_inspection(result, project_root))
+
+    # Orphan asset check: any allowed-extension asset under the project
+    # root that no md references. Skip it loudly so the user resolves
+    # their intent (delete it, or reference it).
+    if asset_files:
+        all_referenced: set[Path] = {
+            abs_path for pkg in packages for _, abs_path in pkg.assets
+        }
+        for asset in asset_files:
+            if asset in all_referenced:
+                continue
+            pre_flight_errors.append(
+                f"{asset}: orphan asset (not referenced by any md); "
+                "remove it or embed it in a markdown file"
+            )
+
+    if pre_flight_errors:
         raise UploadError(
-            f"no files found under {src}; expected sources/**.md or assets/**"
+            "pre-flight inspection failed:\n  - "
+            + "\n  - ".join(pre_flight_errors)
         )
 
-    # SpooledTemporaryFile is the payload we hand back to the caller;
-    # it must outlive this function. SIM115 wants a ``with`` block, but
-    # closing here would invalidate the bundle — suppress at this site.
-    payload = SpooledTemporaryFile(  # noqa: SIM115
+    return _build_bundle(packages)
+
+
+# ---- internals ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PendingPackage:
+    """In-progress package being assembled before the tarball write.
+
+    ``assets`` pairs each asset's archive path (POSIX, ``sources/...``)
+    with its on-disk absolute path — coupled in a single sequence so
+    the two can never drift apart."""
+
+    md_archive: str
+    md_abs: Path
+    assets: list[tuple[str, Path]]
+
+
+def _resolve_input(
+    src: Path,
+) -> tuple[Path, list[Path], list[Path]]:
+    """Inspect ``src`` once and return ``(project_root, md_files, asset_files)``.
+
+    The symlink check has to run on the **user-supplied** path, not on
+    the resolved one — ``Path.resolve`` strips the symlink for us, so
+    a follow-up ``S_ISLNK`` would always say "regular file" and the
+    pre-flight rejection promised in the docstring would silently
+    leak the target's bytes into the upload.
+    """
+    try:
+        st_raw = src.lstat()
+    except OSError as e:
+        raise UploadError(f"upload source does not exist: {src}") from e
+
+    if stat.S_ISLNK(st_raw.st_mode):
+        raise UploadError(
+            f"refusing to upload symlink: {src} "
+            f"(target: {os.readlink(src)!r})"
+        )
+
+    src = src.resolve()
+    st = src.stat()
+
+    if stat.S_ISREG(st.st_mode):
+        if src.suffix.lower() not in _DEFAULT_MD_EXTENSIONS:
+            raise UploadError(
+                f"single-file upload only accepts markdown "
+                f"({sorted(_DEFAULT_MD_EXTENSIONS)}); got {src.suffix!r}"
+            )
+        return src.parent, [src], []
+
+    if stat.S_ISDIR(st.st_mode):
+        # If the user points at a base-style tree (already contains a
+        # ``sources/`` subdir), descend into it and treat ``src`` as the
+        # project root. Without this, scanning + archiving from ``src``
+        # would prepend a second ``sources/`` and commit md as
+        # ``sources/sources/note.md``.
+        scan_root = src / "sources" if (src / "sources").is_dir() else src
+        md_files, asset_files = _discover_files(scan_root)
+        if not md_files:
+            raise UploadError(
+                f"no markdown files found under {scan_root} "
+                f"(expected ``**/*.md``)"
+            )
+        return src, md_files, asset_files
+
+    raise UploadError(
+        f"upload source is neither a file nor a directory: {src}"
+    )
+
+
+def _pending_from_inspection(
+    result: InspectionResult, project_root: Path
+) -> _PendingPackage:
+    """Project the inspection result onto archive paths.
+
+    Both md and assets get re-rooted under ``sources/`` preserving
+    their relative position inside ``project_root``. Assets that
+    resolve outside the project root (via ``_resolve_local``'s
+    project-root fallback when the relative path escapes) are
+    rejected — the upload root must self-contain.
+
+    When the user pointed at a base-style tree, files already begin
+    with ``sources/`` after relativising; ``_archive_path`` keeps a
+    single prefix in either case.
+    """
+    md_archive = _archive_path(result.file_path, project_root)
+    assets: list[tuple[str, Path]] = []
+    for asset_abs in result.asset_paths:
+        try:
+            archive = _archive_path(asset_abs, project_root)
+        except ValueError as e:
+            raise UploadError(
+                f"{result.file_path}: asset {asset_abs} resolves outside "
+                f"the upload root ({project_root}); move the asset under "
+                f"the upload root or invoke upload from a higher directory"
+            ) from e
+        assets.append((archive, asset_abs))
+    return _PendingPackage(
+        md_archive=md_archive,
+        md_abs=result.file_path,
+        assets=assets,
+    )
+
+
+def _archive_path(abs_path: Path, project_root: Path) -> str:
+    """Compute the in-archive path for a file rooted at ``project_root``.
+
+    ``project_root`` may itself sit one level above an existing
+    ``sources/`` subtree (the base-style layout); in that case the
+    relative path already begins with ``sources/`` and we don't add
+    another prefix. Otherwise the relative path is assumed to live
+    under the implicit ``sources/`` root and gets prefixed."""
+    rel = abs_path.relative_to(project_root).as_posix()
+    if rel == "sources" or rel.startswith("sources/"):
+        return rel
+    return "sources/" + rel
+
+
+def _build_bundle(packages: list[_PendingPackage]) -> UploadBundle:
+    """Pack the validated packages into a tar.gz + manifest.
+
+    Files (md + asset) are deduped by archive path: the same logo
+    referenced by two notes appears once in the archive, with both
+    packages listing it in ``asset_paths``.
+    """
+    # Collect unique files preserving first-seen order (sorted later
+    # so the manifest has a stable shape).
+    abs_by_archive: dict[str, Path] = {}
+    for pkg in packages:
+        abs_by_archive.setdefault(pkg.md_archive, pkg.md_abs)
+        for archive_path, abs_path in pkg.assets:
+            abs_by_archive.setdefault(archive_path, abs_path)
+
+    # Hash + stat every unique file once. ``stat`` is one syscall for
+    # both size and mtime; sha256 streams the bytes.
+    hash_by_archive: dict[str, tuple[str, int, float]] = {}
+    for archive_path, abs_path in abs_by_archive.items():
+        st = abs_path.stat()
+        sha = sha256_file(abs_path)
+        hash_by_archive[archive_path] = (sha, st.st_size, st.st_mtime)
+
+    payload = SpooledTemporaryFile(  # noqa: SIM115 - returned to caller
         max_size=_SPOOL_MAX_SIZE, mode="w+b"
     )
-    manifest_entries: list[ManifestEntry] = []
+    manifest_files: list[ManifestEntry] = []
     total_bytes = 0
     try:
-        # Build the gzip stream around the spooled file directly so
-        # large bundles never materialise in RAM. ``mode='w'`` on the
-        # tarfile + GzipFile pair is the documented streaming write
-        # idiom and matches what httpx will send on the wire.
         with gzip.GzipFile(fileobj=payload, mode="wb") as gz, tarfile.TarFile(
             fileobj=gz, mode="w"
         ) as tf:
-            for entry in files:
-                tarinfo = tarfile.TarInfo(name=entry.archive_path)
-                tarinfo.size = entry.size
-                tarinfo.mtime = int(entry.mtime)
+            for archive_path in sorted(abs_by_archive):
+                abs_path = abs_by_archive[archive_path]
+                sha, size, mtime = hash_by_archive[archive_path]
+                tarinfo = tarfile.TarInfo(name=archive_path)
+                tarinfo.size = size
+                tarinfo.mtime = int(mtime)
                 tarinfo.mode = 0o644
                 # Strip uid/gid/uname/gname so the archive is byte-stable
-                # across users running the same upload — useful when a
-                # CI job and a developer both upload the same tree.
+                # across users running the same upload — useful when CI
+                # and a developer both upload the same tree.
                 tarinfo.uid = 0
                 tarinfo.gid = 0
                 tarinfo.uname = ""
                 tarinfo.gname = ""
-                with entry.path.open("rb") as fh:
+                with abs_path.open("rb") as fh:
                     tf.addfile(tarinfo, fh)
-                manifest_entries.append(
-                    ManifestEntry(
-                        path=entry.archive_path,
-                        size=entry.size,
-                        sha256=entry.sha256,
-                    )
+                manifest_files.append(
+                    ManifestEntry(path=archive_path, size=size, sha256=sha)
                 )
-                total_bytes += entry.size
+                total_bytes += size
     except Exception:
         payload.close()
         raise
 
     payload.seek(0)
+    pkg_entries: list[PackageEntry] = []
+    for idx, pkg in enumerate(packages):
+        md_sha = hash_by_archive[pkg.md_archive][0]
+        asset_archives = [archive_path for archive_path, _ in pkg.assets]
+        asset_shas = [hash_by_archive[ap][0] for ap in asset_archives]
+        pkg_entries.append(
+            PackageEntry(
+                id=idx,
+                md_path=pkg.md_archive,
+                asset_paths=asset_archives,
+                package_sha256=package_sha256(md_sha, asset_shas),
+            )
+        )
     manifest_json = json.dumps(
         {
-            "files": [e.__dict__ for e in manifest_entries],
+            "files": [e.__dict__ for e in manifest_files],
+            "packages": [e.__dict__ for e in pkg_entries],
             "total_bytes": total_bytes,
         }
     )
     return UploadBundle(
         payload=payload,
         manifest_json=manifest_json,
-        files_count=len(manifest_entries),
+        files_count=len(manifest_files),
         bytes=total_bytes,
     )
 
 
-# ---- internals ----------------------------------------------------------
+def _discover_files(
+    root: Path,
+) -> tuple[list[Path], list[Path]]:
+    """Walk ``root`` once, bucket entries into (md_files, asset_files).
 
-
-_DEFAULT_EXTENSIONS = frozenset(
-    {".md", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".pdf"}
-)
-
-
-def _allowed_extensions(extra: Iterable[str]) -> frozenset[str]:
-    extras = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extra}
-    return _DEFAULT_EXTENSIONS | frozenset(extras)
-
-
-@dataclass(frozen=True)
-class _DiscoveredFile:
-    """One on-disk file plus its computed archive path + hash + size."""
-
-    path: Path
-    archive_path: str
-    size: int
-    sha256: str
-    mtime: float
-
-
-class UploadError(Exception):
-    """Surface client-side rejection (empty input, bad extension, …)
-    before any bytes leave the machine."""
-
-
-def _discover(
-    src: Path, *, allowed_ext: frozenset[str]
-) -> Iterator[_DiscoveredFile]:
-    """Yield every uploadable file under ``src``, with archive path resolved.
-
-    Two top-level shapes are recognised:
-
-    * ``src/sources/**``, ``src/assets/**`` already laid out — files keep
-      their relative path inside the tarball.
-    * ``src/**.md`` at the top — files get re-rooted under ``sources/``.
-      Any other extension at the top is rejected so the user notices
-      they forgot the ``sources/`` directory rather than silently
-      missing assets.
-
-    Mixed shapes (top-level md AND a sources/ subdir) are rejected — too
-    ambiguous to guess the right merge.
-    """
-    sources_dir = src / "sources"
-    assets_dir = src / "assets"
-    has_sources_subtree = sources_dir.is_dir()
-    has_assets_subtree = assets_dir.is_dir()
-    has_subtree = has_sources_subtree or has_assets_subtree
-
-    # Inventory every visible top-level entry so we can loud-fail on
-    # anything that wouldn't ship. Hidden entries (``.dikw/``, ``.git/``)
-    # are excluded since ``_walk_files`` skips them anyway.
-    top_entries = [p for p in sorted(src.iterdir()) if not p.name.startswith(".")]
-
-    if has_subtree:
-        # Subtree-shape: every top-level entry must be either ``sources/``
-        # or ``assets/``. Loose files (even allowed-ext ones) are
-        # rejected as ambiguous — the user clearly meant the subtree
-        # layout, so a stray ``stray.md`` is more likely a mistake than
-        # a deliberate addition. Other top-level dirs (``drafts/``,
-        # ``docs/``) would otherwise be silently dropped.
-        stray = [p for p in top_entries if p.name not in _ALLOWED_TOP_DIRS]
-        if stray:
-            raise UploadError(
-                f"{src} contains stray top-level entries alongside "
-                f"sources/ or assets/: {[p.name for p in stray]}; "
-                "move them under sources/ or assets/ to disambiguate — "
-                "silently dropping them would ship an incomplete tree."
-            )
-    else:
-        # Flat-folder shape: every top-level entry must be a
-        # whitelisted file. A top-level dir is a hint the user
-        # forgot to wrap things in ``sources/``; surface it instead
-        # of silently skipping its contents.
-        bad: list[Path] = [
-            p
-            for p in top_entries
-            if p.is_dir()
-            or (p.is_file() and p.suffix.lower() not in allowed_ext)
-        ]
-        if bad:
-            raise UploadError(
-                f"{src} contains entries that aren't recognised as "
-                f"sources or assets: {[p.name for p in bad]}"
-            )
-
-    if has_subtree:
-        for top in _ALLOWED_TOP_DIRS:
-            top_path = src / top
-            if not top_path.is_dir():
-                continue
-            for path in sorted(_walk_files(top_path)):
-                if path.suffix.lower() not in allowed_ext:
-                    raise UploadError(
-                        f"unsupported file type for upload: {path} "
-                        f"(allowed: {sorted(allowed_ext)})"
-                    )
-                rel = path.relative_to(src).as_posix()
-                yield _make_entry(path, archive_path=rel)
-        return
-
-    # No sources/ or assets/ subtree → re-root EVERYTHING under
-    # ``sources/`` preserving the relative path. This keeps a flat
-    # ``note.md + diagram.png`` co-located on disk after upload so
-    # ``materialize_asset``'s sibling-of-md resolution still finds the
-    # asset ref ``![](diagram.png)``. Splitting them into
-    # ``sources/note.md`` + ``assets/diagram.png`` would break that
-    # resolution silently — ingest's ``**/*.md`` pattern already skips
-    # binaries in ``sources/`` so co-locating costs nothing.
-    for path in sorted(_walk_files(src)):
-        if path.name == "_payload.tar.gz":
-            continue
-        if path.suffix.lower() not in allowed_ext:
-            raise UploadError(
-                f"unsupported file type for upload: {path} "
-                f"(allowed: {sorted(allowed_ext)})"
-            )
-        rel = path.relative_to(src).as_posix()
-        yield _make_entry(path, archive_path=f"sources/{rel}")
-
-
-def _walk_files(root: Path) -> Iterator[Path]:
+    Hidden dirs (``.git/``, ``.dikw/``) and hidden files are skipped.
+    Asset paths are resolved to absolute form so the orphan check
+    matches what ``inspect_markdown`` returns."""
+    md_files: list[Path] = []
+    asset_files: list[Path] = []
     for parent, dirs, files in os.walk(root):
-        # Drop hidden dirs in-place so os.walk skips them entirely;
-        # ``.dikw/`` (engine state, may contain stale embeddings) is the
-        # main one we don't want to upload by accident.
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for name in files:
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(files):
             if name.startswith("."):
                 continue
-            yield Path(parent) / name
-
-
-def _make_entry(path: Path, *, archive_path: str) -> _DiscoveredFile:
-    # Reject symlinks before we open() — otherwise the open follows the
-    # link and archives whatever it points at as a regular file (e.g.
-    # ``sources/note.md -> /etc/passwd``). The server-side tar check
-    # blocks symlink *members* but can't tell that the bytes inside a
-    # regular member came from a followed symlink, so the gate has to
-    # live here.
-    if path.is_symlink():
-        raise UploadError(
-            f"refusing to upload symlink: {path} "
-            f"(target: {os.readlink(path)!r}); "
-            "copy the file in place if you really mean to include it"
-        )
-    size = path.stat().st_size
-    sha = _sha256_file(path)
-    return _DiscoveredFile(
-        path=path,
-        archive_path=archive_path,
-        size=size,
-        sha256=sha,
-        mtime=path.stat().st_mtime,
-    )
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-# Quiet ``io`` import: we expose ``IO[bytes]`` as the file-like type.
-_ = io
+            suffix = Path(name).suffix.lower()
+            full = Path(parent) / name
+            if suffix in _DEFAULT_MD_EXTENSIONS:
+                md_files.append(full)
+            elif suffix in _DEFAULT_ASSET_EXTENSIONS:
+                asset_files.append(full.resolve())
+    return md_files, asset_files
 
 
 __all__ = [
     "ManifestEntry",
+    "PackageEntry",
     "UploadBundle",
     "UploadError",
     "build_upload",

@@ -10,10 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
+from .._time import isoformat_utc_ms as _isoformat
 from .store import (
     TaskNotFound,
     TaskRow,
@@ -51,20 +51,6 @@ CREATE TABLE IF NOT EXISTS task_events (
     FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
 """
-
-
-def _isoformat(ts: float | None = None) -> str:
-    """ISO8601 UTC with millisecond precision; format matches what the
-    NDJSON wire emits via the events module."""
-    import datetime as _dt
-
-    if ts is None:
-        ts = time.time()
-    return (
-        _dt.datetime.fromtimestamp(ts, tz=_dt.UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
 
 
 class SqliteTaskStore:

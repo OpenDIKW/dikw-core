@@ -52,7 +52,8 @@ dikw client health --format json
 dikw client retrieve "your question" --plain --format json
 dikw client pages list --format json
 dikw client pages get sources/notes/alpha.md
-dikw client ingest --from ./local-sources    # rendered progress; NOT pipeable
+dikw client upload ./local-sources           # pre-flights + uploads md packages
+dikw client ingest                           # rendered progress; NOT pipeable
 dikw client query "your question"            # rendered tokens; NOT pipeable
 ```
 

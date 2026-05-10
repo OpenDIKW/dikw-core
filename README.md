@@ -78,7 +78,8 @@ Everything else lives under `dikw client *` and talks to a running server
 | --------------------------- | ----------------------------------------------------------------------------- |
 | `dikw client status`        | counts across DIKW layers                                                     |
 | `dikw client check`         | ping the configured LLM + embedding endpoints to verify `dikw.yml` + keys     |
-| `dikw client ingest [--no-embed] [--from <dir>]` | upload local sources/ + parse, chunk, FTS-index, embed         |
+| `dikw client upload <path>` | pre-flight + upload local md packages (md + referenced assets) into the server's `sources/` |
+| `dikw client ingest [--no-embed]` | parse + chunk + FTS-index + embed the server's `sources/` tree           |
 | `dikw client query "<q>"`   | hybrid search + LLM answer (streams tokens via NDJSON) with citations         |
 | `dikw client synth [--all]` | LLM turns source docs into K-layer wiki pages; maintains `index.md`+`log.md`  |
 | `dikw client lint`          | report broken wikilinks, orphan pages, duplicate titles                       |
