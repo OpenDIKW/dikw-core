@@ -2519,9 +2519,55 @@ async def _persist_wiki_page(
 _LEGACY_BACKFILL_SENTINEL = "__dikw_legacy_backfill_complete__"
 
 
+# Header strings for the two prompt sections in `_synth_pages_from_source`.
+# Pinned as module constants so tests, code, and any future docs stay
+# aligned — drift between assertion strings and rendered prompts has
+# bitten us before.
+_BATCH_SECTION_HEADER = (
+    "Already created in this batch (MUST reference, do NOT regenerate)"
+)
+_EXISTING_SECTION_HEADER = (
+    "Existing wiki pages (reference via [[Title]] when relevant)"
+)
+_NO_EXISTING_PAGES_SENTINEL = "(no existing pages — this is a fresh wiki)"
+
+
+@dataclass(frozen=True)
+class _ExistingPagesSnapshot:
+    """Per-source snapshot of the K-layer for the synth prompt.
+
+    Hoisted out of the per-group loop because the base K-layer is
+    invariant within a single source (persist runs only after all of
+    that source's groups complete). Without this hoist, a source with
+    G groups against a base of W pages paid G x W storage round-trips
+    per synth call.
+    """
+
+    pages: list[DocumentRecord]   # already filtered to title-bearing
+    full_render_bytes: int
+
+    @classmethod
+    async def load(cls, storage: Storage) -> _ExistingPagesSnapshot:
+        pages = [
+            d for d in await storage.list_documents(
+                layer=Layer.WIKI, active=True
+            )
+            if d.title
+        ]
+        full_render_bytes = sum(
+            len(f"- {d.title} ({type_from_path(d.path)})\n".encode())
+            for d in pages
+        )
+        return cls(pages=pages, full_render_bytes=full_render_bytes)
+
+    def full_pages(self) -> list[tuple[str, str]]:
+        return [(t, type_from_path(d.path)) for d in self.pages if (t := d.title)]
+
+
 async def _existing_pages_for_prompt(
     storage: Storage,
     *,
+    snapshot: _ExistingPagesSnapshot,
     group_chunks: list[ChunkRecord],
     max_bytes: int,
     top_k: int,
@@ -2542,28 +2588,15 @@ async def _existing_pages_for_prompt(
     ``(no existing pages …)`` so the LLM sees a clear signal rather
     than a missing block.
     """
-    all_pages = [
-        d for d in await storage.list_documents(layer=Layer.WIKI, active=True)
-        if d.title
-    ]
-    if not all_pages:
+    if not snapshot.pages:
         return []
-    full_render_bytes = sum(
-        len(f"- {d.title} ({type_from_path(d.path)})\n".encode())
-        for d in all_pages
-    )
-    if full_render_bytes <= max_bytes:
-        # ``d.title`` is narrowed to ``str`` by the leading filter
-        # comprehension; mypy can't see that across the loop boundary,
-        # so the explicit ``or ""`` here is purely a typing hint.
-        return [(d.title or "", type_from_path(d.path)) for d in all_pages]
+    if snapshot.full_render_bytes <= max_bytes:
+        return snapshot.full_pages()
 
     # Over the byte threshold → retrieval-gated top-K. Per-chunk
     # vec_search against the WIKI layer is what the locked design
-    # specifies; union by doc_id, sort by best (smallest) distance,
-    # take top-K. Distance is cosine here (smaller = closer); we
-    # invert to "score" only as a sort-aid intuition, the math still
-    # uses raw distances.
+    # specifies; union by doc_id, keep best (smallest) distance per
+    # doc, sort, take top-K. Distance is cosine (smaller = closer).
     embs = await storage.get_chunk_embeddings(
         [c.chunk_id for c in group_chunks if c.chunk_id is not None],
         version_id=version_id,
@@ -2675,22 +2708,35 @@ async def _synth_pages_from_source(
     # Per-source batch accumulator: each group's prompt sees the titles
     # emitted by groups 0..N-1 of the SAME source, so group N can
     # reference [[Title]] instead of regenerating. Lifecycle scoped
-    # tightly to this function — a new source starts with an empty list.
+    # tightly to this function — a new source starts empty.
+    # ``seen_titles`` mirrors the accumulator titles for O(1) dedup
+    # without rebuilding a set every group.
     batch_accumulator: list[tuple[str, str]] = []
+    seen_titles: set[str] = set()
     # Map section-start → chunk so we can recover per-group chunks for
     # the retrieval-gated existing-pages branch. ``derive_sections_from_chunks``
     # builds sections 1:1 from chunks, so ``section.start == chunk.start``.
     start_to_chunk = {c.start: c for c in chunks}
+    # The base K-layer is invariant within a single source's group loop
+    # (persist runs only after this function returns), so we hoist the
+    # snapshot out of the loop. Without this, a source with G groups
+    # against a base of W pages paid G x W storage round-trips per call.
+    snapshot = (
+        await _ExistingPagesSnapshot.load(storage)
+        if storage is not None
+        else None
+    )
     for group in groups:
         cancel.raise_if_cancelled()
         group_pos = group.index + 1
-        if storage is not None:
+        if storage is not None and snapshot is not None:
             group_chunks = [
                 start_to_chunk[s] for s in group.section_starts
                 if s in start_to_chunk
             ]
             existing_pages = await _existing_pages_for_prompt(
                 storage,
+                snapshot=snapshot,
                 group_chunks=group_chunks,
                 max_bytes=cfg.synth.existing_pages_max_bytes,
                 top_k=cfg.synth.existing_pages_top_k,
@@ -2702,15 +2748,9 @@ async def _synth_pages_from_source(
             # plumbing, not the existing-pages contract itself.
             existing_pages = []
         existing_pages_section = (
-            _render_existing_section(
-                batch_accumulator,
-                "Already created in this batch (MUST reference, do NOT regenerate)",
-            )
-            + _render_existing_section(
-                existing_pages,
-                "Existing wiki pages (reference via [[Title]] when relevant)",
-            )
-        ).strip() or "(no existing pages — this is a fresh wiki)"
+            _render_existing_section(batch_accumulator, _BATCH_SECTION_HEADER)
+            + _render_existing_section(existing_pages, _EXISTING_SECTION_HEADER)
+        ).strip() or _NO_EXISTING_PAGES_SENTINEL
         user_prompt = template.format(
             source_path=source_path,
             source_body=group.text,
@@ -2835,10 +2875,9 @@ async def _synth_pages_from_source(
             continue
         pages.extend(new_pages)
         # Feed group N's emitted page titles into the per-source
-        # accumulator so group N+1's prompt sees them. De-dup against
-        # what the accumulator already has — a same-batch slug
-        # collision is harmless for prompt context but reads as noise.
-        seen_titles = {t for t, _ in batch_accumulator}
+        # accumulator so group N+1's prompt sees them. ``seen_titles``
+        # is maintained incrementally above so dedup is O(1) per page
+        # without rebuilding a set every group.
         for p in new_pages:
             if p.title and p.title not in seen_titles:
                 batch_accumulator.append((p.title, p.type or "page"))
