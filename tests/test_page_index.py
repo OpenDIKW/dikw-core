@@ -43,7 +43,7 @@ async def test_persist_wiki_page_writes_document_chunks_and_links(
         path="wiki/concepts/source.md",
     )
     write_page(tmp_path, src)
-    unresolved = await persist_wiki_page(
+    unresolved, _ = await persist_wiki_page(
         storage=storage, root=tmp_path, path=src.path, title=src.title,
         embedder=None, embedding_model="", text_version_id=None,
     )
@@ -109,7 +109,7 @@ async def test_persist_wiki_page_reports_unresolved_count(
         layer=Layer.WIKI, active=True,
     ))
 
-    unresolved = await persist_wiki_page(
+    unresolved, _ = await persist_wiki_page(
         storage=storage, root=tmp_path, path=page.path, title=page.title,
         embedder=None, embedding_model="", text_version_id=None,
     )

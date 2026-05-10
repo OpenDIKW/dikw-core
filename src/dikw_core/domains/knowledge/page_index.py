@@ -49,7 +49,7 @@ async def persist_wiki_page(
     cjk_tokenizer: CjkTokenizer = "none",
     title_to_path: dict[str, str] | None = None,
     fuzzy_index: dict[str, list[str]] | None = None,
-) -> int:
+) -> tuple[int, str]:
     """Index a wiki page already on disk into the K layer.
 
     Re-parses the file via the backend registry so the stored hash and
@@ -70,17 +70,20 @@ async def persist_wiki_page(
     stream entirely — apply stays provider-free and embeddings
     reconcile on the next ``dikw ingest`` via ``doc.hash`` drift.
 
-    Returns the count of unresolved outgoing wikilinks.
+    Returns ``(unresolved_count, resolved_title)`` so callers can fold
+    the unresolved count into reports and update an incremental
+    ``title_to_path`` without re-reading the file's frontmatter.
     """
     doc_id = wiki_doc_id(path)
     abs_path = (root / path).resolve()
     parsed = parse_any(abs_path, rel_path=path)
+    resolved_title = title if title is not None else parsed.title
 
     await storage.upsert_document(
         DocumentRecord(
             doc_id=doc_id,
             path=path,
-            title=title if title is not None else parsed.title,
+            title=resolved_title,
             hash=parsed.hash,
             mtime=parsed.mtime,
             layer=Layer.WIKI,
@@ -131,4 +134,4 @@ async def persist_wiki_page(
         fuzzy_index=fuzzy_index,
     )
     await storage.replace_links_from(doc_id, resolved)
-    return len(unresolved)
+    return len(unresolved), resolved_title

@@ -893,3 +893,72 @@ async def test_apply_then_lint_does_not_re_report_broken_wikilink(
         and i.path == src_path
     ]
     assert broken_after == []
+
+
+@pytest.mark.asyncio
+async def test_apply_create_page_reconciles_referrer_outgoing_links(
+    parametrized_storage: Storage, wiki_root: Path,
+) -> None:
+    """When apply creates a missing target page, the source page's
+    outgoing links MUST be re-resolved against the post-apply title
+    index. Otherwise:
+    - storage.links_from(source) misses the new edge
+    - run_lint's inbound counter never sees it
+    - the freshly-created target is immediately reported as orphan_page
+    despite being linked.
+    """
+    from dikw_core.domains.knowledge.lint import run_lint
+
+    storage = parametrized_storage
+    src_path = "wiki/articles/china-history.md"
+    src_doc_id = await _seed_page(
+        storage=storage, wiki_root=wiki_root,
+        path=src_path, title="China History",
+        body="# China History\n\nThe [[Qin Dynasty]] unified ...\n",
+    )
+
+    proposal = FixProposal(
+        proposal_id="p-fix-referrer",
+        issue_kind="broken_wikilink",
+        issue_path=src_path,
+        issue_detail="[[Qin Dynasty]] has no matching wiki page",
+        issue_line=3,
+        operations=[FixOperation(
+            kind="create_page",
+            path="wiki/concepts/qin-dynasty.md",
+            new_frontmatter={
+                "id": "K-qin", "type": "concept", "title": "Qin Dynasty",
+                "created": "2026-05-10T00:00:00+00:00",
+                "updated": "2026-05-10T00:00:00+00:00",
+            },
+            new_body="# Qin Dynasty\n\nstub\n",
+            expected_hash=None,
+        )],
+        rationale="LLM stub", source="llm",
+    )
+    await run_lint_apply(
+        proposal_report=FixProposalReport(proposals=[proposal]),
+        storage=storage, wiki_root=wiki_root,
+        reporter=_NullReporter(),
+    )
+
+    # Source page's storage links must now include the edge to the new page.
+    src_links = [
+        link for link in await storage.links_from(src_doc_id)
+        if link.link_type == LinkType.WIKILINK
+    ]
+    assert any(
+        link.dst_path == "wiki/concepts/qin-dynasty.md" for link in src_links
+    ), "referrer page outgoing link to the newly-created target was not reconciled"
+
+    # And the new page must NOT be reported as orphan in the next run_lint.
+    after = await run_lint(storage=storage, root=wiki_root)
+    orphan = [
+        i for i in after.issues
+        if i.kind == "orphan_page"
+        and i.path == "wiki/concepts/qin-dynasty.md"
+    ]
+    assert orphan == [], (
+        "freshly-created page should not be reported as orphan when the "
+        "referrer's [[Title]] now resolves to it"
+    )

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+import frontmatter
 from pydantic import BaseModel, Field
 
 from ...config import DikwConfig
@@ -38,6 +39,7 @@ from ...providers.base import EmbeddingProvider, LLMProvider
 from ...schemas import Layer
 from ...storage.base import Storage
 from ..data.hashing import hash_bytes, hash_file
+from .links import parse_links, resolve_links
 from .lint import LintKind
 from .page_index import persist_wiki_page
 from .synthesize import (
@@ -559,24 +561,20 @@ async def run_lint_apply(
                 skipped.append(skip_reason)
                 proposal_aborted = True
 
-    # Sync each still-extant changed page into storage:
+    # Phase 1: persist each still-extant changed page into storage:
     # upsert document + replace_chunks + reconcile outgoing links.
     # ``embedder=None`` keeps apply provider-free — the next ``dikw
-    # ingest`` will detect ``doc.hash`` drift and re-embed. We pass the
-    # pre-loaded ``title_to_path`` so each persist call doesn't re-pull
-    # the K-layer doc list.
+    # ingest`` will detect ``doc.hash`` drift and re-embed.
     #
-    # ``title_to_path`` is the snapshot from BEFORE this apply pass, so
-    # outgoing wikilinks resolve against pages that already existed.
-    # New pages this batch creates aren't in it — but a freshly-created
-    # stub's body is a TODO marker (the LLM stub fixer doesn't author
-    # outgoing links), so the gap doesn't matter in practice. Future
-    # fixers that author cross-links would need to update title_to_path
-    # incrementally between persist calls.
+    # We grow ``title_to_path`` incrementally as we persist. A proposal
+    # that creates pages A and B where B's body links to ``[[A]]`` would
+    # otherwise see B's wikilink unresolved (A enters storage AFTER B's
+    # persist call started against the pre-apply snapshot). Updating
+    # the dict between calls makes intra-batch cross-links resolve.
     for path in sorted(paths_changed):
         if not (wiki_root / path).resolve().is_file():
             continue
-        await persist_wiki_page(
+        _, page_title = await persist_wiki_page(
             storage=storage,
             root=wiki_root,
             path=path,
@@ -585,6 +583,36 @@ async def run_lint_apply(
             text_version_id=None,
             title_to_path=title_to_path,
         )
+        if page_title and page_title not in title_to_path:
+            title_to_path[page_title] = path
+
+    # Phase 2: re-reconcile referrers — every proposal's ``issue.path``
+    # whose body references a page this batch may have just created.
+    # Without this, a ``broken_wikilink`` → ``create_page`` proposal
+    # leaves the source page's storage links stale: the new edge never
+    # lands, ``run_lint`` reads ``links_from(source)`` and concludes
+    # the freshly-created page is an orphan even though the body
+    # clearly links to it. The referrer page itself wasn't mutated, so
+    # we only need a link-only reconcile (no re-chunk, no document
+    # row touch — those would invalidate chunk_ids and orphan
+    # embeddings). Skip referrers already covered by phase 1 or
+    # deleted by this pass.
+    referrer_paths = {
+        proposal.issue_path for proposal in proposals
+    } - paths_changed - deleted_paths
+    for path in sorted(referrer_paths):
+        abs_path = (wiki_root / path).resolve()
+        if not abs_path.is_file():
+            continue
+        doc_id = path_to_doc_id.get(path)
+        if doc_id is None:
+            continue
+        body = frontmatter.loads(abs_path.read_text(encoding="utf-8")).content
+        parsed_links_ = parse_links(body)
+        resolved, _ = resolve_links(
+            doc_id, parsed_links_, title_to_path=title_to_path,
+        )
+        await storage.replace_links_from(doc_id, resolved)
 
     return ApplyReport(
         applied=applied,

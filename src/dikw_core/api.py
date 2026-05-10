@@ -2431,7 +2431,7 @@ async def _persist_wiki_page(
     reuse the same indexing path without depending on api.py internals.
     """
     from .domains.knowledge.page_index import persist_wiki_page
-    return await persist_wiki_page(
+    unresolved, _ = await persist_wiki_page(
         storage=storage,
         root=root,
         path=page.path,
@@ -2443,6 +2443,7 @@ async def _persist_wiki_page(
         title_to_path=title_to_path,
         fuzzy_index=fuzzy_index,
     )
+    return unresolved
 
 
 # A wiki_log row with ``action="synth_source_done"`` and this sentinel
