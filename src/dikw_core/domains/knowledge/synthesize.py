@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import yaml
 
+from ...providers.base import LLMProvider
 from .wiki import WikiPage, build_page, now_iso
 
 _PAGE_BLOCK = re.compile(
@@ -72,7 +73,10 @@ class SynthesisOutcome:
     source_path: str
 
 
-_DEFAULT_ALLOWED_TYPES: tuple[str, ...] = ("entity", "concept", "note")
+DEFAULT_ALLOWED_TYPES: tuple[str, ...] = ("entity", "concept", "note")
+# Backwards-compat alias for the few internal call sites still using
+# the underscore-prefixed name; new code should import the public one.
+_DEFAULT_ALLOWED_TYPES = DEFAULT_ALLOWED_TYPES
 
 
 def _parse_one_page_block(
@@ -246,3 +250,52 @@ def dedup_pages_by_slug(
 def touch(page: WikiPage) -> WikiPage:
     """Return a copy of ``page`` with ``updated`` bumped to now."""
     return replace(page, updated=now_iso())
+
+
+DEFAULT_SYNTH_SYSTEM = "You synthesise K-layer wiki pages for dikw-core."
+# Underscore alias for legacy callers; new code should use the public name.
+_DEFAULT_SYNTH_SYSTEM = DEFAULT_SYNTH_SYSTEM
+
+
+async def synthesize_pages_from_text(
+    *,
+    user_prompt: str,
+    source_path: str,
+    llm: LLMProvider,
+    model: str,
+    max_tokens: int,
+    temperature: float = 0.3,
+    allowed_types: tuple[str, ...] | None = None,
+    system: str = DEFAULT_SYNTH_SYSTEM,
+) -> list[WikiPage]:
+    """One LLM call + parse — the shared "text to N pages" primitive.
+
+    Used by:
+
+    * the ingestion pipeline (``_synth_pages_from_source`` in
+      :mod:`api`) for per-chunk-group fan-out, and
+    * lint fixers (``broken_wikilink`` LLM stub fallback,
+      ``non_atomic_page`` splitter) that need to drive the same
+      ``llm.complete → parse_synthesis_response`` pair from a different
+      prompt template.
+
+    The caller builds the ``user_prompt`` string so each call site can
+    pick its own template (the synth prompt for fan-out, the
+    ``lint_fix_*`` prompts for fixers). Returns the parsed pages —
+    possibly empty if the model emitted no ``<page>`` blocks. Raises
+    :class:`SynthesisError` / :class:`SynthesisPartialError` exactly
+    like :func:`parse_synthesis_response`; callers decide whether to
+    treat partial output as success.
+    """
+    response = await llm.complete(
+        system=system,
+        user=user_prompt,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return parse_synthesis_response(
+        response.text,
+        source_path=source_path,
+        allowed_types=allowed_types,
+    )

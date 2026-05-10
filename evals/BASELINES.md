@@ -7,6 +7,96 @@ regression from a re-run variance.
 Newest first. `dikw eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-05-10 — K-layer fix proposals (PR2): broken_wikilink LLM stub + non_atomic_page
+
+**Status:** real-data spot check on the elon-musk-validation base
+(`bases/elon-musk-validation`, source = Walter Isaacson's *Elon Musk*
+biography). Confirms the two new PR2 fixers behave on a wiki the
+engine actually owns.
+
+**Provider config:** openai_codex (gpt-5.5 via ChatGPT subscription)
+LLM + Qwen3-Embedding-0.6B on Gitee AI; `dikw.yml` defaults
+elsewhere. PR2 fixers do not exercise the embedder leg yet.
+
+**Methodology:** `scripts/pr2_baseline_run.py` calls
+`api.lint_propose(..., enable_llm=True)` directly (no `dikw serve`)
+so the run is reproducible without server lifecycle. Each rule is
+gated by `--limit` to keep token spend small while still proving the
+LLM path end-to-end on real lint findings.
+
+### Run 1 — `broken_wikilink` LLM stub fallback
+
+```
+DIKW_PR2_BASELINE_RULE=broken_wikilink \
+DIKW_PR2_BASELINE_LIMIT=2 \
+uv run python scripts/pr2_baseline_run.py
+```
+
+| metric | value |
+|---|---|
+| issues consumed | 2 |
+| proposals returned | 2 |
+| skipped | 0 |
+| accept rate (spot check) | 2/2 |
+
+Both proposals were `create_page` with `source="llm"`. The LLM
+stubs:
+
+- carried the broken target verbatim as the page title
+  (`# Twitter`, `# Tesla`),
+- contained the literal `TODO` marker as the prompt requires,
+- referenced the source page that triggered the link
+  (`broken [[Twitter]] reference in wiki/entities/elon-musk.md`),
+- did **not** invent biographical or factual claims — at most a
+  one-sentence summary of the surrounding context, which the prompt
+  explicitly allows ("source page mentions [[Twitter]] in connection
+  with Elon Musk acquiring it").
+
+### Run 2 — `non_atomic_page` LLM splitter
+
+```
+DIKW_PR2_BASELINE_RULE=non_atomic_page \
+DIKW_PR2_BASELINE_LIMIT=1 \
+uv run python scripts/pr2_baseline_run.py
+```
+
+| metric | value |
+|---|---|
+| issues consumed | 1 (`wiki/entities/errol-musk.md`) |
+| proposal ops | 2 × `create_page` + 1 × `delete_page` |
+| LLM children | 2 atomic notes |
+
+The non-atomic page (flagged for "2 H1 sections — atomic page should
+have exactly one") was split into two semantically-distinct atomic
+children:
+
+1. `wiki/notes/errol-musk-harsh-parenting.md` — Errol's "extremely
+   severe dictatorship" parenting style.
+2. `wiki/notes/errol-musk-emerald-trade.md` — Errol's 1986 emerald
+   trade in Zambia.
+
+Both children link back to `[[Errol Musk]]` via wikilink, exactly
+as the design contract requires (the original page is deleted in
+the same proposal, so `[[Errol Musk]]` becomes a `broken_wikilink`
+issue under the next lint pass — handled by the broken_wikilink
+fixer's stub fallback or fuzzy match against any new entity page).
+
+### Caveats
+
+- This is a **proposal** spot check, not an apply baseline — no
+  changes were written to the wiki tree. `dikw client lint apply`
+  exists and is covered by 13 PR1 unit tests
+  (`tests/test_lint_apply.py`); the proposal payloads above carry
+  hash guards + create-collision skips so apply is safe even with
+  concurrent edits.
+- `openai_codex` is the configured LLM. The known
+  "codex SSE 大输入卡死" issue (see internal memory) did NOT
+  reproduce on the errol-musk page (~3 KB body); larger fat pages
+  (10 KB+) may need a budget guard in a follow-up.
+- Sample sizes are small (2 + 1) by design — token cost was the
+  binding constraint. Larger sweeps belong in a routine eval, not
+  a per-PR baseline.
+
 ## 2026-05-08 — Wikilink graph leg ablation (default-off, non-destructive proof)
 
 **Status:** ablation for the optional 4th retrieval leg

@@ -25,6 +25,7 @@ The contract is:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from typing import Any, Literal, Protocol
 import frontmatter
 from pydantic import BaseModel, Field
 
+from ...config import DikwConfig
 from ...providers.base import EmbeddingProvider, LLMProvider
 from ...schemas import Layer
 from ...storage.base import Storage
@@ -40,7 +42,14 @@ from ..data.hashing import hash_bytes, hash_file
 from ..data.path_norm import normalize_path
 from .links import parse_links, resolve_links
 from .lint import LintKind
+from .synthesize import (
+    SynthesisError,
+    SynthesisPartialError,
+    synthesize_pages_from_text,
+)
 from .wiki import WikiPage, build_page, write_page
+
+logger = logging.getLogger(__name__)
 
 
 class FixOperation(BaseModel):
@@ -130,6 +139,11 @@ class FixerContext:
     PRs) raise their own ``ValueError`` if asked to run without one.
     ``all_pages`` is pre-built by the orchestrator from
     ``storage.list_documents`` so each fixer doesn't repeat the round-trip.
+
+    ``enable_llm`` gates the LLM-fallback branch in fixers that have
+    one (PR2 broken_wikilink stub-page generation). Default False keeps
+    propose runs heuristic-only — every LLM call costs tokens, and a
+    user must opt in via ``dikw client lint propose --enable-llm``.
     """
 
     storage: Storage | None
@@ -137,6 +151,12 @@ class FixerContext:
     embedding: EmbeddingProvider | None
     wiki_root: Path
     all_pages: list[WikiPageMeta]
+    enable_llm: bool = False
+    # Passed only for fixers that need synth knobs (max_pages_per_group,
+    # page_types, llm_model, llm_max_tokens_synth). Heuristic-only fixers
+    # don't touch it; the orchestrator threads it through anyway so a
+    # later fixer can read it without changing the FixerContext shape.
+    cfg: DikwConfig | None = None
 
 
 class Fixer(Protocol):
@@ -173,6 +193,78 @@ def extract_broken_target(detail: str) -> str | None:
 # while the actual implementation lives in :mod:`domains.data.hashing`.
 file_sha256 = hash_file
 bytes_sha256 = hash_bytes
+
+
+def page_to_op_frontmatter(page: WikiPage) -> dict[str, Any]:
+    """Flatten a :class:`WikiPage` into the dict ``FixOperation`` expects.
+
+    The inverse of :func:`_build_page_from_op` — both fixer-side
+    (forward) and apply-side (read-back) live in this module so the
+    field list (``id`` / ``type`` / ``title`` / ``tags`` / ``sources``
+    / ``created`` / ``updated`` / ``extras``) stays defined in one
+    place. ``write_page`` is the third place that knows these keys;
+    a future cleanup could route through this helper too.
+    """
+    fm: dict[str, Any] = {
+        "id": page.id,
+        "type": page.type,
+        "title": page.title,
+        "tags": list(page.tags),
+        "sources": list(page.sources),
+        "created": page.created,
+        "updated": page.updated,
+    }
+    fm.update(page.extras)
+    return fm
+
+
+async def safe_synthesize_pages(
+    *,
+    user_prompt: str,
+    source_path: str,
+    llm: LLMProvider,
+    model: str,
+    max_tokens: int,
+    allowed_types: tuple[str, ...],
+    system: str,
+    temperature: float = 0.3,
+    log_label: str,
+) -> list[WikiPage] | None:
+    """LLM call + parse, with the soft-failure contract every fixer needs.
+
+    Returns the parsed pages on success, partial-parse pages when the
+    LLM truncated mid-block (so apply still gets *something*), or
+    ``None`` to signal "fixer should skip this issue":
+
+    * ``SynthesisError`` (no usable ``<page>`` block) → ``None``
+    * Any other exception (provider outage, network, JSON drift) →
+      log at WARNING + ``None``. Cancellation
+      (:class:`asyncio.CancelledError`) is a ``BaseException`` and is
+      not caught — serial-cancel semantics still hold.
+
+    ``log_label`` identifies the calling fixer in the warning line so
+    operators can grep for which rule blew up.
+    """
+    try:
+        return await synthesize_pages_from_text(
+            user_prompt=user_prompt,
+            source_path=source_path,
+            llm=llm,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            allowed_types=allowed_types,
+            system=system,
+        )
+    except SynthesisPartialError as pe:
+        return pe.pages
+    except SynthesisError:
+        return None
+    except Exception as e:
+        logger.warning(
+            "%s LLM call failed for %s: %s", log_label, source_path, e
+        )
+        return None
 
 
 async def run_lint_propose(

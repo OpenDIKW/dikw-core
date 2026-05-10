@@ -2330,33 +2330,46 @@ async def lint_propose(
     rule: LintKind | None = None,
     limit: int = 10,
     llm: Any = None,
-    embedder: Any = None,
+    enable_llm: bool = False,
     reporter: ProgressReporter | None = None,
 ) -> FixProposalReport:
     """Run lint + dispatch fixers, returning a :class:`FixProposalReport`.
 
-    PR1 ships only ``broken_wikilink`` (heuristic-only), so ``llm`` and
-    ``embedder`` are unused — they're accepted now to keep the call
-    signature stable when PR2 adds the LLM stub fallback. ``rule``
-    filters the lint report before dispatch; ``limit`` caps the issues
-    consumed (the default of 10 keeps a single ``propose`` task short).
+    ``enable_llm`` opts into the LLM-fallback paths inside fixers
+    (broken_wikilink stub-page generation, the entire non_atomic_page
+    fixer). When False, propose runs heuristic-only — no LLM call is
+    made and pure-heuristic fixers (``broken_wikilink`` fuzzy-match)
+    still work. The default keeps a ``propose`` invocation cheap and
+    deterministic; users opt in via ``--enable-llm``.
+
+    ``llm`` is a passthrough override used by tests; in production
+    it is built from ``cfg.provider`` the same way :func:`synthesize`
+    does, so ``$DIKW_*_API_KEY`` resolution flows through one path.
     """
-    _cfg, root, storage = await _with_storage(path)
+    cfg, root, storage = await _with_storage(path)
     try:
         report = await run_lint(storage, root=root)
-        # Title + path is enough for every PR1 fixer (broken_wikilink)
-        # and most PR2 fixers; heavy fixers re-read the page body on
-        # demand from disk rather than holding every body in memory.
+        # Title + path is enough for every PR2 fixer; heavy fixers
+        # re-read the page body on demand from disk rather than
+        # holding every body in memory.
         all_pages = [
             WikiPageMeta(path=doc.path, title=doc.title)
             for doc in await storage.list_documents(layer=Layer.WIKI, active=True)
         ]
+        # Skip the build entirely on ``--enable-llm False`` so the
+        # provider-import + key-lookup cost stays out of heuristic-only
+        # propose runs.
+        _llm: Any = llm
+        if _llm is None and enable_llm:
+            _llm = build_llm(cfg.provider, wiki_base=root)
         ctx = FixerContext(
             storage=storage,
-            llm=llm,
-            embedding=embedder,
+            llm=_llm,
+            embedding=None,
             wiki_root=root,
             all_pages=all_pages,
+            enable_llm=enable_llm,
+            cfg=cfg,
         )
         used_reporter: ProgressReporter = reporter or NoopReporter()
         return await run_lint_propose(
