@@ -1026,6 +1026,93 @@ async def test_vec_search_excludes_deactivated_doc(storage: Storage) -> None:
     assert [h.chunk_id for h in post] == [keep_ids[0]]
 
 
+async def test_get_chunk_embeddings_round_trip(storage: Storage) -> None:
+    """Stored chunk embeddings must be recoverable raw by chunk_id.
+
+    Synth's existing-pages retrieval-gated mode (PR2) needs to query
+    vec_search with the SAME vectors it embedded a source's chunks
+    under during ingest. Re-embedding would re-pay the API cost on
+    every synth call; instead we add a row-level fetch primitive that
+    both adapters can satisfy from their existing chunk-embedding
+    tables (SQLite vec0 ``rowid = chunk_id``; PG ``chunk_id PK``).
+    """
+    doc = _make_doc("sources/embed-fetch.md")
+    await storage.upsert_document(doc)
+    chunk_ids = await storage.replace_chunks(
+        doc.doc_id,
+        [
+            ChunkRecord(doc_id=doc.doc_id, seq=0, start=0, end=5, text="alpha"),
+            ChunkRecord(doc_id=doc.doc_id, seq=1, start=5, end=10, text="bravo"),
+        ],
+    )
+    assert len(chunk_ids) == 2
+
+    try:
+        version_id = await register_text_version(storage, dim=4, model="test-embed")
+    except NotSupported:
+        pytest.skip("backend doesn't implement embed versioning yet")
+
+    vec_a = [1.0, 0.0, 0.0, 0.0]
+    vec_b = [0.0, 1.0, 0.0, 0.0]
+    await storage.upsert_embeddings(
+        [
+            EmbeddingRow(chunk_id=chunk_ids[0], version_id=version_id, embedding=vec_a),
+            EmbeddingRow(chunk_id=chunk_ids[1], version_id=version_id, embedding=vec_b),
+        ]
+    )
+
+    embs = await storage.get_chunk_embeddings(chunk_ids, version_id=version_id)
+    assert set(embs.keys()) == set(chunk_ids)
+    assert embs[chunk_ids[0]] == pytest.approx(vec_a, abs=1e-6)
+    assert embs[chunk_ids[1]] == pytest.approx(vec_b, abs=1e-6)
+
+
+async def test_get_chunk_embeddings_skips_unembedded(storage: Storage) -> None:
+    """Chunks that exist but were never embedded are simply absent from
+    the result dict — callers iterate over what they got back rather
+    than guarding every lookup.
+    """
+    doc = _make_doc("sources/partial-embed.md")
+    await storage.upsert_document(doc)
+    chunk_ids = await storage.replace_chunks(
+        doc.doc_id,
+        [
+            ChunkRecord(doc_id=doc.doc_id, seq=0, start=0, end=5, text="alpha"),
+            ChunkRecord(doc_id=doc.doc_id, seq=1, start=5, end=10, text="bravo"),
+        ],
+    )
+
+    try:
+        version_id = await register_text_version(storage, dim=4, model="test-embed")
+    except NotSupported:
+        pytest.skip("backend doesn't implement embed versioning yet")
+    # Embed only the first chunk.
+    await storage.upsert_embeddings(
+        [
+            EmbeddingRow(
+                chunk_id=chunk_ids[0],
+                version_id=version_id,
+                embedding=[1.0, 0.0, 0.0, 0.0],
+            ),
+        ]
+    )
+
+    embs = await storage.get_chunk_embeddings(chunk_ids, version_id=version_id)
+    assert chunk_ids[0] in embs
+    assert chunk_ids[1] not in embs
+
+
+async def test_get_chunk_embeddings_empty_input_no_roundtrip(
+    storage: Storage,
+) -> None:
+    """Empty input must short-circuit before touching the DB — mirrors
+    ``get_cached_embeddings`` so synth's retrieval-gated branch stays
+    cheap when a group has zero embeddable chunks.
+    """
+    embs = await storage.get_chunk_embeddings([], version_id=1)
+    assert embs == {}
+
+
 async def test_link_graph(storage: Storage) -> None:
     src_doc = _make_doc("wiki/a.md", layer=Layer.WIKI)
     dst_doc = _make_doc("wiki/b.md", layer=Layer.WIKI)
