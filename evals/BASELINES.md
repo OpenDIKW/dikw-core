@@ -7,6 +7,102 @@ regression from a re-run variance.
 Newest first. `dikw eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-05-10 — Synth existing-pages awareness (PR2; non-destructive snapshot + deferred A/B)
+
+**Status:** non-destructive proof + pre-rebuild snapshot for PR2
+(`feat/synth-existing-pages-context`). The signal-side A/B
+(broken_wikilink reduction, semantic-duplicate spot-check) requires a
+fresh re-synth from elon-musk.md; deferred to the next wiki rebuild
+cycle to avoid burning the codex SSE keepalive bug on the full text.
+
+### What PR2 changes
+
+Each `_synth_pages_from_source` LLM call now receives two new prompt
+sections — `## Already created in this batch` (per-source accumulator)
++ `## Existing wiki pages` (full base snapshot under
+`synth.existing_pages_max_bytes`, default 16384 B; vec_search-gated
+top-K above) — and is told to emit zero `<page>` blocks for any
+candidate that semantically duplicates an entry. Storage gains one
+new primitive (`get_chunk_embeddings`); pure SELECT, zero DDL.
+
+### Non-destructive proof
+
+- **Storage:** `get_chunk_embeddings` is additive Protocol surface;
+  both adapters' existing `vec_chunks_v<id>` tables already store
+  row-per-chunk embeddings. New contract test
+  (`test_get_chunk_embeddings_round_trip`) green on SQLite + PG.
+- **Synth pipeline:** unchanged for empty/fresh wikis (no existing
+  pages → `(no existing pages …)` sentinel renders, prompt structure
+  preserved); for non-empty wikis the LLM gets *more* context, never
+  less. `_synth_pages_from_source` accepts `storage` + `text_version_id`
+  as **optional** kwargs so the narrow-unit `test_synth_observability`
+  suite keeps working without storage plumbing.
+- **Retrieval / lint / wiki schema:** untouched. `RetrievalConfig` and
+  `LintReport` shapes unchanged.
+- **Test signal:** 1000-test full suite green; ruff + mypy clean.
+
+### Pre-rebuild snapshot — `elon-musk-validation` base, 2026-05-10
+
+Captured before re-synth so the post-PR2 rebuild has a comparison
+anchor. The wiki below was synthesised under the pre-PR2 prompt
+(2026-04 / 2026-05 commits); these numbers are the **baseline** PR2
+should improve against.
+
+```
+source: ~/Project/opendikw/dikw-data/datasets/markdown-books/elon-musk.md
+                (1500-line subset, per docs/eval-plan.md K-layer gate)
+provider: openai_codex (gpt-5.5) + Qwen3-Embedding-0.6B (gitee-ai)
+wiki state: pre-PR2 synth output, indexed in .dikw/index.sqlite
+```
+
+| metric                    | pre-PR2 |
+|---------------------------|--------:|
+| total wiki pages          |      74 |
+| ├─ entities/              |      23 |
+| ├─ notes/                 |      41 |
+| └─ concepts/              |      10 |
+| broken_wikilink           |     241 |
+| orphan_page               |      53 |
+| non_atomic_page           |       5 |
+| duplicate_title           |       1 |
+
+### Expected post-PR2 deltas (hypotheses)
+
+- **broken_wikilink ↓** — when the LLM sees "Tesla (entity)" already
+  exists, it links `[[Tesla]]` instead of inventing `[[Tesla Inc.]]`
+  whose target page never gets generated.
+- **duplicate_title ↓ or =** — lower is better; PR1 already addressed
+  the variant-title class, PR2 attacks the semantic-duplicate class
+  that PR1 cannot reach.
+- **total wiki pages ↓** — semantic duplicates collapse into
+  references; total count drops by the number of avoided regenerations.
+- **orphan_page** — direction unclear; fewer regenerations means fewer
+  pages overall but also potentially fewer cross-references. Watch.
+
+### How to fill in the A/B
+
+When the user next rebuilds the elon-musk wiki:
+
+```powershell
+$env:DIKW_BASE = "C:\Users\HE LE\Project\opendikw\dikw-data\bases\elon-musk-validation"
+# Wipe wiki/ + .dikw/ to start fresh; re-ingest + re-synth on PR2
+# Then capture the same metrics:
+uv run dikw client synth --base $env:DIKW_BASE
+uv run dikw client lint  --base $env:DIKW_BASE
+# Append a "post-PR2" column to the snapshot table above and a
+# spot-check (10 random pages: any obvious semantic duplicates left?).
+```
+
+### Why deferred
+
+The full elon-musk.md synth on the openai_codex provider has a known
+SSE keepalive timeout (see 2026-05-08 entry "Known limitation"); a
+real run needs the 1500-line subset and ~30 min of wall time. PR2's
+non-destructiveness is independently provable from the test suite +
+the targeted unit tests in `tests/test_synth_existing_pages.py`,
+which is the gate for shipping; signal-side A/B follows on the next
+natural rebuild rather than blocking the merge on a 30-min run.
+
 ## 2026-05-08 — Wikilink graph leg ablation (default-off, non-destructive proof)
 
 **Status:** ablation for the optional 4th retrieval leg

@@ -216,6 +216,50 @@ abbreviation dictionaries) are deliberately out of scope: their
 false-merge risk is materially higher and the fixable broken-link
 trade-off is the wrong way for K-layer pages users will edit by hand.
 LLM-aware "is this candidate semantically a duplicate of an existing
-page?" judgement happens upstream at synth time (see PR2 work on
-`{existing_pages_section}`) — the resolve step itself stays
-deterministic.
+page?" judgement happens upstream at synth time (see the next section)
+— the resolve step itself stays deterministic.
+
+### Synth-time existing-pages awareness, as a concrete example
+
+`resolve_links` only sees variants of titles that actually appear in a
+page body. Some duplicates never get a chance to be resolved because
+the LLM, generating new pages without seeing the existing wiki, simply
+**writes a fresh `<page>` block under a different title** — a true
+semantic duplicate that no string-distance trick can absorb.
+`_synth_pages_from_source` (in `api.py`) closes that loop by feeding
+two prompt sections to every group:
+
+1. **`## Already created in this batch`** — a per-source accumulator
+   listing the `Title (type)` of every page emitted by groups
+   `0..N-1` of the SAME source. Stage A 1:N fan-out runs groups
+   serially; without this, group 2 reinvents what group 1 wrote.
+2. **`## Existing wiki pages`** — a snapshot of the base K-layer.
+   Below `synth.existing_pages_max_bytes` (default 16384 B ≈ 500
+   pages × ~25 B/line) we render the full list. Above that the
+   prompt would balloon as the wiki grows, so we switch to a
+   `vec_search`-gated top-K driven by the group's own chunk
+   embeddings — the per-chunk embeddings already exist from ingest,
+   so the only new Storage primitive is `get_chunk_embeddings`
+   (a pure SELECT over the existing per-version vec table). Top-K
+   defaults to `synth.existing_pages_top_k = 50`.
+
+The S2 prompt strategy: strong instruction + zero-block escape hatch.
+On a detected duplicate the LLM is told to emit **zero `<page>` blocks
+for that candidate** and reference the existing page via `[[Title]]`
+in its other pages instead. The "zero blocks" path is the only clean
+way the LLM can comply without partial-output ambiguity.
+
+Why per-chunk vec_search → union → top-K (rather than re-embed the
+group text once)? The locked design keeps the original "per-chunk
+vec_search → union dedup → score sort" semantics so retrieval
+faithfully reflects each chunk's local topic. Re-embedding would have
+collapsed a multi-topic group into one query vector and missed pages
+relevant to chunks the LLM hadn't focused on yet. The
+`get_chunk_embeddings` SELECT is cheap enough that this faithfulness
+costs nothing measurable.
+
+Both new fields (`existing_pages_max_bytes`, `existing_pages_top_k`)
+live on `SynthConfig` so a base-level `dikw.yml` can tune them per
+deployment — a wiki targeting tiny local models can drop the byte
+threshold; a wiki targeting Claude Opus's full context window can
+raise it.
