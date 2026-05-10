@@ -1,0 +1,120 @@
+"""Tests for ``persist_wiki_page`` — the public K-layer indexing function
+shared between synth and lint-apply.
+
+The synth path is already covered by ``test_persist_wiki_page.py``
+(routed through ``api._persist_wiki_page``); this file pins the
+provider-free path lint-apply uses (``embedder=None``) so the indexing
+contract — document upsert + chunks + outgoing-link reconciliation —
+holds without an embedder configured.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from dikw_core.domains.data.path_norm import normalize_path
+from dikw_core.domains.knowledge.page_index import persist_wiki_page
+from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.schemas import DocumentRecord, Layer, LinkType
+from dikw_core.storage.base import Storage
+
+
+def _wiki_doc_id(path: str) -> str:
+    return f"{Layer.WIKI.value}:{normalize_path(path)}"
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_writes_document_chunks_and_links(
+    parametrized_storage: Storage, tmp_path: Path,
+) -> None:
+    """End-to-end: write a page that links to a pre-seeded target and
+    verify that document, chunks, and outgoing wikilink edge all land
+    in storage. ``embedder=None`` exercises the lint-apply path."""
+    storage = parametrized_storage
+
+    target = build_page(title="Foo", body="# Foo\nbody.\n", type_="concept")
+    write_page(tmp_path, target)
+    await persist_wiki_page(
+        storage=storage, root=tmp_path, page=target,
+        embedder=None, embedding_model="", text_version_id=None,
+    )
+
+    src = build_page(
+        title="Source",
+        body="# Source\n\nSee [[Foo]] here.\n",
+        type_="concept",
+        path="wiki/concepts/source.md",
+    )
+    write_page(tmp_path, src)
+    unresolved = await persist_wiki_page(
+        storage=storage, root=tmp_path, page=src,
+        embedder=None, embedding_model="", text_version_id=None,
+    )
+
+    assert unresolved == 0
+    docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
+    src_doc = next(d for d in docs if d.path == src.path)
+    assert src_doc.title == "Source"
+
+    src_id = _wiki_doc_id(src.path)
+    chunks = await storage.list_chunks(src_id)
+    assert len(chunks) >= 1
+
+    links = await storage.links_from(src_id)
+    assert any(
+        link.link_type == LinkType.WIKILINK and link.dst_path == target.path
+        for link in links
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_skips_embedding_when_embedder_none(
+    parametrized_storage: Storage, tmp_path: Path,
+) -> None:
+    """Lint-apply caller passes embedder=None to keep apply provider-free.
+    Document + chunks must still land; the next ``dikw ingest`` will
+    reconcile embeddings via ``doc.hash`` drift."""
+    storage = parametrized_storage
+    page = build_page(title="X", body="body\n", type_="concept")
+    write_page(tmp_path, page)
+
+    await persist_wiki_page(
+        storage=storage, root=tmp_path, page=page,
+        embedder=None, embedding_model="", text_version_id=None,
+    )
+
+    doc_id = _wiki_doc_id(page.path)
+    chunks = await storage.list_chunks(doc_id)
+    assert len(chunks) >= 1
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_reports_unresolved_count(
+    parametrized_storage: Storage, tmp_path: Path,
+) -> None:
+    """An unresolved ``[[Missing]]`` should bump the returned count so
+    callers can fold it into reports (synth: SynthReport, lint apply: skip)."""
+    storage = parametrized_storage
+    page = build_page(
+        title="Source",
+        body="See [[Missing]] which has no target.\n",
+        type_="concept",
+        path="wiki/concepts/src.md",
+    )
+    write_page(tmp_path, page)
+    # Seed the document row for the source itself so resolve_links can
+    # exclude self-references — but no target page exists for [[Missing]].
+    src_id = _wiki_doc_id(page.path)
+    await storage.upsert_document(DocumentRecord(
+        doc_id=src_id, path=page.path, title=page.title,
+        hash="seed", mtime=0.0, layer=Layer.WIKI, active=True,
+    ))
+
+    unresolved = await persist_wiki_page(
+        storage=storage, root=tmp_path, page=page,
+        embedder=None, embedding_model="", text_version_id=None,
+    )
+
+    assert unresolved == 1
