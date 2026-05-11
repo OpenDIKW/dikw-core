@@ -58,19 +58,23 @@ Leave it running. Every `dikw <op>` shown below is a top-level alias for
 
 Two steps:
 
-* **Upload** — pre-flight + ship markdown packages (each md plus the
-  assets it embeds) into the server's `sources/` tree.
-* **Ingest** — chunk + FTS-index + (optionally) embed the
-  `sources/` tree.
+* **Import** — pre-flight + ship markdown packages (each md plus the
+  assets it embeds) from a local directory into the server's
+  `<base>/sources/` tree.
+* **Ingest** — chunk + FTS-index + (optionally) embed whatever lives
+  under `<base>/sources/`.
 
 ```bash
-# Send your local notes (file or directory) to the server. Each *.md
+# Import your local notes (file or directory) into the base. Each *.md
 # becomes one package together with the images it references; the
 # pre-flight rejects bad frontmatter, missing assets, and orphan
-# files BEFORE the network round trip.
-uv run dikw upload ./my-notes
+# files BEFORE the network round trip. ``import`` commits the bytes
+# into ``<base>/sources/``; it does NOT chunk or embed.
+uv run dikw import ./my-notes
 
-# Offline mode — indexes FTS only, no API calls.
+# ``ingest`` is the next step: scans ``<base>/sources/``, chunks the
+# markdown, and writes the D/I layer. Offline mode indexes FTS only,
+# no API calls.
 uv run dikw ingest --no-embed
 
 # Or with embeddings (requires DIKW_EMBEDDING_API_KEY on any OpenAI-compatible
@@ -79,9 +83,12 @@ export DIKW_EMBEDDING_API_KEY=sk-...
 uv run dikw ingest
 ```
 
-If the server runs on the same machine as your notes, you can also
-drop / edit markdown directly under `<base>/sources/` and skip
-`dikw upload` — `dikw ingest` always scans whatever's on disk.
+`import` and `ingest` are two halves of one user intent: import handles
+**outside the base** → `sources/`; ingest handles `sources/` →
+**chunks + embeddings**. If the server runs on the same machine as your
+notes, you can also drop / edit markdown directly under
+`<base>/sources/` and skip `dikw import` — `dikw ingest` always scans
+whatever's on disk.
 
 `dikw status` shows document, chunk, and embedding counts per DIKW layer.
 Subsequent ingests are idempotent: files whose content hash hasn't changed

@@ -1,16 +1,16 @@
-"""``build_upload`` packaging tests (post-refactor: per-md packages).
+"""``build_import`` packaging tests (post-refactor: per-md packages).
 
 These tests cover the new "one md = one package" packaging semantics
-exposed by ``build_upload``. Each invocation walks the input (file
+exposed by ``build_import``. Each invocation walks the input (file
 *or* directory), runs ``inspect_markdown`` on every md to learn its
 asset references, and emits a tar.gz + manifest whose ``packages``
 field carries the per-md grouping.
 
 Pre-flight failures (frontmatter parse, missing asset, empty body,
-orphan asset) raise ``UploadError`` before any bytes are tarred so the
-caller sees the problem before kicking off a network round trip.
+orphan asset) raise ``SourceImportError`` before any bytes are tarred
+so the caller sees the problem before kicking off a network round trip.
 
-The CLI-level happy / sad path is in ``tests/client/test_upload_cli.py``;
+The CLI-level happy / sad path is in ``tests/client/test_import_cli.py``;
 this file isolates the packaging logic so a broken manifest builder
 fails here, not deep in an HTTP test.
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from dikw_core.client.upload import UploadError, build_upload
+from dikw_core.client.importer import SourceImportError, build_import
 
 
 def _sha256(data: bytes) -> str:
@@ -45,14 +45,14 @@ def _write(path: Path, body: str) -> None:
 
 
 def test_build_single_md_file(tmp_path: Path) -> None:
-    """``build_upload(<one.md>)`` packs that file as a single package."""
+    """``build_import(<one.md>)`` packs that file as a single package."""
     note = tmp_path / "alpha.md"
     body = b"# A\nbody\n"
     # Use write_bytes so Windows doesn't translate \n → \r\n; sha256
     # must match what the server hashes off the wire.
     note.write_bytes(body)
 
-    bundle = build_upload(note)
+    bundle = build_import(note)
     try:
         manifest = json.loads(bundle.manifest_json)
         assert [e["path"] for e in manifest["files"]] == ["sources/alpha.md"]
@@ -74,7 +74,7 @@ def test_build_directory_with_sibling_asset(tmp_path: Path) -> None:
     asset_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
     (src / "diagram.png").write_bytes(asset_bytes)
 
-    bundle = build_upload(src)
+    bundle = build_import(src)
     try:
         manifest = json.loads(bundle.manifest_json)
         paths = sorted(e["path"] for e in manifest["files"])
@@ -99,7 +99,7 @@ def test_build_two_mds_share_one_logo(tmp_path: Path) -> None:
     _write(src / "b.md", "# B\n![](logo.png)\n")
     (src / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    bundle = build_upload(src)
+    bundle = build_import(src)
     try:
         manifest = json.loads(bundle.manifest_json)
         paths = sorted(e["path"] for e in manifest["files"])
@@ -127,7 +127,7 @@ def test_build_cross_directory_asset(tmp_path: Path) -> None:
     (src / "shared").mkdir()
     (src / "shared" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    bundle = build_upload(src)
+    bundle = build_import(src)
     try:
         manifest = json.loads(bundle.manifest_json)
         paths = sorted(e["path"] for e in manifest["files"])
@@ -154,32 +154,32 @@ def test_build_rejects_orphan_asset(tmp_path: Path) -> None:
     _write(src / "note.md", "# n\nbody only\n")
     (src / "stray.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    with pytest.raises(UploadError, match=r"orphan|stray\.png"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"orphan|stray\.png"):
+        build_import(src)
 
 
 def test_build_rejects_pre_flight_frontmatter_error(tmp_path: Path) -> None:
     src = tmp_path / "inbox"
     _write(src / "bad.md", "---\nfoo: : bar\n---\n# x\nbody\n")
 
-    with pytest.raises(UploadError, match=r"frontmatter"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"frontmatter"):
+        build_import(src)
 
 
 def test_build_rejects_pre_flight_asset_missing(tmp_path: Path) -> None:
     src = tmp_path / "inbox"
     _write(src / "note.md", "# x\n![](ghost.png)\n")
 
-    with pytest.raises(UploadError, match=r"ghost\.png|asset"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"ghost\.png|asset"):
+        build_import(src)
 
 
 def test_build_rejects_pre_flight_empty_body(tmp_path: Path) -> None:
     src = tmp_path / "inbox"
     _write(src / "empty.md", "---\ntitle: x\n---\n   \n")
 
-    with pytest.raises(UploadError, match=r"empty"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"empty"):
+        build_import(src)
 
 
 def test_build_rejects_no_md_in_dir(tmp_path: Path) -> None:
@@ -187,14 +187,14 @@ def test_build_rejects_no_md_in_dir(tmp_path: Path) -> None:
     src = tmp_path / "empty-dir"
     src.mkdir()
 
-    with pytest.raises(UploadError, match=r"no .* md|no markdown|no files"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"no .* md|no markdown|no files"):
+        build_import(src)
 
 
 def test_build_rejects_input_path_not_found(tmp_path: Path) -> None:
     bogus = tmp_path / "nope"
-    with pytest.raises(UploadError):
-        build_upload(bogus)
+    with pytest.raises(SourceImportError):
+        build_import(bogus)
 
 
 def test_build_rejects_non_md_file_input(tmp_path: Path) -> None:
@@ -203,8 +203,8 @@ def test_build_rejects_non_md_file_input(tmp_path: Path) -> None:
     asset = tmp_path / "logo.png"
     asset.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    with pytest.raises(UploadError):
-        build_upload(asset)
+    with pytest.raises(SourceImportError):
+        build_import(asset)
 
 
 # ---- security ---------------------------------------------------------
@@ -212,7 +212,7 @@ def test_build_rejects_non_md_file_input(tmp_path: Path) -> None:
 
 def test_symlink_md_is_rejected(tmp_path: Path) -> None:
     """A symlinked md could be made to read /etc/passwd through the
-    upload pipeline — the client refuses before the file leaves the
+    import pipeline — the client refuses before the file leaves the
     machine."""
     src = tmp_path / "inbox"
     src.mkdir()
@@ -224,8 +224,8 @@ def test_symlink_md_is_rejected(tmp_path: Path) -> None:
     except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
         pytest.skip(f"symlinks unavailable in this environment: {e}")
 
-    with pytest.raises(UploadError, match=r"symlink"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"symlink"):
+        build_import(src)
 
 
 def test_symlink_asset_is_rejected(tmp_path: Path) -> None:
@@ -241,8 +241,8 @@ def test_symlink_asset_is_rejected(tmp_path: Path) -> None:
     except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
         pytest.skip(f"symlinks unavailable in this environment: {e}")
 
-    with pytest.raises(UploadError, match=r"symlink"):
-        build_upload(src)
+    with pytest.raises(SourceImportError, match=r"symlink"):
+        build_import(src)
 
 
 # ---- file integrity ---------------------------------------------------
@@ -256,7 +256,7 @@ def test_manifest_file_sha256_matches_disk(tmp_path: Path) -> None:
     asset_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4
     (src / "logo.png").write_bytes(asset_bytes)
 
-    bundle = build_upload(src)
+    bundle = build_import(src)
     try:
         manifest = json.loads(bundle.manifest_json)
         for entry in manifest["files"]:
@@ -280,7 +280,7 @@ def test_manifest_package_sha256_matches_formula(tmp_path: Path) -> None:
     (src / "note.md").write_bytes(md_body)
     (src / "logo.png").write_bytes(asset_body)
 
-    bundle = build_upload(src)
+    bundle = build_import(src)
     try:
         manifest = json.loads(bundle.manifest_json)
         pkg = manifest["packages"][0]

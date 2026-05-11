@@ -1,4 +1,4 @@
-"""HTTP-level tests for ``POST /v1/upload/sources`` — infrastructure layer.
+"""HTTP-level tests for ``POST /v1/import`` — infrastructure layer.
 
 This file covers the wire-format invariants that hold regardless of
 the per-package commit model:
@@ -8,7 +8,7 @@ the per-package commit model:
 * size limits
 
 Per-package semantics (``packages``, ``package_sha256``, per-package
-reject, commit-to-sources) live in ``test_upload_packages.py``.
+reject, commit-to-sources) live in ``test_import_packages.py``.
 """
 
 from __future__ import annotations
@@ -21,17 +21,17 @@ from typing import Any
 import httpx
 import pytest
 
-from ._upload_helpers import packages_manifest, sha256, tar_bytes
+from ._import_helpers import packages_manifest, sha256, tar_bytes
 
 # ---- happy path --------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_upload_commits_into_sources(
+async def test_import_commits_into_sources(
     server_client: httpx.AsyncClient,
     wiki_root: Any,
 ) -> None:
-    """Single-package upload commits the md straight into
+    """Single-package import commits the md straight into
     ``<base>/sources/`` and returns committed=[0]."""
     files = {"sources/notes/x.md": b"# x\nhello\n"}
     manifest = packages_manifest(
@@ -40,7 +40,7 @@ async def test_upload_commits_into_sources(
     )
     payload = tar_bytes(files)
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -71,7 +71,7 @@ async def test_manifest_missing_file_rejected(
     )
     payload = tar_bytes(files)
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -92,7 +92,7 @@ async def test_manifest_extra_file_rejected(
     )
     payload = tar_bytes(files)
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -106,7 +106,7 @@ async def test_manifest_invalid_json_rejected(
 ) -> None:
     payload = tar_bytes({"sources/x.md": b"hello"})
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": "{not json"},
     )
@@ -145,7 +145,7 @@ async def test_tar_path_traversal_rejected(
     }
     _ = files
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -174,7 +174,7 @@ async def test_tar_outside_allowed_top_dirs_rejected(
         "total_bytes": len(files["wiki/index.md"]),
     }
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -194,7 +194,7 @@ async def test_tar_with_symlink_rejected(
         tf.addfile(ti)
     payload = buf.getvalue()
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={
             "manifest": json.dumps(
@@ -207,11 +207,11 @@ async def test_tar_with_symlink_rejected(
 
 
 @pytest.mark.asyncio
-async def test_upload_too_large_rejected(
+async def test_import_too_large_rejected(
     server_client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DIKW_SERVER_MAX_UPLOAD_BYTES", "256")
+    monkeypatch.setenv("DIKW_SERVER_MAX_IMPORT_BYTES", "256")
     big = b"a" * 4096
     files = {"sources/big.md": big}
     manifest = packages_manifest(
@@ -219,9 +219,9 @@ async def test_upload_too_large_rejected(
     )
     payload = tar_bytes(files)
     resp = await server_client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
     assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "upload_too_large"
+    assert resp.json()["error"]["code"] == "import_too_large"

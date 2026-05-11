@@ -10,7 +10,7 @@ contract; no engine changes required.
 Submodules:
   * :mod:`config` — resolve server URL + token (CLI flags > env > toml > default)
   * :mod:`transport` — httpx wrapper, JSON + NDJSON helpers, error mapping
-  * :mod:`upload` — pack a local sources/+assets/ tree as tar.gz + manifest
+  * :mod:`importer` — pack a local sources/+assets/ tree as tar.gz + manifest
   * :mod:`progress` — NDJSON event → rich Progress / final-result renderers
   * :mod:`cli_app` — Typer app exposed as ``dikw client *``
 """

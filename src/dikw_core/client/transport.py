@@ -16,7 +16,7 @@ Things this module deliberately does NOT do:
   idempotent + resumable via task event ``from_seq``. A retry layer here
   would only mask real network or auth issues.
 * No streaming uploads — the multipart upload helper lives in
-  ``client/upload.py`` because it owns the manifest + tar.gz packing
+  ``client/importer.py`` because it owns the manifest + tar.gz packing
   logic; the transport just wraps the bytes.
 """
 
@@ -150,7 +150,7 @@ class Transport:
         files: Mapping[str, tuple[str, Any, str]],
         data: Mapping[str, str] | None = None,
     ) -> Any:
-        """Send a multipart POST (sources upload).
+        """Send a multipart POST (sources import).
 
         ``files`` matches httpx's ``files=`` shape: ``name -> (filename,
         fileobj, content_type)``. The transport doesn't own the file

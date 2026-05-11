@@ -1,7 +1,7 @@
-"""Shared fixtures for the server-side upload-route tests.
+"""Shared fixtures for the server-side import-route tests.
 
-Both ``test_upload.py`` (tar shape + size limits + manifest schema)
-and ``test_upload_packages.py`` (per-package commit semantics) need
+Both ``test_import.py`` (tar shape + size limits + manifest schema)
+and ``test_import_packages.py`` (per-package commit semantics) need
 the same primitives — packing a dict of ``{path: bytes}`` into a
 gzipped tarball, computing per-file sha256, and assembling the
 packages-aware manifest. Putting them here keeps the two suites in

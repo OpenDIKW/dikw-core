@@ -13,7 +13,7 @@ Two flavours of test infrastructure:
 
   * ``ingested_wiki`` — extends ``server_client`` by copying a small
     fixture corpus into the wiki's ``sources/`` and running ``ingest``
-    via the engine API (skips the HTTP upload path so test setup stays
+    via the engine API (skips the HTTP import path so test setup stays
     cheap). Several route tests need a wiki with both documents and
     embeddings populated; reuse this fixture instead of cloning the
     setup per file.

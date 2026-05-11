@@ -72,7 +72,7 @@ src/dikw_core/
 │       ├── sqlite/          schema SQL
 │       └── postgres/        schema SQL (vector extension)
 ├── prompts/               versioned LLM prompts loaded via importlib.resources
-├── server/                FastAPI app + auth + sync/task/upload/query routes + task subsystem
+├── server/                FastAPI app + auth + sync/task/import/query routes + task subsystem
 ├── client/                Remote Typer CLI + httpx transport + NDJSON progress
 └── cli.py                 top-level Typer app: version, init, serve + dikw client subgroup
 ```

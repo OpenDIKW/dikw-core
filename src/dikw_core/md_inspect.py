@@ -1,7 +1,7 @@
 """Client-side markdown pre-flight inspection + asset reference extraction.
 
 Lives at the package root (next to ``schemas.py``) so both the client
-upload command and the D-layer ingest backend can import it without
+import command and the D-layer ingest backend can use it without
 violating the client-doesn't-depend-on-engine layering invariant.
 Dependencies are stdlib + ``python-frontmatter`` + ``schemas.AssetRef``
 only — anything heavier belongs in ``domains/data/``.
@@ -12,7 +12,7 @@ Two surfaces:
   standard ``![alt](path)`` and Obsidian ``![[file|alias]]`` embeds.
   ``domains/data/backends/markdown.py`` re-exports this.
 * ``inspect_markdown(path, *, project_root)`` — used by ``dikw client
-  upload`` to pre-flight every md before packaging. Returns every
+  import`` to pre-flight every md before packaging. Returns every
   reason ingest would warn or fail (`frontmatter_error`,
   `asset_missing`, `empty_body`) plus the resolved absolute paths of
   every local asset reference so the packager can include them in the
@@ -59,7 +59,7 @@ def sha256_file(path: Path, *, chunk_size: int = _SHA256_CHUNK) -> str:
 
 def package_sha256(md_sha: str, asset_shas: Iterable[str]) -> str:
     """``sha256( sorted([md_sha, *asset_shas]).join("\\n") )`` — the
-    digest the upload manifest carries per package; client + server +
+    digest the import manifest carries per package; client + server +
     tests must use this single implementation or a typo means the
     server rejects every package as ``manifest_package_sha256_mismatch``."""
     joined = "\n".join(sorted([md_sha, *asset_shas]))
@@ -134,9 +134,8 @@ def _resolve_local(
 ) -> Path | None:
     """Sibling-of-md → project-root two-stage lookup.
 
-    Mirrors ``domains/data/assets._resolve_local`` so the upload
-    packager and ingest agree on which file an embed reference points
-    at."""
+    Mirrors ``domains/data/assets._resolve_local`` so the importer
+    and ingest agree on which file an embed reference points at."""
     candidate = (source_md_path.parent / original_path).resolve()
     if candidate.is_file():
         return candidate
@@ -153,10 +152,10 @@ def _candidate_is_symlink(
     sibling-of-md or project-root) lstats to a symlink.
 
     The pre-flight needs this because ``_resolve_local`` runs
-    ``Path.resolve`` and silently follows the symlink — the upload
+    ``Path.resolve`` and silently follows the symlink — the import
     would then archive the target's bytes under the symlink's name,
     breaking the md's reference and potentially leaking files outside
-    the upload root.
+    the import root.
     """
     for candidate in (
         source_md_path.parent / original_path,
@@ -188,8 +187,8 @@ class InspectionResult:
 
     ``asset_paths`` lists the **resolved absolute** paths of every
     local asset embedded by the file (deduplicated, in source order).
-    The upload packager uses it directly as the asset_paths of the
-    package built around this md.
+    The importer uses it directly as the asset_paths of the package
+    built around this md.
     """
 
     file_path: Path
@@ -215,7 +214,7 @@ def inspect_markdown(
        refs (excluding remote URLs) are reported one by one.
 
     Multiple issues accumulate so users see the full picture in one
-    upload attempt rather than fixing-and-retrying drip-fed errors.
+    import attempt rather than fixing-and-retrying drip-fed errors.
     """
     issues: list[InspectionIssue] = []
     asset_paths: list[Path] = []
@@ -235,7 +234,7 @@ def inspect_markdown(
         )
     except OSError as e:
         # Caller normally checks existence first; surface the real
-        # error so the upload packager can attribute it cleanly.
+        # error so the importer can attribute it cleanly.
         return InspectionResult(
             file_path=path,
             ok=False,

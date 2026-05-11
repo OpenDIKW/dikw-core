@@ -32,7 +32,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 | **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
 | **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval}` → `task_id`; `GET /v1/tasks/{id}/events` (NDJSON); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → stream NDJSON → final JSON |
 | **Streaming query** | `POST /v1/query` | NDJSON: `query_started → retrieval_done → llm_token* → final` |
-| **Upload** | `POST /v1/upload/sources` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
+| **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
 Every error follows one envelope:
 
@@ -158,10 +158,10 @@ token comes from the file, and so on.
   event every 15s while idle, just to defeat reverse-proxy idle
   timeouts. Clients drop heartbeats at the transport layer; server
   operators don't need to do anything special.
-* **Upload size** — `POST /v1/upload/sources` accepts up to 1 GiB by
-  default. Override via `DIKW_SERVER_MAX_UPLOAD_BYTES=<int>`.
+* **Import payload size** — `POST /v1/import` accepts up to 1 GiB by
+  default. Override via `DIKW_SERVER_MAX_IMPORT_BYTES=<int>`.
 
-### Sources upload (`POST /v1/upload/sources`)
+### Sources import (`POST /v1/import`)
 
 Multipart form-data with two parts:
 
@@ -183,7 +183,7 @@ Multipart form-data with two parts:
   ```
 
 The server stages the tarball under
-`<base>/.dikw/upload-staging/<upload_id>/`, validates schema (orphan
+`<base>/.dikw/staging/<import_id>/`, validates schema (orphan
 file, duplicate `md_path`, missing/extra files), recomputes every
 file sha256 + each `package_sha256`, then commits well-formed
 packages straight into `<base>/sources/` via `os.replace` and
@@ -193,7 +193,7 @@ Response:
 
 ```json
 {
-  "upload_id": "...", "files_count": N, "bytes": M, "applied_at": "...",
+  "import_id": "...", "files_count": N, "bytes": M, "applied_at": "...",
   "committed": [0, 2, ...],
   "rejected": [{"id": 1, "code": "...", "detail": {...}}]
 }
@@ -203,7 +203,7 @@ Error codes:
 
 | code | layer | meaning |
 |---|---|---|
-| `upload_too_large` | request | exceeds `DIKW_SERVER_MAX_UPLOAD_BYTES` |
+| `import_too_large` | request | exceeds `DIKW_SERVER_MAX_IMPORT_BYTES` |
 | `tar_path_traversal` / `tar_link_forbidden` / `tar_unexpected_path` / `tar_invalid` | tar safety | refused before extraction |
 | `manifest_malformed` / `manifest_invalid` | schema | manifest JSON / pydantic validation |
 | `manifest_packages_missing` | schema | legacy files-only manifest no longer accepted |

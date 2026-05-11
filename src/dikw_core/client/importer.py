@@ -1,10 +1,11 @@
 """Local md+assets → tar.gz + per-md packages manifest.
 
-The post-refactor client packages each markdown file together with its
-referenced assets as a single logical "package" inside one tar.gz +
-manifest. The server's ``POST /v1/upload/sources`` validates each
-package independently, commits the well-formed ones into
-``<base>/sources/`` directly, and reports per-package outcomes.
+The client packages each markdown file together with its referenced
+assets as a single logical "package" inside one tar.gz + manifest, and
+ships them via ``POST /v1/import`` (multipart upload at the transport
+layer; "import" at the business layer — see CONTEXT.md). The server
+validates each package independently, commits the well-formed ones
+into ``<base>/sources/`` directly, and reports per-package outcomes.
 
 Wire shape::
 
@@ -20,8 +21,8 @@ Wire shape::
     }
 
 Pre-flight inspection (frontmatter parse, missing asset, empty body,
-orphan asset, symlink) raises ``UploadError`` before any bytes are
-tarred so a broken input fails locally — no network round trip.
+orphan asset, symlink) raises ``SourceImportError`` before any bytes
+are tarred so a broken input fails locally — no network round trip.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from ..md_inspect import (
 # bundles.
 _SPOOL_MAX_SIZE = 16 * 1024 * 1024
 
-# Only ``.md`` is accepted for upload — the default ``dikw.yml``
+# Only ``.md`` is accepted for import — the default ``dikw.yml``
 # scans ``sources/**/*.md`` and ``.markdown`` files would commit but
 # silently never get ingested. Users needing ``.markdown`` should
 # rename + edit their config glob explicitly.
@@ -80,7 +81,7 @@ class PackageEntry:
 
 
 @dataclass
-class UploadBundle:
+class ImportBundle:
     """A ready-to-send tar.gz + its manifest.
 
     ``payload`` is a file-like positioned at byte 0; the caller hands
@@ -95,23 +96,23 @@ class UploadBundle:
 
     def close(self) -> None:
         # Tempfile cleanup races with delete-on-close on Windows; don't
-        # let a swallowed cleanup error mask the real upload error.
+        # let a swallowed cleanup error mask the real import error.
         with contextlib.suppress(Exception):
             self.payload.close()
 
-    def __enter__(self) -> UploadBundle:
+    def __enter__(self) -> ImportBundle:
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
 
 
-class UploadError(Exception):
+class SourceImportError(Exception):
     """Surface client-side rejection (bad inputs, pre-flight lint, …)
     before any bytes leave the machine."""
 
 
-def build_upload(src: Path) -> UploadBundle:
+def build_import(src: Path) -> ImportBundle:
     """Pack ``src`` into a tar.gz + manifest the server will accept.
 
     ``src`` may be either a single ``.md`` file or a directory whose
@@ -120,7 +121,7 @@ def build_upload(src: Path) -> UploadBundle:
     non-empty body); orphan assets in the input tree are rejected so
     files don't get silently dropped.
 
-    Raises :class:`UploadError` for any pre-flight failure with
+    Raises :class:`SourceImportError` for any pre-flight failure with
     enough detail (file path, lint kind, missing ref) for the user to
     fix.
     """
@@ -161,7 +162,7 @@ def build_upload(src: Path) -> UploadBundle:
             )
 
     if pre_flight_errors:
-        raise UploadError(
+        raise SourceImportError(
             "pre-flight inspection failed:\n  - "
             + "\n  - ".join(pre_flight_errors)
         )
@@ -194,16 +195,16 @@ def _resolve_input(
     the resolved one — ``Path.resolve`` strips the symlink for us, so
     a follow-up ``S_ISLNK`` would always say "regular file" and the
     pre-flight rejection promised in the docstring would silently
-    leak the target's bytes into the upload.
+    leak the target's bytes into the import payload.
     """
     try:
         st_raw = src.lstat()
     except OSError as e:
-        raise UploadError(f"upload source does not exist: {src}") from e
+        raise SourceImportError(f"import source does not exist: {src}") from e
 
     if stat.S_ISLNK(st_raw.st_mode):
-        raise UploadError(
-            f"refusing to upload symlink: {src} "
+        raise SourceImportError(
+            f"refusing to import symlink: {src} "
             f"(target: {os.readlink(src)!r})"
         )
 
@@ -212,8 +213,8 @@ def _resolve_input(
 
     if stat.S_ISREG(st.st_mode):
         if src.suffix.lower() not in _DEFAULT_MD_EXTENSIONS:
-            raise UploadError(
-                f"single-file upload only accepts markdown "
+            raise SourceImportError(
+                f"single-file import only accepts markdown "
                 f"({sorted(_DEFAULT_MD_EXTENSIONS)}); got {src.suffix!r}"
             )
         return src.parent, [src], []
@@ -227,14 +228,14 @@ def _resolve_input(
         scan_root = src / "sources" if (src / "sources").is_dir() else src
         md_files, asset_files = _discover_files(scan_root)
         if not md_files:
-            raise UploadError(
+            raise SourceImportError(
                 f"no markdown files found under {scan_root} "
                 f"(expected ``**/*.md``)"
             )
         return src, md_files, asset_files
 
-    raise UploadError(
-        f"upload source is neither a file nor a directory: {src}"
+    raise SourceImportError(
+        f"import source is neither a file nor a directory: {src}"
     )
 
 
@@ -247,7 +248,7 @@ def _pending_from_inspection(
     their relative position inside ``project_root``. Assets that
     resolve outside the project root (via ``_resolve_local``'s
     project-root fallback when the relative path escapes) are
-    rejected — the upload root must self-contain.
+    rejected — the import root must self-contain.
 
     When the user pointed at a base-style tree, files already begin
     with ``sources/`` after relativising; ``_archive_path`` keeps a
@@ -259,10 +260,10 @@ def _pending_from_inspection(
         try:
             archive = _archive_path(asset_abs, project_root)
         except ValueError as e:
-            raise UploadError(
+            raise SourceImportError(
                 f"{result.file_path}: asset {asset_abs} resolves outside "
-                f"the upload root ({project_root}); move the asset under "
-                f"the upload root or invoke upload from a higher directory"
+                f"the import root ({project_root}); move the asset under "
+                f"the import root or invoke import from a higher directory"
             ) from e
         assets.append((archive, asset_abs))
     return _PendingPackage(
@@ -286,7 +287,7 @@ def _archive_path(abs_path: Path, project_root: Path) -> str:
     return "sources/" + rel
 
 
-def _build_bundle(packages: list[_PendingPackage]) -> UploadBundle:
+def _build_bundle(packages: list[_PendingPackage]) -> ImportBundle:
     """Pack the validated packages into a tar.gz + manifest.
 
     Files (md + asset) are deduped by archive path: the same logo
@@ -326,8 +327,8 @@ def _build_bundle(packages: list[_PendingPackage]) -> UploadBundle:
                 tarinfo.mtime = int(mtime)
                 tarinfo.mode = 0o644
                 # Strip uid/gid/uname/gname so the archive is byte-stable
-                # across users running the same upload — useful when CI
-                # and a developer both upload the same tree.
+                # across users running the same import — useful when CI
+                # and a developer both import the same tree.
                 tarinfo.uid = 0
                 tarinfo.gid = 0
                 tarinfo.uname = ""
@@ -363,7 +364,7 @@ def _build_bundle(packages: list[_PendingPackage]) -> UploadBundle:
             "total_bytes": total_bytes,
         }
     )
-    return UploadBundle(
+    return ImportBundle(
         payload=payload,
         manifest_json=manifest_json,
         files_count=len(manifest_files),
@@ -396,9 +397,9 @@ def _discover_files(
 
 
 __all__ = [
+    "ImportBundle",
     "ManifestEntry",
     "PackageEntry",
-    "UploadBundle",
-    "UploadError",
-    "build_upload",
+    "SourceImportError",
+    "build_import",
 ]

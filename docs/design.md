@@ -93,7 +93,7 @@ Module boundaries are chosen so each subpackage fits in a single reading pass an
 - **Markdown**: `markdown-it-py` + `python-frontmatter`; wiki-link parsing via a small in-repo module (not a heavy dep)
 - **LLM SDKs**: `anthropic`, `openai` (the `openai` SDK covers all OpenAI-compatible endpoints), behind a thin provider interface
 - **Embeddings**: default through an OpenAI-compatible `embeddings` endpoint (works for OpenAI, Ollama, TEI, etc.); Anthropic path uses OpenAI-compat for embeddings since Anthropic has no embeddings API
-- **HTTP server**: `fastapi` + `uvicorn[standard]` + `python-multipart` for source uploads
+- **HTTP server**: `fastapi` + `uvicorn[standard]` + `python-multipart` for source-import multipart payloads
 - **CLI & output**: `typer` + `httpx` + `rich`
 - **Quality**: `pytest`, `pytest-asyncio`, `ruff`, `mypy --strict` where practical
 - **CI**: GitHub Actions — lint + type-check + tests on 3.12/3.13
@@ -103,7 +103,7 @@ Known patterns to reuse from references (concrete sources):
 - **SQLite schema design + content-addressed storage** — `mineru-doc-explorer/src/db-schema.ts`, `mineru-doc-explorer/src/store.ts` (documents table with indexed content hash, links table, wiki_log).
 - **Smart markdown chunking (~900 tokens, 15% overlap, heading-aware)** — `mineru-doc-explorer/src/store.ts` chunking section; `qmd/src/store.ts` lines ~257–310.
 - **Wikilink parsing + forward/backward graph** — `mineru-doc-explorer/src/links.ts`, `mineru-doc-explorer/src/wiki/{log,lint,index-gen}.ts`. Port to a small `knowledge/links.py`.
-- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,upload,query}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / distill / eval / query) stream NDJSON; sync ops return JSON directly.
+- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,query}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / distill / eval / query) stream NDJSON; sync ops return JSON directly.
 - **YAML config + schema validation** — `mineru-doc-explorer/src/config-schema.ts` (Zod) → Pydantic v2 equivalent in `dikw_core/config.py`.
 - **Strong-signal short-circuit** (skip expensive LLM expansion when FTS already gives a confident top hit) — `qmd/src/store.ts:4057–4076`.
 
@@ -170,7 +170,7 @@ dikw-core/
 │   │   └── lint.md
 │   │
 │   ├── server/               # FastAPI app, auth, sync + task routes, NDJSON streamer
-│   ├── client/               # remote Typer CLI + httpx transport + NDJSON progress + sources upload
+│   ├── client/               # remote Typer CLI + httpx transport + NDJSON progress + sources importer
 │   └── cli.py                # top-level typer app: version, init, serve + dikw client subgroup
 │
 ├── tests/
@@ -182,7 +182,7 @@ dikw-core/
 │   ├── test_providers.py     # uses recorded responses
 │   ├── test_storage_contract.py  # same contract test runs against every backend
 │   ├── server/               # HTTP-level tests against an in-memory ASGI app
-│   └── client/               # transport, config, upload, progress renderer tests
+│   └── client/               # transport, config, importer, progress renderer tests
 └── examples/
     └── personal-wiki/        # runnable demo wiki
 ```
@@ -518,7 +518,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 **Remote CLI** (`dikw client *`, also reachable via top-level aliases):
 - `dikw client status` — counts per layer
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
-- `dikw client upload <path>` — pre-flight + upload markdown packages (md + referenced assets) into the server's `sources/`
+- `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
 - `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` tree, stream progress
 - `dikw client synth [--all]` — K synthesis
 - `dikw client distill` — propose W-layer candidates
@@ -532,7 +532,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - Sync RPC under `/v1/` — `status`, `check`, `lint`, `init`, wiki page list/read, doc search, chunk fetch, wisdom list/approve/reject.
 - Async tasks under `/v1/{ingest,synth,distill,eval}` — submit returns `task_id`; `GET /v1/tasks/{id}/events` streams NDJSON progress; `/result` and `/cancel` complete the lifecycle.
 - Streaming query — `POST /v1/query` returns NDJSON: `query_started → retrieval_done → llm_token* → final{succeeded|failed|cancelled}`.
-- Sources upload — `POST /v1/upload/sources` accepts a manifest + tar.gz, validates sha256, stages atomically before ingest reads from disk.
+- Sources import — `POST /v1/import` accepts a manifest + tar.gz (multipart upload at the transport layer), validates sha256, stages atomically, then commits per-package into `<base>/sources/` before ingest reads from disk.
 
 ## Phasing
 

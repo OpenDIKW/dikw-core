@@ -38,7 +38,7 @@ class TaskRow(BaseModel):
     """One persisted task. ``params_digest`` is a sha256 of the canonical
     JSON params dict — used by future client tooling to dedup retries
     without storing the raw params (which may carry large embedded blobs
-    once we wire upload-id-driven ingest in Phase 3)."""
+    once we wire import-id-driven ingest in Phase 3)."""
 
     task_id: str
     op: str

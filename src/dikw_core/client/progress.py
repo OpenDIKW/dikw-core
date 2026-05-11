@@ -427,12 +427,12 @@ def render_ingest_errors(
     console.print(table)
 
 
-def render_upload_report(
+def render_import_report(
     console: Console, report: Mapping[str, Any]
 ) -> None:
-    """Render the ``UploadResponse`` returned by ``POST /v1/upload/sources``.
+    """Render the ``ImportResponse`` returned by ``POST /v1/import``.
 
-    Shows the upload summary (files, bytes), the list of committed
+    Shows the import summary (files, bytes), the list of committed
     package ids, and a table of rejected packages with reason codes."""
     files_count = int(report.get("files_count") or 0)
     total_bytes = int(report.get("bytes") or 0)
@@ -440,7 +440,7 @@ def render_upload_report(
     rejected = list(report.get("rejected") or [])
 
     summary = Table(
-        title="dikw upload", show_header=True, header_style="bold"
+        title="dikw import", show_header=True, header_style="bold"
     )
     summary.add_column("metric", justify="left")
     summary.add_column("count", justify="right")

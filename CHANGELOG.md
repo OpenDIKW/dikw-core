@@ -7,6 +7,49 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### `upload` → `import` — rename the source-import verb top-to-bottom
+
+* **BREAKING (CLI)**: `dikw client upload <path>` is now
+  `dikw client import <path>`. Top-level alias `dikw upload` is gone;
+  use `dikw import`. `dikw auth import` is **unchanged** — it sits in
+  the `auth` subgroup and targets the OAuth token store, not the
+  base's `sources/`.
+* **BREAKING (HTTP)**: `POST /v1/upload/sources` is now
+  `POST /v1/import`. Manifest and response shapes are unchanged
+  except that the response field `upload_id` is now `import_id`.
+* **BREAKING (env)**: `DIKW_SERVER_MAX_UPLOAD_BYTES` is now
+  `DIKW_SERVER_MAX_IMPORT_BYTES`. The old name is not read as a
+  fallback (pre-alpha; nobody outside this repo depends on it).
+* **BREAKING (error code)**: `upload_too_large` is now
+  `import_too_large`. Other error codes (`tar_*`, `manifest_*`,
+  `package_*`) are unchanged.
+* **BREAKING (staging path)**: per-request staging directory moves
+  from `<base>/.dikw/upload-staging/<id>/` to
+  `<base>/.dikw/staging/<id>/`. The orphan-cleanup pass in
+  `runtime.py` additionally rmtrees the legacy
+  `.dikw/upload-staging/` once on next startup so users upgrading
+  don't leak abandoned transient bytes.
+* **BREAKING (backup suffix)**: the per-file backup created during
+  the atomic in-place replace inside `_commit_one_file` changes from
+  `.bak.upload` to `.bak.import`. The new server doesn't sweep stale
+  `.bak.upload` files left over from a pre-rename crash mid-commit
+  — they're rare enough that we leave them for the user to delete
+  manually.
+* **Why**: `upload` is HTTP-wire terminology; the user-facing verb
+  for "bring external files into the base" is `import`. The DIKW
+  pipeline now reads as `import → ingest → synth → distill`, four
+  verbs each pinned to one transition between layers. The HTTP path
+  describes what the caller asks the server to do; multipart upload
+  remains the **transport mechanism** but is no longer surfaced as
+  the **business verb**. See `CONTEXT.md` for the term boundaries.
+* **Code moves**: `client/upload.py` → `client/importer.py`;
+  `server/routes_upload.py` → `server/routes_import.py`. Class
+  rename: `UploadError` → `SourceImportError` (avoids shadowing
+  Python's builtin `ImportError`); `UploadResponse` →
+  `ImportResponse`; `UploadBundle` → `ImportBundle`. Function rename:
+  `build_upload` → `build_import`; `render_upload_report` →
+  `render_import_report`.
+
 ### `synth` — preserve dominant source language in K-layer pages
 
 * **Changed**: synth prompt (`prompts/synthesize.md`) gains an `## Output

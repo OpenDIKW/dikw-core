@@ -9,7 +9,7 @@ Title resolution order:
 3. File stem (``my-note`` -> ``my-note``)
 
 The asset-reference regex pair lives in ``dikw_core.md_inspect`` so the
-client upload command (which can't import from ``domains/``) and the
+client import command (which can't import from ``domains/``) and the
 D-layer parser both share one source of truth. ``extract_image_refs``
 is re-exported here for existing callers.
 """
