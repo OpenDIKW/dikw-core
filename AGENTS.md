@@ -39,7 +39,7 @@ ask the user to run `dikw serve` (don't try to start it yourself).
 | `POST /v1/query` | retrieval + LLM answer with citations | when you want a synthesized answer with grounding |
 | `GET /v1/base/pages` | list pages registered in the base, optional `?layer=` filter | discovering page paths to read |
 | `GET /v1/base/pages/{path}` | full page body + chunk anchors aligned to the parsed coordinate space | reading a specific page after a retrieval hit lands you on it |
-| `POST /v1/ingest` | ingest the on-disk `sources/` (or an uploaded tar) | when the user adds/edits markdown and wants the index refreshed |
+| `POST /v1/ingest` | ingest whatever is on disk under `<base>/sources/` (loaded there by `POST /v1/import` or by the user dropping files in) | when the user adds/edits markdown and wants the index refreshed |
 | `GET /v1/status`, `POST /v1/lint`, `POST /v1/check` | counts, lint issues, provider connectivity | sanity checks the user may ask for |
 
 CLI equivalents (sync commands ship `--format json|table` for piping
@@ -52,7 +52,7 @@ dikw client health --format json
 dikw client retrieve "your question" --plain --format json
 dikw client pages list --format json
 dikw client pages get sources/notes/alpha.md
-dikw client upload ./local-sources           # pre-flights + uploads md packages
+dikw client import ./local-sources           # pre-flights + imports md packages
 dikw client ingest                           # rendered progress; NOT pipeable
 dikw client query "your question"            # rendered tokens; NOT pipeable
 ```

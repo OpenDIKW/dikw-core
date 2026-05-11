@@ -4,10 +4,10 @@ Lives in its own module (rather than inside ``routes_tasks.py``) so the
 TaskRunner closure is independently testable.
 
 In the post-refactor world ingest is a pure scan-disk task: the client
-uploads sources separately via ``/v1/upload/sources``, which commits
-files straight into ``<base>/sources/``. ``api.ingest`` then walks
-that tree, hashing for idempotency and chunking + embedding the
-new/changed files.
+imports sources separately via ``/v1/import``, which commits files
+straight into ``<base>/sources/``. ``api.ingest`` then walks that
+tree, hashing for idempotency and chunking + embedding the new/changed
+files.
 """
 
 from __future__ import annotations

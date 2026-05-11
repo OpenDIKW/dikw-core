@@ -211,7 +211,7 @@ class PageReadResult(BaseModel):
 
     ``body`` is the on-disk file content (unchunked); ``anchors`` are the
     chunk boundaries the engine produced at last ingest, in ``seq`` order.
-    A page that has never been chunked (e.g. a just-uploaded source not
+    A page that has never been chunked (e.g. a just-imported source not
     yet ingested) returns an empty ``anchors`` list.
     """
 

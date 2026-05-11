@@ -1,10 +1,10 @@
 """End-to-end ingest task tests through the FastAPI app.
 
 In the post-refactor world, ``/v1/ingest`` is a pure scan-disk task:
-the client uploads sources separately via ``/v1/upload/sources`` (which
+the client imports sources separately via ``/v1/import`` (which
 commits straight into ``<base>/sources/``), then calls ingest to
 chunk + embed whatever lives on disk. The previous ``upload_id``
-parameter is gone — see ``test_upload_packages.py`` for the upload
+parameter is gone — see ``test_import_packages.py`` for the import
 side of the contract.
 
 Asserts:
@@ -68,23 +68,19 @@ async def test_ingest_scans_existing_sources(
     ]
     assert result["scanned"] == 1
     assert result["added"] == 1
-    # ``upload_commit`` field is dead in the new model.
-    assert "upload_commit" not in result
 
 
 @pytest.mark.asyncio
-async def test_ingest_submit_does_not_accept_upload_id(
+async def test_ingest_submit_rejects_unknown_fields(
     server_client: httpx.AsyncClient,
 ) -> None:
-    """``upload_id`` is hard-removed; passing it must yield a schema-level
-    422 (FastAPI rejects unknown body fields when the model is strict)."""
+    """``IngestSubmit`` has ``extra: 'forbid'``; a request body carrying
+    fields the schema doesn't know must yield 422 instead of silently
+    succeeding (which would let typos like ``no_embeed`` look fine)."""
     submit = await server_client.post(
-        "/v1/ingest", json={"upload_id": "deadbeef0000", "no_embed": True}
+        "/v1/ingest", json={"unknown_extra_field": "x", "no_embed": True}
     )
-    # FastAPI / pydantic returns 422 for unknown fields when the model
-    # is configured to forbid extras. If the model isn't strict, accept
-    # 200 but assert no upload_commit appears in the result.
-    assert submit.status_code in (200, 422), submit.text
+    assert submit.status_code == 422, submit.text
 
 
 # ---- event tape replay --------------------------------------------------

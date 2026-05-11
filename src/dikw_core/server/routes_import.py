@@ -1,20 +1,20 @@
-"""Multipart packages upload + per-package commit.
+"""Source import endpoint (multipart packages upload + per-package commit).
 
-Wire format (``POST /v1/upload/sources``)::
+Wire format (``POST /v1/import``)::
 
     Content-Type: multipart/form-data
         payload  — tar.gz, every member's path must start with ``sources/``
         manifest — JSON ``{"files": [...], "packages": [...], "total_bytes": N}``
 
-The server unpacks into a per-upload staging directory under
-``<base>/.dikw/upload-staging/<upload_id>/``, validates the manifest
-schema, recomputes each file's sha256 and each package's
-``package_sha256``, then commits the well-formed packages straight
-into ``<base>/sources/`` (per-package via ``os.replace``) and
-``rmtree``s the staging directory before returning. Per-package
-failures (sha mismatch, commit error) are reported in
-``UploadResponse.rejected``; schema-level failures (orphan file,
-missing packages, duplicate md_path) reject the whole request.
+The server unpacks into a per-request staging directory under
+``<base>/.dikw/staging/<import_id>/``, validates the manifest schema,
+recomputes each file's sha256 and each package's ``package_sha256``,
+then commits the well-formed packages straight into ``<base>/sources/``
+(per-package via ``os.replace``) and ``rmtree``s the staging directory
+before returning. Per-package failures (sha mismatch, commit error)
+are reported in ``ImportResponse.rejected``; schema-level failures
+(orphan file, missing packages, duplicate md_path) reject the whole
+request.
 """
 
 from __future__ import annotations
@@ -41,13 +41,13 @@ from .runtime import ServerRuntime, get_runtime
 logger = logging.getLogger(__name__)
 
 
-# ``DIKW_SERVER_MAX_UPLOAD_BYTES`` overrides the default at process start.
+# ``DIKW_SERVER_MAX_IMPORT_BYTES`` overrides the default at process start.
 # 1 GiB is generous for an md+assets bundle but avoids the worst-case
 # wedge on a runaway tarball.
-_DEFAULT_MAX_UPLOAD_BYTES = 1 * 1024 * 1024 * 1024
+_DEFAULT_MAX_IMPORT_BYTES = 1 * 1024 * 1024 * 1024
 _ALLOWED_TOP_DIRS = ("sources",)
 
-STAGING_DIRNAME = ".dikw/upload-staging"
+STAGING_DIRNAME = ".dikw/staging"
 
 
 # ---- request / response models ------------------------------------------
@@ -78,8 +78,8 @@ class RejectedPackage(BaseModel):
     detail: dict[str, Any] | None = None
 
 
-class UploadResponse(BaseModel):
-    upload_id: str
+class ImportResponse(BaseModel):
+    import_id: str
     files_count: int
     bytes: int
     applied_at: str  # ISO8601 UTC
@@ -93,12 +93,12 @@ class UploadResponse(BaseModel):
 def make_router(*, auth_dep: Any) -> APIRouter:
     router = APIRouter(prefix="/v1", dependencies=[Depends(auth_dep)])
 
-    @router.post("/upload/sources", response_model=UploadResponse)
-    async def upload_sources(
+    @router.post("/import", response_model=ImportResponse)
+    async def import_sources(
         request: Request,
         payload: UploadFile = File(..., description="tar.gz of sources/"),
         manifest: str = Form(..., description="JSON Manifest body."),
-    ) -> UploadResponse:
+    ) -> ImportResponse:
         rt: ServerRuntime = get_runtime(request.app)
         max_bytes = _resolve_max_bytes()
 
@@ -107,15 +107,15 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         cl = request.headers.get("content-length")
         if cl is not None and int(cl) > max_bytes:
             raise BadRequest(
-                f"upload exceeds {max_bytes} bytes (content-length={cl})",
-                code="upload_too_large",
+                f"import payload exceeds {max_bytes} bytes (content-length={cl})",
+                code="import_too_large",
                 detail={"max_bytes": max_bytes},
             )
 
         manifest_obj = _parse_manifest(manifest)
 
-        upload_id = uuid.uuid4().hex[:12]
-        staging_root = rt.root / STAGING_DIRNAME / upload_id
+        import_id = uuid.uuid4().hex[:12]
+        staging_root = rt.root / STAGING_DIRNAME / import_id
         staging_root.parent.mkdir(parents=True, exist_ok=True)
         staging_root.mkdir(parents=True, exist_ok=False)
 
@@ -126,7 +126,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             os.unlink(tarball_path)
             file_rejects = _verify_manifest(staging_root, manifest_obj)
             # Mutating ``<base>/sources/`` must serialize with ingest
-            # (which scans that tree) and with other concurrent uploads
+            # (which scans that tree) and with other concurrent imports
             # (which would otherwise race on the same archive paths).
             # ``ingest_lock`` is the runtime-wide single-writer guard.
             async with rt.ingest_lock:
@@ -143,8 +143,8 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             # to ``rejected`` above.
             shutil.rmtree(staging_root, ignore_errors=True)
 
-        return UploadResponse(
-            upload_id=upload_id,
+        return ImportResponse(
+            import_id=import_id,
             files_count=len(manifest_obj.files),
             bytes=written,
             applied_at=isoformat_utc_ms(),
@@ -159,13 +159,13 @@ def make_router(*, auth_dep: Any) -> APIRouter:
 
 
 def _resolve_max_bytes() -> int:
-    raw = os.environ.get("DIKW_SERVER_MAX_UPLOAD_BYTES")
+    raw = os.environ.get("DIKW_SERVER_MAX_IMPORT_BYTES")
     if not raw:
-        return _DEFAULT_MAX_UPLOAD_BYTES
+        return _DEFAULT_MAX_IMPORT_BYTES
     try:
         return max(1, int(raw))
     except ValueError:
-        return _DEFAULT_MAX_UPLOAD_BYTES
+        return _DEFAULT_MAX_IMPORT_BYTES
 
 
 def _parse_manifest(raw: str) -> Manifest:
@@ -202,8 +202,8 @@ async def _save_payload(
             total += len(chunk)
             if total > max_bytes:
                 raise BadRequest(
-                    f"upload exceeds {max_bytes} bytes",
-                    code="upload_too_large",
+                    f"import payload exceeds {max_bytes} bytes",
+                    code="import_too_large",
                     detail={"max_bytes": max_bytes},
                 )
             fh.write(chunk)
@@ -523,7 +523,7 @@ def _rollback_moved_files(
         already_moved.discard(entry.archive_path)
 
 
-_BACKUP_SUFFIX = ".bak.upload"
+_BACKUP_SUFFIX = ".bak.import"
 
 
 def _commit_one_file(
@@ -562,10 +562,10 @@ def _commit_one_file(
 
 __all__ = [
     "STAGING_DIRNAME",
+    "ImportResponse",
     "Manifest",
     "ManifestEntry",
     "PackageEntry",
     "RejectedPackage",
-    "UploadResponse",
     "make_router",
 ]

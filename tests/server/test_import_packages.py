@@ -1,6 +1,6 @@
-"""HTTP-level tests for the packages-aware ``POST /v1/upload/sources``.
+"""HTTP-level tests for the packages-aware ``POST /v1/import``.
 
-The post-refactor upload endpoint:
+The post-refactor import endpoint:
 
 * requires a ``packages`` field in the manifest (one per md + its asset refs);
 * does **per-package** sha256 verification + per-package commit straight
@@ -23,13 +23,13 @@ from typing import Any
 import httpx
 import pytest
 
-from ._upload_helpers import (
+from ._import_helpers import (
     packages_manifest as _manifest_with_packages,
 )
-from ._upload_helpers import (
+from ._import_helpers import (
     sha256 as _sha256,
 )
-from ._upload_helpers import (
+from ._import_helpers import (
     tar_bytes as _tar_bytes,
 )
 
@@ -41,7 +41,7 @@ def _post(
 ) -> Any:
     payload = _tar_bytes(files)
     return client.post(
-        "/v1/upload/sources",
+        "/v1/import",
         files={"payload": ("u.tar.gz", payload, "application/gzip")},
         data={"manifest": json.dumps(manifest)},
     )
@@ -230,7 +230,7 @@ async def test_orphan_file_rejected(
     server_client: httpx.AsyncClient,
 ) -> None:
     """A file in the tar but not referenced by any package's md_path
-    or asset_paths is an orphan; reject the whole upload so the client
+    or asset_paths is an orphan; reject the whole import so the client
     fixes the bug instead of silently dropping bytes."""
     files = {
         "sources/note.md": b"# n\n",
@@ -309,10 +309,10 @@ async def test_staging_dir_cleared_after_success(
     resp = await _post(server_client, files, manifest)
     assert resp.status_code == 200, resp.text
 
-    staging_root = wiki_root / ".dikw" / "upload-staging"
+    staging_root = wiki_root / ".dikw" / "staging"
     # Either the parent dir doesn't exist, or it's empty — depends on
     # whether the server lazily creates it. Both states satisfy "no
-    # leftover staging from this upload."
+    # leftover staging from this import."
     if staging_root.exists():
         assert list(staging_root.iterdir()) == []
 
@@ -341,7 +341,7 @@ async def test_staging_dir_cleared_after_per_package_reject(
     resp = await _post(server_client, files, manifest)
     assert resp.status_code == 200, resp.text
 
-    staging_root = wiki_root / ".dikw" / "upload-staging"
+    staging_root = wiki_root / ".dikw" / "staging"
     if staging_root.exists():
         assert list(staging_root.iterdir()) == []
 

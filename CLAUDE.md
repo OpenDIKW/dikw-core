@@ -65,7 +65,7 @@ src/dikw_core/
 ├── eval/                  retrieval-quality eval — metrics, dataset loader, runner, packaged datasets
 ├── prompts/               versioned LLM prompts (importlib.resources)
 ├── server/                FastAPI app, auth, sync + task routes, NDJSON streaming, task subsystem
-└── client/                Remote Typer CLI + httpx transport + NDJSON progress renderer + sources upload
+└── client/                Remote Typer CLI + httpx transport + NDJSON progress renderer + sources importer
 ```
 
 ### Layering invariants

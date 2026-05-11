@@ -161,7 +161,7 @@ uv run dikw client health --format json
 
 ## 8. Ingest source material
 
-Drop markdown into `my-base/sources/` (or upload a local tree). Then:
+Drop markdown into `my-base/sources/` (or import a local tree via `dikw client import`). Then:
 
 ```bash
 # Ingest whatever's already on the server's disk:
@@ -169,7 +169,7 @@ uv run dikw client ingest --no-embed         # FTS only, no API calls
 uv run dikw client ingest                    # full pipeline (needs embedding key)
 
 # Or push a local tree to the server's sources/ first, then ingest:
-uv run dikw client upload ./local-sources    # pre-flights md + uploads packages
+uv run dikw client import ./local-sources    # pre-flights md + imports packages
 uv run dikw client ingest
 ```
 

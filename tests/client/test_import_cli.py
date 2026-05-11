@@ -1,14 +1,14 @@
-"""End-to-end CLI tests for ``dikw client upload <path>``.
+"""End-to-end CLI tests for ``dikw client import <path>``.
 
 These tests drive the full Typer command surface against the in-memory
 ASGI server fixture: client packs a local input dir, ships it via
-multipart upload, server validates per-package + commits to
+multipart payload, server validates per-package + commits to
 ``<base>/sources/``. Both happy paths and pre-flight rejection paths
 are covered.
 
 Pre-flight rejection (frontmatter_error / asset_missing / empty_body)
 exits 2 — Unix convention for "user supplied bad input." Server-side
-per-package rejection still exits 0 because the upload itself
+per-package rejection still exits 0 because the import itself
 succeeded; the rejected list is rendered for the user to retry.
 """
 
@@ -38,17 +38,17 @@ def _write(path: Path, body: str) -> None:
 # ---- happy paths -------------------------------------------------------
 
 
-def test_upload_single_md_file(
+def test_import_single_md_file(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
 ) -> None:
-    """``dikw client upload <one.md>`` — single file path, no assets."""
+    """``dikw client import <one.md>`` — single file path, no assets."""
     patch_transport_factory()
     note = tmp_path / "alpha.md"
     note.write_text("# Alpha\nbody\n", encoding="utf-8")
 
-    result = _run(["client", "upload", str(note)])
+    result = _run(["client", "import", str(note)])
     assert result.exit_code == 0, result.stdout
 
     _, rt = asgi_client
@@ -57,18 +57,18 @@ def test_upload_single_md_file(
     ) == "# Alpha\nbody\n"
 
 
-def test_upload_directory_recursive(
+def test_import_directory_recursive(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
 ) -> None:
-    """``dikw client upload <dir>`` — every ``**/*.md`` becomes a package."""
+    """``dikw client import <dir>`` — every ``**/*.md`` becomes a package."""
     patch_transport_factory()
     src = tmp_path / "inbox"
     _write(src / "a.md", "# A\nbody\n")
     _write(src / "sub" / "b.md", "# B\nbody\n")
 
-    result = _run(["client", "upload", str(src)])
+    result = _run(["client", "import", str(src)])
     assert result.exit_code == 0, result.stdout
 
     _, rt = asgi_client
@@ -76,7 +76,7 @@ def test_upload_directory_recursive(
     assert (rt.root / "sources" / "sub" / "b.md").exists()
 
 
-def test_upload_md_with_sibling_asset(
+def test_import_md_with_sibling_asset(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -88,7 +88,7 @@ def test_upload_md_with_sibling_asset(
     _write(src / "note.md", "# n\n![](diagram.png)\n")
     (src / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
 
-    result = _run(["client", "upload", str(src)])
+    result = _run(["client", "import", str(src)])
     assert result.exit_code == 0, result.stdout
 
     _, rt = asgi_client
@@ -96,7 +96,7 @@ def test_upload_md_with_sibling_asset(
     assert (rt.root / "sources" / "diagram.png").exists()
 
 
-def test_upload_cross_directory_asset(
+def test_import_cross_directory_asset(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -110,7 +110,7 @@ def test_upload_cross_directory_asset(
     (src / "shared").mkdir(parents=True)
     (src / "shared" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    result = _run(["client", "upload", str(src)])
+    result = _run(["client", "import", str(src)])
     assert result.exit_code == 0, result.stdout
 
     _, rt = asgi_client
@@ -118,38 +118,38 @@ def test_upload_cross_directory_asset(
     assert (rt.root / "sources" / "shared" / "logo.png").exists()
 
 
-def test_top_level_alias_dikw_upload(
+def test_top_level_alias_dikw_import(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
 ) -> None:
-    """``dikw upload`` (no ``client`` prefix) must resolve via the splice
+    """``dikw import`` (no ``client`` prefix) must resolve via the splice
     in ``cli.py`` — same machinery as ``dikw status``, ``dikw query``."""
     patch_transport_factory()
     note = tmp_path / "alpha.md"
     note.write_text("# A\nbody\n", encoding="utf-8")
 
-    result = _run(["upload", str(note)])
+    result = _run(["import", str(note)])
     assert result.exit_code == 0, result.stdout
 
 
 # ---- pre-flight rejection (exit 2) -------------------------------------
 
 
-def test_upload_pre_flight_frontmatter_error(
+def test_import_pre_flight_frontmatter_error(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
 ) -> None:
     """Malformed YAML between ``---`` fences is caught client-side; no
-    upload request leaves the machine."""
+    import request leaves the machine."""
     patch_transport_factory()
     note = tmp_path / "bad.md"
     note.write_text(
         "---\nfoo: : bar\n---\n# x\nbody\n", encoding="utf-8"
     )
 
-    result = _run(["client", "upload", str(note)])
+    result = _run(["client", "import", str(note)])
     assert result.exit_code == 2, result.stdout
     assert "frontmatter" in result.stdout.lower()
 
@@ -157,7 +157,7 @@ def test_upload_pre_flight_frontmatter_error(
     assert not (rt.root / "sources" / "bad.md").exists()
 
 
-def test_upload_pre_flight_asset_missing(
+def test_import_pre_flight_asset_missing(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -168,7 +168,7 @@ def test_upload_pre_flight_asset_missing(
     note = tmp_path / "n.md"
     note.write_text("# x\n![](ghost.png)\nbody\n", encoding="utf-8")
 
-    result = _run(["client", "upload", str(note)])
+    result = _run(["client", "import", str(note)])
     assert result.exit_code == 2, result.stdout
     assert "ghost.png" in result.stdout
 
@@ -176,7 +176,7 @@ def test_upload_pre_flight_asset_missing(
     assert not (rt.root / "sources" / "n.md").exists()
 
 
-def test_upload_pre_flight_empty_body(
+def test_import_pre_flight_empty_body(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -186,12 +186,12 @@ def test_upload_pre_flight_empty_body(
     note = tmp_path / "empty.md"
     note.write_text("---\ntitle: empty\n---\n   \n", encoding="utf-8")
 
-    result = _run(["client", "upload", str(note)])
+    result = _run(["client", "import", str(note)])
     assert result.exit_code == 2, result.stdout
     assert "empty" in result.stdout.lower()
 
 
-def test_upload_orphan_asset_rejected(
+def test_import_orphan_asset_rejected(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -203,12 +203,12 @@ def test_upload_orphan_asset_rejected(
     _write(src / "note.md", "# n\nbody\n")  # no asset reference
     (src / "stray.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    result = _run(["client", "upload", str(src)])
+    result = _run(["client", "import", str(src)])
     assert result.exit_code == 2, result.stdout
     assert "orphan" in result.stdout.lower() or "stray.png" in result.stdout
 
 
-def test_upload_aggregates_multiple_pre_flight_issues(
+def test_import_aggregates_multiple_pre_flight_issues(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
@@ -219,7 +219,7 @@ def test_upload_aggregates_multiple_pre_flight_issues(
     _write(src / "a.md", "# A\n![](missing-a.png)\n")
     _write(src / "b.md", "# B\n![](missing-b.png)\n")
 
-    result = _run(["client", "upload", str(src)])
+    result = _run(["client", "import", str(src)])
     assert result.exit_code == 2, result.stdout
     assert "missing-a.png" in result.stdout
     assert "missing-b.png" in result.stdout
@@ -228,23 +228,23 @@ def test_upload_aggregates_multiple_pre_flight_issues(
 # ---- bad CLI args ------------------------------------------------------
 
 
-def test_upload_path_argument_required(
+def test_import_path_argument_required(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "upload"])
+    result = _run(["client", "import"])
     assert result.exit_code != 0
 
 
-def test_upload_path_must_exist(
+def test_import_path_must_exist(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
     tmp_path: Path,
 ) -> None:
     patch_transport_factory()
     bogus = tmp_path / "does-not-exist"
-    result = _run(["client", "upload", str(bogus)])
+    result = _run(["client", "import", str(bogus)])
     assert result.exit_code != 0
     assert (
         "not exist" in result.stdout.lower()

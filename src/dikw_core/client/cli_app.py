@@ -29,6 +29,7 @@ from rich.table import Table
 from ..schemas import Layer
 from . import serve_and_run as _sar
 from .config import ClientConfig, resolve
+from .importer import SourceImportError, build_import
 from .progress import (
     QueryStreamRenderer,
     RetrieveStreamRenderer,
@@ -37,16 +38,15 @@ from .progress import (
     render_distill_report,
     render_eval_report,
     render_health_report,
+    render_import_report,
     render_ingest_errors,
     render_ingest_report,
     render_lint_report,
     render_retrieve_table,
     render_status,
     render_synth_report,
-    render_upload_report,
 )
 from .transport import ClientError, Transport
-from .upload import UploadError, build_upload
 
 app = typer.Typer(
     name="client",
@@ -115,8 +115,8 @@ def _on_error(err: ClientError) -> None:
 def _run(coro: Any) -> Any:
     """Run an async command with a uniform error → exit-code mapping.
 
-    ``UploadError`` exits 2 (Unix convention for user-supplied bad
-    input — the pre-flight inspection caught a problem the user
+    ``SourceImportError`` exits 2 (Unix convention for user-supplied
+    bad input — the pre-flight inspection caught a problem the user
     needs to fix locally). Server-side failures and transport errors
     exit 1 (operation failed at the remote end).
     """
@@ -125,8 +125,8 @@ def _run(coro: Any) -> Any:
     except ClientError as e:
         _on_error(e)
         raise typer.Exit(code=1) from e
-    except UploadError as e:
-        console.print(f"[red]upload error:[/red] {e}")
+    except SourceImportError as e:
+        console.print(f"[red]import error:[/red] {e}")
         raise typer.Exit(code=2) from e
 
 
@@ -707,27 +707,28 @@ def _exit_on_failure(
 
 
 @app.command(
-    "upload",
+    "import",
     epilog=(
         "Examples:\n\n"
-        "  dikw client upload ./inbox\n\n"
-        "  dikw client upload ./note.md"
+        "  dikw client import ./inbox\n\n"
+        "  dikw client import ./note.md"
     ),
 )
-def upload_cmd(
+def import_cmd(
     path: Annotated[
         Path,
         typer.Argument(
             help=(
-                "Local markdown file or directory to upload. Each ``*.md`` "
-                "becomes one package together with its referenced assets."
+                "Local markdown file or directory to import into the base. "
+                "Each ``*.md`` becomes one package together with its "
+                "referenced assets."
             ),
         ),
     ],
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Pre-flight + upload markdown packages into the server's ``sources/``.
+    """Pre-flight + import markdown packages into the server's ``sources/``.
 
     Each markdown file becomes a single package alongside any
     asset (image, pdf) it embeds. Pre-flight inspection (frontmatter
@@ -739,13 +740,16 @@ def upload_cmd(
     ``<base>/sources/`` (per-package via ``os.replace``) and returns
     a ``committed`` / ``rejected`` summary. Run ``dikw client ingest``
     afterwards to chunk + embed the new sources.
+
+    Distinct from ``dikw auth import``, which loads OAuth credentials
+    into the per-base auth store — different target, different command.
     """
 
     async def _go() -> None:
-        with build_upload(path) as bundle:
+        with build_import(path) as bundle:
             async with Transport.from_config(_resolve(server, token)) as t:
                 response = await t.post_multipart(
-                    "/v1/upload/sources",
+                    "/v1/import",
                     files={
                         "payload": (
                             "payload.tar.gz",
@@ -755,7 +759,7 @@ def upload_cmd(
                     },
                     data={"manifest": bundle.manifest_json},
                 )
-        render_upload_report(console, response)
+        render_import_report(console, response)
         if response.get("rejected"):
             raise typer.Exit(code=1)
 
@@ -788,7 +792,7 @@ def ingest_cmd(
 ) -> None:
     """Run ingest against the server's ``<base>/sources/`` tree.
 
-    Sources are uploaded separately via ``dikw client upload``.
+    Sources are imported separately via ``dikw client import``.
     """
 
     async def _go() -> None:

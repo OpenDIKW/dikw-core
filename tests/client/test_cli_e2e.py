@@ -84,8 +84,8 @@ def test_query_streams_tokens_and_renders_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end: ingest fixtures via the engine (the CLI doesn't have
-    `ingest --from` support without an actual upload tarball, which is
-    covered by ``test_upload.py`` + the server's own upload tests), then
+    `ingest --from` support without an actual import tarball, which is
+    covered by ``test_import.py`` + the server's own import tests), then
     issue ``dikw query`` and check the streaming + final rendering both
     produce output.
 
@@ -175,7 +175,7 @@ def test_health_rejects_invalid_format(
 
 def _drop_broken_markdown(rt: ServerRuntime) -> None:
     """Plant one valid + one YAML-broken file under the server's
-    sources tree, ready for an in-place ingest (no upload bundle
+    sources tree, ready for an in-place ingest (no import bundle
     needed). Used by both --strict tests."""
     src_dir = rt.root / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)

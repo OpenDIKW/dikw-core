@@ -1,7 +1,7 @@
 """Client-side D-layer pre-flight inspection tests.
 
 ``inspect_markdown(path, *, project_root)`` is the function the new
-``dikw client upload`` command calls before packaging a markdown file.
+``dikw client import`` command calls before packaging a markdown file.
 It returns an ``InspectionResult`` listing every reason ingest would
 fail or warn (`frontmatter_error`, `asset_missing`, `empty_body`),
 plus the resolved absolute paths of every local asset reference so the
@@ -9,7 +9,7 @@ client packaging step can include them in the same package as the md.
 
 Layered above ``extract_image_refs`` (markdown-source asset extraction)
 and ``_resolve_local`` (sibling-of-md → project-root two-stage lookup);
-when the upload command writes broken md or a missing-asset md, the
+when the import command receives broken md or a missing-asset md, the
 user gets a fast pre-flight error instead of a server-side ingest crash
 ten seconds later.
 """
@@ -85,7 +85,7 @@ def test_obsidian_wikilink_asset_extracted(tmp_path: Path) -> None:
 def test_remote_url_asset_is_not_an_issue(tmp_path: Path) -> None:
     """``![](https://...)`` is a remote URL; ingest's materialize_asset
     skips remote refs at runtime, so pre-flight must not flag them as
-    asset_missing — the upload package needs no local file for them."""
+    asset_missing — the import package needs no local file for them."""
     note = tmp_path / "sources" / "n.md"
     _write(note, "# x\n\n![](https://example.com/img.png)\n")
 
@@ -160,7 +160,7 @@ def test_multiple_issues_accumulated(tmp_path: Path) -> None:
 
 def test_asset_paths_dedupe_across_refs(tmp_path: Path) -> None:
     """Same asset referenced twice in one md → resolved once in
-    ``asset_paths`` (the upload packager needs the unique set, not the
+    ``asset_paths`` (the importer needs the unique set, not the
     multiset of references)."""
     note = tmp_path / "sources" / "n.md"
     _write(note, "# x\n![](shared.png)\nbody\n![](shared.png)\n")

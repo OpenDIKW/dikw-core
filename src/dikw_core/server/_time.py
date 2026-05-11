@@ -1,7 +1,7 @@
 """Server-side timestamp helper.
 
 Centralises the ISO8601-with-millis-Z format the server uses for
-NDJSON events, task rows, and upload responses. The format mirrors
+NDJSON events, task rows, and import responses. The format mirrors
 what JavaScript's ``Date.prototype.toISOString()`` emits, so client
 consumers can pass it through ``new Date(...)`` without conversion.
 """

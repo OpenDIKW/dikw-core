@@ -78,7 +78,7 @@ class IngestSubmit(BaseModel):
     ``no_embed`` skips the dense embedding pass; useful for FTS-only
     wikis or when the embedding provider isn't reachable.
 
-    Sources are uploaded separately via ``POST /v1/upload/sources``
+    Sources are imported separately via ``POST /v1/import``
     (which commits straight into ``<base>/sources/``); ingest then
     walks that tree, hashing for idempotency and chunking + embedding.
     """

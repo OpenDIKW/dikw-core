@@ -119,11 +119,11 @@ async def build_runtime(
         )
     cfg = load_config(cfg_path)
 
-    # Crash-recovery: a server killed mid-upload leaves a staging dir
-    # behind. The new packages-aware upload always rmtrees its own
-    # staging when the request returns, so any leftover here means a
-    # process died before that block ran. Wipe wholesale — staging
-    # is purely transient.
+    # Crash-recovery: a server killed mid-import leaves a staging dir
+    # behind. The import endpoint always rmtrees its own staging when
+    # the request returns, so any leftover here means a process died
+    # before that block ran. Wipe wholesale — staging is purely
+    # transient.
     _cleanup_orphan_staging(root)
 
     storage = build_storage(
@@ -220,25 +220,31 @@ def get_runtime(app: FastAPI) -> ServerRuntime:
 
 
 def _cleanup_orphan_staging(root: Path) -> None:
-    """Wipe ``<root>/.dikw/upload-staging/`` on startup.
+    """Wipe ``<root>/.dikw/staging/`` on startup.
 
-    Successful + failed uploads always rmtree their own per-id
+    Successful + failed imports always rmtree their own per-id
     subdirectory in a ``finally`` block; anything left here means a
-    process died mid-upload (SIGKILL, OOM). The contents are pure
+    process died mid-import (SIGKILL, OOM). The contents are pure
     transient state — no commit happened, no client is waiting on
     them — so wipe wholesale rather than per-id.
 
-    String-literal path (rather than ``from .routes_upload import
-    STAGING_DIRNAME``) avoids a circular import — routes_upload
+    Also rmtrees the legacy ``.dikw/upload-staging/`` directory if it
+    survives from a pre-rename install — it holds the same kind of
+    transient bytes and the new server would otherwise leave it
+    lingering forever.
+
+    String-literal path (rather than ``from .routes_import import
+    STAGING_DIRNAME``) avoids a circular import — routes_import
     imports ``ServerRuntime`` from this module."""
-    staging = root / ".dikw" / "upload-staging"
-    if not staging.exists():
-        return
+    legacy = root / ".dikw" / "upload-staging"
+    staging = root / ".dikw" / "staging"
     try:
-        for entry in staging.iterdir():
-            shutil.rmtree(entry, ignore_errors=True)
+        shutil.rmtree(legacy, ignore_errors=True)
+        if staging.exists():
+            for entry in staging.iterdir():
+                shutil.rmtree(entry, ignore_errors=True)
     except OSError as e:
-        logger.warning("orphan staging cleanup at %s skipped: %s", staging, e)
+        logger.warning("orphan staging cleanup skipped: %s", e)
 
 
 __all__ = [

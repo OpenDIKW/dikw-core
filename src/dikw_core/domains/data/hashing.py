@@ -1,4 +1,4 @@
-"""Hash helpers shared across D layer + server commit + client upload.
+"""Hash helpers shared across D layer + server commit + client import.
 
 ``hash_file`` lives in :mod:`dikw_core.md_inspect` so the client (which
 can't import from ``domains/``) and the engine share one implementation.
