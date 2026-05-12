@@ -647,6 +647,107 @@ def render_check_report(console: Console, report: Mapping[str, Any]) -> None:
     console.print(table)
 
 
+def render_synth_eval_report(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Render a ``SynthEvalReport`` (K-layer eval).
+
+    Mirrors ``render_eval_report`` shape but iterates the report's own
+    ``threshold_results`` list — that carries the direction-aware
+    ``passed`` flag (``synth/duplicate_ratio_max`` is ≤, others are ≥),
+    so we don't replay the direction logic in the renderer."""
+    name = str(report.get("dataset_name") or report.get("dataset") or "synth eval")
+    title = f"dikw eval — {name} (mode: synth)"
+    table = Table(title=title, show_header=True, header_style="bold")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_column("threshold", justify="right")
+    table.add_column("direction", justify="center")
+    table.add_column("result")
+
+    threshold_results = report.get("threshold_results") or []
+    if isinstance(threshold_results, list):
+        for row in threshold_results:
+            if not isinstance(row, dict):
+                continue
+            name_ = str(row.get("name") or "?")
+            observed = row.get("observed")
+            threshold = row.get("threshold")
+            direction = str(row.get("direction") or "min")
+            passed = bool(row.get("passed"))
+            val_str = (
+                f"{observed:.3f}" if isinstance(observed, int | float) else "-"
+            )
+            thr_str = (
+                f"{threshold:.3f}"
+                if isinstance(threshold, int | float)
+                else "-"
+            )
+            verdict = (
+                "[green]✓ pass[/green]"
+                if passed
+                else "[red]✗ FAIL[/red]"
+            )
+            table.add_row(name_, val_str, thr_str, direction, verdict)
+
+    metrics = report.get("metrics") or {}
+    informational = report.get("informational") or {}
+    if isinstance(metrics, dict):
+        scored = {
+            r.get("name") for r in threshold_results if isinstance(r, dict)
+        }
+        for m_name, value in sorted(metrics.items()):
+            if m_name in scored:
+                continue
+            val_str = (
+                f"{value:.3f}" if isinstance(value, int | float) else "-"
+            )
+            table.add_row(m_name, val_str, "-", "-", "[dim](info)[/dim]")
+    if isinstance(informational, dict):
+        for m_name, value in sorted(informational.items()):
+            val_str = (
+                f"{value:.3f}" if isinstance(value, int | float) else "-"
+            )
+            table.add_row(m_name, val_str, "-", "-", "[dim](info)[/dim]")
+
+    console.print(table)
+
+    n_sources = report.get("n_sources")
+    n_pages = report.get("n_pages")
+    passed = bool(report.get("passed", True))
+    footer = (
+        f"n_sources={n_sources}  n_pages={n_pages}  "
+        f"passed={'[green]True[/green]' if passed else '[red]False[/red]'}"
+    )
+    console.print(footer)
+
+    judge_summary = report.get("judge_summary")
+    if isinstance(judge_summary, dict):
+        judge_table = Table(
+            title="LLM judge (soft score, 0-5)",
+            show_header=True,
+            header_style="bold",
+        )
+        judge_table.add_column("dimension")
+        judge_table.add_column("mean", justify="right")
+        for dim in ("grounding", "atomicity", "completeness", "clarity"):
+            value = judge_summary.get(f"mean_{dim}")
+            judge_table.add_row(
+                dim,
+                f"{value:.2f}" if isinstance(value, int | float) else "-",
+            )
+        console.print(judge_table)
+        console.print(
+            f"judged {judge_summary.get('n_judged', 0)} pages, "
+            f"errors: {judge_summary.get('n_errors', 0)}"
+        )
+
+    warnings = report.get("warnings") or []
+    if isinstance(warnings, list):
+        for w in warnings:
+            console.print(f"[yellow]warning[/yellow] {w}")
+
+
 def render_eval_report(console: Console, report: Mapping[str, Any]) -> None:
     """Mirror of cli.py's ``_print_eval_report`` minus the diagnostic block.
 
@@ -711,5 +812,6 @@ __all__ = [
     "render_lint_report",
     "render_retrieve_table",
     "render_status",
+    "render_synth_eval_report",
     "render_synth_report",
 ]

@@ -156,11 +156,20 @@ class EvalSubmit(BaseModel):
     ``dikw eval``. Omit it to run every packaged dataset back-to-back
     (preserves the in-process ``dikw eval`` no-arg workflow).
     ``mode`` and ``cache_mode`` mirror ``run_eval`` knobs.
+
+    ``eval_modes`` selects which eval families to run for each dataset:
+    ``"retrieval"`` (current behaviour, default), ``"synth"`` (K-layer
+    quality gate), or both. ``None`` falls back to the dataset's own
+    ``modes:`` declaration. ``judge`` + ``judge_sample`` only apply when
+    synth mode is selected — they add the LLM-judge soft layer.
     """
 
     dataset: str | None = None
     mode: str = "hybrid"
     cache_mode: str = "read_write"
+    eval_modes: list[str] | None = None
+    judge: bool = False
+    judge_sample: int | None = None
 
 
 class TaskHandle(BaseModel):
@@ -348,11 +357,26 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             raise BadRequest(
                 f"cache_mode must be one of read_write|rebuild|off, got {body.cache_mode!r}"
             )
+        if body.eval_modes is not None:
+            unknown = [m for m in body.eval_modes if m not in ("retrieval", "synth")]
+            if unknown:
+                raise BadRequest(
+                    f"eval_modes entries must be retrieval|synth, got {unknown!r}"
+                )
+            if not body.eval_modes:
+                raise BadRequest("eval_modes must be non-empty when provided")
+        if body.judge_sample is not None and body.judge_sample < 1:
+            raise BadRequest(
+                f"judge_sample must be >= 1, got {body.judge_sample!r}"
+            )
         runner: TaskRunner = make_eval_runner(
             wiki_root=rt.root,
             dataset=body.dataset,
             mode=body.mode,
             cache_mode=body.cache_mode,
+            eval_modes=body.eval_modes,
+            judge=body.judge,
+            judge_sample=body.judge_sample,
         )
         row = await rt.manager.submit(
             op="eval",
@@ -361,6 +385,9 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "dataset": body.dataset,
                 "mode": body.mode,
                 "cache_mode": body.cache_mode,
+                "eval_modes": body.eval_modes,
+                "judge": body.judge,
+                "judge_sample": body.judge_sample,
             },
         )
         return _handle(row)

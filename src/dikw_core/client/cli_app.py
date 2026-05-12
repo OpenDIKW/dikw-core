@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -45,6 +45,7 @@ from .progress import (
     render_lint_report,
     render_retrieve_table,
     render_status,
+    render_synth_eval_report,
     render_synth_report,
 )
 from .transport import ClientError, Transport
@@ -922,6 +923,43 @@ def eval_cmd(
             help="Eval-snapshot cache: read_write|rebuild|off.",
         ),
     ] = "read_write",
+    eval_modes: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--eval",
+            help=(
+                "Eval family to run (repeatable): retrieval|synth. "
+                "Omit to run whatever the dataset declares in modes:."
+            ),
+        ),
+    ] = None,
+    judge: Annotated[
+        bool,
+        typer.Option(
+            "--judge",
+            help=(
+                "Run the LLM judge soft score on synth-eval pages. "
+                "Only meaningful with --eval synth."
+            ),
+        ),
+    ] = False,
+    judge_sample: Annotated[
+        int | None,
+        typer.Option(
+            "--judge-sample",
+            help=(
+                "Sample N pages for the LLM judge instead of judging "
+                "all. Ignored when --judge is not set."
+            ),
+        ),
+    ] = None,
+    pretty: Annotated[
+        bool,
+        typer.Option(
+            "--pretty",
+            help="Render rich tables instead of NDJSON (default).",
+        ),
+    ] = False,
     plain: Annotated[
         bool,
         typer.Option("--plain", help="Disable progress widget."),
@@ -929,7 +967,7 @@ def eval_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Run a packaged retrieval-eval dataset on the server."""
+    """Run an eval dataset on the server (retrieval and/or synth)."""
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
@@ -940,24 +978,45 @@ def eval_cmd(
                     "dataset": dataset,
                     "mode": mode,
                     "cache_mode": cache_mode,
+                    "eval_modes": eval_modes,
+                    "judge": judge,
+                    "judge_sample": judge_sample,
                 },
                 plain=plain,
             )
         if status == "succeeded" and result is not None:
-            # No-arg server path returns ``{datasets: [...], passed: bool}``;
-            # render each report and gate exit on the aggregate pass.
-            if "datasets" in result and isinstance(result["datasets"], list):
-                for ds in result["datasets"]:
-                    render_eval_report(console, ds)
-                if not bool(result.get("passed", True)):
-                    raise typer.Exit(code=1)
-            else:
-                render_eval_report(console, result)
-                if not bool(result.get("passed", True)):
-                    raise typer.Exit(code=1)
+            _render_eval_result(result, pretty=pretty)
+            if not bool(result.get("passed", True)):
+                raise typer.Exit(code=1)
         _exit_on_failure(status, error)
 
     _run(_go())
+
+
+def _render_eval_result(result: Mapping[str, Any], *, pretty: bool) -> None:
+    """Dispatch one eval result to the right renderer.
+
+    Single-report runs come back at top level; multi-report envelopes
+    carry ``datasets: [...]``. Each report's ``mode`` field tells us
+    which renderer to use (``retrieval`` → ``render_eval_report``,
+    ``synth`` → ``render_synth_eval_report``). When ``--pretty`` is off
+    we emit one NDJSON line per report so an agent reading stdout can
+    parse without rich's ANSI cruft.
+    """
+    if "datasets" in result and isinstance(result["datasets"], list):
+        rows = list(result["datasets"])
+    else:
+        rows = [result]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not pretty:
+            print(json.dumps(row, ensure_ascii=False, default=str))
+            continue
+        if row.get("mode") == "synth":
+            render_synth_eval_report(console, row)
+        else:
+            render_eval_report(console, row)
 
 
 # ---- review subcommands -----------------------------------------------
