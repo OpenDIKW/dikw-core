@@ -193,8 +193,8 @@ class RetrieveStreamRenderer:
             # retrieval_done / progress / log / partial / heartbeat all
             # ignored — heartbeat is dropped at the transport layer; the
             # rest are not user-facing for retrieve.
-        # Stream closed without final — synthetic failure for symmetry
-        # with QueryStreamRenderer.
+        # Stream closed without final — synthesise a failed FinalEvent so
+        # callers see a structured outcome instead of a bare None.
         return FinalEvent(status="failed", result=None, error=None)
 
 

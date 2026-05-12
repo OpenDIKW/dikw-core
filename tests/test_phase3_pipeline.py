@@ -15,7 +15,7 @@ from dikw_core import api
 from dikw_core.domains.wisdom.io import aggregate_path, candidate_path
 from dikw_core.schemas import WisdomKind, WisdomStatus
 
-from .fakes import FakeEmbeddings, FakeLLM, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 

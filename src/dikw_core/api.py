@@ -389,10 +389,9 @@ class DistillReport:
 class AppliedWisdomRef(BaseModel):
     """Reference to a wisdom item the engine marked applicable to a question.
 
-    Retained after the PR-1 removal of ``query`` because PR-5 will surface
-    this same shape via ``GET /v1/wisdom/applicable?q=...`` and
-    ``dikw client wisdom applicable``. Agents inject the returned items
-    into their own LLM prompts; dikw-core does not perform synthesis.
+    Surfaced by ``GET /v1/wisdom/applicable?q=...`` and the
+    ``dikw client wisdom applicable`` command; agents inject the returned
+    items into their own LLM prompts.
     """
 
     ref: str
@@ -2888,5 +2887,3 @@ def _dr_replace(r: DistillReport, **kw: int) -> DistillReport:
         rejected=kw.get("rejected", r.rejected),
         errors=kw.get("errors", r.errors),
     )
-
-

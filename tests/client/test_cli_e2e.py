@@ -126,17 +126,8 @@ def test_query_cmd_removed_from_cli(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
-    """PR-1 removed ``dikw client query``. dikw-core no longer performs
-    in-engine LLM synthesis; agents call ``retrieve`` and run their own
-    LLM on the returned chunks.
-
-    We probe via ``dikw client query --help`` because it's the cleanest
-    structural signal: if the subcommand exists, Typer renders its help
-    and exits 0; if it's been removed, Typer rejects with "No such
-    command" and exits non-zero. (Probing via ``client --help`` text
-    parsing is brittle — Rich wraps each command line in a box frame, so
-    naive ``startswith`` checks miss the entry.)
-    """
+    """Guard: ``dikw client query --help`` must exit non-zero (Typer
+    rejects unknown subcommands)."""
     patch_transport_factory()
     result = _run(["client", "query", "--help"])
     assert result.exit_code != 0, (

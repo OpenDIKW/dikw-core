@@ -1,17 +1,8 @@
-"""Removal-verification tests for the deleted ``/v1/query`` endpoint.
+"""Guard tests against accidental ``/v1/query`` reintroduction.
 
-PR-1 removed the in-engine query verb. dikw-core now stops at retrieve;
-LLM synthesis is the agent's job. These tests guard against accidental
-reintroduction of the endpoint via a regression or a stale router
-registration somewhere in ``server/app.py``.
-
-Asserts:
-  * ``POST /v1/query`` returns 404 (route truly not registered, not just
-    405 Method Not Allowed — a stub registration with the wrong verb
-    would manifest as 405 and silently leak the surface).
-  * No FastAPI route advertises any ``/v1/query`` family path in the
-    OpenAPI schema (catches reintroduction via a path with a different
-    HTTP method that still shows up in the auto-generated schema).
+PR-1 removed the in-engine query verb; these two tests ensure the
+endpoint stays gone — checking both runtime (404, not 405) and the
+OpenAPI schema (catches reintroduction via any HTTP method).
 """
 
 from __future__ import annotations

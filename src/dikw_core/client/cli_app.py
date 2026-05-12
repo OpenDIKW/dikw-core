@@ -576,13 +576,13 @@ def retrieve_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Retrieve chunks + page-level refs without invoking the LLM.
+    """Retrieve chunks + page-level refs without invoking an LLM.
 
-    Companion to ``query`` for AI agents that want to assemble their
-    own answer: streams the same NDJSON event sequence as ``query`` but
-    skips ``llm_token`` events. ``--format json`` prints
-    ``final.result`` (chunks + page_refs) so the caller can pipe it into
-    ``jq`` or another tool.
+    The agent-facing knowledge-access verb: streams an NDJSON sequence
+    ``retrieve_started → retrieval_done → final`` and stops there.
+    Answer synthesis happens in the agent layer, with the agent's own
+    LLM. ``--format json`` prints ``final.result`` (chunks + page_refs)
+    so the caller can pipe it into ``jq`` or another tool.
     """
     _validate_format(fmt)
 
