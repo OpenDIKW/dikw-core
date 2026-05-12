@@ -1,12 +1,13 @@
 """Retrieve NDJSON streaming.
 
-``POST /v1/retrieve`` is the retrieval-only sibling of ``/v1/query``: it
-runs the same hybrid-search pipeline but skips the LLM stage so an AI
-agent can assemble its own answer from chunks + page-level refs without
-spending a provider round-trip on the engine side. Wire shape:
+``POST /v1/retrieve`` is the sole knowledge-access verb on dikw-core's
+HTTP surface. PR-1 removed ``/v1/query``: in-engine LLM synthesis is no
+longer dikw-core's job. Agents call retrieve to get ranked chunks +
+page-level refs and assemble their own answer with their own LLM. Wire
+shape:
 
   {"type":"retrieve_started","q":"...","limit":5}
-  {"type":"retrieval_done","hits":[...]}
+  {"type":"retrieval_done","hits":[...]}      # hits carry full chunk ``text``
   {"type":"final","status":"succeeded","result":{...RetrieveResult...}}
 
 Validation errors (empty ``q``, out-of-range ``limit``) return HTTP 4xx

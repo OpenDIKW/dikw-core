@@ -6,9 +6,10 @@ Two renderers, one per wire shape:
   Updates a rich ``Progress`` widget while the server emits ``progress``
   events; logs WARN/ERROR lines above it; yields the terminal ``final``
   event so the caller can render an op-specific result table.
-* :class:`QueryStreamRenderer` — driven by ``POST /v1/query``. Prints
-  retrieval hits, streams LLM tokens to stdout in real time, and prints
-  the citations table when ``final`` lands.
+* :class:`RetrieveStreamRenderer` — driven by ``POST /v1/retrieve``.
+  Collects the NDJSON event stream until ``final`` and returns it; the
+  CLI picks JSON vs table output. dikw-core no longer ships an
+  in-engine query renderer — LLM synthesis is the agent's job.
 
 Both renderers degrade gracefully when ``--no-progress`` is set: the
 caller can pass ``plain=True`` to get unstyled, line-oriented output
@@ -23,14 +24,12 @@ sync RPC, no progress stream) can render it without owning a renderer.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     Progress,
@@ -161,131 +160,16 @@ class TaskProgressRenderer:
         return
 
 
-class QueryStreamRenderer:
-    """Renders a ``POST /v1/query`` NDJSON stream.
-
-    Streams LLM tokens to stdout in real time so the user sees the
-    answer assemble; on ``final`` it prints the citations table. The
-    renderer treats ``retrieval_done`` as a stash (saved + emitted later
-    if the user asked for ``--show-hits``) so the streaming feel isn't
-    interrupted by a hits dump in the middle of the answer.
-    """
-
-    def __init__(
-        self,
-        console: Console,
-        *,
-        plain: bool = False,
-        show_hits: bool = False,
-    ) -> None:
-        self._console = console
-        self._plain = plain
-        self._show_hits = show_hits
-        self._buffered: list[str] = []
-        self._hits: list[dict[str, Any]] | None = None
-
-    async def run(
-        self, events: AsyncIterator[dict[str, Any]]
-    ) -> FinalEvent:
-        # Use the underlying file directly for token streaming so rich's
-        # markup parser doesn't choke on accidental brackets in the LLM
-        # answer.
-        out = sys.stdout
-        async for event in events:
-            ev_type = event.get("type")
-            if ev_type == "query_started":
-                if not self._plain:
-                    self._console.print(
-                        "[dim]searching…[/dim]", end="\r"
-                    )
-            elif ev_type == "retrieval_done":
-                hits = event.get("hits")
-                if isinstance(hits, list):
-                    self._hits = [h for h in hits if isinstance(h, dict)]
-                if not self._plain:
-                    self._console.print(
-                        f"[dim]retrieved {len(self._hits or [])} excerpt(s);"
-                        " streaming answer…[/dim]"
-                    )
-            elif ev_type == "llm_token":
-                delta = str(event.get("delta") or "")
-                if delta:
-                    self._buffered.append(delta)
-                    out.write(delta)
-                    out.flush()
-            elif ev_type == "final":
-                if self._buffered:
-                    out.write("\n")
-                    out.flush()
-                final = FinalEvent(
-                    status=str(event.get("status") or "succeeded"),
-                    result=_as_dict(event.get("result")),
-                    error=_as_dict(event.get("error")),
-                )
-                self._render_citations(final)
-                return final
-        return FinalEvent(status="failed", result=None, error=None)
-
-    def _render_citations(self, final: FinalEvent) -> None:
-        if final.status != "succeeded" or final.result is None:
-            return
-        # If the engine had no streaming output (fallback path because
-        # the provider doesn't implement ``complete_stream``), the
-        # answer only exists in the final payload — print it in BOTH
-        # rich and plain modes; otherwise ``--plain`` produces empty
-        # stdout on the supported fallback path.
-        if not self._buffered:
-            answer = str(final.result.get("answer") or "")
-            if answer:
-                if self._plain:
-                    sys.stdout.write(answer + "\n")
-                    sys.stdout.flush()
-                else:
-                    self._console.print(
-                        Panel(answer, title="answer", border_style="cyan")
-                    )
-        if self._plain:
-            return
-
-        citations = final.result.get("citations") or []
-        if not isinstance(citations, list) or not citations:
-            self._console.print("[dim]no citations[/dim]")
-            return
-        table = Table(title="citations", show_header=True, header_style="bold")
-        table.add_column("#", justify="right")
-        table.add_column("layer")
-        table.add_column("path")
-        table.add_column("seq", justify="right")
-        table.add_column("excerpt")
-        for c in citations:
-            if not isinstance(c, dict):
-                continue
-            excerpt = str(c.get("excerpt") or "")
-            seq = c.get("seq")
-            table.add_row(
-                str(c.get("n") or ""),
-                str(c.get("layer") or ""),
-                str(c.get("path") or ""),
-                "" if seq is None else str(seq),
-                excerpt[:120] + ("…" if len(excerpt) > 120 else ""),
-            )
-        self._console.print(table)
-        if self._show_hits and self._hits:
-            self._console.print("[dim]raw hits:[/dim]")
-            for hit in self._hits:
-                self._console.print(f"  - {hit}")
-
-
 class RetrieveStreamRenderer:
     """Drain a ``POST /v1/retrieve`` NDJSON stream into a ``FinalEvent``.
 
     Retrieve has no LLM stage to stream, so this renderer just collects
     events until ``final`` and returns it — the CLI command picks the
-    output format (json / table) based on its own flag. Compared with
-    ``QueryStreamRenderer`` we deliberately don't print citations here:
-    the retrieve consumer is typically an agent that wants raw chunks +
-    page_refs JSON, and humans driving ``--format table`` get a
-    purpose-built table renderer at the CLI layer.
+    output format (json / table) based on its own flag. We deliberately
+    don't print citations here: the retrieve consumer is typically an
+    agent that wants raw chunks + page_refs JSON, and humans driving
+    ``--format table`` get a purpose-built table renderer at the CLI
+    layer.
     """
 
     def __init__(self, console: Console, *, plain: bool = False) -> None:
@@ -309,8 +193,8 @@ class RetrieveStreamRenderer:
             # retrieval_done / progress / log / partial / heartbeat all
             # ignored — heartbeat is dropped at the transport layer; the
             # rest are not user-facing for retrieve.
-        # Stream closed without final — synthetic failure for symmetry
-        # with QueryStreamRenderer.
+        # Stream closed without final — synthesise a failed FinalEvent so
+        # callers see a structured outcome instead of a bare None.
         return FinalEvent(status="failed", result=None, error=None)
 
 
@@ -817,7 +701,6 @@ def _as_dict(value: Any) -> dict[str, Any] | None:
 
 __all__ = [
     "FinalEvent",
-    "QueryStreamRenderer",
     "RetrieveStreamRenderer",
     "TaskProgressRenderer",
     "render_check_report",

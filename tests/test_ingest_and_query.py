@@ -7,7 +7,7 @@ import pytest
 
 from dikw_core import api
 
-from .fakes import FakeEmbeddings, FakeLLM, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -42,33 +42,3 @@ async def test_ingest_is_idempotent_and_fills_storage(wiki_with_fixtures: Path) 
     assert report2.chunks == 0
 
 
-@pytest.mark.asyncio
-async def test_query_returns_answer_with_citations(wiki_with_fixtures: Path) -> None:
-    embedder = FakeEmbeddings()
-    await api.ingest(wiki_with_fixtures, embedder=embedder)
-
-    llm = FakeLLM(response_text="Deterministic scoping matters [#1].")
-    result = await api.query(
-        "what does Karpathy say about scoping?",
-        wiki_with_fixtures,
-        limit=3,
-        llm=llm,
-        embedder=embedder,
-    )
-    assert result.answer.startswith("Deterministic")
-    assert result.citations, "expected at least one citation"
-    assert llm.last_user is not None and "QUESTION" in llm.last_user
-    assert any("karpathy" in c.path.lower() for c in result.citations)
-
-
-@pytest.mark.asyncio
-async def test_query_returns_no_citations_when_corpus_empty(tmp_path: Path) -> None:
-    wiki = tmp_path / "empty"
-    init_test_wiki(wiki)
-    llm = FakeLLM()
-    embedder = FakeEmbeddings()
-    result = await api.query("anything", wiki, llm=llm, embedder=embedder)
-    assert result.citations == []
-    assert "ingest sources" in result.answer or "rephrase" in result.answer
-    # LLM shouldn't even be asked when no excerpts exist
-    assert llm.last_user is None

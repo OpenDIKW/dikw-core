@@ -12,7 +12,10 @@
 - [`uv`](https://docs.astral.sh/uv/) (the project manager dikw-core uses)
 - One of:
   - LLM API key (Anthropic, OpenAI-compatible, or `codex` OAuth) — only
-    needed if you'll call `/v1/synth` or `/v1/query` (the answer leg)
+    needed if you'll call `/v1/synth` or `/v1/distill` (engine-internal
+    LLM legs that author K-layer wiki pages + W-layer wisdom candidates).
+    Answer synthesis is **not** a dikw-core verb; agents run their own
+    LLM against retrieve output.
   - Embedding API key on any OpenAI-compatible vendor — only needed if
     you'll embed for vector search; `/v1/ingest --no-embed` skips this
 
@@ -184,8 +187,10 @@ uv run dikw client retrieve "your question" --format json
 ```
 
 Returns a list of chunks (text + path + layer + score) plus page-level
-refs. No LLM call — for that use `dikw client query "..."` instead,
-which streams tokens via NDJSON.
+refs. **No LLM call** — answer synthesis is the agent's job. Feed the
+JSON into your own LLM with whatever query rewrite, expansion, or
+conversation-context handling you want; dikw-core is stateless and does
+not own that step.
 
 ## 10. Read a full page after a hit
 

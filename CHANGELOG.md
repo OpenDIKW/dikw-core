@@ -7,6 +7,45 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Agent-first CLI evolution + remove `query`
+
+* **BREAKING (HTTP)**: `POST /v1/query` is **removed**. dikw-core no longer
+  performs in-engine LLM answer synthesis. Agents call `POST /v1/retrieve`
+  to get ranked chunks + page refs, then compose the answer with their own
+  LLM. Rationale: query rewrite, query expansion, and conversation context
+  all live in the agent layer; dikw-core is stateless and structurally
+  cannot do query well from inside the engine. (See
+  `~/.claude/plans/agent-dikw-resilient-swing.md`.)
+* **BREAKING (CLI)**: `dikw client query "..."` is **removed**. Use
+  `dikw client retrieve "..."` and run an LLM on the result, or write a
+  short shell helper. The `dikw client retrieve` JSON output is stable
+  and agent-friendly by default.
+* **BREAKING (config)**: `provider.llm_max_tokens_query` field removed
+  from `dikw.yml`. `llm_max_tokens_synth` and `llm_max_tokens_distill`
+  remain — those are the only legs where dikw-core still calls the LLM
+  internally.
+* **BREAKING (wire)**: `QueryResult` / `Citation` DTOs removed.
+  `AppliedWisdomRef` retained — PR-5 will surface it on a new
+  `/v1/wisdom/applicable?q=...` endpoint so agents can preview which
+  wisdom items would shape an answer.
+* **Internal removal**: `src/dikw_core/server/routes_query.py`,
+  `prompts/query.md`, `api.query()`, `_format_applicable_wisdom`,
+  `_build_excerpts`, and `QueryStreamRenderer` are all gone. The
+  "codex SSE large-input hang" known issue (in-engine streaming LLM
+  path) goes with them.
+* **Docs**: `docs/design.md`, `docs/architecture.md`, `docs/server.md`,
+  `docs/getting-started.md`, `AGENTS.md`, `INSTALL_FOR_AGENTS.md` all
+  rewritten to reflect "dikw-core is a knowledge kernel; agents compose
+  answers" as the new product invariant.
+* **Wire (additive)**: `retrieval_done.hits[].text` now carries the
+  **full chunk body** instead of being stripped. Agents consuming the
+  intermediate partial event can now prompt directly off it without
+  waiting for `final` (or paying a second round-trip for chunk bodies).
+  Cost: payload roughly doubles at `limit=100` since chunks duplicate
+  on `final.result.chunks`; clients that only need the final result can
+  stop reading the stream after `final`. Clients ignoring unknown fields
+  are unaffected.
+
 ### `upload` → `import` — rename the source-import verb top-to-bottom
 
 * **BREAKING (CLI)**: `dikw client upload <path>` is now

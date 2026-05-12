@@ -84,6 +84,17 @@ async def test_retrieve_stream_emits_started_retrieval_done_final(
     final_ids = sorted(c["chunk_id"] for c in result["chunks"])
     assert partial_ids == final_ids
 
+    # ``retrieval_done.hits[].text`` must carry the full chunk body so a
+    # streaming agent can prompt off the partial without waiting for
+    # ``final``. For each chunk_id the text must match what lands on
+    # ``final.result.chunks``.
+    final_text_by_id = {c["chunk_id"]: c["text"] for c in result["chunks"]}
+    for hit in retrieval_done["hits"]:
+        assert hit["text"], f"retrieval_done hit has empty or null text: {hit}"
+        assert hit["text"] == final_text_by_id[hit["chunk_id"]], (
+            f"retrieval_done text != final chunks text for chunk_id={hit['chunk_id']}"
+        )
+
 
 @pytest.mark.asyncio
 async def test_retrieve_stream_works_without_llm_provider(

@@ -4,7 +4,8 @@ which talks HTTP to a running server instead of importing the engine.
 
 Phase 1 surface:
   * ``ingest`` — walk configured sources, parse markdown, chunk, embed, index.
-  * ``query`` — hybrid search + LLM answer with citations.
+  * ``retrieve`` — hybrid search returning ranked chunks + page refs;
+    no LLM call. Answer synthesis is the agent's responsibility.
 
 Phase 2 surface:
   * ``synthesize`` — turn source docs into K-layer wiki pages via the LLM,
@@ -16,8 +17,9 @@ Phase 3 surface:
   * ``distill`` — propose W-layer wisdom items from K-layer pages.
   * ``list_candidates`` / ``approve_wisdom`` / ``reject_wisdom`` —
     drive the review state machine.
-  * ``query`` — unchanged call signature, but now surfaces applicable
-    approved wisdom items alongside excerpts.
+  * ``pick_applicable`` (in ``domains/wisdom/apply``) ranks approved
+    wisdom items against a question; PR-5 will surface it on a new
+    ``GET /v1/wisdom/applicable?q=...`` endpoint.
 
 Phase 0 surface (``init_wiki``, ``status``) stays unchanged.
 """
@@ -98,7 +100,6 @@ from .domains.knowledge.synthesize import (
     parse_synthesis_response,
 )
 from .domains.knowledge.wiki import WikiPage, now_iso, type_from_path, write_page
-from .domains.wisdom.apply import ApplicableWisdom, pick_applicable
 from .domains.wisdom.distill import WisdomCandidate, parse_distill_response
 from .domains.wisdom.io import write_candidate_file
 from .domains.wisdom.review import (
@@ -144,7 +145,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AppliedWisdomRef",
     "CheckReport",
-    "Citation",
     "DistillReport",
     "EmbeddingInfo",
     "HealthReport",
@@ -160,7 +160,6 @@ __all__ = [
     "PageRef",
     "ProbeResult",
     "ProvidersInfo",
-    "QueryResult",
     "RetrieveResult",
     "ReviewError",
     "ReviewResult",
@@ -176,7 +175,6 @@ __all__ = [
     "list_candidates",
     "list_pages",
     "load_wiki",
-    "query",
     "read_page",
     "reject_wisdom",
     "retrieve",
@@ -390,29 +388,18 @@ class DistillReport:
     errors: int = 0
 
 
-class Citation(BaseModel):
-    n: int
-    path: str
-    title: str | None = None
-    layer: str
-    # Chunk sequence within ``path``; populated when chunk-level retrieval
-    # surfaced this citation. Disambiguates "doc X chunk 2 vs doc X chunk 5"
-    # when multiple chunks from the same document end up in the citation list.
-    seq: int | None = None
-    excerpt: str
-
-
 class AppliedWisdomRef(BaseModel):
+    """Reference to a wisdom item the engine marked applicable to a question.
+
+    Surfaced by ``GET /v1/wisdom/applicable?q=...`` and the
+    ``dikw client wisdom applicable`` command; agents inject the returned
+    items into their own LLM prompts.
+    """
+
     ref: str
     item_id: str
     kind: str
     title: str
-
-
-class QueryResult(BaseModel):
-    answer: str
-    citations: list[Citation]
-    applied_wisdom: list[AppliedWisdomRef] = []
 
 
 class ProbeResult(BaseModel):
@@ -459,7 +446,6 @@ class LlmInfo(BaseModel):
     model: str
     base_url: str | None
     max_retries: int = Field(ge=0)
-    max_tokens_query: int = Field(gt=0)
     max_tokens_synth: int = Field(gt=0)
     max_tokens_distill: int = Field(gt=0)
     timeout_seconds: float = Field(gt=0)
@@ -716,7 +702,6 @@ async def health(path: str | Path | None = None) -> HealthReport:
         model=p.llm_model,
         base_url=_sanitize_base_url(p.llm_base_url),
         max_retries=p.llm_max_retries,
-        max_tokens_query=p.llm_max_tokens_query,
         max_tokens_synth=p.llm_max_tokens_synth,
         max_tokens_distill=p.llm_max_tokens_distill,
         timeout_seconds=p.llm_timeout_seconds,
@@ -1477,9 +1462,9 @@ async def _retrieve_inner(
     to build the multimodal embedder itself; a caller-supplied embedder
     is never owned here).
 
-    Emits the ``retrieval_done`` partial via ``reporter`` so both wire
-    surfaces (``/v1/query`` + ``/v1/retrieve``) report the same shape;
-    pass ``None`` for ``reporter`` to silence the partial.
+    Emits the ``retrieval_done`` partial via ``reporter`` so the
+    ``/v1/retrieve`` wire surface reports a stable shape; pass ``None``
+    for ``reporter`` to silence the partial.
     """
     _reporter: ProgressReporter = reporter or NoopReporter()
     owned_mm: MultimodalEmbeddingProvider | None = None
@@ -1560,14 +1545,13 @@ async def _retrieve_inner(
             multimodal=mm_search,
         )
         hits = await searcher.search(q, limit=limit)
-        # Strip ``text`` from the partial event — clients consuming
-        # ``retrieval_done`` for live citation rendering only need
-        # snippet/path/score; the full chunk body lives on
-        # ``final.result.chunks`` for retrieve callers that actually need
-        # it. Halves the wire payload at limit=100 with ~1 KB chunks.
+        # Include full ``text`` so a streaming agent can prompt off the
+        # partial without waiting for ``final``. Cost: chunk bodies
+        # duplicate on ``final.result.chunks`` — clients that don't
+        # need the partial can stop reading after ``final``.
         await _reporter.partial(
             "retrieval_done",
-            {"hits": [h.model_dump(mode="json", exclude={"text"}) for h in hits]},
+            {"hits": [h.model_dump(mode="json") for h in hits]},
         )
         return hits, owned_mm
     except BaseException:
@@ -1779,14 +1763,15 @@ async def retrieve(
     """Hybrid-search the wiki and return chunks + page-level refs only.
 
     Companion to ``query`` for retrieval-only consumers (typically AI
-    agents that intend to assemble their own answer): runs the same
-    fusion + multimodal pipeline as ``query`` via ``_retrieve_inner``
-    but skips the LLM step, so a caller without provider keys still
-    gets meaningful results.
+    agents that intend to assemble their own answer using their own
+    LLM): runs the fusion + multimodal pipeline via ``_retrieve_inner``
+    and stops there. dikw-core no longer ships an in-engine query verb
+    (PR-1 removed it); ``retrieve`` is the sole knowledge-access entry
+    point from the engine side.
 
-    ``reporter`` (optional) emits a ``retrieval_done`` partial mirroring
-    the wire shape used by ``/v1/query``; the route layer wraps this in
-    a ``final{result}`` event.
+    ``reporter`` (optional) emits a ``retrieval_done`` partial; the
+    route layer wraps this in a ``final{result}`` event for the
+    ``POST /v1/retrieve`` NDJSON wire.
     """
     cfg, _root, storage = await _with_storage(path)
     owned_mm: MultimodalEmbeddingProvider | None = None
@@ -1805,154 +1790,6 @@ async def retrieve(
         if owned_mm is not None and hasattr(owned_mm, "aclose"):
             await owned_mm.aclose()
         await storage.close()
-
-
-async def query(
-    q: str,
-    path: str | Path | None = None,
-    *,
-    limit: int = 5,
-    llm: LLMProvider | None = None,
-    embedder: EmbeddingProvider | None = None,
-    multimodal_embedder: MultimodalEmbeddingProvider | None = None,
-    reporter: ProgressReporter | None = None,
-) -> QueryResult:
-    """Hybrid-search the wiki, feed the top hits to an LLM, and return cited answer.
-
-    When ``cfg.assets.multimodal`` is configured *and* a
-    ``multimodal_embedder`` is supplied (or buildable from the same
-    config), the searcher activates the asset-vector channel so visual
-    references contribute to retrieval.
-
-    ``reporter`` (optional) emits a ``retrieval_done`` partial with the
-    raw hits before the LLM step, then a final ``llm_done`` partial with
-    the answer text + usage. Streaming token-level partials land in
-    Phase 4 once provider ``complete_stream`` exists.
-    """
-    cfg, _root, storage = await _with_storage(path)
-    owned_mm: MultimodalEmbeddingProvider | None = None
-    _reporter: ProgressReporter = reporter or NoopReporter()
-    try:
-        _llm = llm
-        if _llm is None:
-            _llm = build_llm(cfg.provider, wiki_base=_root)
-
-        hits, owned_mm = await _retrieve_inner(
-            storage,
-            cfg,
-            q,
-            limit=limit,
-            embedder=embedder,
-            multimodal_embedder=multimodal_embedder,
-            reporter=_reporter,
-        )
-
-        excerpts_block, citations = await _build_excerpts(storage, hits)
-        if not citations:
-            return QueryResult(
-                answer="(no excerpts available — ingest sources first or rephrase)",
-                citations=[],
-            )
-
-        approved = await storage.list_wisdom(status=WisdomStatus.APPROVED)
-        applicable = pick_applicable(q, approved, limit=3)
-        wisdom_block, applied_refs = _format_applicable_wisdom(applicable)
-
-        prompt_tmpl = prompts.load("query")
-        user_prompt = prompt_tmpl.format(
-            question=q, wisdom=wisdom_block, excerpts=excerpts_block
-        )
-        # Try the streaming path first so a remote NDJSON subscriber sees
-        # tokens as they arrive; providers that haven't wired SDK-level
-        # streaming raise NotImplementedError synchronously and we fall
-        # back to a single ``complete`` round-trip + a synthetic done.
-        text: str | None = None
-        finish_reason: str | None = None
-        usage: dict[str, int] = {}
-        try:
-            stream = _llm.complete_stream(
-                system="You are the query-answering component of dikw-core.",
-                user=user_prompt,
-                model=cfg.provider.llm_model,
-                max_tokens=cfg.provider.llm_max_tokens_query,
-                temperature=0.2,
-            )
-        except NotImplementedError:
-            stream = None
-        if stream is not None:
-            parts: list[str] = []
-            try:
-                async for ev in stream:
-                    if ev.type == "token" and ev.delta:
-                        parts.append(ev.delta)
-                        await _reporter.partial(
-                            "llm_token", {"delta": ev.delta}
-                        )
-                    elif ev.type == "done":
-                        # ``ev.text`` is authoritative when present (the
-                        # provider already assembled it); fall back to the
-                        # accumulated parts if the stream omits it.
-                        text = ev.text if ev.text is not None else "".join(parts)
-                        finish_reason = ev.finish_reason
-                        usage = ev.usage
-            except NotImplementedError:
-                stream = None  # provider raised on first iteration
-            if stream is not None and text is None:
-                # Stream closed without a done event — accept the parts.
-                text = "".join(parts)
-        if stream is None:
-            response = await _llm.complete(
-                system="You are the query-answering component of dikw-core.",
-                user=user_prompt,
-                model=cfg.provider.llm_model,
-                max_tokens=cfg.provider.llm_max_tokens_query,
-                temperature=0.2,
-            )
-            text = response.text
-            finish_reason = response.finish_reason
-            usage = response.usage
-        assert text is not None  # both branches set it
-        await _reporter.partial(
-            "llm_done",
-            {
-                "text": text,
-                "finish_reason": finish_reason,
-                "usage": usage,
-            },
-        )
-        return QueryResult(
-            answer=text.strip(),
-            citations=citations,
-            applied_wisdom=applied_refs,
-        )
-    finally:
-        if owned_mm is not None and hasattr(owned_mm, "aclose"):
-            await owned_mm.aclose()
-        await storage.close()
-
-
-def _format_applicable_wisdom(
-    applicable: list[ApplicableWisdom],
-) -> tuple[str, list[AppliedWisdomRef]]:
-    if not applicable:
-        return "_(none)_", []
-    lines: list[str] = []
-    refs: list[AppliedWisdomRef] = []
-    for i, app in enumerate(applicable, start=1):
-        tag = f"W{i}"
-        summary = app.item.body.strip().splitlines()[0] if app.item.body.strip() else ""
-        lines.append(
-            f"[{tag}] ({app.item.kind.value}) {app.item.title}\n    {summary}".rstrip()
-        )
-        refs.append(
-            AppliedWisdomRef(
-                ref=tag,
-                item_id=app.item.item_id,
-                kind=app.item.kind.value,
-                title=app.item.title,
-            )
-        )
-    return "\n".join(lines), refs
 
 
 # ---- Phase 2: synthesize + lint -----------------------------------------
@@ -3051,44 +2888,3 @@ def _dr_replace(r: DistillReport, **kw: int) -> DistillReport:
         rejected=kw.get("rejected", r.rejected),
         errors=kw.get("errors", r.errors),
     )
-
-
-async def _build_excerpts(
-    storage: Storage, hits: list[Hit]
-) -> tuple[str, list[Citation]]:
-    # Chunk-level fusion repeats doc_ids across hits, so a per-hit
-    # ``get_document`` would issue O(hits) round trips for O(unique docs)
-    # of useful work. Batch once up front.
-    unique_doc_ids = list({h.doc_id for h in hits})
-    docs_by_id = {
-        d.doc_id: d for d in await storage.get_documents(unique_doc_ids)
-    }
-
-    citations: list[Citation] = []
-    lines: list[str] = []
-    for i, hit in enumerate(hits, start=1):
-        doc = docs_by_id.get(hit.doc_id)
-        if doc is None:
-            continue
-        excerpt = hit.snippet
-        if not excerpt:
-            chunk = await storage.get_chunk(hit.chunk_id)
-            if chunk is not None:
-                excerpt = chunk.text[:400]
-        excerpt = (excerpt or "").strip()
-        if not excerpt:
-            continue
-        citations.append(
-            Citation(
-                n=i,
-                path=doc.path,
-                title=doc.title,
-                layer=doc.layer.value,
-                seq=hit.seq,
-                excerpt=excerpt,
-            )
-        )
-        lines.append(
-            f"[#{i}] ({doc.layer.value}) {doc.path}\n> {excerpt}"
-        )
-    return "\n\n".join(lines), citations

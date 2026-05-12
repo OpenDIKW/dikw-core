@@ -25,4 +25,4 @@ def test_old_top_level_layers_gone() -> None:
 
 
 def test_api_facade_intact() -> None:
-    from dikw_core.api import distill, ingest, query, synthesize  # noqa: F401
+    from dikw_core.api import distill, ingest, retrieve, synthesize  # noqa: F401

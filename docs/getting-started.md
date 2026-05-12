@@ -2,7 +2,9 @@
 
 This walkthrough takes a blank directory to a queryable knowledge base with a
 curated Wisdom layer in about five minutes. It only needs Python 3.12+ and
-`uv`; LLM keys are optional until you hit `dikw synth` or `dikw query`.
+`uv`; LLM keys are optional until you hit `dikw synth` or `dikw distill`
+(the engine-internal authoring legs). Plain `dikw client retrieve` runs
+without any LLM key.
 
 ## 1. Install and scaffold
 
@@ -94,15 +96,24 @@ whatever's on disk.
 Subsequent ingests are idempotent: files whose content hash hasn't changed
 are skipped.
 
-## 4. Ask questions (Information layer → LLM)
+## 4. Retrieve grounded chunks (Information layer)
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-uv run dikw query "What does Karpathy mean by deterministic scoping?"
+uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?" --format table
 ```
 
-Output includes the answer and a table of citations. Every claim cites a
-source excerpt by `[#N]`; approved wisdom items cite by `[W1]`.
+Returns the top-K chunks (with full text, path, layer, and score) plus
+page-level refs. `--format table` renders the hits as a human-readable
+table. For piping into `jq` or an agent loop, use
+`dikw client retrieve "..." --plain` so the rich "retrieving…" status
+line stays off stdout; that combination emits just the final JSON
+payload.
+
+**dikw-core does not produce the final answer itself.** Answer synthesis
+— composing chunks into prose with a particular style, applying query
+rewrite or conversation context — belongs in the agent layer (Claude
+Code, ChatGPT, your own script). Pipe the retrieve JSON into your LLM of
+choice and let it draft the answer with whatever prompt fits your task.
 
 ## 5. Synthesise a Knowledge layer
 
@@ -156,8 +167,11 @@ least two pieces of evidence** across the wiki. Approval deletes the
 candidate file, promotes the item to approved status, and regenerates
 `wisdom/<kind>s.md`. Rejected items are archived.
 
-Approved wisdom automatically surfaces in future `dikw query` answers under
-an "operating principles" block — cited as `[W1]`, `[W2]`, ….
+Approved wisdom is exposed to agents through `GET /v1/wisdom/applicable?q=...`
+(once PR-5 lands). Until then, list active items by hitting the existing
+`GET /v1/wisdom?status=approved` HTTP endpoint and inject them into your
+own LLM prompt — dikw-core no longer ships an in-engine query path that
+auto-injects them.
 
 ## 7. Check retrieval quality on your corpus
 

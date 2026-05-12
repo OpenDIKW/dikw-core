@@ -57,19 +57,19 @@ async def test_400_carries_server_error_code(
 async def test_ndjson_stream_yields_events_and_drops_heartbeat(
     client_transport: Transport,
 ) -> None:
-    """Drive a query stream against the in-memory server.
+    """Drive a retrieve stream against the in-memory server.
 
-    Without LLM credentials configured the engine's ``api.query`` will
-    fail at LLM build time; we still expect at least the
-    ``query_started`` event and a terminal ``final`` of status
-    ``failed``. The point of this test is to verify NDJSON parsing
-    + heartbeat suppression at the transport layer, not the engine
-    success path (covered in ``tests/server/test_query_stream.py``).
+    Without an embedding provider configured the engine's ``api.retrieve``
+    falls back to the FTS-only path or fails at embedder build; we still
+    expect at least the ``retrieve_started`` event and a terminal
+    ``final``. The point of this test is to verify NDJSON parsing +
+    heartbeat suppression at the transport layer, not the engine
+    success path (covered in ``tests/server/test_retrieve_stream.py``).
     """
     types: list[str] = []
     async with client_transport.stream_ndjson(
         "POST",
-        "/v1/query",
+        "/v1/retrieve",
         json_body={"q": "hello", "limit": 3},
     ) as events:
         async for ev in events:
@@ -78,8 +78,8 @@ async def test_ndjson_stream_yields_events_and_drops_heartbeat(
             if ev["type"] == "final":
                 break
 
-    # At minimum we got a query_started and a final.
-    assert "query_started" in types
+    # At minimum we got a retrieve_started and a final.
+    assert "retrieve_started" in types
     assert types[-1] == "final"
 
 
@@ -93,7 +93,7 @@ async def test_stream_4xx_surfaces_as_client_error_before_iteration(
     with pytest.raises(ClientError) as excinfo:
         async with client_transport.stream_ndjson(
             "POST",
-            "/v1/query",
+            "/v1/retrieve",
             json_body={"q": "   ", "limit": 3},  # empty after strip → 400
         ) as events:
             async for _ in events:

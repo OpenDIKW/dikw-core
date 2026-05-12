@@ -16,7 +16,6 @@ import pytest
 from rich.console import Console
 
 from dikw_core.client.progress import (
-    QueryStreamRenderer,
     TaskProgressRenderer,
     render_distill_report,
     render_eval_report,
@@ -107,37 +106,6 @@ async def test_task_progress_renderer_falls_back_when_no_final() -> None:
         final = await renderer.run(_scripted(events))
     assert final.status == "failed"
     assert final.result is None
-
-
-@pytest.mark.asyncio
-async def test_query_renderer_streams_tokens_and_emits_citations(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    console = Console(record=True, width=80, force_terminal=False)
-    renderer = QueryStreamRenderer(console, plain=False)
-    events = [
-        {"type": "query_started"},
-        {"type": "retrieval_done", "hits": [{"chunk_id": 1, "path": "a.md"}]},
-        {"type": "llm_token", "delta": "Hello "},
-        {"type": "llm_token", "delta": "world."},
-        {
-            "type": "final",
-            "status": "succeeded",
-            "result": {
-                "answer": "Hello world.",
-                "citations": [
-                    {"n": 1, "layer": "source", "path": "a.md", "seq": 0, "excerpt": "Hello world."}
-                ],
-            },
-        },
-    ]
-    final = await renderer.run(_scripted(events))
-    assert final.status == "succeeded"
-    captured_stdout = capsys.readouterr().out
-    # Tokens streamed to stdout in arrival order.
-    assert "Hello world." in captured_stdout
-    # Citations table on the rich console.
-    assert "citations" in console.export_text()
 
 
 def test_render_ingest_report_table_has_metrics() -> None:

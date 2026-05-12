@@ -23,8 +23,8 @@ in [`docs/server.md`](./docs/server.md).
 ## Bootstrap
 
 You probably want [`INSTALL_FOR_AGENTS.md`](./INSTALL_FOR_AGENTS.md). It
-walks through install → init a base → set keys → start the server → first
-query in concrete commands.
+walks through install → init a base → set keys → start the server →
+first retrieve call in concrete commands.
 
 ## Endpoints you will actually use
 
@@ -32,35 +32,41 @@ The agent surface is intentionally small. The server is **manually
 started by the human operator** — if you can't reach `GET /v1/health`,
 ask the user to run `dikw serve` (don't try to start it yourself).
 
+**dikw-core does NOT do LLM answer synthesis.** It hands you ranked
+chunks + applicable wisdom + the parsed wiki tree. Composing those into
+an answer is your job — you run your own LLM with your own prompt,
+applying query rewrite / expansion / conversation context as you see
+fit. dikw-core is stateless; agents have the context dikw-core doesn't.
+
 | route | purpose | when to call |
 | --- | --- | --- |
 | `GET /v1/health` | server self-description (`base_root`, `version`, `storage_engine`, `layer_counts`, `providers`) | first call after attach — confirms the server is up and which base it's bound to |
-| `POST /v1/retrieve` | retrieval-only NDJSON (chunks + page refs, no LLM call) | when you want to assemble your own answer from raw chunks |
-| `POST /v1/query` | retrieval + LLM answer with citations | when you want a synthesized answer with grounding |
+| `POST /v1/retrieve` | retrieval-only NDJSON (chunks + page refs, no LLM call) | knowledge access — feed the chunks into your own LLM prompt |
 | `GET /v1/base/pages` | list pages registered in the base, optional `?layer=` filter | discovering page paths to read |
 | `GET /v1/base/pages/{path}` | full page body + chunk anchors aligned to the parsed coordinate space | reading a specific page after a retrieval hit lands you on it |
 | `POST /v1/ingest` | ingest whatever is on disk under `<base>/sources/` (loaded there by `POST /v1/import` or by the user dropping files in) | when the user adds/edits markdown and wants the index refreshed |
 | `GET /v1/status`, `POST /v1/lint`, `POST /v1/check` | counts, lint issues, provider connectivity | sanity checks the user may ask for |
 
-CLI equivalents (sync commands ship `--format json|table` for piping
-into `jq` or an agent loop; the long-running commands `query` and
-`ingest` consume NDJSON internally and render rich progress to stdout —
-talk to the HTTP endpoint directly if you need the raw event stream):
+CLI equivalents — all `dikw client` commands default to JSON output
+suitable for piping into `jq` or an agent loop. Human-readable rendering
+requires opting in via `--format table`:
 
 ```
-dikw client health --format json
-dikw client retrieve "your question" --plain --format json
-dikw client pages list --format json
-dikw client pages get sources/notes/alpha.md
+dikw client health                           # JSON by default
+dikw client retrieve "your question" --plain # pipe-safe final JSON (chunks + page_refs)
+dikw client pages list                       # JSON by default
+dikw client pages get sources/notes/alpha.md # JSON
 dikw client import ./local-sources           # pre-flights + imports md packages
 dikw client ingest                           # rendered progress; NOT pipeable
-dikw client query "your question"            # rendered tokens; NOT pipeable
 ```
 
-`retrieve` needs `--plain` whenever you pipe its output, otherwise the
-"retrieving…" rich banner lands on stdout and breaks `jq`. The
-`--format json` and `--plain` toggles are orthogonal: `--format` picks
-the *final* shape, `--plain` suppresses the *intermediate* status.
+`retrieve` consumes the NDJSON event stream server-side and emits the
+final JSON payload (chunks + page_refs) to stdout. Pass `--plain`
+whenever you pipe, otherwise the "retrieving…" rich banner lands on
+stdout and breaks `jq`. The `--format json` and `--plain` toggles are
+orthogonal: `--format` picks the *final* shape, `--plain` suppresses
+the *intermediate* status. If you want the raw NDJSON event stream,
+talk to `POST /v1/retrieve` over HTTP directly.
 
 ## A typical retrieval-augmented loop
 
@@ -68,12 +74,15 @@ the *final* shape, `--plain` suppresses the *intermediate* status.
    know which base the user pointed it at.
 2. `POST /v1/retrieve` with the question + a `limit`. Each chunk hit
    carries a `path`, `layer`, `anchor`, `start_off`/`end_off`, plus
-   `page_refs` listing the parent pages.
+   full chunk `text` (on both the intermediate `retrieval_done` partial
+   *and* `final.result.chunks`), plus `page_refs` listing the parent
+   pages. A streaming agent can prompt off the partial without waiting
+   for `final`.
 3. If you want full pages instead of just chunks, follow the page refs
    with `GET /v1/base/pages/{path}` — that returns the parsed body plus
    anchors so you can re-locate every chunk hit inside the page body.
-4. Feed the chunks into your own prompt assembly, or call
-   `POST /v1/query` and let the server's configured LLM do the synth.
+4. Feed the chunks into your own LLM prompt and produce the final
+   answer client-side. dikw-core does not own the synthesis step.
 
 ## Things that will trip you up
 
@@ -94,11 +103,11 @@ the *final* shape, `--plain` suppresses the *intermediate* status.
   `DocumentRecord` rows resolve. If a markdown file exists on disk but
   hasn't been ingested, the route returns 404. Use `GET /v1/base/pages`
   to enumerate what's actually queryable.
-- **NDJSON, not SSE — but only on streaming routes.** `POST /v1/query`
-  and `POST /v1/retrieve` stream NDJSON directly on their response body.
-  The async-task ops (`POST /v1/ingest`, `POST /v1/synth`,
-  `POST /v1/distill`, `POST /v1/eval`) instead return a JSON
-  `TaskHandle` (`{"task_id": "..."}`); follow the task by **opening
+- **NDJSON, not SSE — but only on streaming routes.** `POST /v1/retrieve`
+  streams NDJSON directly on its response body. The async-task ops
+  (`POST /v1/ingest`, `POST /v1/synth`, `POST /v1/distill`,
+  `POST /v1/eval`) instead return a JSON `TaskHandle`
+  (`{"task_id": "..."}`); follow the task by **opening
   `GET /v1/tasks/{task_id}/events`** as the NDJSON stream. Either way
   the final event has `type=final` and earlier events are `progress` /
   `partial` / `task_started`. There is no `data:` SSE prefix.

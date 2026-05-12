@@ -98,10 +98,12 @@ async def test_ingest_then_query_returns_karpathy_citation(
     mvp_wiki: Path,
 ) -> None:
     # ``api.ingest`` only embeds when an embedder is passed (matching the
-    # CLI's ``--no-embed``-aware wiring); unlike ``api.query`` it doesn't
-    # auto-build one. Mirror the CLI here so the smoke test exercises the
-    # full ingest → embed → hybrid-search → answer path against live
-    # providers.
+    # CLI's ``--no-embed``-aware wiring); ``api.retrieve`` doesn't
+    # auto-build one either when one isn't passed explicitly. Mirror the
+    # CLI here so the smoke test exercises the full ingest → embed →
+    # hybrid-search path against live providers. dikw-core no longer
+    # owns the LLM-synthesis step (PR-1 removed ``query``) — agents
+    # compose retrieve output with their own LLM.
     cfg, _ = api.load_wiki(mvp_wiki)
     embedder = build_embedder(cfg.provider)
 
@@ -109,12 +111,14 @@ async def test_ingest_then_query_returns_karpathy_citation(
     assert ingest_report.added > 0, "expected some docs to be added"
     assert ingest_report.embedded > 0, "expected some chunks to be embedded"
 
-    result = await api.query(
+    result = await api.retrieve(
         "What does Karpathy mean by deterministic scoping versus probabilistic reasoning?",
         mvp_wiki,
         limit=5,
+        embedder=embedder,
     )
-    assert result.citations, "expected at least one citation from a live query"
-    assert any("karpathy" in c.path.lower() for c in result.citations), (
-        f"expected a karpathy citation, got: {[c.path for c in result.citations]}"
+    assert result.chunks, "expected at least one chunk hit from live retrieve"
+    assert any("karpathy" in hit.path.lower() for hit in result.chunks), (
+        "expected a karpathy chunk, got: "
+        f"{[hit.path for hit in result.chunks]}"
     )

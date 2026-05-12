@@ -64,7 +64,6 @@ class ProviderConfig(BaseModel):
     # ``api.py``; shrink for cost-optimised models (some GLM-Flash / Gemini
     # Nano variants cap below 2048), grow if synth/distill responses get
     # truncated.
-    llm_max_tokens_query: int = 1024
     llm_max_tokens_synth: int = 2048
     llm_max_tokens_distill: int = 2048
     # Per-leg SDK retry budget. Anthropic and OpenAI SDKs retry 408/409/429/5xx

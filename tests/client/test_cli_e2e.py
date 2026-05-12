@@ -78,57 +78,6 @@ def test_client_init_treats_already_initialised_as_success(
     assert "already initialized" in result.stdout.lower()
 
 
-def test_query_streams_tokens_and_renders_answer(
-    asgi_client: tuple[Any, ServerRuntime],
-    patch_transport_factory: Callable[[], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """End-to-end: ingest fixtures via the engine (the CLI doesn't have
-    `ingest --from` support without an actual import tarball, which is
-    covered by ``test_import.py`` + the server's own import tests), then
-    issue ``dikw query`` and check the streaming + final rendering both
-    produce output.
-
-    Sync test body — Typer's ``CliRunner`` runs each command through
-    ``asyncio.run`` internally, which clashes with pytest-asyncio's
-    outer loop if we mark this ``async``. We do the engine-side ingest
-    via a one-shot ``asyncio.run`` instead.
-    """
-    import asyncio
-
-    _, rt = asgi_client
-    src_dir = rt.root / "sources" / "notes"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    for src in FIXTURES.glob("*.md"):
-        shutil.copy2(src, src_dir / src.name)
-    asyncio.run(api.ingest(rt.root, embedder=FakeEmbeddings()))
-
-    # Patch build_llm + build_embedder so the engine doesn't try to hit
-    # a real LLM / embedding endpoint inside the CLI run.
-    fake_llm = FakeLLM(
-        response_text="Karpathy says scoping is deterministic.",
-        stream_chunks=["Karpathy ", "says ", "scoping ", "is ", "deterministic."],
-    )
-    monkeypatch.setattr(
-        "dikw_core.api.build_llm", lambda _cfg, **_kw: fake_llm
-    )
-    monkeypatch.setattr(
-        "dikw_core.api.build_embedder",
-        lambda _cfg, dim_override=None: FakeEmbeddings(),
-    )
-    patch_transport_factory()
-
-    result = _run(
-        ["query", "what does Karpathy say about scoping?", "--limit", "3"]
-    )
-    assert result.exit_code == 0, result.stdout
-    # Streamed tokens land in stdout (CliRunner captures both rich
-    # console + plain stdout).
-    assert "Karpathy" in result.stdout
-    assert "deterministic" in result.stdout
-    assert "citations" in result.stdout
-
-
 def test_health_default_emits_json(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
@@ -171,6 +120,20 @@ def test_health_rejects_invalid_format(
     result = _run(["client", "health", "--format", "csv"])
     assert result.exit_code == 2
     assert "must be 'json' or 'table'" in result.stdout
+
+
+def test_query_cmd_removed_from_cli(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """Guard: ``dikw client query --help`` must exit non-zero (Typer
+    rejects unknown subcommands)."""
+    patch_transport_factory()
+    result = _run(["client", "query", "--help"])
+    assert result.exit_code != 0, (
+        "dikw client query should be removed but `--help` succeeded,"
+        f" suggesting the subcommand still exists. Output:\n{result.stdout}"
+    )
 
 
 def _drop_broken_markdown(rt: ServerRuntime) -> None:

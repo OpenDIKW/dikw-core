@@ -24,14 +24,16 @@ Everything else is plumbing.
 The W layer is the differentiator. Every item must cite **≥ 2 pieces of
 evidence** drawn from the K or D layers, and every state change passes
 through the review flow (`dikw review approve|reject`). Approved items
-surface automatically at query time as "operating principles".
+are exposed to agents (via `GET /v1/wisdom/applicable?q=...`, PR-5)
+so the agent can inject them into its own LLM prompt; dikw-core itself
+no longer performs answer synthesis.
 
 ## Module map
 
 ```text
 src/dikw_core/
 ├── api.py                 thin facade (init_wiki, ingest, synth, distill,
-│                          review, query, lint, status)
+│                          review, retrieve, lint, status)
 ├── config.py              Pydantic config + YAML loader
 ├── schemas.py             cross-layer DTOs
 ├── domains/                 DIKW domain model (the four layers)
@@ -59,7 +61,7 @@ src/dikw_core/
 │       ├── distill.py       LLM -> <wisdom> blocks; enforces N>=2 evidence
 │       ├── io.py            candidate files + aggregate regenerators
 │       ├── review.py        approve/reject state machine
-│       └── apply.py         stem-aware token overlap at query time
+│       └── apply.py         stem-aware token overlap; surfaced to agents via /v1/wisdom/applicable (PR-5)
 ├── providers/
 │   ├── base.py            LLMProvider + EmbeddingProvider Protocols
 │   ├── anthropic.py       anthropic SDK, system-prompt cache_control
@@ -72,7 +74,7 @@ src/dikw_core/
 │       ├── sqlite/          schema SQL
 │       └── postgres/        schema SQL (vector extension)
 ├── prompts/               versioned LLM prompts loaded via importlib.resources
-├── server/                FastAPI app + auth + sync/task/import/query routes + task subsystem
+├── server/                FastAPI app + auth + sync/task/import/retrieve routes + task subsystem
 ├── client/                Remote Typer CLI + httpx transport + NDJSON progress
 └── cli.py                 top-level Typer app: version, init, serve + dikw client subgroup
 ```
@@ -188,8 +190,10 @@ each adapter doesn't re-implement RRF.
 
 We take that seriously. Every navigation step (source listing, chunk
 lookup, link traversal, wisdom retrieval-by-title) is deterministic SQL +
-file I/O. LLM calls only enter at synthesis, distillation, and the
-natural-language answering step of `query`.
+file I/O. LLM calls only enter at synthesis and distillation — the two
+engine-internal authoring legs that write the K and W layers. Answer
+synthesis happens **outside** dikw-core, in the agent layer, with the
+agent's own LLM and conversation context.
 
 ### Wikilink resolve, as a concrete example
 

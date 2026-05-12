@@ -15,7 +15,7 @@ from dikw_core import api
 from dikw_core.domains.wisdom.io import aggregate_path, candidate_path
 from dikw_core.schemas import WisdomKind, WisdomStatus
 
-from .fakes import FakeEmbeddings, FakeLLM, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -144,17 +144,12 @@ async def test_distill_then_approve_then_wisdom_applied_in_query(wiki: Path) -> 
     assert cand.title in agg_text
     assert "Evidence" in agg_text
 
-    # Query now — the applied_wisdom list should include the approved item.
-    answering_llm = FakeLLM(response_text="Yes, prefer determinism [W1].")
-    query_result = await api.query(
-        "how should I scope retrieval deterministically?",
-        wiki,
-        llm=answering_llm,
-        embedder=embedder,
-    )
-    assert query_result.applied_wisdom
-    assert query_result.applied_wisdom[0].item_id == cand.item_id
-    assert "OPERATING PRINCIPLES" in (answering_llm.last_user or "")
+    # PR-1 removed the in-engine query verb. Wisdom application is now
+    # an explicit agent-side step exposed via ``/v1/wisdom/applicable``
+    # (PR-5). The candidate→approved transition + aggregate file
+    # bookkeeping are the invariants this test guards; the
+    # "wisdom-shapes-the-answer" behaviour will get its own test once
+    # PR-5 lands.
 
 
 @pytest.mark.asyncio

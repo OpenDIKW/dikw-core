@@ -13,7 +13,7 @@ uv run dikw serve --base ./my-base
 
 # In another terminal:
 uv run dikw client status
-uv run dikw client query "what does Karpathy say about scoping?"
+uv run dikw client retrieve "what does Karpathy say about scoping?"
 ```
 
 For one-shot commands without keeping a server running, use
@@ -31,7 +31,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 |---|---|---|
 | **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
 | **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval}` → `task_id`; `GET /v1/tasks/{id}/events` (NDJSON); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → stream NDJSON → final JSON |
-| **Streaming query** | `POST /v1/query` | NDJSON: `query_started → retrieval_done → llm_token* → final` |
+| **Streaming retrieve** | `POST /v1/retrieve` | NDJSON: `retrieve_started → retrieval_done → final`. **No LLM tokens stream from the server** — agents compose chunks with their own LLM. |
 | **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
 Every error follows one envelope:

@@ -99,23 +99,6 @@ sources:
 
 
 @pytest.mark.asyncio
-async def test_query_threads_max_tokens_from_config(tmp_path: Path) -> None:
-    wiki = _write_wiki(
-        tmp_path,
-        llm_max_tokens_query=777,
-        llm_max_tokens_synth=2048,
-        llm_max_tokens_distill=2048,
-    )
-    embedder = FakeEmbeddings()
-    await api.ingest(wiki, embedder=embedder)
-
-    llm = FakeLLM(response_text="stub answer")
-    await api.query("anything", wiki, llm=llm, embedder=embedder)
-
-    assert llm.last_max_tokens == 777
-
-
-@pytest.mark.asyncio
 async def test_synthesize_threads_max_tokens_from_config(tmp_path: Path) -> None:
     wiki = _write_wiki(
         tmp_path,

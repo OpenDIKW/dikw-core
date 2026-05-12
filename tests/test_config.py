@@ -89,7 +89,6 @@ def test_load_config_rejects_non_mapping(tmp_path: Path) -> None:
 def test_provider_config_llm_max_tokens_defaults() -> None:
     """Per-op max_tokens fields default to the values currently hardcoded in api.py."""
     cfg = ProviderConfig()
-    assert cfg.llm_max_tokens_query == 1024
     assert cfg.llm_max_tokens_synth == 2048
     assert cfg.llm_max_tokens_distill == 2048
 
@@ -104,7 +103,6 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
-  llm_max_tokens_query: 512
   llm_max_tokens_synth: 4096
   llm_max_tokens_distill: 1536
 sources: []
@@ -112,7 +110,6 @@ sources: []
         encoding="utf-8",
     )
     cfg = load_config(path)
-    assert cfg.provider.llm_max_tokens_query == 512
     assert cfg.provider.llm_max_tokens_synth == 4096
     assert cfg.provider.llm_max_tokens_distill == 1536
 
