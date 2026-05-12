@@ -17,12 +17,12 @@ import json
 import logging
 import random
 from collections.abc import Mapping, Sequence
-from importlib.resources import files
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ..domains.knowledge.wiki import WikiPage
 from ..progress import NoopReporter, ProgressReporter
+from ..prompts import load as load_prompt
 from ..providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -101,23 +101,9 @@ def parse_judge_response(text: str) -> JudgeScore | None:
         return None
 
 
-_PROMPT_CACHE: str | None = None
-
-
-def _load_prompt() -> str:
-    global _PROMPT_CACHE
-    if _PROMPT_CACHE is None:
-        _PROMPT_CACHE = (
-            files("dikw_core.prompts")
-            .joinpath("eval_judge_synth.md")
-            .read_text(encoding="utf-8")
-        )
-    return _PROMPT_CACHE
-
-
 def _format_prompt(*, page: WikiPage, source_text: str) -> str:
     return (
-        _load_prompt()
+        load_prompt("eval_judge_synth")
         .replace("{page_path}", page.path)
         .replace("{page_title}", page.title)
         .replace("{page_body}", page.body)

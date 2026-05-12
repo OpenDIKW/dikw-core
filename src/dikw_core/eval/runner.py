@@ -986,7 +986,7 @@ async def _run_queries(
 
 
 # ===========================================================================
-# K-layer (synth) eval — Step 4: run_synth_eval + SynthEvalReport
+# K-layer (synth) eval — run_synth_eval + SynthEvalReport
 # ===========================================================================
 
 
@@ -1059,6 +1059,21 @@ class SynthEvalReport(BaseModel):
         return all(r.passed for r in self.threshold_results)
 
 
+@dataclass
+class _SynthMetricsBundle:
+    """Everything ``run_synth_eval`` needs to assemble a ``SynthEvalReport``
+    and (optionally) drive the LLM judge. Built once by
+    ``_collect_metrics_bundle``; the pages and source texts are reused
+    for judging instead of being re-read from disk."""
+
+    pages: list[WikiPage]
+    source_text_by_path: dict[str, str]
+    n_sources: int
+    metrics: dict[str, float]
+    informational: dict[str, float]
+    pages_per_source: dict[str, int]
+
+
 async def run_synth_eval(
     spec: DatasetSpec,
     *,
@@ -1072,16 +1087,17 @@ async def run_synth_eval(
 ) -> SynthEvalReport:
     """End-to-end K-layer eval: ingest → synth → metrics + optional judge.
 
-    The runner spins up a throwaway wiki under ``tempfile.TemporaryDirectory``,
-    ingests the dataset's corpus, runs ``api.synthesize`` with the provided
-    LLM, then computes the seven K-layer metrics off the resulting pages
-    and source chunks. The synth pass writes through ``spec.synth.page_types``
-    so the dataset's whitelist (rather than the production wiki's) gates
-    which page types ``parse_synthesis_response`` accepts.
+    Materialises a throwaway wiki under ``tempfile.TemporaryDirectory``,
+    ingests the dataset's corpus, runs ``api.synthesize`` with the
+    provided LLM, then computes the seven K-layer metrics off the
+    resulting pages and source chunks. ``spec.synth.page_types`` is
+    written through to the throwaway wiki's ``dikw.yml`` so the
+    dataset's whitelist (rather than the production wiki's) gates which
+    page types ``parse_synthesis_response`` accepts.
 
-    Empty page output raises ``SynthEvalError`` rather than letting a
-    ``0 / 0`` metric mask a hard failure. Pass ``judge=True`` to layer an
-    LLM judge soft score on top once Step 5 wires ``judge.py`` in.
+    Empty page output raises ``SynthEvalError`` so a ``0 / 0`` metric
+    can't silently mask a hard failure. Pass ``judge=True`` to layer
+    the LLM-judge soft score on top.
     """
     if "synth" not in spec.modes:
         raise SynthEvalError(
@@ -1148,85 +1164,67 @@ async def run_synth_eval(
             },
         )
 
-        report = await _compute_synth_metrics(
+        bundle = await _collect_metrics_bundle(
             spec=spec,
             wiki=wiki,
             synth_report=synth_report,
             embedder=effective_embedder,
             embedding_model=effective_provider_cfg.embedding_model,
-            warnings=warnings,
         )
 
+        judge_summary: JudgeSummary | None = None
         if judge:
-            judge_model = (
-                spec.judge.model or effective_provider_cfg.llm_model
-            )
-            judge_pages, judge_sources = _load_pages_and_sources(wiki)
             await _reporter.progress(
                 phase="synth_eval/judge",
                 current=0,
-                total=len(judge_pages),
+                total=len(bundle.pages),
             )
-            summary = await judge_synthesis(
-                judge_pages,
-                sources=judge_sources,
+            judge_summary = await judge_synthesis(
+                bundle.pages,
+                sources=bundle.source_text_by_path,
                 llm=llm,
-                model=judge_model,
+                model=spec.judge.model or effective_provider_cfg.llm_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,
             )
             await _reporter.progress(
                 phase="synth_eval/judge",
-                current=summary.n_judged + summary.n_errors,
-                total=len(judge_pages),
+                current=judge_summary.n_judged + judge_summary.n_errors,
+                total=len(bundle.pages),
             )
-            # Replace the immutable report — pydantic BaseModel doesn't
-            # support attribute mutation by default; model_copy is the
-            # idiomatic way to set ``judge_summary`` post-construction.
-            report = report.model_copy(update={"judge_summary": summary})
 
-        return report
-
-
-def _load_pages_and_sources(
-    wiki: Path,
-) -> tuple[list[WikiPage], dict[str, str]]:
-    """Re-load wiki pages from disk and the source texts they cite.
-
-    Used by ``run_synth_eval`` when ``judge=True``: judge_synthesis needs
-    the same in-memory bundle that ``_compute_synth_metrics`` already
-    computed, but plumbing the data out without coupling the two phases
-    is messier than re-reading from the throwaway wiki (which is still
-    materialised at this point).
-    """
-    pages: list[WikiPage] = []
-    for md in sorted((wiki / "wiki").rglob("*.md")):
-        rel = md.relative_to(wiki).as_posix()
-        try:
-            pages.append(read_page(wiki, rel))
-        except FileNotFoundError:
-            continue
-    sources: dict[str, str] = {}
-    sources_dir = wiki / "sources"
-    if sources_dir.is_dir():
-        for src in sources_dir.rglob("*.md"):
-            rel = src.relative_to(wiki).as_posix()  # ``sources/foo.md``
-            sources[rel] = src.read_text(encoding="utf-8")
-    return pages, sources
+        return SynthEvalReport(
+            dataset_name=spec.name,
+            n_sources=bundle.n_sources,
+            n_pages=len(bundle.pages),
+            metrics=bundle.metrics,
+            threshold_results=check_thresholds(bundle.metrics, spec.thresholds),
+            pages_per_source=bundle.pages_per_source,
+            informational=bundle.informational,
+            judge_summary=judge_summary,
+            warnings=warnings,
+        )
 
 
-async def _compute_synth_metrics(
+async def _collect_metrics_bundle(
     *,
     spec: DatasetSpec,
     wiki: Path,
     synth_report: api.SynthReport,
     embedder: EmbeddingProvider,
     embedding_model: str,
-    warnings: list[str],
-) -> SynthEvalReport:
-    """Load the synth output from storage + disk, compute all metrics,
-    check thresholds, return a populated ``SynthEvalReport``."""
+) -> _SynthMetricsBundle:
+    """Pull pages + source chunks + source bodies out of the throwaway
+    wiki and compute every K-layer metric.
+
+    All keying uses the storage ``doc.path`` (``sources/<rel>``), which
+    matches ``WikiPage.sources[0]`` populated by ``synthesize`` from
+    ``src.path``. Keeping the two sides on the same key (rather than
+    stripping a ``sources/`` prefix on one side) is what makes
+    ``fact_grounding_ratio`` and ``language_fidelity`` actually look up
+    their chunks and texts.
+    """
     _cfg, _wiki_root, storage = await api._with_storage(wiki)
     try:
         wiki_docs = list(
@@ -1251,13 +1249,13 @@ async def _compute_synth_metrics(
             )
 
         chunks_by_source: dict[str, list[ChunkRecord]] = {}
-        n_chunks = 0
         source_text_by_path: dict[str, str] = {}
+        n_chunks = 0
         for doc in source_docs:
             chunks = await storage.list_chunks(doc.doc_id)
             chunks_by_source[doc.path] = chunks
             n_chunks += len(chunks)
-            source_file = wiki / "sources" / doc.path
+            source_file = wiki / doc.path
             if source_file.is_file():
                 source_text_by_path[doc.path] = source_file.read_text(
                     encoding="utf-8"
@@ -1265,23 +1263,13 @@ async def _compute_synth_metrics(
     finally:
         await storage.close()
 
-    # Page → primary source. ``WikiPage.sources`` is wiki-relative
-    # (``sources/foo.md``); the storage doc path for the same file is
-    # ``sources/foo.md`` too, but the dataset chunks_by_source we built
-    # is keyed by storage doc path. Strip the ``sources/`` prefix where
-    # present so both sides line up.
-    def _source_key(page_source: str) -> str:
-        if page_source.startswith("sources/"):
-            return page_source[len("sources/") :]
-        return page_source
-
     pages_with_source_keys: list[tuple[WikiPage, str]] = []
     pages_with_source_texts: list[tuple[WikiPage, str]] = []
     pages_per_source: dict[str, int] = {}
     for page in pages:
         if not page.sources:
             continue
-        key = _source_key(page.sources[0])
+        key = page.sources[0]
         pages_with_source_keys.append((page, key))
         pages_per_source[key] = pages_per_source.get(key, 0) + 1
         text = source_text_by_path.get(key)
@@ -1331,15 +1319,11 @@ async def _compute_synth_metrics(
         ),
     }
 
-    threshold_results = check_thresholds(metrics, spec.thresholds)
-
-    return SynthEvalReport(
-        dataset_name=spec.name,
+    return _SynthMetricsBundle(
+        pages=pages,
+        source_text_by_path=source_text_by_path,
         n_sources=len(source_docs),
-        n_pages=len(pages),
         metrics=metrics,
-        threshold_results=threshold_results,
-        pages_per_source=pages_per_source,
         informational=informational,
-        warnings=warnings,
+        pages_per_source=pages_per_source,
     )
