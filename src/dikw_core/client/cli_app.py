@@ -1235,12 +1235,18 @@ def tasks_show_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Print the JSON snapshot of a task row."""
+    """Print the JSON snapshot of a task row.
+
+    Uses ``console.print_json`` so long values (timestamps, queue
+    identifiers, error messages) don't get rich's soft-wrap injected
+    mid-string — agent parsers need clean JSON regardless of terminal
+    width.
+    """
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             row = await t.get_json(f"/v1/tasks/{task_id}")
-        console.print(json.dumps(row, indent=2))
+        console.print_json(json.dumps(row, ensure_ascii=False))
 
     _run(_go())
 
