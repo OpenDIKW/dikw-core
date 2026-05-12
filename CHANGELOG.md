@@ -45,6 +45,19 @@ on each entry call out exactly what shape changes break.
   on `final.result.chunks`; clients that only need the final result can
   stop reading the stream after `final`. Clients ignoring unknown fields
   are unaffected.
+* **BREAKING (CLI)**: `dikw client status` default output flips from
+  rich-rendered table to JSON. Human operators add `--format table`
+  to recover the previous behavior. Rationale: agent-first principle
+  — JSON is the zero-friction format for the dominant caller.
+* **BREAKING (CLI)**: `dikw client check` gains a `--format json|table`
+  flag (previously rendered table only). Default is `json`. Add
+  `--format table` for the previous human-friendly probe summary. Exit
+  code (0 / 1) still mirrors per-leg `ok` regardless of format.
+* **Fix (CLI)**: `dikw client info` and `dikw client tasks show` now
+  emit clean JSON via `console.print_json` instead of
+  `console.print(json.dumps(...))`. The old path let rich's soft-wrap
+  inject newlines mid-string at long paths, URLs, or error messages,
+  breaking `jq` / `json.loads` on agent stdout.
 
 ### `upload` → `import` — rename the source-import verb top-to-bottom
 

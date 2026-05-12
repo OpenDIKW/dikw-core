@@ -92,9 +92,11 @@ notes, you can also drop / edit markdown directly under
 `<base>/sources/` and skip `dikw import` — `dikw ingest` always scans
 whatever's on disk.
 
-`dikw status` shows document, chunk, and embedding counts per DIKW layer.
-Subsequent ingests are idempotent: files whose content hash hasn't changed
-are skipped.
+`dikw status --format table` shows document, chunk, and embedding counts
+per DIKW layer in a human-readable table. The default `dikw status`
+output is JSON so an automation script or agent can pipe it into `jq`
+without extra flags. Subsequent ingests are idempotent: files whose
+content hash hasn't changed are skipped.
 
 ## 4. Retrieve grounded chunks (Information layer)
 
@@ -282,13 +284,14 @@ use `uv run --env-file .env dikw …`.
 After editing `dikw.yml` and exporting the env vars, run:
 
 ```bash
-uv run dikw check --llm-only     # just LLM — run this first if you set up vendors one at a time
-uv run dikw check --embed-only   # just embedding
-uv run dikw check                # both legs
+uv run dikw check --format table --llm-only    # just LLM (human-readable)
+uv run dikw check --format table --embed-only  # just embedding
+uv run dikw check --format table               # both legs
 ```
 
-Each variant pings the relevant provider with one tiny request and prints
-a status table with endpoint, latency, and dim/tokens. Exit code is 0 on
+Each variant pings the relevant provider with one tiny request and
+reports endpoint / latency / dim/tokens. Drop `--format table` to get
+the raw JSON probe report (default, agent-friendly). Exit code is 0 on
 success, 1 on any probe failure, 2 when `--llm-only` and `--embed-only`
 are passed together. Do this *before* running `dikw ingest` on a real
 corpus so a misconfigured endpoint doesn't burn a full embedding run.

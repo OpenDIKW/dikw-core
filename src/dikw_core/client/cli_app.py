@@ -162,12 +162,17 @@ def info_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Print the server's ``GET /v1/info`` response."""
+    """Print the server's ``GET /v1/info`` response as JSON.
+
+    Uses ``console.print_json`` so long values (paths, URLs) don't get
+    rich's soft-wrap injected mid-string — agent parsers need clean
+    JSON regardless of terminal width.
+    """
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             payload = await t.get_json("/v1/info")
-        console.print(json.dumps(payload, indent=2))
+        console.print_json(json.dumps(payload, ensure_ascii=False))
 
     _run(_go())
 
@@ -178,9 +183,9 @@ def status_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'table' (default, human) or 'json' (agent-friendly).",
+            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
         ),
-    ] = "table",
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -242,11 +247,18 @@ def health_cmd(
     epilog=(
         "Examples:\n\n"
         "  dikw client check\n\n"
-        "  dikw client check --llm-only\n\n"
-        "  dikw client check --embed-only"
+        "  dikw client check --format table\n\n"
+        "  dikw client check --llm-only"
     ),
 )
 def check_cmd(
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+        ),
+    ] = "json",
     llm_only: Annotated[
         bool, typer.Option("--llm-only", help="Probe only the LLM leg.")
     ] = False,
@@ -258,6 +270,7 @@ def check_cmd(
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
     """Verify configured providers via the server."""
+    _validate_format(fmt)
     if llm_only and embed_only:
         console.print(
             "[red]error:[/red] --llm-only and --embed-only are mutually exclusive"
@@ -270,7 +283,10 @@ def check_cmd(
                 "/v1/check",
                 json_body={"llm_only": llm_only, "embed_only": embed_only},
             )
-        render_check_report(console, report)
+        if fmt == "json":
+            console.print_json(json.dumps(report, ensure_ascii=False))
+        else:
+            render_check_report(console, report)
         # ``CheckReport.ok`` is a ``@property`` that pydantic drops on
         # serialization; recompute here from the per-leg probe results
         # so the exit code matches the engine's intent.
@@ -1219,12 +1235,18 @@ def tasks_show_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Print the JSON snapshot of a task row."""
+    """Print the JSON snapshot of a task row.
+
+    Uses ``console.print_json`` so long values (timestamps, queue
+    identifiers, error messages) don't get rich's soft-wrap injected
+    mid-string — agent parsers need clean JSON regardless of terminal
+    width.
+    """
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             row = await t.get_json(f"/v1/tasks/{task_id}")
-        console.print(json.dumps(row, indent=2))
+        console.print_json(json.dumps(row, ensure_ascii=False))
 
     _run(_go())
 

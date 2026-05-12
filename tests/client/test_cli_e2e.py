@@ -10,6 +10,7 @@ flake.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -36,21 +37,29 @@ def test_status_routes_through_client(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
+    """Top-level ``dikw status`` aliases to ``dikw client status`` and
+    emits parseable JSON by default."""
+
     patch_transport_factory()
     result = _run(["status"])  # top-level alias → client.status
     assert result.exit_code == 0, result.stdout
-    assert "source" in result.stdout
-    assert "chunks" in result.stdout
+    payload = json.loads(result.stdout)
+    assert "chunks" in payload
+    assert "documents_by_layer" in payload
 
 
 def test_client_status_explicit_subcommand(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
+    """``dikw client status`` (explicit subcommand) is the same JSON
+    payload as the top-level alias."""
+
     patch_transport_factory()
     result = _run(["client", "status"])
     assert result.exit_code == 0, result.stdout
-    assert "source" in result.stdout
+    payload = json.loads(result.stdout)
+    assert "chunks" in payload
 
 
 def test_lint_clean_on_fresh_wiki(
@@ -86,12 +95,11 @@ def test_health_default_emits_json(
     Smoke-test that the no-arg invocation succeeds against an in-memory
     server and the output is parseable JSON containing the load-bearing
     top-level keys."""
-    import json as _json
 
     patch_transport_factory()
     result = _run(["client", "health"])
     assert result.exit_code == 0, result.stdout
-    payload = _json.loads(result.stdout)
+    payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
     assert "providers" in payload
     assert "layer_counts" in payload
@@ -143,9 +151,7 @@ def _drop_broken_markdown(rt: ServerRuntime) -> None:
     src_dir = rt.root / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "good.md").write_text("# Good\n\nbody.\n", encoding="utf-8")
-    (src_dir / "broken.md").write_text(
-        "---\nbroken: : :\n---\n# T\n", encoding="utf-8"
-    )
+    (src_dir / "broken.md").write_text("---\nbroken: : :\n---\n# T\n", encoding="utf-8")
 
 
 def test_ingest_default_treats_file_errors_as_warnings(
@@ -203,14 +209,13 @@ def test_pages_list_emits_documents(
 ) -> None:
     """``dikw client pages list`` returns the same DocumentRecord array as
     ``GET /v1/base/pages``."""
-    import json as _json
 
     _, rt = asgi_client
     _ingest_fixtures(rt)
     patch_transport_factory()
     result = _run(["client", "pages", "list", "--format", "json"])
     assert result.exit_code == 0, result.stdout
-    rows = _json.loads(result.stdout)
+    rows = json.loads(result.stdout)
     assert any(r["layer"] == "source" for r in rows)
 
 
@@ -218,16 +223,13 @@ def test_pages_list_layer_filter(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
-    import json as _json
 
     _, rt = asgi_client
     _ingest_fixtures(rt)
     patch_transport_factory()
-    result = _run(
-        ["client", "pages", "list", "--layer", "source", "--format", "json"]
-    )
+    result = _run(["client", "pages", "list", "--layer", "source", "--format", "json"])
     assert result.exit_code == 0, result.stdout
-    rows = _json.loads(result.stdout)
+    rows = json.loads(result.stdout)
     assert rows and all(r["layer"] == "source" for r in rows)
 
 
@@ -260,19 +262,16 @@ def test_pages_get_emits_body_and_anchors(
 ) -> None:
     """End-to-end pages get: list to discover an indexed path, then get
     that path and verify body + non-empty anchors land in stdout JSON."""
-    import json as _json
 
     _, rt = asgi_client
     _ingest_fixtures(rt)
     patch_transport_factory()
     listed = _run(["client", "pages", "list", "--format", "json"])
-    target = next(
-        r for r in _json.loads(listed.stdout) if r["layer"] == "source"
-    )
+    target = next(r for r in json.loads(listed.stdout) if r["layer"] == "source")
 
     result = _run(["client", "pages", "get", target["path"]])
     assert result.exit_code == 0, result.stdout
-    body = _json.loads(result.stdout)
+    body = json.loads(result.stdout)
     assert body["doc_id"] == target["doc_id"]
     assert isinstance(body["body"], str) and body["body"]
     assert isinstance(body["anchors"], list) and body["anchors"]
@@ -328,14 +327,13 @@ def test_format_json_emits_parseable_json(
     actually prints valid JSON instead of the rich-rendered table —
     otherwise an agent piping ``| jq`` would silently get a banner
     string that never parses."""
-    import json as _json
 
     patch_transport_factory()
     result = _run(argv)
     assert result.exit_code == 0, result.stdout
     # ``console.print_json`` adds two-space indent + trailing newline; the
     # body must be a parseable JSON document either way.
-    parsed = _json.loads(result.stdout)
+    parsed = json.loads(result.stdout)
     assert isinstance(parsed, list | dict)
 
 
@@ -358,6 +356,93 @@ def test_check_unavailable_provider_exits_one(
     assert result.exit_code in (0, 1), result.stdout
 
 
+def test_status_default_emits_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``dikw client status`` (no flags) must emit JSON parseable by
+    ``json.loads``."""
+    patch_transport_factory()
+    result = _run(["client", "status"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, dict)
+    assert payload, "status JSON payload must not be empty"
+
+
+def test_status_table_mode_renders(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--format table`` keeps the rich-rendered output for humans."""
+    patch_transport_factory()
+    result = _run(["client", "status", "--format", "table"])
+    assert result.exit_code == 0, result.stdout
+    # ``render_status`` prints layer labels; "chunks" is one of them.
+    assert "chunks" in result.stdout
+
+
+def test_check_default_emits_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``dikw client check`` (no flags) must emit parseable JSON
+    regardless of probe outcome."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
+    patch_transport_factory()
+    result = _run(["client", "check"])
+    assert result.exit_code in (0, 1), result.stdout
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, dict)
+    # ``CheckReport`` has ``llm`` and ``embed`` per-leg keys; at least
+    # one must be present in every probe outcome.
+    assert "llm" in payload or "embed" in payload
+
+
+def test_check_table_mode_renders(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--format table`` keeps the rich rendering for human operators."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
+    patch_transport_factory()
+    result = _run(["client", "check", "--format", "table"])
+    assert result.exit_code in (0, 1), result.stdout
+    # ``render_check_report`` prints per-leg labels.
+    out = result.stdout.lower()
+    assert "llm" in out or "embed" in out
+
+
+def test_check_rejects_invalid_format(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    patch_transport_factory()
+    result = _run(["client", "check", "--format", "csv"])
+    assert result.exit_code == 2
+    assert "must be 'json' or 'table'" in result.stdout
+
+
+def test_info_default_emits_parseable_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``dikw client info`` happy path must emit parseable JSON. The
+    command is JSON-only (no ``--format`` flag) — agents call it as a
+    bootstrap probe and need the openapi / docs hints inline."""
+    patch_transport_factory()
+    result = _run(["client", "info"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, dict)
+
+
 def test_distill_runs_through_task_pipeline(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
@@ -369,9 +454,7 @@ def test_distill_runs_through_task_pipeline(
     into a candidate), but the report shape itself is the contract we
     care about."""
     monkeypatch.setattr(synth_op, "build_llm", lambda _cfg, **_kw: FakeLLM())
-    monkeypatch.setattr(
-        synth_op, "build_embedder", lambda _cfg: FakeEmbeddings()
-    )
+    monkeypatch.setattr(synth_op, "build_embedder", lambda _cfg: FakeEmbeddings())
     patch_transport_factory()
     result = _run(["distill", "--plain"])
     assert result.exit_code == 0, result.stdout

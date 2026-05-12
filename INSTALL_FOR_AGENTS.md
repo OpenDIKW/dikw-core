@@ -106,9 +106,11 @@ Gitee-embedding (and similar splits) don't cross-wire credentials.
 uv run dikw client check
 ```
 
-Pings each leg with one tiny request and reports endpoint / latency /
-dim. Exit code 0 = both legs OK, 1 = any failure, 2 = flag misuse. Pass
-`--llm-only` or `--embed-only` to probe one leg in isolation.
+Pings each leg with one tiny request and emits a JSON `CheckReport`
+(default) with endpoint / latency / dim per leg. Pipe into `jq` to
+branch. Exit code 0 = both legs OK, 1 = any failure, 2 = flag misuse.
+Pass `--llm-only` or `--embed-only` to probe one leg in isolation. Add
+`--format table` for a human-readable summary.
 
 > Note: `check` requires a running server. If you haven't started one
 > yet, point `serve-and-run` at the base you just initialised:
