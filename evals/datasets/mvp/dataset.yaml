@@ -5,12 +5,34 @@ description: >
   Software 2.0, Recipe for Training Neural Networks). 10 hand-authored
   queries with 4 exact-fact + 3 paraphrase + 3 multi-doc synthesis.
 
-# Calibrated from the first hermetic FakeEmbeddings run on 2026-04-21:
+  Supports two eval modes — ``retrieval`` (the original hermetic gate)
+  and ``synth`` (K-layer quality eval added 2026-05-12). Synth thresholds
+  are placeholders awaiting real-LLM baseline calibration; see
+  ``evals/BASELINES.md`` for the synth section once it lands.
+
+modes: [retrieval, synth]
+
+# Retrieval thresholds calibrated 2026-04-21:
 # observed hit@3 = 1.000, hit@10 = 1.000, MRR = 0.833 on 10 queries.
 # With 10 queries, each single-query change shifts hit@k by 0.1 — the
 # thresholds leave ~2 queries of slack so corpus tweaks don't flake
 # the gate while a real retrieval regression still fails it.
+#
+# Synth thresholds are PLACEHOLDERS — set permissive enough that any
+# reasonable LLM run passes them, awaiting calibration via
+# ``dikw eval mvp --eval synth --judge`` against a real LLM.
 thresholds:
   hit_at_3: 0.80
   hit_at_10: 0.80
   mrr: 0.60
+  synth/fact_grounding_ratio: 0.70
+  synth/atomicity_score: 0.85
+  synth/duplicate_ratio_max: 0.10
+  synth/wikilink_resolved_ratio: 0.80
+  synth/expected_coverage: 0.70
+  synth/language_fidelity: 0.95
+
+synth:
+  grounding_threshold: 0.65
+  duplicate_threshold: 0.85
+  page_types: [entity, concept, note]

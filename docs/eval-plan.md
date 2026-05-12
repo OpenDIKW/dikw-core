@@ -96,6 +96,16 @@ or non-destructiveness. Two gates:
    broken down by issue kind, and (for atomicity tweaks) a 5+5 sample
    judgement of TP/FP rates.
 
+   **Also run** `dikw eval mvp --eval synth --pretty` (and
+   `--judge --judge-sample 5` once an LLM budget allows the soft layer)
+   to capture the seven quantified K-layer metrics — `fact_grounding_ratio`,
+   `atomicity_score`, `duplicate_ratio_max`, `wikilink_resolved_ratio`,
+   `expected_coverage`, `language_fidelity`, and the informational
+   `page_density`. This replaces the manual 5+5 TP/FP sampling for
+   ongoing changes once the mvp thresholds are calibrated; the first
+   real-LLM run that lands the calibrated numbers is itself the
+   baseline entry.
+
 2. **Retrieval config changes** (any field on `RetrievalConfig`,
    anything under `src/dikw_core/domains/info/search.py`): run an
    ablation on at least one packaged dataset (mvp / scifact / cmteb)

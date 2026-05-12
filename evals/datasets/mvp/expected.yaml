@@ -1,0 +1,71 @@
+# Expected K-layer page coverage for the synth-mode evaluation.
+#
+# Each ``expected_titles`` list captures the concepts/entities the
+# author considers must-have when synth processes that source. The
+# coverage metric uses fuzzy match (NFKC + casefold + plural stem,
+# same rules as wikilink resolution) so "Neural Networks" matches
+# "Neural Network" and "Elon Musk." matches "Elon Musk".
+#
+# ``expected_keywords`` is informational only — surfaces in the report
+# but doesn't gate. Use it for concept-adjacent terms that a future
+# tighter eval pass might want to track.
+
+sources:
+  - path: design.md
+    expected_titles:
+      - "DIKW Pyramid"
+      - "Knowledge Base"
+      - "Storage Protocol"
+      - "Wikilink"
+    expected_keywords:
+      - "atomicity"
+      - "evidence"
+
+  - path: architecture.md
+    expected_titles:
+      - "Source Backend"
+      - "LLM Provider"
+      - "Embedding Provider"
+      - "Hybrid Search"
+    expected_keywords:
+      - "RRF"
+      - "chunking"
+
+  - path: getting-started.md
+    expected_titles:
+      - "dikw init"
+      - "dikw ingest"
+      - "dikw synth"
+    expected_keywords:
+      - "uv"
+      - "dikw.yml"
+
+  - path: README.md
+    expected_titles:
+      - "dikw-core"
+    expected_keywords:
+      - "DIKW"
+
+  - path: karpathy-gist.md
+    expected_titles:
+      - "LLM Wiki"
+      - "Atomic Note"
+    expected_keywords:
+      - "wikilink"
+
+  - path: karpathy-software-2-0.md
+    expected_titles:
+      - "Software 2.0"
+      - "Neural Network"
+      - "Software 1.0"
+      - "Gradient Descent"
+    expected_keywords:
+      - "differentiable"
+
+  - path: karpathy-recipe.md
+    expected_titles:
+      - "Recipe for Training Neural Networks"
+      - "Overfitting"
+      - "Regularization"
+    expected_keywords:
+      - "learning rate"

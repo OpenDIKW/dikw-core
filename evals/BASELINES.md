@@ -7,6 +7,47 @@ regression from a re-run variance.
 Newest first. `dikw eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-05-12 — Synth quality eval framework (PR-A through PR-C)
+
+Infrastructure shipped: `run_synth_eval` + 7 K-layer metrics
+(`fact_grounding_ratio`, `atomicity_score`, `duplicate_ratio_max`,
+`wikilink_resolved_ratio`, `expected_coverage`, `language_fidelity`
+hard-gated; `page_density` informational) + LLM-judge soft scoring
+(4 dimensions × 0-5).
+
+`evals/datasets/mvp/` upgraded with `modes: [retrieval, synth]`,
+`synth/*` threshold placeholders, and `expected.yaml`. The hermetic
+gate (`tests/test_synth_quality.py`) passes; real-LLM thresholds are
+**not yet calibrated** — run the command below against a wiki with
+a configured LLM provider and replace this section with the observed
+numbers:
+
+```bash
+# Real-LLM baseline (do this from a wiki that has a configured LLM):
+uv run dikw eval mvp --eval synth --pretty
+uv run dikw eval mvp --eval synth --judge --judge-sample 5 --pretty
+```
+
+Expected output shape:
+
+```
+dikw eval — mvp (mode: synth)
+metric                       value   threshold  direction  result
+synth/fact_grounding_ratio   0.???   0.700      min        ?
+synth/atomicity_score        0.???   0.850      min        ?
+synth/duplicate_ratio_max    0.???   0.100      max        ?
+synth/wikilink_resolved_ratio 0.???  0.800      min        ?
+synth/expected_coverage      0.???   0.700      min        ?
+synth/language_fidelity      0.???   0.950      min        ?
+synth/page_density (info)    0.???     -          -          —
+n_sources=7 n_pages=?? passed=?
+```
+
+Once the first real-LLM run lands: update the placeholder thresholds in
+`evals/datasets/mvp/dataset.yaml` to ~2-3% below observed values
+(matching the retrieval-side discipline above), commit the numbers
+here, and link the corresponding PR.
+
 ## 2026-05-10 — K-layer fix proposals (lint-fix PR2): broken_wikilink LLM stub + non_atomic_page
 
 **Status:** real-data spot check on the elon-musk-validation base

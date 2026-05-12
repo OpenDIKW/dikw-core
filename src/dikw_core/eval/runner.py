@@ -269,13 +269,19 @@ class EvalReport(BaseModel):
 
     @property
     def passed(self) -> bool:
-        """True iff every threshold is met (or no thresholds are configured)."""
+        """True iff every threshold the runner observed is met.
+
+        Thresholds whose metric wasn't computed (e.g. ``synth/*`` keys
+        on a retrieval-only run) are skipped — those gates belong to
+        the corresponding ``run_synth_eval`` call, not this one. Typos
+        in metric names get caught at ``load_dataset`` time via
+        ``SUPPORTED_METRICS``, so a ``None`` here is always "wrong
+        family", never "user wrote it wrong".
+        """
         for key, floor in self.thresholds.items():
             value = self.metrics.get(key)
             if value is None:
-                # Threshold for a metric the runner didn't compute — fail loudly
-                # rather than silently pass.
-                return False
+                continue
             if value < floor:
                 return False
         return True
