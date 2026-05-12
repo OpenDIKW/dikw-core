@@ -282,18 +282,22 @@ async def fact_grounding_ratio(
         if cached is not None:
             return cached
         chunks = chunks_by_source.get(source_path, [])
-        if not chunks:
+        # Defensive: skip empty / whitespace-only chunks. Gitee /
+        # OpenAI embedding APIs 400 on empty input rather than emitting
+        # a zero vector, which would tank the whole run.
+        chunk_texts = [c.text for c in chunks if c.text.strip()]
+        if not chunk_texts:
             chunk_embeds_cache[source_path] = []
             return []
-        embeds = await embedder.embed(
-            [c.text for c in chunks], model=embedding_model
+        embeds = await _embed_batched(
+            embedder, chunk_texts, model=embedding_model
         )
         chunk_embeds_cache[source_path] = embeds
         return embeds
 
     per_page: list[float] = []
     for page, source_path in pages_with_sources:
-        claims = split_claims(page.body)
+        claims = [c for c in split_claims(page.body) if c.strip()]
         if not claims:
             per_page.append(1.0)
             continue
@@ -301,7 +305,9 @@ async def fact_grounding_ratio(
         if not chunk_embeds:
             per_page.append(0.0)
             continue
-        claim_embeds = await embedder.embed(claims, model=embedding_model)
+        claim_embeds = await _embed_batched(
+            embedder, claims, model=embedding_model
+        )
         grounded = sum(
             1
             for ce in claim_embeds
@@ -309,6 +315,33 @@ async def fact_grounding_ratio(
         )
         per_page.append(grounded / len(claims))
     return sum(per_page) / len(per_page)
+
+
+# Most embedding providers (Gitee, MiniMax, OpenAI batch tier-2) cap
+# ``input`` length per request well below the synth-eval payload size —
+# Gitee rejects ~30+ texts in one shot with a cryptic
+# "Validation error for body application/json: No schema matches"
+# 400. Batch every direct ``embedder.embed`` call from this module at
+# 16 items, matching ``DikwConfig.provider.embedding_batch_size``'s
+# default. ``EmbeddingProvider`` doesn't batch internally because the
+# synth + ingest paths route through ``consume_embedding_stream``
+# which already batches; eval-only callers don't go through that path.
+_EMBED_BATCH = 16
+
+
+async def _embed_batched(
+    embedder: EmbeddingProvider,
+    texts: list[str],
+    *,
+    model: str,
+) -> list[list[float]]:
+    if not texts:
+        return []
+    out: list[list[float]] = []
+    for start in range(0, len(texts), _EMBED_BATCH):
+        chunk = texts[start : start + _EMBED_BATCH]
+        out.extend(await embedder.embed(chunk, model=model))
+    return out
 
 
 async def duplicate_ratio_max(
@@ -321,13 +354,20 @@ async def duplicate_ratio_max(
     """Fraction of distinct page pairs whose body cosine ≥ tau.
 
     Total pairs = ``n*(n-1)/2``. Reverse-direction metric: lower is
-    better. Fewer than two pages → 0.0 (no pair to compare)."""
-    if len(pages) < 2:
+    better. Fewer than two pages → 0.0 (no pair to compare).
+
+    Pages with empty / whitespace-only body are excluded from the pair
+    set — they're degenerate synth output, not duplicates, and most
+    embedding APIs (Gitee, OpenAI) 400 on empty input strings rather
+    than emitting a zero vector.
+    """
+    bodied = [p for p in pages if p.body.strip()]
+    if len(bodied) < 2:
         return 0.0
-    embeds = await embedder.embed(
-        [p.body for p in pages], model=embedding_model
+    embeds = await _embed_batched(
+        embedder, [p.body for p in bodied], model=embedding_model
     )
-    n = len(pages)
+    n = len(bodied)
     total_pairs = n * (n - 1) // 2
     above = 0
     for i in range(n):

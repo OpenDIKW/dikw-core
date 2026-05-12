@@ -6,11 +6,9 @@ description: >
   queries with 4 exact-fact + 3 paraphrase + 3 multi-doc synthesis.
 
   Supports two eval modes — ``retrieval`` (the original hermetic gate)
-  and ``synth`` (K-layer quality eval added 2026-05-12). Synth metrics
-  ship without thresholds until a real-LLM baseline run lands the
-  observed numbers in ``evals/BASELINES.md``; until then the synth
-  gate is informational (``passed=True`` with empty
-  ``threshold_results``).
+  and ``synth`` (K-layer quality eval added 2026-05-12). Both halves
+  carry calibrated thresholds; see ``evals/BASELINES.md`` for the
+  observed numbers and rationale behind the slack.
 
 modes: [retrieval, synth]
 
@@ -20,15 +18,27 @@ modes: [retrieval, synth]
 # thresholds leave ~2 queries of slack so corpus tweaks don't flake
 # the gate while a real retrieval regression still fails it.
 #
-# Synth thresholds intentionally omitted — see description above.
-# The first real-LLM ``dikw eval mvp --eval synth`` run lands them
-# back here (alongside the BASELINES.md entry) as the calibration
-# baseline. Until then, the synth half of this dataset reports
-# metrics without gating.
+# Synth thresholds calibrated 2026-05-13 against openai_codex (gpt-5.5)
+# LLM + Qwen3-Embedding-0.6B@1024 (Gitee). Observed metrics across 7
+# sources / 31 pages — see the 2026-05-13 BASELINES.md entry. Floors
+# sit well below observed values: a regression should drop synth
+# output noticeably to fail the gate, but a prompt tweak that nudges
+# one metric down a few % won't flake.
 thresholds:
   hit_at_3: 0.80
   hit_at_10: 0.80
   mrr: 0.60
+  synth/fact_grounding_ratio: 0.20
+  synth/atomicity_score: 0.85
+  synth/duplicate_ratio_max: 0.05
+  synth/wikilink_resolved_ratio: 0.55
+  synth/language_fidelity: 0.95
+  # expected_coverage intentionally NOT gated yet — two real-LLM
+  # runs swung 0.238 → 0.143 (>0.09 noise), the expected_titles in
+  # expected.yaml don't match the LLM's actual title patterns
+  # ("DIKW Pyramid" vs "DIKW Layers in dikw-core"). Re-add once
+  # the fuzzy resolver / expected.yaml are reconciled (see the
+  # 2026-05-13 BASELINES.md entry, follow-up #2).
 
 synth:
   grounding_threshold: 0.65

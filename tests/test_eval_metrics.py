@@ -469,6 +469,40 @@ async def test_duplicate_ratio_max_empty_pages() -> None:
     assert ratio == 0.0
 
 
+@pytest.mark.asyncio
+async def test_duplicate_ratio_max_skips_empty_body_pages() -> None:
+    """Pages with empty / whitespace-only bodies are degenerate synth
+    output, not duplicates — most embedding APIs 400 on empty input so
+    we filter them out before embedding. Verified against a tracking
+    embedder that records every text it saw."""
+
+    class TrackingEmbedder(FakeEmbeddings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[str] = []
+
+        async def embed(  # type: ignore[override]
+            self, texts: list[str], *, model: str
+        ) -> list[list[float]]:
+            self.seen.extend(texts)
+            return await super().embed(texts, model=model)
+
+    embedder = TrackingEmbedder()
+    pages = [
+        _page("A", "# A\n\nNon-empty body.\n"),
+        _page("B", ""),  # truly empty
+        _page("C", "   \n\t"),  # whitespace only
+        _page("D", "# D\n\nAnother non-empty body.\n"),
+    ]
+    ratio = await duplicate_ratio_max(
+        pages=pages, embedder=embedder, embedding_model="fake", tau=0.85,
+    )
+    # Only A and D were embedded — one pair, distinct bodies → 0.0.
+    assert ratio == 0.0
+    assert len(embedder.seen) == 2
+    assert all("body" in t.lower() for t in embedder.seen)
+
+
 # ---- split_claims ----------------------------------------------------------
 
 
