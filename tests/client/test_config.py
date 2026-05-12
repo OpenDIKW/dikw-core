@@ -87,3 +87,76 @@ def test_empty_token_string_is_treated_as_none(tmp_path: Path) -> None:
     )
     cfg = resolve(env={ENV_SERVER_TOKEN: "from-env"}, config_path=toml)
     assert cfg.token == "from-env"
+
+
+# ---- [default.converters] resolution ------------------------------------
+
+
+def test_converters_default_empty(tmp_path: Path) -> None:
+    cfg = resolve(env={}, config_path=tmp_path / "missing.toml")
+    assert cfg.converters == {}
+
+
+def test_converters_from_toml(tmp_path: Path) -> None:
+    toml = _write_toml(
+        tmp_path / "client.toml",
+        '[default.converters]\n".pdf" = "marker"\n".epub" = "ebook2md"\n',
+    )
+    cfg = resolve(env={}, config_path=toml)
+    assert cfg.converters == {".pdf": "marker", ".epub": "ebook2md"}
+
+
+def test_converters_env_var_wins_over_toml(tmp_path: Path) -> None:
+    """``DIKW_CLIENT_CONVERTER_<EXT>`` overrides the toml entry for that
+    one extension; other extensions stay on the toml value."""
+    toml = _write_toml(
+        tmp_path / "client.toml",
+        '[default.converters]\n".pdf" = "marker"\n".epub" = "ebook2md"\n',
+    )
+    cfg = resolve(
+        env={"DIKW_CLIENT_CONVERTER_PDF": "mineru"},
+        config_path=toml,
+    )
+    assert cfg.converters == {".pdf": "mineru", ".epub": "ebook2md"}
+
+
+def test_converters_env_var_only(tmp_path: Path) -> None:
+    """``DIKW_CLIENT_CONVERTER_PDF`` alone (no toml) populates ``.pdf``."""
+    cfg = resolve(
+        env={"DIKW_CLIENT_CONVERTER_PDF": "marker"},
+        config_path=tmp_path / "missing.toml",
+    )
+    assert cfg.converters == {".pdf": "marker"}
+
+
+def test_converters_env_var_ignores_unrelated_env(tmp_path: Path) -> None:
+    """A wide ``DIKW_*`` env shouldn't accidentally seed converters."""
+    cfg = resolve(
+        env={"DIKW_SERVER_URL": "http://x", "DIKW_LOG_LEVEL": "DEBUG"},
+        config_path=tmp_path / "missing.toml",
+    )
+    assert cfg.converters == {}
+
+
+def test_converters_env_var_lowercases_extension(tmp_path: Path) -> None:
+    """``DIKW_CLIENT_CONVERTER_PDF`` → ``.pdf`` key (the registry is
+    lowercase-indexed)."""
+    cfg = resolve(
+        env={"DIKW_CLIENT_CONVERTER_PDF": "marker"},
+        config_path=tmp_path / "missing.toml",
+    )
+    assert ".pdf" in cfg.converters
+    assert ".PDF" not in cfg.converters
+
+
+def test_converters_env_var_empty_string_skipped(tmp_path: Path) -> None:
+    """Empty string env value is "unset" — falls through to toml."""
+    toml = _write_toml(
+        tmp_path / "client.toml",
+        '[default.converters]\n".pdf" = "marker"\n',
+    )
+    cfg = resolve(
+        env={"DIKW_CLIENT_CONVERTER_PDF": ""},
+        config_path=toml,
+    )
+    assert cfg.converters == {".pdf": "marker"}

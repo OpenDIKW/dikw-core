@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -29,6 +30,7 @@ from rich.table import Table
 from ..schemas import Layer
 from . import serve_and_run as _sar
 from .config import ClientConfig, resolve
+from .converters import Converter, discover, pick
 from .importer import SourceImportError, build_import
 from .progress import (
     QueryStreamRenderer,
@@ -80,6 +82,21 @@ def _token_option() -> Any:
 
 def _resolve(server: str | None, token: str | None) -> ClientConfig:
     return resolve(server_url=server, token=token)
+
+
+def _converter_resolver(
+    cli_choice: str | None, cfg: ClientConfig
+) -> Callable[[str], Converter]:
+    """Build a lazy converter resolver — ``discover()`` runs only on
+    first invocation, so md-only imports never pay the plugin import
+    cost even when heavy converters are installed."""
+
+    def _resolve_one(ext: str) -> Converter:
+        return pick(
+            ext, discover(), converter=cli_choice, config=cfg.converters
+        )
+
+    return _resolve_one
 
 
 def _validate_format(fmt: str) -> None:
@@ -711,7 +728,8 @@ def _exit_on_failure(
     epilog=(
         "Examples:\n\n"
         "  dikw client import ./inbox\n\n"
-        "  dikw client import ./note.md"
+        "  dikw client import ./note.md\n\n"
+        "  dikw client import ./paper.pdf --converter=marker"
     ),
 )
 def import_cmd(
@@ -720,21 +738,35 @@ def import_cmd(
         typer.Argument(
             help=(
                 "Local markdown file or directory to import into the base. "
-                "Each ``*.md`` becomes one package together with its "
-                "referenced assets."
+                "Non-md single files (``paper.pdf``, ``book.epub``, …) are "
+                "dispatched to an installed converter plugin first."
             ),
         ),
     ],
+    converter: Annotated[
+        str | None,
+        typer.Option(
+            "--converter",
+            help=(
+                "Engine name to use for non-md inputs (e.g. "
+                "``--converter=marker`` for ``paper.pdf``). Overrides the "
+                "``client.toml`` ``[default.converters]`` entry for one "
+                "call. Plugins ship in the dikw-plugins repo."
+            ),
+        ),
+    ] = None,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
     """Pre-flight + import markdown packages into the server's ``sources/``.
 
-    Each markdown file becomes a single package alongside any
-    asset (image, pdf) it embeds. Pre-flight inspection (frontmatter
-    parse, asset existence, non-empty body, no orphan asset) runs
-    locally first; failures exit 2 before any bytes leave the
-    machine.
+    Each markdown file becomes a single package alongside any asset
+    (image, pdf) it embeds. Non-md single-file inputs go through a
+    client-side converter plugin first; install the plugin you want
+    (e.g. ``dikw-converter-pdf``) and the importer dispatches by
+    extension automatically. Pre-flight inspection (frontmatter parse,
+    asset existence, non-empty body, no orphan asset) runs locally
+    first; failures exit 2 before any bytes leave the machine.
 
     On success the server commits well-formed packages straight into
     ``<base>/sources/`` (per-package via ``os.replace``) and returns
@@ -745,9 +777,12 @@ def import_cmd(
     into the per-base auth store — different target, different command.
     """
 
+    cfg = _resolve(server, token)
+    converter_for = _converter_resolver(converter, cfg)
+
     async def _go() -> None:
-        with build_import(path) as bundle:
-            async with Transport.from_config(_resolve(server, token)) as t:
+        with build_import(path, converter_for=converter_for) as bundle:
+            async with Transport.from_config(cfg) as t:
                 response = await t.post_multipart(
                     "/v1/import",
                     files={

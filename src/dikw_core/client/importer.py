@@ -31,8 +31,11 @@ import contextlib
 import gzip
 import json
 import os
+import shutil
 import stat
 import tarfile
+import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
@@ -44,6 +47,7 @@ from ..md_inspect import (
     package_sha256,
     sha256_file,
 )
+from .converters import Converter, ConverterError
 
 # Spooled buffer threshold — 16 MiB matches the plan's recommendation.
 # Below it, the tarball stays in RAM (zero disk I/O); above it, the
@@ -112,19 +116,36 @@ class SourceImportError(Exception):
     before any bytes leave the machine."""
 
 
-def build_import(src: Path) -> ImportBundle:
+def build_import(
+    src: Path,
+    *,
+    converter_for: Callable[[str], Converter] | None = None,
+) -> ImportBundle:
     """Pack ``src`` into a tar.gz + manifest the server will accept.
 
-    ``src`` may be either a single ``.md`` file or a directory whose
+    ``src`` may be either a single ``.md`` file, a single non-md file
+    paired with a ``converter_for`` resolver, or a directory whose
     ``**/*.md`` tree becomes one package per file. Pre-flight
     inspection runs on every md (frontmatter parse, asset existence,
     non-empty body); orphan assets in the input tree are rejected so
     files don't get silently dropped.
 
+    ``converter_for(ext)`` returns a :class:`Converter` instance that
+    knows how to turn ``ext`` into md+assets. Used only when ``src`` is
+    a single non-md file — the importer stages the converter output in
+    a temp directory, then packs that directory normally. Directory
+    imports keep the strict md-only rule; convert non-md files
+    individually first.
+
     Raises :class:`SourceImportError` for any pre-flight failure with
     enough detail (file path, lint kind, missing ref) for the user to
     fix.
     """
+    with _normalize_input(src, converter_for) as normalized:
+        return _build_from_normalized(normalized)
+
+
+def _build_from_normalized(src: Path) -> ImportBundle:
     project_root, md_files, asset_files = _resolve_input(src)
 
     # Pre-flight inspection: collect packages or accumulate failures.
@@ -171,6 +192,76 @@ def build_import(src: Path) -> ImportBundle:
 
 
 # ---- internals ---------------------------------------------------------
+
+
+_DIKW_PLUGINS_URL = "https://github.com/opendikw/dikw-plugins"
+
+
+@contextlib.contextmanager
+def _normalize_input(
+    src: Path,
+    converter_for: Callable[[str], Converter] | None,
+) -> Iterator[Path]:
+    """Yield a path that the standard import flow can package.
+
+    For markdown inputs and directories the path is ``src`` unchanged.
+    For a single non-md file, this dispatches to the converter resolver
+    and yields a staging temp dir containing the converter's output —
+    cleaned up on exit, regardless of success or failure.
+
+    The symlink + existence checks happen on the user-supplied path
+    before any conversion runs, so a malicious symlink can't trick the
+    plugin into reading bytes outside the user's intent.
+    """
+    try:
+        st_raw = src.lstat()
+    except OSError as e:
+        raise SourceImportError(f"import source does not exist: {src}") from e
+    if stat.S_ISLNK(st_raw.st_mode):
+        raise SourceImportError(
+            f"refusing to import symlink: {src} "
+            f"(target: {os.readlink(src)!r})"
+        )
+
+    resolved = src.resolve()
+    # Non-file, non-md-file inputs (directories, single md) flow through
+    # the existing _resolve_input logic untouched.
+    if not resolved.is_file() or resolved.suffix.lower() in _DEFAULT_MD_EXTENSIONS:
+        yield src
+        return
+
+    ext = resolved.suffix.lower()
+    if converter_for is None:
+        raise SourceImportError(
+            f"no converter installed for {ext!r}. "
+            f"See {_DIKW_PLUGINS_URL} for available plugins."
+        )
+
+    try:
+        converter = converter_for(ext)
+    except ConverterError as e:
+        # The resolver may raise on conflict / missing-engine. Surface
+        # those messages verbatim through the importer's error type so
+        # the CLI's error path stays uniform.
+        raise SourceImportError(str(e)) from e
+
+    staging = Path(tempfile.mkdtemp(prefix="dikw-import-"))
+    try:
+        output_dir = staging / resolved.stem
+        try:
+            converter.convert(resolved, output_dir)
+        except Exception as e:
+            raise SourceImportError(
+                f"converter {converter.name!r} failed on {resolved.name}: {e}"
+            ) from e
+        if not output_dir.exists() or not any(output_dir.iterdir()):
+            raise SourceImportError(
+                f"converter {converter.name!r} produced no output for "
+                f"{resolved.name}"
+            )
+        yield staging
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 @dataclass(frozen=True)
