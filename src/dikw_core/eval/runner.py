@@ -51,7 +51,6 @@ from ..config import (
     RetrievalConfig,
     SchemaConfig,
     dump_config_yaml,
-    load_config,
 )
 from ..domains.data.backends import parse_any
 from ..domains.data.hashing import hash_file
@@ -1222,8 +1221,7 @@ async def _compute_synth_metrics(
 ) -> SynthEvalReport:
     """Load the synth output from storage + disk, compute all metrics,
     check thresholds, return a populated ``SynthEvalReport``."""
-    cfg = load_config(wiki)
-    storage = build_storage(cfg.storage, root=wiki)
+    _cfg, _wiki_root, storage = await api._with_storage(wiki)
     try:
         wiki_docs = list(
             await storage.list_documents(layer=Layer.WIKI, active=True)
