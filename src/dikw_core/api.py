@@ -4,7 +4,8 @@ which talks HTTP to a running server instead of importing the engine.
 
 Phase 1 surface:
   * ``ingest`` — walk configured sources, parse markdown, chunk, embed, index.
-  * ``query`` — hybrid search + LLM answer with citations.
+  * ``retrieve`` — hybrid search returning ranked chunks + page refs;
+    no LLM call. Answer synthesis is the agent's responsibility.
 
 Phase 2 surface:
   * ``synthesize`` — turn source docs into K-layer wiki pages via the LLM,
@@ -16,8 +17,9 @@ Phase 3 surface:
   * ``distill`` — propose W-layer wisdom items from K-layer pages.
   * ``list_candidates`` / ``approve_wisdom`` / ``reject_wisdom`` —
     drive the review state machine.
-  * ``query`` — unchanged call signature, but now surfaces applicable
-    approved wisdom items alongside excerpts.
+  * ``pick_applicable`` (in ``domains/wisdom/apply``) ranks approved
+    wisdom items against a question; PR-5 will surface it on a new
+    ``GET /v1/wisdom/applicable?q=...`` endpoint.
 
 Phase 0 surface (``init_wiki``, ``status``) stays unchanged.
 """

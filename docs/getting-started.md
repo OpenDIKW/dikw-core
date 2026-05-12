@@ -104,8 +104,10 @@ uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?" 
 
 Returns the top-K chunks (with full text, path, layer, and score) plus
 page-level refs. `--format table` renders the hits as a human-readable
-table; the default `--format json` emits the payload an agent or `jq`
-pipeline can parse directly.
+table. For piping into `jq` or an agent loop, use
+`dikw client retrieve "..." --plain` so the rich "retrieving…" status
+line stays off stdout; that combination emits just the final JSON
+payload.
 
 **dikw-core does not produce the final answer itself.** Answer synthesis
 — composing chunks into prose with a particular style, applying query
@@ -166,9 +168,10 @@ candidate file, promotes the item to approved status, and regenerates
 `wisdom/<kind>s.md`. Rejected items are archived.
 
 Approved wisdom is exposed to agents through `GET /v1/wisdom/applicable?q=...`
-(once PR-5 lands). Until then, list the active items with `dikw client wisdom list`
-and inject them into your own LLM prompt — dikw-core no longer ships an
-in-engine query path that auto-injects them.
+(once PR-5 lands). Until then, list active items by hitting the existing
+`GET /v1/wisdom?status=approved` HTTP endpoint and inject them into your
+own LLM prompt — dikw-core no longer ships an in-engine query path that
+auto-injects them.
 
 ## 7. Check retrieval quality on your corpus
 
