@@ -6,16 +6,28 @@ import math
 
 import pytest
 
+from dikw_core.domains.knowledge.wiki import WikiPage, build_page
+from dikw_core.eval.fake_embedder import FakeEmbeddings
 from dikw_core.eval.metrics import (
+    _classify_lang,
+    _split_claims,
+    atomicity_score,
+    duplicate_ratio_max,
+    expected_coverage,
+    fact_grounding_ratio,
     hit_at_k,
+    language_fidelity,
     mean_hit_at_k,
     mean_ndcg_at_k,
     mean_recall_at_k,
     mean_reciprocal_rank,
     ndcg_at_k,
+    page_density,
     recall_at_k,
     reciprocal_rank,
+    wikilink_resolved_ratio,
 )
+from dikw_core.schemas import ChunkRecord
 
 
 def test_hit_at_k_matches_any_expected() -> None:
@@ -158,3 +170,381 @@ def test_mean_recall_averages_per_query() -> None:
 def test_mean_aggregates_empty_inputs_are_zero() -> None:
     assert mean_ndcg_at_k([], 10) == 0.0
     assert mean_recall_at_k([], 10) == 0.0
+
+
+# ============================================================================
+# K-layer synth quality metrics
+# ============================================================================
+
+
+def _page(
+    title: str,
+    body: str,
+    tags: list[str] | None = None,
+    type_: str = "concept",
+) -> WikiPage:
+    return build_page(
+        title=title,
+        body=body,
+        type_=type_,
+        tags=tags or [],
+        sources=[],
+        path=None,
+        extras={},
+    )
+
+
+def _chunk(doc_id: str, seq: int, text: str) -> ChunkRecord:
+    return ChunkRecord(
+        chunk_id=None,
+        doc_id=doc_id,
+        seq=seq,
+        start=0,
+        end=len(text),
+        text=text,
+    )
+
+
+# ---- expected_coverage ------------------------------------------------------
+
+
+def test_expected_coverage_all_exact_match() -> None:
+    cov = expected_coverage(
+        page_titles=["Alpha", "Beta", "Gamma"],
+        expected_titles=["Alpha", "Beta", "Gamma"],
+    )
+    assert cov == 1.0
+
+
+def test_expected_coverage_fuzzy_plural_match() -> None:
+    cov = expected_coverage(
+        page_titles=["Neural Network"],
+        expected_titles=["Neural Networks"],
+    )
+    assert cov == 1.0
+
+
+def test_expected_coverage_fuzzy_punctuation_and_case() -> None:
+    cov = expected_coverage(
+        page_titles=["elon musk"],
+        expected_titles=["Elon Musk."],
+    )
+    assert cov == 1.0
+
+
+def test_expected_coverage_partial() -> None:
+    cov = expected_coverage(
+        page_titles=["Alpha", "Beta"],
+        expected_titles=["Alpha", "Beta", "Gamma", "Delta"],
+    )
+    assert cov == 0.5
+
+
+def test_expected_coverage_empty_expected_returns_one() -> None:
+    # Vacuously satisfied — runner can skip; metric defaults to 1.0 so the
+    # threshold never triggers when expected.yaml is absent.
+    assert expected_coverage(page_titles=["A"], expected_titles=[]) == 1.0
+
+
+def test_expected_coverage_empty_pages_zero() -> None:
+    assert expected_coverage(page_titles=[], expected_titles=["A"]) == 0.0
+
+
+# ---- wikilink_resolved_ratio ------------------------------------------------
+
+
+def test_wikilink_resolved_ratio_no_links_returns_one() -> None:
+    assert wikilink_resolved_ratio(total=0, unresolved=0) == 1.0
+
+
+def test_wikilink_resolved_ratio_all_resolved() -> None:
+    assert wikilink_resolved_ratio(total=10, unresolved=0) == 1.0
+
+
+def test_wikilink_resolved_ratio_partial() -> None:
+    assert wikilink_resolved_ratio(total=10, unresolved=2) == 0.8
+
+
+def test_wikilink_resolved_ratio_all_unresolved() -> None:
+    assert wikilink_resolved_ratio(total=10, unresolved=10) == 0.0
+
+
+# ---- atomicity_score --------------------------------------------------------
+
+
+def test_atomicity_score_all_atomic() -> None:
+    pages = [
+        _page("A", "# A\n\nshort\n"),
+        _page("B", "# B\n\nshort\n"),
+    ]
+    assert atomicity_score(pages) == 1.0
+
+
+def test_atomicity_score_half_non_atomic() -> None:
+    pages = [
+        _page("A", "# A\n\nshort\n"),
+        _page("B", "# B\n\n" + ("filler " * 1000)),  # body > 2500 chars
+    ]
+    assert atomicity_score(pages) == 0.5
+
+
+def test_atomicity_score_empty_returns_one() -> None:
+    # 0/0: no failures observed, define as perfect score
+    assert atomicity_score([]) == 1.0
+
+
+# ---- language_fidelity ------------------------------------------------------
+
+
+def test_language_fidelity_all_english_match() -> None:
+    pages_with_sources = [
+        (_page("A", "# A\n\nPlain English page body content.\n"),
+         "Plain English source body content."),
+    ]
+    assert language_fidelity(pages_with_sources) == 1.0
+
+
+def test_language_fidelity_all_cjk_match() -> None:
+    pages_with_sources = [
+        (_page("中文", "# 中文\n\n这是一段中文内容。\n"),
+         "这是一段中文源文档。"),
+    ]
+    assert language_fidelity(pages_with_sources) == 1.0
+
+
+def test_language_fidelity_mismatch_cjk_source_english_page() -> None:
+    pages_with_sources = [
+        (_page("A", "# A\n\nThis page is in English even though source was CJK.\n"),
+         "中文源文档,内容应保留中文。"),
+    ]
+    assert language_fidelity(pages_with_sources) == 0.0
+
+
+def test_language_fidelity_empty_returns_one() -> None:
+    assert language_fidelity([]) == 1.0
+
+
+# ---- page_density -----------------------------------------------------------
+
+
+def test_page_density_typical() -> None:
+    assert page_density(n_pages=5, n_chunks=20) == 0.25
+
+
+def test_page_density_zero_chunks_returns_zero() -> None:
+    # div-by-zero guard
+    assert page_density(n_pages=0, n_chunks=0) == 0.0
+    assert page_density(n_pages=3, n_chunks=0) == 0.0
+
+
+# ---- fact_grounding_ratio (async, embedding-driven) -------------------------
+
+
+@pytest.mark.asyncio
+async def test_fact_grounding_ratio_verbatim_match_is_one() -> None:
+    """Page claim sentence is verbatim equal to a chunk → cosine = 1.0 → grounded."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nThe sky is blue today.\n")
+    chunks_by_source = {
+        "wiki/sources/a.md": [
+            _chunk("wiki/sources/a.md", 0, "The sky is blue today."),
+        ],
+    }
+    pages_with_sources = [(page, "wiki/sources/a.md")]
+    score = await fact_grounding_ratio(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+        tau=0.5,
+    )
+    assert score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_fact_grounding_ratio_disjoint_vocab_is_zero() -> None:
+    """Page claim has no overlapping tokens with any chunk → cosine 0 → ungrounded."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nDeep ocean trenches are mysterious.\n")
+    chunks_by_source = {
+        "wiki/sources/a.md": [
+            _chunk("wiki/sources/a.md", 0, "Pizza toppings vary widely."),
+        ],
+    }
+    pages_with_sources = [(page, "wiki/sources/a.md")]
+    score = await fact_grounding_ratio(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+        tau=0.5,
+    )
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_fact_grounding_ratio_empty_pages_returns_one() -> None:
+    score = await fact_grounding_ratio(
+        pages_with_sources=[],
+        chunks_by_source={},
+        embedder=FakeEmbeddings(),
+        embedding_model="fake",
+        tau=0.5,
+    )
+    assert score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_fact_grounding_ratio_skips_page_with_no_claims() -> None:
+    """Page body contains only heading + wikilinks → no claim sentences →
+    contributes neutrally (treated as 1.0, not 0.0)."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\n[[Other]]\n")
+    chunks_by_source = {
+        "wiki/sources/a.md": [
+            _chunk("wiki/sources/a.md", 0, "Unrelated text."),
+        ],
+    }
+    pages_with_sources = [(page, "wiki/sources/a.md")]
+    score = await fact_grounding_ratio(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+        tau=0.5,
+    )
+    assert score == 1.0
+
+
+# ---- duplicate_ratio_max (async, embedding-driven) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ratio_max_no_duplicates() -> None:
+    embedder = FakeEmbeddings()
+    pages = [
+        _page("Alpha", "# Alpha\n\nDistinct topic about alpha.\n"),
+        _page("Beta", "# Beta\n\nDifferent vocabulary on beta.\n"),
+        _page("Gamma", "# Gamma\n\nUnrelated topic gamma.\n"),
+    ]
+    ratio = await duplicate_ratio_max(
+        pages=pages, embedder=embedder, embedding_model="fake", tau=0.99,
+    )
+    assert ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ratio_max_identical_body_flagged() -> None:
+    embedder = FakeEmbeddings()
+    # Two pages with byte-identical body content (titles in metadata differ
+    # but never reach the embedder — duplicate detection looks at body).
+    body = "# Shared Heading\n\nSame body verbatim about networks.\n"
+    pages = [
+        _page("Page Alpha", body),
+        _page("Page Beta", body),
+    ]
+    # 1 pair, cosine = 1.0 ≥ tau → ratio = 1/1 = 1.0
+    ratio = await duplicate_ratio_max(
+        pages=pages, embedder=embedder, embedding_model="fake", tau=0.85,
+    )
+    assert ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ratio_max_one_page_no_pairs() -> None:
+    embedder = FakeEmbeddings()
+    pages = [_page("A", "# A\n\nLonely.\n")]
+    ratio = await duplicate_ratio_max(
+        pages=pages, embedder=embedder, embedding_model="fake", tau=0.85,
+    )
+    assert ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ratio_max_empty_pages() -> None:
+    embedder = FakeEmbeddings()
+    ratio = await duplicate_ratio_max(
+        pages=[], embedder=embedder, embedding_model="fake", tau=0.85,
+    )
+    assert ratio == 0.0
+
+
+# ---- _split_claims ----------------------------------------------------------
+
+
+def test_split_claims_basic_sentences() -> None:
+    body = "# Title\n\nFirst claim. Second claim.\n\nThird claim.\n"
+    claims = _split_claims(body)
+    assert len(claims) == 3
+    assert "First claim" in claims[0]
+    assert "Second claim" in claims[1]
+    assert "Third claim" in claims[2]
+
+
+def test_split_claims_strips_wikilinks() -> None:
+    body = "# T\n\nThis mentions [[Alice]] and also [[Bob|Robert]] briefly.\n"
+    claims = _split_claims(body)
+    text = " ".join(claims)
+    # Wikilink markup gone; target text may stay but [[ ]] should not
+    assert "[[" not in text
+    assert "]]" not in text
+
+
+def test_split_claims_strips_headings() -> None:
+    body = "# Big Title Heading\n\n## Subhead Heading\n\nA real claim sentence here.\n"
+    claims = _split_claims(body)
+    text = " ".join(claims)
+    assert "Big Title Heading" not in text
+    assert "Subhead Heading" not in text
+    assert "A real claim sentence here" in text
+
+
+def test_split_claims_strips_fenced_code() -> None:
+    body = (
+        "# T\n\nA prose claim sentence.\n\n"
+        "```python\nignored_code_line()\n```\n\n"
+        "Another claim sentence.\n"
+    )
+    claims = _split_claims(body)
+    text = " ".join(claims)
+    assert "ignored_code_line" not in text
+    assert "prose claim sentence" in text
+
+
+def test_split_claims_chinese_period() -> None:
+    body = "# T\n\n这是第一个声明。这是第二个声明。\n"
+    claims = _split_claims(body)
+    assert len(claims) == 2
+
+
+def test_split_claims_empty_body() -> None:
+    assert _split_claims("") == []
+
+
+def test_split_claims_only_heading() -> None:
+    assert _split_claims("# Just a title\n") == []
+
+
+# ---- _classify_lang ---------------------------------------------------------
+
+
+def test_classify_lang_pure_english() -> None:
+    assert _classify_lang("This is plain English without any non-ASCII.") == "en"
+
+
+def test_classify_lang_pure_cjk() -> None:
+    assert _classify_lang("这是一段全部由中文字符组成的文本内容") == "cjk"
+
+
+def test_classify_lang_mostly_cjk() -> None:
+    text = "这是一段以中文为主的内容,只是夹杂了 a few English words 用于测试。"
+    assert _classify_lang(text) == "cjk"
+
+
+def test_classify_lang_mostly_english() -> None:
+    text = "Mostly English content with just 中文 a couple of characters."
+    assert _classify_lang(text) == "en"
+
+
+def test_classify_lang_empty_is_other() -> None:
+    assert _classify_lang("") == "other"

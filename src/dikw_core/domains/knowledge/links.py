@@ -117,6 +117,14 @@ def _normalize_for_match(s: str) -> str:
     return _stem_plural(base)
 
 
+# Public aliases — used by ``eval.metrics`` so the expected-coverage check
+# applies the exact same normalize rules as wikilink resolution. Underscore
+# names stay as the canonical implementation; these re-exports document
+# that the helpers ARE intentionally available to other in-tree modules.
+normalize_base = _normalize_base
+normalize_for_match = _normalize_for_match
+
+
 def build_fuzzy_index(title_to_path: dict[str, str]) -> dict[str, list[str]]:
     """Precompute the normalize-keyed lookup ``resolve_links`` needs.
 
