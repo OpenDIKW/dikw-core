@@ -13,6 +13,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -37,9 +38,79 @@ __all__ = [
     "make_codex_response",
     "make_jwt",
     "make_provider_cfg",
+    "png_with_dims",
     "register_text_version",
     "register_text_version_or_skip",
+    "seed_asset",
 ]
+
+
+def png_with_dims(width: int, height: int) -> bytes:
+    """Synthetic PNG header with declared ``width``/``height``.
+
+    Sufficient for ``materialize_asset``'s dim probe and for read_asset
+    round-trips — not a renderable image. Centralised here so the asset
+    test files don't each redefine the same byte-pack helper.
+    """
+    import struct as _struct
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _struct.pack(">I", 13)
+        + b"IHDR"
+        + _struct.pack(">II", width, height)
+        + bytes([8, 6, 0, 0, 0])
+        + b"\x00\x00\x00\x00"
+    )
+
+
+async def seed_asset(
+    wiki_root: Path,
+    *,
+    asset_id: str,
+    stored_path: str,
+    payload: bytes,
+    mime: str = "image/png",
+    drop_file: bool = True,
+) -> None:
+    """Upsert an ``AssetRecord`` against the wiki's storage + optionally
+    drop ``payload`` to ``<wiki_root>/<stored_path>``.
+
+    Bypasses the markdown parser so a test can exercise the asset routes
+    without a full ingest. The four new asset test files all share this
+    seed shape; centralising it keeps them in lock-step.
+    """
+    import time as _time
+
+    from dikw_core.config import load_config as _load_config
+    from dikw_core.schemas import AssetKind as _AssetKind
+    from dikw_core.schemas import AssetRecord as _AssetRecord
+    from dikw_core.storage import build_storage as _build_storage
+
+    cfg = _load_config(wiki_root / "dikw.yml")
+    storage = _build_storage(
+        cfg.storage, root=wiki_root, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await storage.upsert_asset(
+            _AssetRecord(
+                asset_id=asset_id,
+                kind=_AssetKind.IMAGE,
+                mime=mime,
+                stored_path=stored_path,
+                original_paths=["images/x.png"],
+                bytes=len(payload),
+                created_ts=_time.time(),
+            )
+        )
+    finally:
+        await storage.close()
+    if drop_file:
+        abs_path = wiki_root / stored_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_bytes(payload)
 
 
 # --------------------------------------------------------------------------- #

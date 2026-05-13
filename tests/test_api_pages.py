@@ -17,7 +17,7 @@ import pytest
 from dikw_core import api
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki, png_with_dims
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -351,4 +351,87 @@ async def test_read_page_relative_to_guard_traps_corrupt_doc(
     cause = excinfo.value.__cause__
     assert isinstance(cause, ValueError), (
         f"expected ValueError from relative_to, got {type(cause).__name__}"
+    )
+
+
+# ---- assets attached to read_page ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_page_includes_assets(tmp_path: Path) -> None:
+    """A page whose markdown references local images must surface those
+    assets in :class:`PageReadResult.assets` after ingest, each entry
+    carrying enough info for a remote client to fetch the bytes via
+    ``GET /v1/assets/{asset_id}``.
+    """
+    init_test_wiki(tmp_path)
+    src_dir = tmp_path / "sources" / "demo"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "arch.png").write_bytes(png_with_dims(640, 480))
+    (src_dir / "tiny.png").write_bytes(png_with_dims(10, 10))
+    rel = "sources/demo/with-images.md"
+    (tmp_path / rel).write_text(
+        "# Architecture\n\n"
+        "First the wide diagram: ![arch](./arch.png)\n\n"
+        "Then a small one: ![tiny](./tiny.png)\n\n"
+        "Some more body text so the chunker has fodder.\n",
+        encoding="utf-8",
+    )
+    await api.ingest(tmp_path, embedder=FakeEmbeddings())
+
+    page = await api.read_page(tmp_path, rel)
+    assert len(page.assets) == 2, (
+        f"expected both images to surface on the page, got {page.assets!r}"
+    )
+    # Every record carries the fields a remote client needs to render.
+    for asset in page.assets:
+        assert asset.asset_id and len(asset.asset_id) == 64, "sha256 hex id"
+        assert asset.mime == "image/png"
+        assert asset.bytes > 0
+        assert asset.url == f"/v1/assets/{asset.asset_id}", (
+            "url must be a stable server-relative path so clients zero-pase"
+        )
+        # ``original_paths`` is what the user typed in markdown — needed
+        # so the client can map the path back to the asset for display.
+        assert asset.original_paths, "original_paths must round-trip"
+    # The two assets must be distinct (different content → different ids).
+    ids = {a.asset_id for a in page.assets}
+    assert len(ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_read_page_no_assets_when_no_image_refs(tmp_path: Path) -> None:
+    """A plain-text page (no image refs) returns an empty assets list,
+    not ``None`` — keeps the wire shape uniform so clients don't need a
+    null check."""
+    root, rel = _bootstrap_wiki_with_fixture(tmp_path)
+    await api.ingest(root, embedder=FakeEmbeddings())
+    page = await api.read_page(root, rel)
+    # Fixture markdowns under tests/fixtures/notes are text-only.
+    assert page.assets == []
+
+
+@pytest.mark.asyncio
+async def test_read_page_dedups_assets_referenced_twice(tmp_path: Path) -> None:
+    """If the same image is referenced from multiple chunks (or twice in
+    one chunk), the page-level ``assets`` list must dedupe by
+    ``asset_id`` — content-addressed assets have one canonical entry."""
+    init_test_wiki(tmp_path)
+    src_dir = tmp_path / "sources" / "demo"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "same.png").write_bytes(png_with_dims(100, 100))
+    rel = "sources/demo/repeated.md"
+    body = (
+        "# Repeats\n\n"
+        "![same](./same.png)\n\n"
+        "Some paragraph between the two refs to force separate chunks.\n\n"
+        "## Second section\n\n"
+        "![same again](./same.png)\n"
+    )
+    (tmp_path / rel).write_text(body, encoding="utf-8")
+    await api.ingest(tmp_path, embedder=FakeEmbeddings())
+
+    page = await api.read_page(tmp_path, rel)
+    assert len(page.assets) == 1, (
+        f"expected dedup by asset_id, got {[a.asset_id for a in page.assets]!r}"
     )

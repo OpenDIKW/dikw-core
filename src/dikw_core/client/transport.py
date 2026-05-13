@@ -125,6 +125,25 @@ class Transport:
             raise _network_error(e) from e
         return _parse_json_response(resp)
 
+    async def get_bytes(
+        self, path: str, *, params: Mapping[str, Any] | None = None
+    ) -> bytes:
+        """Fetch a binary response body — buffers fully in memory.
+
+        Binary counterpart to :meth:`get_json`. Server error envelopes
+        flow through :class:`ClientError` exactly like the JSON path,
+        so callers branch on ``code``.
+        """
+        try:
+            resp = await self._client.get(
+                path, params=params, headers=self._headers()
+            )
+        except httpx.RequestError as e:
+            raise _network_error(e) from e
+        if resp.status_code >= 400:
+            _raise_for_error(resp)
+        return resp.content
+
     async def post_json(
         self,
         path: str,

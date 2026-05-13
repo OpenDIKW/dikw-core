@@ -270,3 +270,44 @@ live on `SynthConfig` so a base-level `dikw.yml` can tune them per
 deployment — a wiki targeting tiny local models can drop the byte
 threshold; a wiki targeting Claude Opus's full context window can
 raise it.
+
+## Asset exposure to remote clients
+
+Markdown source pages routinely embed images (`![alt](./figs/x.png)`
+or Obsidian `![[assets/foo.jpg]]`). Ingest already materialises each
+image into `<base>/assets/<h2>/<h8>-<stem>.<ext>` (content-addressed by
+SHA-256) and writes both an `AssetRecord` and the chunk → asset bridge
+rows (`chunk_asset_refs`). The server makes those bytes reachable from
+a remote process via two pieces, designed to be the **minimum surface
+that keeps the wiki tree itself unchanged**:
+
+1. **`PageReadResult.assets[]` on `GET /v1/base/pages/{path}`** —
+   page-level asset list, deduped by `asset_id`, ordered by first
+   appearance (chunk seq → ref ord). Each entry carries
+   `original_paths` (what the user typed in markdown), `mime`, `bytes`,
+   `media_meta`, and `url` (always `/v1/assets/{asset_id}` — fixed
+   shape so the client zero-parses). The page `body` itself is
+   returned **verbatim** — no in-place URL rewriting — because the
+   `wiki/` tree is the product (Obsidian-compatible, user-owned),
+   and rewriting would diverge from the on-disk file.
+
+2. **`GET /v1/assets/{asset_id}`** — streams the raw bytes with the
+   stored `mime` as `Content-Type`. Because content is addressed by
+   SHA-256, the response is naturally immutable and the route emits
+   `ETag: "<asset_id>"` + `Cache-Control: public, max-age=31536000,
+   immutable` so well-behaved clients (browsers, CDN fronts, future
+   client cache) can revalidate with a single `If-None-Match`.
+
+Failure surface is uniform 404: unknown id, malformed id (anything
+that isn't 64 lower-case hex), file vanished, or a row whose
+`stored_path` would resolve outside `<base>/<assets.dir>` all produce
+the same `{"error": {"code": "asset_not_found", ...}}` envelope. The
+last case is a defence-in-depth guard against DB corruption /
+migration drift — without it a tampered row could point the route at
+an arbitrary file on disk. Distinguishing the four causes on the wire
+would let an attacker probe which ids exist, so we deliberately don't.
+
+`Storage` Protocol is unchanged — the engine reuses `get_asset`,
+`get_assets`, `chunk_asset_refs_for_chunks`, and `list_chunks` that
+the ingest + retrieve channels already depend on. No new adapter
+behaviour, no new contract-suite cases.

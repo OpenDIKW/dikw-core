@@ -206,6 +206,31 @@ class PageAnchor(BaseModel):
     end: int
 
 
+# Wire contract for the asset bytes route. Lives here so the engine
+# (which formats ``PageAsset.url``) and the server (which serves the
+# route) share one source of truth without crossing the layering
+# boundary in either direction.
+ASSET_URL_TEMPLATE = "/v1/assets/{asset_id}"
+
+
+class PageAsset(BaseModel):
+    """One image (or other media asset) referenced by a page body.
+
+    ``url`` is the server-relative endpoint that streams the bytes —
+    always ``/v1/assets/{asset_id}`` so clients zero-parse the route.
+    ``original_paths`` is what the user typed in markdown, so a client
+    can map a literal body reference back to this entry.
+    """
+
+    asset_id: str
+    kind: AssetKind
+    mime: str
+    bytes: int
+    original_paths: list[str] = Field(default_factory=list)
+    media_meta: MediaMeta | None = None
+    url: str
+
+
 class PageReadResult(BaseModel):
     """Final payload for ``GET /v1/base/pages/{path}``.
 
@@ -213,6 +238,9 @@ class PageReadResult(BaseModel):
     chunk boundaries the engine produced at last ingest, in ``seq`` order.
     A page that has never been chunked (e.g. a just-imported source not
     yet ingested) returns an empty ``anchors`` list.
+
+    ``assets`` is the deduped union of every asset referenced by any
+    chunk of the page (by ``asset_id``). Empty for text-only pages.
     """
 
     doc_id: str
@@ -221,6 +249,7 @@ class PageReadResult(BaseModel):
     title: str | None = None
     body: str
     anchors: list[PageAnchor] = Field(default_factory=list)
+    assets: list[PageAsset] = Field(default_factory=list)
 
 
 class LinkRecord(BaseModel):

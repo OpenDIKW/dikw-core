@@ -117,6 +117,39 @@ rewrite or conversation context — belongs in the agent layer (Claude
 Code, ChatGPT, your own script). Pipe the retrieve JSON into your LLM of
 choice and let it draft the answer with whatever prompt fits your task.
 
+### Working with images
+
+Markdown sources that embed images — either `![alt](path)` or Obsidian
+`![[assets/foo.jpg]]` — flow through ingest into a content-addressed
+asset store under `<base>/assets/`. Once ingested, two endpoints make
+those bytes reachable from a remote client:
+
+```bash
+# 1) Discover which assets a source page references.
+curl -sS "$DIKW_SERVER_URL/v1/base/pages/sources/some/doc.md" | jq '.assets'
+# → [
+#     {"asset_id": "a649…", "mime": "image/jpeg",
+#      "url": "/v1/assets/a649…",
+#      "original_paths": ["assets/images/a649…jpg"], ...}
+#   ]
+
+# 2) Fetch the actual bytes by id.
+curl -sS "$DIKW_SERVER_URL/v1/assets/a649…" -o /tmp/diagram.jpg
+
+# Or with the CLI client (writes to --output, prints metadata JSON to stdout):
+uv run dikw client assets get a649… --output /tmp/diagram.jpg
+```
+
+The page `body` is returned **verbatim** — `![[…]]` references are
+not rewritten — so the same response round-trips an editor-owned
+Obsidian vault without divergence. Clients render images by mapping
+each `assets[].original_paths` entry back to `assets[].url`.
+
+Asset responses are immutable (content-addressed by SHA-256), so the
+route emits a strong `ETag` + `Cache-Control: immutable, max-age=1y`;
+a browser or HTTP cache fronting the server can revalidate with a
+single `If-None-Match`.
+
 ## 5. Synthesise a Knowledge layer
 
 ```bash

@@ -1361,6 +1361,65 @@ def pages_links_cmd(
     _run(_go())
 
 
+# ---- assets subcommands -----------------------------------------------
+
+assets_app = typer.Typer(
+    help="Download media assets (images) materialized into the server's base.",
+    no_args_is_help=True,
+)
+app.add_typer(assets_app, name="assets")
+
+
+@assets_app.command(
+    "get",
+    epilog=(
+        "Examples:\n\n"
+        "  dikw client assets get a649f5dd...409a --output diagram.jpg\n\n"
+        "  dikw client assets get $ID --output ./figures/$ID.png"
+    ),
+)
+def assets_get_cmd(
+    asset_id: Annotated[
+        str,
+        typer.Argument(help="sha256-hex asset id (64 lower-case hex chars)."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Local file to write the asset bytes into. Required.",
+        ),
+    ],
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Download an asset's bytes by id and write them to a local file.
+
+    Binary content always lands in ``--output`` (never stdout) so the
+    command stays agent-friendly: stdout carries a JSON envelope with
+    ``asset_id`` / ``path`` / ``bytes`` that downstream scripts parse.
+    """
+
+    async def _go() -> None:
+        async with Transport.from_config(_resolve(server, token)) as t:
+            payload = await t.get_bytes(f"/v1/assets/{asset_id}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(payload)
+        console.print_json(
+            json.dumps(
+                {
+                    "asset_id": asset_id,
+                    "path": str(output),
+                    "bytes": len(payload),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    _run(_go())
+
+
 # ---- tasks subcommands ------------------------------------------------
 
 tasks_app = typer.Typer(

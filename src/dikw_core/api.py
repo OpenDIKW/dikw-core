@@ -119,6 +119,7 @@ from .providers import (
     build_multimodal_embedder,
 )
 from .schemas import (
+    ASSET_URL_TEMPLATE,
     AssetRecord,
     ChunkAssetRef,
     ChunkRecord,
@@ -132,6 +133,7 @@ from .schemas import (
     MultimodalInput,
     OutgoingLink,
     PageAnchor,
+    PageAsset,
     PageLinksResult,
     PageReadResult,
     PageRef,
@@ -149,6 +151,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AppliedWisdomRef",
+    "AssetNotFound",
     "CheckReport",
     "DistillReport",
     "EmbeddingInfo",
@@ -184,6 +187,7 @@ __all__ = [
     "list_links",
     "list_pages",
     "load_wiki",
+    "read_asset",
     "read_page",
     "reject_wisdom",
     "retrieve",
@@ -197,6 +201,14 @@ class PageNotFound(LookupError):
     document in the base. Path-escape attempts (``..``, files outside the
     base root) and unindexed files (``dikw.yml``) all surface here so the
     server route can map a single exception type to a uniform 404.
+    """
+
+
+class AssetNotFound(LookupError):
+    """Raised by :func:`read_asset` for unknown id, vanished file, or
+    ``stored_path`` escape (DB tampering / migration drift). Mirrors
+    :class:`PageNotFound`: a single exception keeps the route's 404
+    uniform so existing ids can't be probed.
     """
 
 WIKI_INIT_FILES: dict[str, str] = {
@@ -568,6 +580,61 @@ def resolve_wiki_root(path: str | Path | None) -> Path:
 def load_wiki(path: str | Path | None = None) -> tuple[DikwConfig, Path]:
     root = resolve_wiki_root(path)
     return load_config(root / CONFIG_FILENAME), root
+
+
+def _assert_within(base: Path, candidate: Path) -> Path:
+    """Resolve ``candidate`` and assert it stays under ``base``.
+
+    Returns the resolved absolute path on success. Raises :class:`ValueError`
+    (via :meth:`Path.relative_to`) when ``candidate`` escapes — callers
+    translate to whatever domain exception fits (``PageNotFound`` /
+    ``AssetNotFound``).
+    """
+    base_resolved = base.resolve()
+    candidate_resolved = candidate.resolve()
+    candidate_resolved.relative_to(base_resolved)
+    return candidate_resolved
+
+
+async def _collect_page_assets(
+    storage: Storage, chunks: list[ChunkRecord]
+) -> list[PageAsset]:
+    """Walk ``chunks → chunk_asset_refs → assets`` for one page.
+
+    Deduplicates by ``asset_id`` in first-appearance order (chunk seq,
+    then ref ord) so a page that references the same image twice
+    surfaces one entry. Asset rows missing between the ref scan and the
+    batch fetch (e.g. concurrent delete) are dropped silently.
+    """
+    chunk_ids = [c.chunk_id for c in chunks if c.chunk_id is not None]
+    if not chunk_ids:
+        return []
+    refs_by_chunk = await storage.chunk_asset_refs_for_chunks(chunk_ids)
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        if chunk.chunk_id is None:
+            continue
+        for ref in refs_by_chunk.get(chunk.chunk_id, ()):
+            if ref.asset_id in seen:
+                continue
+            seen.add(ref.asset_id)
+            ordered_ids.append(ref.asset_id)
+    if not ordered_ids:
+        return []
+    records_by_id = {r.asset_id: r for r in await storage.get_assets(ordered_ids)}
+    return [
+        PageAsset(
+            asset_id=r.asset_id,
+            kind=r.kind,
+            mime=r.mime,
+            bytes=r.bytes,
+            original_paths=list(r.original_paths),
+            media_meta=r.media_meta,
+            url=ASSET_URL_TEMPLATE.format(asset_id=r.asset_id),
+        )
+        for r in (records_by_id[aid] for aid in ordered_ids if aid in records_by_id)
+    ]
 
 
 async def _with_storage(path: str | Path | None) -> tuple[DikwConfig, Path, Storage]:
@@ -1693,13 +1760,12 @@ async def read_page(
         if match is None:
             raise PageNotFound(path)
         chunks = await storage.list_chunks(match.doc_id)
+        page_assets = await _collect_page_assets(storage, chunks)
     finally:
         await storage.close()
 
-    base_resolved = base_root.resolve()
-    abs_path = (base_resolved / match.path).resolve()
     try:
-        abs_path.relative_to(base_resolved)
+        abs_path = _assert_within(base_root, base_root / match.path)
     except ValueError as e:
         # Defence in depth: a doc registered with a path that escapes
         # the base root is corruption — refuse to read.
@@ -1746,7 +1812,39 @@ async def read_page(
         title=match.title,
         body=body,
         anchors=anchors,
+        assets=page_assets,
     )
+
+
+async def read_asset(
+    root: str | Path | None, asset_id: str
+) -> tuple[Path, AssetRecord]:
+    """Resolve an ``asset_id`` to its on-disk path + :class:`AssetRecord`.
+
+    Raises :class:`AssetNotFound` on unknown id, ``stored_path`` that
+    escapes the configured assets dir (DB tampering / migration drift),
+    or a vanished file. The single exception keeps the route's 404
+    uniform so existing ids can't be probed.
+    """
+    cfg, base_root, storage = await _with_storage(root)
+    try:
+        record = await storage.get_asset(asset_id)
+    finally:
+        await storage.close()
+    if record is None:
+        raise AssetNotFound(asset_id)
+
+    try:
+        abs_path = _assert_within(
+            base_root / cfg.assets.dir, base_root / record.stored_path
+        )
+    except ValueError as e:
+        raise AssetNotFound(asset_id) from e
+
+    if not abs_path.is_file():
+        raise AssetNotFound(asset_id)
+
+    return abs_path, record
 
 
 async def list_links(

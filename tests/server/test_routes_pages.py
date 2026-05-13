@@ -13,6 +13,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from dikw_core import api as api_module
+
+from ..fakes import FakeEmbeddings, png_with_dims
+
 
 @pytest.mark.asyncio
 async def test_list_pages_default_active(
@@ -101,3 +105,39 @@ async def test_get_page_path_escape_404(
     # than a 404 from our handler. Either is fine; what we're locking
     # in is "no 200 leaks anything outside the index".
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_page_response_includes_assets(
+    server_client: httpx.AsyncClient, wiki_root: Path
+) -> None:
+    """End-to-end: a markdown page with an image ref surfaces the asset
+    under ``response.assets[]`` with a directly-usable ``url`` — remote
+    callers can fetch image bytes without any server-side rewriting of
+    the page body."""
+    src_dir = wiki_root / "sources" / "demo"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "diagram.png").write_bytes(png_with_dims(320, 240))
+    rel = "sources/demo/page-with-image.md"
+    (wiki_root / rel).write_text(
+        "# With image\n\n"
+        "Look at this diagram: ![diagram](./diagram.png)\n\n"
+        "Body fodder so the chunker has material to work with.\n",
+        encoding="utf-8",
+    )
+    await api_module.ingest(wiki_root, embedder=FakeEmbeddings())
+
+    resp = await server_client.get(f"/v1/base/pages/{rel}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assets = body["assets"]
+    assert len(assets) == 1, f"expected one image asset, got {assets!r}"
+    a = assets[0]
+    # The route the client must hit to actually fetch the bytes.
+    assert a["url"] == f"/v1/assets/{a['asset_id']}"
+    assert a["mime"] == "image/png"
+    assert a["bytes"] > 0
+    # And that URL must actually work on the same server.
+    bytes_resp = await server_client.get(a["url"])
+    assert bytes_resp.status_code == 200
+    assert bytes_resp.content == (src_dir / "diagram.png").read_bytes()

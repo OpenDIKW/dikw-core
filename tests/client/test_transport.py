@@ -8,10 +8,15 @@ so that schema drift on either side fails loudly.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import httpx
 import pytest
 
 from dikw_core.client.transport import ClientError, Transport
+
+if TYPE_CHECKING:
+    from dikw_core.server.runtime import ServerRuntime
 
 
 @pytest.mark.asyncio
@@ -100,6 +105,41 @@ async def test_stream_4xx_surfaces_as_client_error_before_iteration(
                 pytest.fail("stream should have raised before yielding")
     assert excinfo.value.status == 400
     assert excinfo.value.code == "bad_request"
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_returns_raw_body(
+    client_transport: Transport,
+    asgi_client: tuple[httpx.AsyncClient, ServerRuntime],
+) -> None:
+    """End-to-end binary fetch: seed an asset on the runtime, fetch via
+    transport, assert bytes round-trip."""
+    import hashlib
+
+    from tests.fakes import png_with_dims, seed_asset
+
+    _, rt = asgi_client
+    payload = png_with_dims(1, 1)
+    asset_id = hashlib.sha256(payload).hexdigest()
+    rel = f"assets/{asset_id[:2]}/{asset_id[:8]}-x.png"
+    await seed_asset(
+        rt.root, asset_id=asset_id, stored_path=rel, payload=payload
+    )
+
+    got = await client_transport.get_bytes(f"/v1/assets/{asset_id}")
+    assert got == payload
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_404_raises_client_error(
+    client_transport: Transport,
+) -> None:
+    """A 404 from the asset route must surface as ``ClientError`` with
+    ``code='asset_not_found'`` — same envelope as ``get_json``."""
+    with pytest.raises(ClientError) as excinfo:
+        await client_transport.get_bytes(f"/v1/assets/{'0' * 64}")
+    assert excinfo.value.status == 404
+    assert excinfo.value.code == "asset_not_found"
 
 
 @pytest.mark.asyncio
