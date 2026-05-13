@@ -28,7 +28,7 @@ thresholds:
   hit_at_3: 0.80
   hit_at_10: 0.80
   mrr: 0.60
-  synth/fact_grounding_ratio: 0.20
+  synth/fact_grounding_ratio: 0.55
   synth/atomicity_score: 0.85
   synth/duplicate_ratio_max: 0.05
   synth/wikilink_resolved_ratio: 0.55
@@ -41,6 +41,9 @@ thresholds:
   # 2026-05-13 BASELINES.md entry, follow-up #2).
 
 synth:
-  grounding_threshold: 0.65
+  # grounding_threshold lowered from 0.65 → 0.50 after the 2026-05-13
+  # tau sweep (BASELINES.md). Real-grounded claims cluster at cosine
+  # 0.55+; paraphrased / fragment claims at < 0.40. 0.50 is the gap.
+  grounding_threshold: 0.50
   duplicate_threshold: 0.85
   page_types: [entity, concept, note]

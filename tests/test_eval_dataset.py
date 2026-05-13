@@ -527,7 +527,10 @@ def test_load_dataset_synth_section_defaults(tmp_path: Path) -> None:
     retrieval-only datasets)."""
     ds = _write_valid_dataset(tmp_path)
     spec = load_dataset(ds)
-    assert spec.synth.grounding_threshold == 0.65
+    # Default lowered 0.65 → 0.50 after the 2026-05-13 tau sweep
+    # (BASELINES.md); 0.65 was tighter than the embedder's similarity
+    # scale supports for natural-language claims.
+    assert spec.synth.grounding_threshold == 0.50
     assert spec.synth.duplicate_threshold == 0.85
     assert spec.synth.page_types == ["entity", "concept", "note"]
 

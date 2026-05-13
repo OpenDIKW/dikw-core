@@ -9,8 +9,10 @@ import pytest
 from dikw_core.domains.knowledge.wiki import WikiPage, build_page
 from dikw_core.eval.fake_embedder import FakeEmbeddings
 from dikw_core.eval.metrics import (
+    GroundingClaim,
     atomicity_score,
     classify_lang,
+    compute_grounding_cosines,
     duplicate_ratio_max,
     expected_coverage,
     fact_grounding_ratio,
@@ -24,6 +26,7 @@ from dikw_core.eval.metrics import (
     page_density,
     recall_at_k,
     reciprocal_rank,
+    reduce_grounding_ratio,
     split_claims,
     wikilink_resolved_ratio,
 )
@@ -383,6 +386,61 @@ async def test_fact_grounding_ratio_disjoint_vocab_is_zero() -> None:
 
 
 @pytest.mark.asyncio
+async def test_compute_grounding_cosines_emits_one_entry_per_claim() -> None:
+    """The new split — embed once, reduce at any tau — keeps page/source
+    paths attached so a sweep / hand-label workflow can inspect rows."""
+    embedder = FakeEmbeddings()
+    page = _page(
+        "A",
+        "# A\n\nFirst claim here is grounded. "
+        "Second claim covers another topic.\n",
+    )
+    chunks_by_source = {
+        "wiki/sources/a.md": [
+            _chunk(
+                "wiki/sources/a.md", 0, "First claim here is grounded."
+            ),
+            _chunk("wiki/sources/a.md", 1, "Unrelated content."),
+        ],
+    }
+    pages_with_sources = [(page, "wiki/sources/a.md")]
+    claims = await compute_grounding_cosines(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+    )
+    assert len(claims) == 2
+    assert all(isinstance(c, GroundingClaim) for c in claims)
+    assert {c.claim for c in claims} == {
+        "First claim here is grounded.",
+        "Second claim covers another topic.",
+    }
+    assert all(c.page_path == page.path for c in claims)
+    # tau-sweep: each tau bucket is a deterministic reduction of the cosines.
+    at_low = reduce_grounding_ratio(
+        claims, pages_with_sources=pages_with_sources, tau=0.0
+    )
+    at_high = reduce_grounding_ratio(
+        claims, pages_with_sources=pages_with_sources, tau=0.99
+    )
+    assert at_low >= at_high
+
+
+def test_reduce_grounding_ratio_pages_with_no_claims_score_one() -> None:
+    """Same vacuous-1.0 floor as the metric: a page that emitted no claim
+    sentences shouldn't drag the aggregate down."""
+    page = _page("A", "# A\n\n[[Other]]\n")
+    pages_with_sources = [(page, "wiki/sources/a.md")]
+    # No GroundingClaim entries for page A (mirroring what
+    # compute_grounding_cosines does for claim-less pages).
+    ratio = reduce_grounding_ratio(
+        [], pages_with_sources=pages_with_sources, tau=0.5
+    )
+    assert ratio == 1.0
+
+
+@pytest.mark.asyncio
 async def test_fact_grounding_ratio_empty_pages_returns_one() -> None:
     score = await fact_grounding_ratio(
         pages_with_sources=[],
@@ -507,12 +565,31 @@ async def test_duplicate_ratio_max_skips_empty_body_pages() -> None:
 
 
 def test_split_claims_basic_sentences() -> None:
-    body = "# Title\n\nFirst claim. Second claim.\n\nThird claim.\n"
+    """split_claims requires ≥3 en words per fragment (filters out
+    sentence-splitter junk like ``"."`` and ``"embed("``)."""
+    body = (
+        "# Title\n\nFirst claim here. Second claim follows.\n\n"
+        "Third claim wraps the body.\n"
+    )
     claims = split_claims(body)
     assert len(claims) == 3
-    assert "First claim" in claims[0]
-    assert "Second claim" in claims[1]
-    assert "Third claim" in claims[2]
+    assert "First claim here" in claims[0]
+    assert "Second claim follows" in claims[1]
+    assert "Third claim wraps" in claims[2]
+
+
+def test_split_claims_drops_punctuation_only_fragments() -> None:
+    """Fragments under the en-word / cjk-char threshold are dropped at
+    the splitter so downstream embedders don't see ``"."`` or
+    ``"embed("`` (real garbage seen in the 2026-05-13 tau sweep)."""
+    body = (
+        "# Title\n\nThe real claim runs for several words.\n"
+        "embed(. )\n"
+        ".\n"
+    )
+    claims = split_claims(body)
+    # Only the real claim survives.
+    assert claims == ["The real claim runs for several words."]
 
 
 def test_split_claims_strips_wikilinks() -> None:

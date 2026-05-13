@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from ..domains.knowledge.links import WIKILINK_RE, normalize_for_match
@@ -136,6 +137,32 @@ _LANG_SAMPLE_PREFIX = 200
 _LANG_CJK_RATIO_THRESHOLD = 0.3
 
 
+# Filter junk fragments that ``_SENTENCE_BOUNDARY.split`` lets through.
+# The 2026-05-13 tau-sweep dump exposed ~30 garbage "claims" (``.``,
+# ``embed(.``, ``)`` from code residue, single ``"``) that survived
+# the empty-string check and matched arbitrary chunks at low cosine,
+# dragging ``fact_grounding_ratio`` down at every tau without carrying
+# any factual signal. A claim must clear EITHER the en threshold
+# (≥ 3 word tokens of ≥ 2 letters each) OR the cjk threshold (≥ 4
+# CJK characters), so the filter works on bilingual corpora.
+_CLAIM_EN_WORD = re.compile(r"[A-Za-z]{2,}")
+# Same CJK ranges as ``_CJK_CHAR`` above — written via unicode escapes
+# so the regex source doesn't trip ruff's RUF001 ambiguous-character
+# lint on the literal-CJK-in-source line.
+_CLAIM_CJK = re.compile(
+    "[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]"
+)
+_CLAIM_MIN_EN_WORDS = 3
+_CLAIM_MIN_CJK_CHARS = 4
+
+
+def _has_claim_substance(text: str) -> bool:
+    return (
+        len(_CLAIM_EN_WORD.findall(text)) >= _CLAIM_MIN_EN_WORDS
+        or len(_CLAIM_CJK.findall(text)) >= _CLAIM_MIN_CJK_CHARS
+    )
+
+
 def split_claims(body: str) -> list[str]:
     """Tokenise a wiki-page body into claim-bearing sentences.
 
@@ -143,11 +170,25 @@ def split_claims(body: str) -> list[str]:
     so a body that's just ``[[Other]]`` yields zero claims and doesn't
     embed-match against a misleading "Other" word), then splits on
     sentence terminators plus paragraph breaks.
+
+    Fragments with fewer than ``_CLAIM_MIN_LETTERS`` letters / CJK
+    characters are dropped — punctuation-only splits (``"."``, ``")``,
+    code-snippet residue like ``embed(.``) are not claims and would
+    embed-match against arbitrary chunks at low cosine, lowering the
+    grounding ratio without carrying any factual signal.
     """
     text = _FENCED_CODE.sub("", body)
     text = _HEADING_LINE.sub("", text)
     text = WIKILINK_RE.sub(" ", text)
-    return [p.strip() for p in _SENTENCE_BOUNDARY.split(text) if p.strip()]
+    out: list[str] = []
+    for p in _SENTENCE_BOUNDARY.split(text):
+        stripped = p.strip()
+        if not stripped:
+            continue
+        if not _has_claim_substance(stripped):
+            continue
+        out.append(stripped)
+    return out
 
 
 def classify_lang(text: str) -> Literal["en", "cjk", "other"]:
@@ -249,6 +290,126 @@ def page_density(*, n_pages: int, n_chunks: int) -> float:
     return n_pages / n_chunks
 
 
+@dataclass(frozen=True)
+class GroundingClaim:
+    """One claim sentence + its peak cosine against the page's source chunks.
+
+    Emitted by :func:`compute_grounding_cosines` so callers (the metric,
+    tau-sweep scripts, debug dumpers) can apply any threshold without
+    re-running the embedder. ``page_path`` and ``source_path`` are kept
+    for hand-labelling and per-source breakdowns.
+    """
+
+    page_path: str
+    source_path: str
+    claim: str
+    max_cosine: float
+
+
+async def compute_grounding_cosines(
+    *,
+    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    chunks_by_source: Mapping[str, Sequence[ChunkRecord]],
+    embedder: EmbeddingProvider,
+    embedding_model: str,
+) -> list[GroundingClaim]:
+    """Compute the peak cosine for every claim sentence in every page.
+
+    The expensive half of :func:`fact_grounding_ratio` — embed each
+    source's chunks once, embed each page's claims, take per-claim max
+    cosine against the source's chunks. Returned as a flat list so the
+    caller can reduce at any tau (the metric does ``ratio = (count ≥ tau)
+    / total``; the tau-sweep script does the same for several taus).
+
+    Pages with no claim sentences emit nothing — same semantics as the
+    metric's ``1.0`` floor (vacuous truth). Pages whose source has zero
+    chunks emit one ``max_cosine=-inf`` entry per claim — so the metric
+    sees them as ungrounded at every tau.
+    """
+    if not pages_with_sources:
+        return []
+    chunk_embeds_cache: dict[str, list[list[float]]] = {}
+
+    async def _chunks_for(source_path: str) -> list[list[float]]:
+        cached = chunk_embeds_cache.get(source_path)
+        if cached is not None:
+            return cached
+        chunks = chunks_by_source.get(source_path, [])
+        # Defensive: skip empty / whitespace-only chunks. Gitee /
+        # OpenAI embedding APIs 400 on empty input rather than emitting
+        # a zero vector, which would tank the whole run.
+        chunk_texts = [c.text for c in chunks if c.text.strip()]
+        if not chunk_texts:
+            chunk_embeds_cache[source_path] = []
+            return []
+        embeds = await _embed_batched(
+            embedder, chunk_texts, model=embedding_model
+        )
+        chunk_embeds_cache[source_path] = embeds
+        return embeds
+
+    out: list[GroundingClaim] = []
+    for page, source_path in pages_with_sources:
+        claims = [c for c in split_claims(page.body) if c.strip()]
+        if not claims:
+            continue
+        chunk_embeds = await _chunks_for(source_path)
+        if not chunk_embeds:
+            for claim in claims:
+                out.append(
+                    GroundingClaim(
+                        page_path=page.path,
+                        source_path=source_path,
+                        claim=claim,
+                        max_cosine=float("-inf"),
+                    )
+                )
+            continue
+        claim_embeds = await _embed_batched(
+            embedder, claims, model=embedding_model
+        )
+        for claim, ce in zip(claims, claim_embeds, strict=True):
+            best = max((_cosine(ce, ch) for ch in chunk_embeds), default=0.0)
+            out.append(
+                GroundingClaim(
+                    page_path=page.path,
+                    source_path=source_path,
+                    claim=claim,
+                    max_cosine=best,
+                )
+            )
+    return out
+
+
+def reduce_grounding_ratio(
+    claims: Sequence[GroundingClaim],
+    *,
+    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    tau: float,
+) -> float:
+    """Apply tau to per-claim cosines → per-page ratios → mean across pages.
+
+    Pure function. Same semantics as :func:`fact_grounding_ratio`:
+    pages with no claims score 1.0 (vacuous), pages whose source had
+    zero chunks score 0.0 (emitted as ``-inf`` claims by
+    :func:`compute_grounding_cosines`).
+    """
+    if not pages_with_sources:
+        return 1.0
+    by_page: dict[str, list[float]] = {}
+    for c in claims:
+        by_page.setdefault(c.page_path, []).append(c.max_cosine)
+    per_page: list[float] = []
+    for page, _ in pages_with_sources:
+        cosines = by_page.get(page.path)
+        if not cosines:
+            per_page.append(1.0)
+            continue
+        grounded = sum(1 for cos in cosines if cos >= tau)
+        per_page.append(grounded / len(cosines))
+    return sum(per_page) / len(per_page)
+
+
 async def fact_grounding_ratio(
     *,
     pages_with_sources: Sequence[tuple[WikiPage, str]],
@@ -272,49 +433,15 @@ async def fact_grounding_ratio(
     — for a 100-page wiki with 10 sources, that's 10 chunk-embed calls
     instead of 100, the dominant cost in real-LLM runs.
     """
-    if not pages_with_sources:
-        return 1.0
-    # Embed each source's chunks once, lazily on first use.
-    chunk_embeds_cache: dict[str, list[list[float]]] = {}
-
-    async def _chunks_for(source_path: str) -> list[list[float]]:
-        cached = chunk_embeds_cache.get(source_path)
-        if cached is not None:
-            return cached
-        chunks = chunks_by_source.get(source_path, [])
-        # Defensive: skip empty / whitespace-only chunks. Gitee /
-        # OpenAI embedding APIs 400 on empty input rather than emitting
-        # a zero vector, which would tank the whole run.
-        chunk_texts = [c.text for c in chunks if c.text.strip()]
-        if not chunk_texts:
-            chunk_embeds_cache[source_path] = []
-            return []
-        embeds = await _embed_batched(
-            embedder, chunk_texts, model=embedding_model
-        )
-        chunk_embeds_cache[source_path] = embeds
-        return embeds
-
-    per_page: list[float] = []
-    for page, source_path in pages_with_sources:
-        claims = [c for c in split_claims(page.body) if c.strip()]
-        if not claims:
-            per_page.append(1.0)
-            continue
-        chunk_embeds = await _chunks_for(source_path)
-        if not chunk_embeds:
-            per_page.append(0.0)
-            continue
-        claim_embeds = await _embed_batched(
-            embedder, claims, model=embedding_model
-        )
-        grounded = sum(
-            1
-            for ce in claim_embeds
-            if max((_cosine(ce, ch) for ch in chunk_embeds), default=0.0) >= tau
-        )
-        per_page.append(grounded / len(claims))
-    return sum(per_page) / len(per_page)
+    claims = await compute_grounding_cosines(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model=embedding_model,
+    )
+    return reduce_grounding_ratio(
+        claims, pages_with_sources=pages_with_sources, tau=tau
+    )
 
 
 # Most embedding providers (Gitee, MiniMax, OpenAI batch tier-2) cap

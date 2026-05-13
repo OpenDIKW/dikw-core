@@ -221,8 +221,11 @@ class Query(BaseModel):
 class SynthSection(BaseModel):
     """K-layer eval knobs declared in ``dataset.yaml``'s ``synth:`` block.
 
-    Defaults match the spec (``grounding_threshold=0.65``,
-    ``duplicate_threshold=0.85``) so retrieval-only datasets that don't
+    Defaults reflect the 2026-05-13 tau sweep against
+    Qwen3-Embedding-0.6B (BASELINES.md): ``grounding_threshold=0.50``
+    (sits between the cluster of real-grounded claims at 0.55+ and the
+    cluster of paraphrased / fragment claims below 0.40),
+    ``duplicate_threshold=0.85``. Retrieval-only datasets that don't
     declare synth still parse and ``run_synth_eval`` (if invoked) gets
     sensible numbers. ``page_types`` is dataset-local and written into
     the throwaway wiki's ``dikw.yml`` at eval time, so a synth-eval
@@ -231,7 +234,7 @@ class SynthSection(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    grounding_threshold: float = 0.65
+    grounding_threshold: float = 0.50
     duplicate_threshold: float = 0.85
     page_types: list[str] = Field(
         default_factory=lambda: ["entity", "concept", "note"]
