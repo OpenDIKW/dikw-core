@@ -91,6 +91,27 @@ class Storage(Protocol):
         since_ts: float | None = None,
     ) -> Iterable[DocumentRecord]: ...
     async def deactivate_document(self, doc_id: str) -> None: ...
+    async def delete_document(self, doc_id: str) -> None:
+        """Hard-delete a document: remove the row plus every dependent
+        row (chunks, chunk embeddings, outgoing links, FTS rows, vec
+        rows). The counterpart to ``deactivate_document``, which only
+        flips ``active = False``.
+
+        Used by the lint-apply trash path: the on-disk page moves to
+        ``<base>/trash/wiki/<rel>`` (recoverable by hand) while storage
+        purges all rows so ``run_lint`` can't see ghost docs and
+        ``counts()`` no longer tallies the dead row. Idempotent —
+        deleting an unknown ``doc_id`` is a no-op (matches
+        ``replace_links_from([])`` semantics).
+
+        Inbound links from OTHER docs (``links_to(doc.path)``) are
+        intentionally NOT cleared: after the page moves to trash,
+        referrers still point at the now-missing path and the next
+        ``run_lint`` reports them as ``broken_wikilink``, which is the
+        right surfacing — a deletion that silently broke other pages'
+        links would be invisible.
+        """
+        ...
 
     # ---- I layer ---------------------------------------------------------
 

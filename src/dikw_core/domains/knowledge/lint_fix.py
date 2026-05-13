@@ -24,9 +24,12 @@ The contract is:
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import datetime as _dt
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -119,15 +122,18 @@ class ApplyReport(BaseModel):
 class WikiPageMeta:
     """Lightweight wiki-page descriptor handed to fixers.
 
-    Title + path is enough for PR1's broken_wikilink fuzzy matcher and
-    the metadata browsing PR2 fixers (orphan / duplicate) need. Heavy
-    fixers that operate on a page body re-read the body from
-    ``ctx.wiki_root / path`` on demand; we don't hold every K-layer
-    page's body in memory for the duration of the propose task.
+    ``path`` + ``title`` is enough for the fuzzy-link matcher. The
+    scorer for ``orphan_page`` also wants ``sources`` and ``tags`` so
+    candidate-parent comparison can run without a frontmatter re-read
+    per orphan; both come from the frontmatter the lint pass already
+    parsed (see ``LintReport.page_meta``). Heavy fixers that need the
+    body re-read it from ``ctx.wiki_root / path`` on demand.
     """
 
     path: str
     title: str | None
+    sources: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,16 +141,17 @@ class FixerContext:
     """Per-task context handed to every fixer.
 
     ``storage`` and ``llm`` are optional because heuristic-only fixers
-    (the PR1 broken_wikilink path) never touch them. Fixers that *do*
-    need them (orphan_page, duplicate_title, non_atomic_page in later
-    PRs) raise their own ``ValueError`` if asked to run without one.
-    ``all_pages`` is pre-built by the orchestrator from
-    ``storage.list_documents`` so each fixer doesn't repeat the round-trip.
+    never touch them; fixers that need them raise ``ValueError`` if
+    asked to run without. ``all_pages`` is pre-built by the orchestrator
+    from ``storage.list_documents`` so each fixer doesn't repeat the
+    round-trip. ``path_to_doc_id`` is the same listing inverted to a
+    O(1) lookup so per-orphan code paths can resolve ``doc_id`` without
+    re-listing the entire WIKI layer.
 
     ``enable_llm`` gates the LLM-fallback branch in fixers that have
-    one (PR2 broken_wikilink stub-page generation). Default False keeps
-    propose runs heuristic-only — every LLM call costs tokens, and a
-    user must opt in via ``dikw client lint propose --enable-llm``.
+    one. Default False keeps propose runs heuristic-only — every LLM
+    call costs tokens, and a user must opt in via
+    ``dikw client lint propose --enable-llm``.
     """
 
     storage: Storage | None
@@ -153,11 +160,8 @@ class FixerContext:
     wiki_root: Path
     all_pages: list[WikiPageMeta]
     enable_llm: bool = False
-    # Passed only for fixers that need synth knobs (max_pages_per_group,
-    # page_types, llm_model, llm_max_tokens_synth). Heuristic-only fixers
-    # don't touch it; the orchestrator threads it through anyway so a
-    # later fixer can read it without changing the FixerContext shape.
     cfg: DikwConfig | None = None
+    path_to_doc_id: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 class Fixer(Protocol):
@@ -567,6 +571,7 @@ async def run_lint_apply(
                 storage=storage,
                 wiki_root=wiki_root,
                 proposal_id=proposal.proposal_id,
+                issue_kind=proposal.issue_kind,
                 path_to_doc_id=path_to_doc_id,
             )
             if skip_reason is None:
@@ -764,6 +769,7 @@ async def _apply_one_op(
     storage: Storage,
     wiki_root: Path,
     proposal_id: str,
+    issue_kind: LintKind,
     path_to_doc_id: dict[str, str],
 ) -> dict[str, Any] | None:
     """Execute one op. Returns ``None`` on success, or a skip-record dict
@@ -816,16 +822,126 @@ async def _apply_one_op(
         return None
 
     if op.kind == "delete_page":
-        try:
-            abs_path.unlink()
-        except OSError as e:
-            return _skip(proposal_id, op, f"unlink failed: {e}")
+        # Soft-delete: storage purge first, then move the file to
+        # ``<base>/trash/wiki/<rel>``. If the trash move fails after the
+        # storage row is gone, the next ``dikw ingest`` re-creates the
+        # doc row from the file still sitting at the original path
+        # (ingest is idempotent on hash). The reverse order would leave
+        # an orphaned doc row pointing at a missing file — irrecoverable
+        # without manual SQL.
         doc_id = path_to_doc_id.get(op.path)
         if doc_id is not None:
-            await storage.deactivate_document(doc_id)
+            await storage.delete_document(doc_id)
+        try:
+            _move_to_trash(
+                wiki_root=wiki_root, src_abs=abs_path, rel_path=op.path,
+                reason=issue_kind, proposal_id=proposal_id,
+            )
+        except OSError as e:
+            return _skip(proposal_id, op, f"trash move failed: {e}")
         return None
 
     return _skip(proposal_id, op, f"unknown op kind {op.kind!r}")
+
+
+def _move_to_trash(
+    *,
+    wiki_root: Path,
+    src_abs: Path,
+    rel_path: str,
+    reason: str,
+    proposal_id: str,
+) -> Path:
+    """Move ``src_abs`` to ``<wiki_root>/trash/<rel_path>`` and stamp a
+    ``trashed:`` frontmatter block on the file before the move.
+
+    ``rel_path`` is the wiki-relative path of the page (e.g.
+    ``"wiki/concepts/dead.md"``); the file ends up at
+    ``<wiki_root>/trash/wiki/concepts/dead.md`` so the original directory
+    layout under ``wiki/`` is preserved verbatim inside ``trash/``,
+    making "rescue this page back into the wiki" a plain ``mv`` for the
+    user. Collisions get a millisecond-precision timestamp suffix so a
+    re-trash of the same path doesn't clobber the earlier copy.
+
+    Why frontmatter and not a separate manifest: the audit metadata
+    lives WITH the file. A user grep-ing ``trash/`` for "what fixer
+    dropped this and when" doesn't have to cross-reference a sibling
+    JSON. ``frontmatter.dumps`` round-trips other keys, so the
+    ``trashed:`` block is added in-place without rewriting body or
+    losing existing metadata.
+
+    Returns the destination path; raises ``OSError`` on filesystem failure.
+    """
+    dest = wiki_root / "trash" / rel_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        # Same wiki path trashed twice in the same wall-clock second
+        # would otherwise collide on a second-resolution suffix and
+        # overwrite the earlier copy. Spin a millisecond counter until
+        # the candidate name is free — bounded at 1000 because the
+        # next second will roll the timestamp anyway.
+        base_dest = dest
+        for ms in range(1000):
+            ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+            suffix = f".{ts}.{ms:03d}" if ms else f".{ts}"
+            candidate = base_dest.with_name(
+                f"{base_dest.stem}{suffix}{base_dest.suffix}"
+            )
+            if not candidate.exists():
+                dest = candidate
+                break
+        else:
+            raise OSError(
+                f"trash collision: {base_dest} exists and 1000 timestamp "
+                "fallbacks were all taken"
+            )
+
+    raw = src_abs.read_text(encoding="utf-8")
+    try:
+        post = frontmatter.loads(raw)
+    except Exception:
+        # Malformed frontmatter: keep the body intact, don't try to
+        # parse-and-rewrite — drop the file as-is into trash. Better to
+        # preserve byte-identical contents than to risk content loss
+        # while trying to inject an audit marker.
+        shutil.move(str(src_abs), str(dest))
+        return dest
+    post.metadata["trashed"] = {
+        "at": _dt.datetime.now(tz=_dt.UTC).isoformat(timespec="seconds"),
+        "reason": reason,
+        "proposal_id": proposal_id,
+    }
+    # Two-stage write so a mid-write failure (disk full, short write)
+    # cannot leave a partial file at the visible ``dest`` path: write
+    # to a sibling ``.tmp`` first, then atomic-replace into place. A
+    # failed ``write_text`` only leaves the ``.tmp`` to clean up; only
+    # after the rename does ``dest`` materialise visibly under
+    # ``trash/``.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
+    try:
+        tmp_dest.write_text(frontmatter.dumps(post), encoding="utf-8")
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_dest.unlink()
+        raise
+    try:
+        tmp_dest.replace(dest)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_dest.unlink()
+        raise
+    try:
+        src_abs.unlink()
+    except OSError:
+        # Roll back the trash copy so we never leave the same page in
+        # BOTH wiki/ and trash/. After rollback the page stays in wiki/
+        # and storage already purged the doc row — the next
+        # ``dikw ingest`` re-creates the row from the file (ingest is
+        # idempotent on hash), so the user recovers without manual SQL.
+        with contextlib.suppress(OSError):
+            dest.unlink()
+        raise
+    return dest
 
 
 def _skip(proposal_id: str, op: FixOperation, reason: str) -> dict[str, Any]:

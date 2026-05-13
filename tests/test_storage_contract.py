@@ -1026,6 +1026,135 @@ async def test_vec_search_excludes_deactivated_doc(storage: Storage) -> None:
     assert [h.chunk_id for h in post] == [keep_ids[0]]
 
 
+async def test_delete_document_purges_all_rows(storage: Storage) -> None:
+    """``delete_document`` is the hard counterpart to ``deactivate_document``:
+    the row plus every dependent (chunks, embeddings, links) must be
+    gone from storage. Used by the lint-apply trash path so a soft-
+    deleted file in ``<base>/trash/wiki/`` doesn't leave residual rows
+    behind that ``counts()`` would still tally and that the next
+    ``run_lint`` would see as ghost docs.
+    """
+    keep_doc = _make_doc("wiki/keep.md", layer=Layer.WIKI)
+    drop_doc = _make_doc("wiki/drop.md", layer=Layer.WIKI)
+    for d in (keep_doc, drop_doc):
+        await storage.upsert_document(d)
+
+    keep_ids = await storage.replace_chunks(
+        keep_doc.doc_id,
+        [ChunkRecord(doc_id=keep_doc.doc_id, seq=0, start=0, end=4, text="keep")],
+    )
+    drop_ids = await storage.replace_chunks(
+        drop_doc.doc_id,
+        [ChunkRecord(doc_id=drop_doc.doc_id, seq=0, start=0, end=4, text="drop")],
+    )
+
+    # outgoing links from the doomed doc
+    await storage.upsert_link(
+        LinkRecord(
+            src_doc_id=drop_doc.doc_id,
+            dst_path="wiki/keep.md",
+            link_type=LinkType.WIKILINK,
+            anchor=None,
+            line=1,
+        )
+    )
+
+    try:
+        version_id = await register_text_version(storage, dim=4, model="test-embed")
+    except NotSupported:
+        version_id = None
+    if version_id is not None:
+        await storage.upsert_embeddings(
+            [
+                EmbeddingRow(
+                    chunk_id=keep_ids[0], version_id=version_id,
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+                EmbeddingRow(
+                    chunk_id=drop_ids[0], version_id=version_id,
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                ),
+            ]
+        )
+
+    # Hard delete.
+    await storage.delete_document(drop_doc.doc_id)
+
+    # Doc row gone — both active=True listing and "any state" listing.
+    assert await storage.get_document(drop_doc.doc_id) is None
+    all_docs = list(await storage.list_documents(layer=Layer.WIKI, active=None))
+    assert all(d.doc_id != drop_doc.doc_id for d in all_docs)
+
+    # Chunks gone (cascade or explicit), and the keeper's chunks survive.
+    assert await storage.list_chunks(drop_doc.doc_id) == []
+    assert len(await storage.list_chunks(keep_doc.doc_id)) == 1
+
+    # Outgoing links gone.
+    assert await storage.links_from(drop_doc.doc_id) == []
+
+    # vec_search must not surface the deleted doc's chunk.
+    if version_id is not None:
+        hits = await storage.vec_search(
+            [1.0, 0.0, 0.0, 0.0], limit=10, version_id=version_id,
+        )
+        assert all(h.chunk_id != drop_ids[0] for h in hits)
+        # And the keeper still vec-hits.
+        assert any(h.chunk_id == keep_ids[0] for h in hits)
+
+
+async def test_delete_document_clears_wisdom_evidence_references(
+    storage: Storage,
+) -> None:
+    """``wisdom_evidence.doc_id`` is a non-cascading FK to ``documents``
+    on both adapters, so ``delete_document`` would otherwise fail on a
+    page that has been used as W-layer evidence. The hard-delete path
+    is contractually required to clear referring evidence rows up
+    front; the wisdom item itself stays (it may have other evidence)."""
+    doc = _make_doc("wiki/cited-doc.md", layer=Layer.WIKI)
+    other_doc = _make_doc("wiki/other-cited.md", layer=Layer.WIKI)
+    for d in (doc, other_doc):
+        await storage.upsert_document(d)
+
+    ts = time.time()
+    item = WisdomItem(
+        item_id="W-cascade-test",
+        kind=WisdomKind.PRINCIPLE,
+        status=WisdomStatus.CANDIDATE,
+        path="wisdom/_candidates/cascade-test.md",
+        title="Cascade test",
+        body="...",
+        confidence=0.5,
+        created_ts=ts,
+        approved_ts=None,
+    )
+    await storage.put_wisdom(
+        item,
+        [
+            WisdomEvidence(doc_id=doc.doc_id, excerpt="from doomed doc", line=1),
+            WisdomEvidence(doc_id=other_doc.doc_id, excerpt="from other", line=2),
+        ],
+    )
+
+    # Sanity: both evidence rows present.
+    pre = await storage.get_wisdom_evidence(item.item_id)
+    assert len(pre) == 2
+
+    # Hard-delete the doomed doc — must NOT raise.
+    await storage.delete_document(doc.doc_id)
+
+    # Wisdom item survives but lost the evidence row tied to the deleted doc.
+    post = await storage.get_wisdom_evidence(item.item_id)
+    assert [e.doc_id for e in post] == [other_doc.doc_id]
+    survived = await storage.get_wisdom(item.item_id)
+    assert survived is not None
+
+
+async def test_delete_document_missing_is_noop(storage: Storage) -> None:
+    """Deleting a non-existent doc_id must not raise — apply-path callers
+    treat ``delete_document`` like ``replace_links_from([])``: idempotent."""
+    await storage.delete_document("doc::does-not-exist")
+
+
 async def test_get_chunk_embeddings_round_trip(storage: Storage) -> None:
     """Stored chunk embeddings must be recoverable raw by chunk_id.
 
