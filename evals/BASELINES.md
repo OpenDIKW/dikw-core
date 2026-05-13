@@ -7,6 +7,68 @@ regression from a re-run variance.
 Newest first. `dikw eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-05-13 — K-layer orphan-page governance (lint-fix PR3)
+
+Issue #82: `dikw lint propose --rule orphan_page` previously skipped
+every orphan because `FIXER_REGISTRY` lacked an entry — 250 orphans
+on the elon-musk validation base produced 0 applicable proposals.
+This PR registers `OrphanPageFixer` with four strategies (delete /
+merge / link / mark_as_leaf), plus a soft-delete `<base>/trash/` for
+all `delete_page` ops, and `lint.skip` per-page frontmatter
+suppression.
+
+### What this PR ships
+
+| Strategy                    | When                                                       | Source       |
+|-----------------------------|------------------------------------------------------------|--------------|
+| `delete_page`               | body < 40 B, no outbound wikilinks, AND empty / TODO marker / no sources+tags | heuristic    |
+| `merge_into_existing_page`  | candidate score ≥ `MERGE_THRESHOLD = 6.0` AND `--enable-llm` | LLM          |
+| `link_from_existing_page`   | candidate score ≥ `LINK_THRESHOLD = 3.0` (or merge LLM no-op) | heuristic    |
+| `mark_as_leaf` (tail)       | nothing else fits — writes `lint: {skip: [orphan_page], reason}` | heuristic    |
+
+Scoring weights and thresholds documented in
+`docs/lint-orphan-governance.md`.
+
+### Baseline run
+
+**TODO** — run on the elon-musk validation base once an end-to-end
+sandbox is available:
+
+```powershell
+$base = "<elon-musk validation base>"
+uv run dikw client lint --base $base --format json | jq '.by_kind'
+uv run dikw client lint propose --base $base --rule orphan_page --limit 50 --plain
+uv run dikw client lint propose --base $base --rule orphan_page --limit 50 --enable-llm --plain
+uv run dikw client lint proposals --base $base --format json | jq '.[] | select(.kind=="orphan_page")'
+```
+
+Record orphan counts (pre/post-apply) + per-strategy counts (delete /
+merge / link / mark_as_leaf) here once the first run lands.
+
+### Tests landed
+
+- 26 unit tests in `tests/test_lint_orphan_fixer.py` covering each
+  strategy + edge cases (duplicate-title gate, vec_search layer
+  scoping, trash collision avoidance, stub-delete refusal on
+  metadata-rich pages).
+- 4 frontmatter-suppression tests in `tests/test_lint_skip_frontmatter.py`.
+- End-to-end ASGI roundtrip in
+  `tests/client/test_cli_lint_fix.py::test_lint_orphan_page_propose_apply_roundtrip`.
+- Storage contract additions: `test_delete_document_purges_all_rows`,
+  `test_delete_document_missing_is_noop`,
+  `test_delete_document_clears_wisdom_evidence_references`.
+
+### Open follow-ups
+
+- `add_to_moc` strategy (issue #82 item 2) — deferred. MOC topic
+  recovery is a deterministic-scoping hard problem and overlaps with
+  `wiki/index.md`; more natural to schedule into synth (which is
+  already clustering source material) than to bolt onto lint.
+- `wiki/index.md` promotion to a real K-page — conflicts with
+  `indexgen.py`'s rewrite contract.
+- Wire orphan score into `dikw eval` metrics — current baseline table
+  is good enough for first iteration.
+
 ## 2026-05-13 — fact_grounding_ratio tau sweep + claim-filter fix
 
 Resolves follow-up #1 from the synth eval mvp baseline below. The

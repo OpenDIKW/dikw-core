@@ -117,6 +117,99 @@ def test_lint_propose_apply_cli_full_loop(
     assert "[[Foo Bar]]" in rewritten
 
 
+@pytest.fixture()
+async def orphan_seeded_wiki(client_wiki: Path) -> Path:
+    """A 3-page wiki where:
+
+    * ``parent.md`` and ``orphan.md`` share a ``sources`` entry — the
+      orphan's parent-candidate score clears LINK_THRESHOLD, so the
+      fixer must emit a ``link_from_existing`` proposal.
+    * neither page has any inbound wikilinks, so both register as
+      orphans; the fixer should propose a fix for the orphan only
+      under ``--rule orphan_page`` filtering.
+    """
+    await _seed_orphan_pair(client_wiki)
+    return client_wiki
+
+
+async def _seed_orphan_pair(wiki_root: Path) -> None:
+    parent = wiki_root / "wiki/concepts/parent-topic.md"
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.write_text(
+        "---\nid: K-parent\ntype: concept\ntitle: Parent Topic\n"
+        "sources: [sources/shared.md]\n"
+        "created: 2026-05-09T00:00:00+00:00\n"
+        "updated: 2026-05-09T00:00:00+00:00\n---\n\n"
+        "# Parent Topic\n\nBroader prose about the topic to keep this "
+        "comfortably past the stub byte threshold.\n",
+        encoding="utf-8",
+    )
+    orphan = wiki_root / "wiki/concepts/orphan-detail.md"
+    orphan.write_text(
+        "---\nid: K-orphan\ntype: concept\ntitle: Orphan Detail\n"
+        "sources: [sources/shared.md]\n"
+        "created: 2026-05-09T00:00:00+00:00\n"
+        "updated: 2026-05-09T00:00:00+00:00\n---\n\n"
+        "# Orphan Detail\n\nNarrow observation that warrants its own "
+        "page but no other page links to it, well past the stub bar.\n",
+        encoding="utf-8",
+    )
+    _cfg, _root, storage = await api_module._with_storage(wiki_root)
+    try:
+        for path, title in [
+            ("wiki/concepts/parent-topic.md", "Parent Topic"),
+            ("wiki/concepts/orphan-detail.md", "Orphan Detail"),
+        ]:
+            await storage.upsert_document(
+                DocumentRecord(
+                    doc_id=_wiki_doc_id(path), path=path, title=title,
+                    hash=f"hash-{path}", mtime=0.0,
+                    layer=Layer.WIKI, active=True,
+                )
+            )
+    finally:
+        await storage.close()
+
+
+def test_lint_orphan_page_propose_apply_roundtrip(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    orphan_seeded_wiki: Path,
+) -> None:
+    """End-to-end ``lint propose --rule orphan_page`` then ``lint apply``
+    against the in-memory ASGI server: propose emits a link_from_existing
+    proposal for at least one orphan, apply rewrites the parent body
+    to include the orphan's backlink."""
+    patch_transport_factory()
+
+    r1 = _run(["lint", "propose", "--rule", "orphan_page", "--plain"])
+    assert r1.exit_code == 0, r1.stdout
+    assert "succeeded" in r1.stdout.lower()
+
+    task_id: str | None = None
+    for line in r1.stdout.splitlines():
+        if "lint apply" in line.lower():
+            task_id = line.strip().split()[-1]
+            break
+    assert task_id is not None, r1.stdout
+
+    r2 = _run(["lint", "apply", task_id, "--plain"])
+    assert r2.exit_code == 0, r2.stdout
+    assert "applied" in r2.stdout.lower()
+
+    # The orphan + parent share one ``sources`` entry → score 3.0,
+    # exactly ``LINK_THRESHOLD``. Routing must pick link_from_existing
+    # and the parent body must now reference the orphan via a backlink
+    # under the stable ``## 相关`` heading. A leaf fallback at this score
+    # would be a regression — assert the specific branch.
+    parent_body = (orphan_seeded_wiki / "wiki/concepts/parent-topic.md").read_text(
+        encoding="utf-8"
+    )
+    assert "[[Orphan Detail]]" in parent_body, (
+        f"expected parent backlink at LINK_THRESHOLD score; got: {parent_body!r}"
+    )
+
+
 def test_lint_propose_invalid_rule_rejected_by_server(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],

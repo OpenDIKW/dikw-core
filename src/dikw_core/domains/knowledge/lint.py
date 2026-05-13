@@ -20,7 +20,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, get_args
 
 import frontmatter
 
@@ -69,9 +69,32 @@ class LintIssue:
     line: int | None = None
 
 
+@dataclass(frozen=True)
+class PageMeta:
+    """Frontmatter slice ``run_lint`` already had to parse and that
+    downstream callers (``lint_propose`` building ``WikiPageMeta``)
+    would otherwise re-parse from disk. Keyed by ``LintReport.page_meta``.
+    """
+
+    sources: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+
 @dataclass
 class LintReport:
     issues: list[LintIssue] = field(default_factory=list)
+    # Paths of pages that opted out of one or more lint rules via the
+    # per-page ``lint: {skip: [<kind>, ...]}`` frontmatter block. The
+    # rule is filtered out before ``issues`` is built, but the path
+    # surfaces here so audit tools (and the JSON CLI output) can show
+    # "N pages intentionally exempted" without scanning every page's
+    # frontmatter a second time.
+    acknowledged_leaves: list[str] = field(default_factory=list)
+    # Cached frontmatter slice keyed by page path. Populated as a
+    # by-product of the per-page frontmatter load already needed for
+    # rule checks so downstream consumers (``lint_propose``) don't have
+    # to re-parse the same files.
+    page_meta: dict[str, PageMeta] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -82,6 +105,29 @@ class LintReport:
         for i in self.issues:
             counts[i.kind] = counts.get(i.kind, 0) + 1
         return counts
+
+
+def _read_lint_skip(metadata: dict[str, Any]) -> set[LintKind]:
+    """Extract suppressed lint kinds from a page's ``lint:`` frontmatter.
+
+    The frontmatter is user-editable, so robustness > strict validation:
+    a malformed ``lint:`` block (list at top, non-list ``skip``, non-string
+    kind) is silently ignored — the rule fires as if no suppression
+    existed. Only well-formed ``lint: {skip: ["orphan_page", ...]}``
+    entries take effect.
+    """
+    raw = metadata.get("lint")
+    if not isinstance(raw, dict):
+        return set()
+    raw_skip = raw.get("skip")
+    if not isinstance(raw_skip, list):
+        return set()
+    valid: set[LintKind] = set(get_args(LintKind))
+    out: set[LintKind] = set()
+    for k in raw_skip:
+        if isinstance(k, str) and k in valid:
+            out.add(k)
+    return out
 
 
 @dataclass(frozen=True)
@@ -141,6 +187,12 @@ def check_atomicity(*, body: str, tags: list[str]) -> AtomicityVerdict:
 async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     """Scan K-layer pages and return a structured report."""
     issues: list[LintIssue] = []
+    # path → set of LintKind the page opted out of via frontmatter.
+    # Populated below in the same per-page frontmatter-load loop; consulted
+    # both when appending per-page issues (broken_wikilink / non_atomic)
+    # and when emitting orphan_page issues a second time later.
+    suppressions: dict[str, set[LintKind]] = {}
+    page_meta: dict[str, PageMeta] = {}
 
     wiki_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
     title_to_paths: dict[str, list[str]] = defaultdict(list)
@@ -171,6 +223,25 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         except Exception:
             continue
         body = post.content
+        skip_kinds = _read_lint_skip(post.metadata)
+        if skip_kinds:
+            suppressions[doc.path] = skip_kinds
+        # Stash the frontmatter slice we already paid to parse so
+        # ``lint_propose`` can build ``WikiPageMeta`` without a second
+        # disk pass over the same K-layer pages.
+        raw_sources = post.metadata.get("sources")
+        sources_tuple: tuple[str, ...] = (
+            tuple(s for s in raw_sources if isinstance(s, str))
+            if isinstance(raw_sources, list)
+            else ()
+        )
+        raw_tags_pm = post.metadata.get("tags")
+        tags_tuple: tuple[str, ...] = (
+            tuple(t for t in raw_tags_pm if isinstance(t, str))
+            if isinstance(raw_tags_pm, list)
+            else ()
+        )
+        page_meta[doc.path] = PageMeta(sources=sources_tuple, tags=tags_tuple)
         page_links = parse_links(body)
         _, unresolved = resolve_links(
             doc.doc_id,
@@ -178,15 +249,16 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             title_to_path=title_to_path,
             fuzzy_index=fuzzy_index,
         )
-        for u in unresolved:
-            issues.append(
-                LintIssue(
-                    kind="broken_wikilink",
-                    path=doc.path,
-                    detail=f"{u.target_text} has no matching wiki page",
-                    line=u.line,
+        if "broken_wikilink" not in skip_kinds:
+            for u in unresolved:
+                issues.append(
+                    LintIssue(
+                        kind="broken_wikilink",
+                        path=doc.path,
+                        detail=f"{u.target_text} has no matching wiki page",
+                        line=u.line,
+                    )
                 )
-            )
 
         # atomicity check — delegate to the pure helper so eval/metrics
         # can apply the exact same thresholds.
@@ -197,7 +269,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             raw_tags = []
         tag_list = [t for t in raw_tags if isinstance(t, str) and t.strip()]
         verdict = check_atomicity(body=body, tags=tag_list)
-        if not verdict.atomic:
+        if not verdict.atomic and "non_atomic_page" not in skip_kinds:
             issues.append(
                 LintIssue(
                     kind="non_atomic_page",
@@ -220,6 +292,8 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     for doc in wiki_docs:
         if doc.path in orphan_exclusions:
             continue
+        if "orphan_page" in suppressions.get(doc.path, set()):
+            continue
         if inbound[doc.path] == 0:
             issues.append(
                 LintIssue(
@@ -234,6 +308,8 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         if len(dup_paths) > 1:
             primary = dup_paths[0]
             for extra in dup_paths[1:]:
+                if "duplicate_title" in suppressions.get(extra, set()):
+                    continue
                 issues.append(
                     LintIssue(
                         kind="duplicate_title",
@@ -242,4 +318,8 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                     )
                 )
 
-    return LintReport(issues=issues)
+    return LintReport(
+        issues=issues,
+        acknowledged_leaves=sorted(suppressions),
+        page_meta=page_meta,
+    )

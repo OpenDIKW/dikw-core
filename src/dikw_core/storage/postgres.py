@@ -278,6 +278,29 @@ class PostgresStorage:
                 )
             await conn.commit()
 
+    async def delete_document(self, doc_id: str) -> None:
+        # FK cascade chain on the Postgres schema:
+        #   documents → chunks (CASCADE)
+        #   chunks → chunk_embed_meta, chunk_asset_refs (CASCADE)
+        #   chunks → vec_chunks_v<v> (CASCADE, per ``_ensure_vec_table``)
+        # ``links`` and ``wisdom_evidence`` both reference documents
+        # WITHOUT cascade, so wipe them explicitly first. Inbound
+        # (``dst_path``) links stay so the next lint surfaces
+        # broken_wikilink from the referrers; the wisdom_item rows
+        # themselves stay — they may have evidence from other docs.
+        async with self._acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM links WHERE src_doc_id = %s", (doc_id,)
+                )
+                await cur.execute(
+                    "DELETE FROM wisdom_evidence WHERE doc_id = %s", (doc_id,),
+                )
+                await cur.execute(
+                    "DELETE FROM documents WHERE doc_id = %s", (doc_id,)
+                )
+            await conn.commit()
+
     # ---- I layer ---------------------------------------------------------
 
     async def replace_chunks(

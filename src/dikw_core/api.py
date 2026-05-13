@@ -65,6 +65,7 @@ from .config import (
 from .domains.data.assets import materialize_asset
 from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
+from .domains.data.path_norm import doc_id_for as _doc_id_for
 from .domains.data.sources import iter_source_files
 from .domains.info.chunk import chunk_markdown
 from .domains.info.embed import (
@@ -965,17 +966,6 @@ async def check_providers(
 
 
 # ---- Phase 1: ingest -----------------------------------------------------
-
-
-def _doc_id_for(layer: Layer, logical_path: str) -> str:
-    # ``logical_path`` is normalized (NFC + casefold) so the same file
-    # written under different macOS NFD / NTFS-case spellings still
-    # resolves to the same doc_id. Without this, ``MyDoc.md`` and
-    # ``mydoc.md`` would each become their own row on re-ingest after
-    # a rename. See ``data/path_norm.py``.
-    from .domains.data.path_norm import normalize_path
-
-    return f"{layer.value}:{normalize_path(logical_path)}"
 
 
 async def ingest(
@@ -2282,13 +2272,25 @@ async def lint_propose(
     cfg, root, storage = await _with_storage(path)
     try:
         report = await run_lint(storage, root=root)
-        # Title + path is enough for every PR2 fixer; heavy fixers
-        # re-read the page body on demand from disk rather than
-        # holding every body in memory.
-        all_pages = [
-            WikiPageMeta(path=doc.path, title=doc.title)
-            for doc in await storage.list_documents(layer=Layer.WIKI, active=True)
-        ]
+        # Build WikiPageMeta + path→doc_id index in one pass over the
+        # WIKI listing. ``report.page_meta`` already carries the
+        # frontmatter slice ``run_lint`` parsed, so the orphan scorer's
+        # sources/tags signal lands here without a second disk read.
+        wiki_docs = list(
+            await storage.list_documents(layer=Layer.WIKI, active=True)
+        )
+        all_pages: list[WikiPageMeta] = []
+        path_to_doc_id: dict[str, str] = {}
+        for doc in wiki_docs:
+            pm = report.page_meta.get(doc.path)
+            all_pages.append(
+                WikiPageMeta(
+                    path=doc.path, title=doc.title,
+                    sources=pm.sources if pm else (),
+                    tags=pm.tags if pm else (),
+                )
+            )
+            path_to_doc_id[doc.path] = doc.doc_id
         # Skip the build entirely on ``--enable-llm False`` so the
         # provider-import + key-lookup cost stays out of heuristic-only
         # propose runs.
@@ -2303,6 +2305,7 @@ async def lint_propose(
             all_pages=all_pages,
             enable_llm=enable_llm,
             cfg=cfg,
+            path_to_doc_id=path_to_doc_id,
         )
         used_reporter: ProgressReporter = reporter or NoopReporter()
         return await run_lint_propose(

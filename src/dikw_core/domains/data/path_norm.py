@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import unicodedata
 
+from ...schemas import Layer
+
 
 def normalize_path(path: str) -> str:
     """Return ``path`` canonicalized for uniqueness comparison.
@@ -40,4 +42,15 @@ def normalize_path(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
 
-__all__ = ["normalize_path"]
+def doc_id_for(layer: Layer, logical_path: str) -> str:
+    """Canonical ``doc_id`` for a ``(layer, path)`` pair.
+
+    Deterministic over the normalized path so the same file written
+    under different macOS NFD / NTFS-case spellings still resolves to
+    the same row. The single source of truth — engine and tests
+    construct doc_ids through here so they cannot drift.
+    """
+    return f"{layer.value}:{normalize_path(logical_path)}"
+
+
+__all__ = ["doc_id_for", "normalize_path"]

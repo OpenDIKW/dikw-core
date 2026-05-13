@@ -286,6 +286,69 @@ class SQLiteStorage:
 
         await asyncio.to_thread(_run)
 
+    async def delete_document(self, doc_id: str) -> None:
+        def _run() -> None:
+            conn = self._require_conn()
+            with conn:
+                # Collect chunk_ids first so we can drop their FTS / vec
+                # rows manually — those are virtual tables, so the FK
+                # cascade from ``chunks → chunk_*`` doesn't reach them.
+                chunk_ids = [
+                    int(r[0]) for r in conn.execute(
+                        "SELECT chunk_id FROM chunks WHERE doc_id = ?",
+                        (doc_id,),
+                    ).fetchall()
+                ]
+                if chunk_ids:
+                    qmarks = ",".join("?" * len(chunk_ids))
+                    conn.execute(
+                        f"DELETE FROM documents_fts WHERE rowid IN ({qmarks})",
+                        chunk_ids,
+                    )
+                    # sqlite-vec ``vec_chunks_v<v>`` tables per active
+                    # text-version: rowid = chunk_id.
+                    versions = [
+                        int(r[0]) for r in conn.execute(
+                            "SELECT version_id FROM embed_versions WHERE modality = 'text'"
+                        ).fetchall()
+                    ]
+                    for vid in versions:
+                        vec_table = f"vec_chunks_v{vid}"
+                        exists = conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type IN ('table','virtual') "
+                            "AND name = ?",
+                            (vec_table,),
+                        ).fetchone()
+                        if exists:
+                            conn.execute(
+                                f"DELETE FROM {vec_table} WHERE rowid IN ({qmarks})",
+                                chunk_ids,
+                            )
+                # FK cascade drops chunk_embed_meta + chunk_asset_refs
+                # when their parent ``chunks`` row goes away.
+                conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+                # ``links`` has no FK to documents (dst_path is a free
+                # text path), so the outgoing edges must be cleared
+                # explicitly. Inbound links (``links.dst_path = doc.path``)
+                # are intentionally left alone — they surface as
+                # broken_wikilink on the next lint, which is the right
+                # signal for "this delete broke someone else's link".
+                conn.execute("DELETE FROM links WHERE src_doc_id = ?", (doc_id,))
+                # ``wisdom_evidence.doc_id`` is a non-cascading FK to
+                # ``documents``; without an explicit clear the next
+                # statement would fail with a FK violation on pages
+                # that have been used as W-layer evidence. The
+                # ``wisdom_items`` row itself stays — it may have
+                # evidence from other docs and the constraint that
+                # every item carry ≥2 evidences is enforced at review
+                # time, not by storage.
+                conn.execute(
+                    "DELETE FROM wisdom_evidence WHERE doc_id = ?", (doc_id,),
+                )
+                conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+
+        await asyncio.to_thread(_run)
+
     # ---- I layer ---------------------------------------------------------
 
     async def replace_chunks(

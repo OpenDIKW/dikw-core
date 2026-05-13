@@ -56,7 +56,9 @@ src/dikw_core/
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
 │   │   ├── indexgen.py      regenerate wiki/index.md
 │   │   ├── log.py           render wiki/log.md from wiki_log rows
-│   │   └── lint.py          broken wikilinks, orphans, duplicate titles
+│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles; lint.skip frontmatter suppression
+│   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect)
+│   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router)
 │   └── wisdom/
 │       ├── distill.py       LLM -> <wisdom> blocks; enforces N>=2 evidence
 │       ├── io.py            candidate files + aggregate regenerators

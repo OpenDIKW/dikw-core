@@ -52,10 +52,9 @@ class _NullReporter:
 
 
 def _wiki_doc_id(path: str) -> str:
-    """Mirror of ``api._doc_id_for(Layer.WIKI, path)`` without the cycle."""
-    from dikw_core.domains.data.path_norm import normalize_path
+    from dikw_core.domains.data.path_norm import doc_id_for
 
-    return f"wiki:{normalize_path(path)}"
+    return doc_id_for(Layer.WIKI, path)
 
 
 async def _seed_page(
@@ -272,9 +271,13 @@ async def test_create_page_skipped_when_file_already_exists(
 
 
 @pytest.mark.asyncio
-async def test_delete_page_unlinks_file_and_deactivates_doc(
+async def test_delete_page_moves_to_trash_and_purges_storage(
     parametrized_storage: Storage, wiki_root: Path,
 ) -> None:
+    """delete_page is a soft-delete + hard-purge: the on-disk file moves
+    to ``<base>/trash/wiki/<original-rel-path>`` (recoverable by hand)
+    while storage clears the doc + dependent rows entirely (no ghost
+    records left behind by the old ``deactivate_document`` flow)."""
     storage = parametrized_storage
     doc_id = await _seed_page(
         storage=storage, wiki_root=wiki_root,
@@ -304,11 +307,210 @@ async def test_delete_page_unlinks_file_and_deactivates_doc(
         reporter=_NullReporter(),
     )
     assert len(report.applied) == 1
+    # Original wiki path is empty …
     assert not abs_dead.exists()
+    # … the file is now under base/trash/wiki/, preserving its rel path.
+    trash_path = wiki_root / "trash/wiki/concepts/dead.md"
+    assert trash_path.is_file(), (
+        "delete_page must move the page to <base>/trash/wiki/<rel-path>"
+    )
+    # The trashed file carries a ``trashed:`` frontmatter block so users
+    # auditing the trash can tell which fixer dropped it.
+    import frontmatter
+    post = frontmatter.loads(trash_path.read_text(encoding="utf-8"))
+    trashed = post.metadata.get("trashed")
+    assert isinstance(trashed, dict)
+    assert trashed.get("proposal_id") == "p1"
+    assert trashed.get("reason") == "duplicate_title"
+    assert isinstance(trashed.get("at"), str) and trashed["at"]
 
-    # Doc should be deactivated.
-    actives = list(await storage.list_documents(layer=Layer.WIKI, active=True))
-    assert all(d.doc_id != doc_id for d in actives)
+    # Storage rows are fully purged — not just active=False.
+    assert await storage.get_document(doc_id) is None
+    all_docs = list(await storage.list_documents(layer=Layer.WIKI, active=None))
+    assert all(d.doc_id != doc_id for d in all_docs)
+
+
+@pytest.mark.asyncio
+async def test_move_to_trash_collision_does_not_overwrite(
+    tmp_path: Path,
+) -> None:
+    """Two trashes of the same path within the same second must not
+    overwrite each other. Regression for codex R2-2: a
+    second-resolution timestamp suffix collided when called twice in a
+    tight loop, silently losing the earlier soft-deleted copy."""
+    from dikw_core.domains.knowledge.lint_fix import _move_to_trash
+
+    wiki_root = tmp_path
+    rel = "wiki/concepts/twice.md"
+    src1 = wiki_root / rel
+    src1.parent.mkdir(parents=True, exist_ok=True)
+    src1.write_text(
+        "---\ntitle: First\n---\nfirst version\n", encoding="utf-8",
+    )
+    dest1 = _move_to_trash(
+        wiki_root=wiki_root, src_abs=src1, rel_path=rel,
+        reason="duplicate_title", proposal_id="p1",
+    )
+    # Recreate the file at the same path and re-trash immediately —
+    # the timestamp will collide on the second-resolution suffix.
+    src2 = wiki_root / rel
+    src2.write_text(
+        "---\ntitle: Second\n---\nsecond version\n", encoding="utf-8",
+    )
+    dest2 = _move_to_trash(
+        wiki_root=wiki_root, src_abs=src2, rel_path=rel,
+        reason="orphan_page", proposal_id="p2",
+    )
+    # Both files survive in trash with distinct names.
+    assert dest1 != dest2
+    assert dest1.is_file()
+    assert dest2.is_file()
+    import frontmatter
+    assert frontmatter.loads(dest1.read_text(encoding="utf-8")).content.strip() \
+        == "first version"
+    assert frontmatter.loads(dest2.read_text(encoding="utf-8")).content.strip() \
+        == "second version"
+
+
+@pytest.mark.asyncio
+async def test_move_to_trash_partial_write_leaves_no_dest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the trash write fails partway (disk full, short write), the
+    function must not leave a partial file at the visible ``dest``
+    path. Regression for codex R3-1: previously ``dest.write_text``
+    wrote directly to the final path, so a mid-write failure left a
+    truncated file in ``trash/`` AND the src still in ``wiki/``.
+
+    The two-stage write (tmp → atomic replace) means a failed write
+    only leaves a ``.tmp`` to clean up; the visible ``dest`` is never
+    materialised until the rename succeeds."""
+    from dikw_core.domains.knowledge import lint_fix
+    from dikw_core.domains.knowledge.lint_fix import _move_to_trash
+
+    wiki_root = tmp_path
+    rel = "wiki/concepts/half-written.md"
+    src = wiki_root / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "---\ntitle: HalfWritten\n---\nbody\n", encoding="utf-8",
+    )
+
+    original_write_text = Path.write_text
+
+    def _fake_write_text(self: Path, *args: object, **kwargs: object) -> None:
+        # Refuse only when writing into the trash subtree; let src
+        # writes and any other tmp paths outside trash succeed.
+        if str(self).startswith(str(wiki_root / "trash")):
+            raise OSError("simulated disk full")
+        return original_write_text(self, *args, **kwargs)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(lint_fix.Path, "write_text", _fake_write_text)
+
+    with pytest.raises(OSError, match="disk full"):
+        _move_to_trash(
+            wiki_root=wiki_root, src_abs=src, rel_path=rel,
+            reason="orphan_page", proposal_id="p-partial",
+        )
+
+    # Post-failure: src still in wiki/, no partial dest, no leftover tmp.
+    assert src.is_file()
+    trash_dir = wiki_root / "trash" / "wiki" / "concepts"
+    if trash_dir.exists():
+        leftovers = list(trash_dir.iterdir())
+        assert leftovers == [], (
+            f"trash/ must be empty after a failed write, got: {leftovers}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_move_to_trash_rolls_back_when_unlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``src_abs.unlink()`` fails after ``dest.write_text`` succeeds,
+    the function must roll back by deleting the new trash copy and
+    re-raising — leaving the page in exactly one place (wiki/) so the
+    next ``dikw ingest`` re-creates the storage row from disk.
+
+    Regression for codex R2-1: the previous flow left the file in
+    BOTH ``wiki/`` and ``trash/`` on a partial filesystem failure."""
+    from dikw_core.domains.knowledge import lint_fix
+    from dikw_core.domains.knowledge.lint_fix import _move_to_trash
+
+    wiki_root = tmp_path
+    rel = "wiki/concepts/doomed.md"
+    src = wiki_root / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "---\ntitle: Doomed\n---\nbody\n", encoding="utf-8",
+    )
+
+    original_unlink = Path.unlink
+
+    def _fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        # Refuse to remove the source; allow rollback unlink of the
+        # dest to proceed (dest is in trash/, src is in wiki/).
+        if self == src:
+            raise OSError("simulated permission denied on src.unlink")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(lint_fix.Path, "unlink", _fake_unlink)
+
+    with pytest.raises(OSError, match="permission denied"):
+        _move_to_trash(
+            wiki_root=wiki_root, src_abs=src, rel_path=rel,
+            reason="orphan_page", proposal_id="p-rollback",
+        )
+
+    # Post-rollback: src survives, trash is empty for this page.
+    assert src.is_file()
+    trash_target = wiki_root / "trash" / rel
+    assert not trash_target.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_page_op_path_outside_wiki_is_rejected(
+    parametrized_storage: Storage, wiki_root: Path,
+) -> None:
+    """A fixer must not try to delete files outside the ``wiki/`` tree
+    by setting ``op.path = "trash/..."`` directly. The trash redirect
+    is an apply-internal behaviour; the public op contract still only
+    allows wiki-relative targets."""
+    storage = parametrized_storage
+    # Stage a real file under base/trash/ so the path resolves to something
+    # that exists on disk — the sandbox check has to reject by path shape,
+    # not by file-existence.
+    trash_file = wiki_root / "trash/wiki/sneaky.md"
+    trash_file.parent.mkdir(parents=True, exist_ok=True)
+    trash_file.write_text("---\ntitle: Sneaky\n---\nstub\n", encoding="utf-8")
+    expected_hash = file_sha256(trash_file)
+
+    proposal = FixProposal(
+        proposal_id="p-sandbox",
+        issue_kind="duplicate_title",
+        issue_path="trash/wiki/sneaky.md",
+        issue_detail="should-never-apply",
+        operations=[
+            FixOperation(
+                kind="delete_page",
+                path="trash/wiki/sneaky.md",
+                expected_hash=expected_hash,
+            )
+        ],
+        rationale="r", source="heuristic",
+    )
+    report = await run_lint_apply(
+        proposal_report=FixProposalReport(proposals=[proposal]),
+        storage=storage, wiki_root=wiki_root,
+        reporter=_NullReporter(),
+    )
+    assert report.applied == []
+    assert len(report.skipped) == 1
+    assert "outside wiki/" in report.skipped[0]["reason"]
+    # File untouched.
+    assert trash_file.is_file()
 
 
 @pytest.mark.asyncio
