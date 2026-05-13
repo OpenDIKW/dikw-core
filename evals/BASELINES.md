@@ -29,21 +29,86 @@ suppression.
 Scoring weights and thresholds documented in
 `docs/lint-orphan-governance.md`.
 
-### Baseline run
+### Baseline run — elon-musk-validation base, 2026-05-13
 
-**TODO** — run on the elon-musk validation base once an end-to-end
-sandbox is available:
+Base: `~/Project/opendikw/dikw-data/bases/elon-musk-validation/`
+(wiki/ = 364 KB, donor source = Walter Isaacson's *Elon Musk* 2023
+biography). Pre-PR result: `lint propose --rule orphan_page` skipped
+every orphan because `FIXER_REGISTRY` had no entry → 0 applicable
+proposals. Post-PR results below.
 
-```powershell
-$base = "<elon-musk validation base>"
-uv run dikw client lint --base $base --format json | jq '.by_kind'
-uv run dikw client lint propose --base $base --rule orphan_page --limit 50 --plain
-uv run dikw client lint propose --base $base --rule orphan_page --limit 50 --enable-llm --plain
-uv run dikw client lint proposals --base $base --format json | jq '.[] | select(.kind=="orphan_page")'
+#### Lint baseline (pre-propose)
+
+```
+Total issues:          135
+By kind:               broken_wikilink=96, orphan_page=39
+Acknowledged leaves:   0
 ```
 
-Record orphan counts (pre/post-apply) + per-strategy counts (delete /
-merge / link / mark_as_leaf) here once the first run lands.
+#### Heuristic-only run (`--rule orphan_page --limit 50`)
+
+```
+Proposals generated:   39 / 39 orphans  (100%)
+Skipped:               0
+Strategy distribution: link_from_existing=39
+Source:                heuristic=39 (no LLM call)
+```
+
+Every orphan cleared `LINK_THRESHOLD = 3.0` from the shared
+`sources: [sources/elon-musk.md]` entry alone — the donor source is
+the single D-page that fans out across all K-pages, so every
+orphan-vs-candidate pair scores ≥ 3.0 on shared sources. None
+dropped to `mark_as_leaf`; no stubs detected.
+
+#### LLM-enabled run (`--rule orphan_page --limit 50 --enable-llm`)
+
+Provider: `openai_codex` (gpt-5.5 via ChatGPT-Plus backend).
+
+```
+Proposals generated:   39 / 39 orphans  (100%)
+Skipped:               0
+Strategy distribution: merge_into_existing=33, link_from_existing=6
+Source:                llm=33, heuristic=6
+```
+
+85% of orphans (33/39) cleared `MERGE_THRESHOLD = 6.0` once embedding
+similarity was folded in — the elon-musk corpus has dense semantic
+overlap between sub-notes ("Elon Musk's Crisis Combat Mode" and
+"Elon Musk's Adversity-Shaped Risk Tolerance" both pull from the
+same source paragraph, score = 3 shared-source + ~3 embed = ~6+).
+The remaining 6 orphans landed below MERGE_THRESHOLD but above
+LINK_THRESHOLD, so the fixer fell back to the heuristic link branch
+exactly as designed.
+
+All 39 LLM merge prompts passed the destructive-merge contract
+checks (`strict=True` parse, exactly-one-page response, path/title/
+body-starts-with-heading validation) — no fall-through to link due
+to contract violation.
+
+#### Delta vs the issue #82 acceptance bar
+
+| Before PR | After PR (heuristic) | After PR (LLM) |
+|-----------|---------------------:|---------------:|
+| 0 / 39 actionable proposals | 39 / 39 | 39 / 39 |
+| every orphan silently skipped | every orphan reviewable as link | 85% merge-class, 15% link-class |
+
+#### Reproducing
+
+```powershell
+$base = "$HOME/Project/opendikw/dikw-data/bases/elon-musk-validation"
+$port = Get-Random -Minimum 53000 -Maximum 60000
+Push-Location $base
+Start-Process -NoNewWindow uv -ArgumentList @(
+    "--project", "$HOME/Project/opendikw/dikw-core",
+    "run", "dikw", "serve", "--port", $port, "--log-level", "warning"
+)
+$env:DIKW_SERVER_URL = "http://127.0.0.1:$port"
+
+uv run dikw client lint --format json
+uv run dikw client lint propose --rule orphan_page --limit 50 --plain
+uv run dikw client lint propose --rule orphan_page --limit 50 --enable-llm --plain
+uv run dikw client lint proposals --format json > props.json
+```
 
 ### Tests landed
 
