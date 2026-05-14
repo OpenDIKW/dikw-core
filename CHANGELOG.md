@@ -7,6 +7,49 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### feat(server): `GET /v1/base/graph` exposes the full base graph (#89)
+
+* **Wire (additive)**: new `GET /v1/base/graph` returns the entire base
+  graph in one read-only request. Replaces `dikw-web`'s old workaround
+  of looping `GET /v1/base/pages/{path}` and re-parsing wikilinks in
+  the browser. Query: `active` (`true` default = active subset, `false`
+  = deactivated subset; matches `GET /v1/base/pages` semantics).
+  Response: `{base_revision, generated_at, nodes[{id, path, title,
+  layer, active, mtime, inbound, outbound}], edges[{id, source, target,
+  type, target_text, anchor, weight}], unresolved[{source, target_text,
+  anchor, count}], stats[{node_count, edge_count, unresolved_count}]}`.
+* **Determinism contract**: identical base state hashes the same
+  `base_revision` (sha256 over sorted per-doc
+  `(path, title, layer, mtime, body_sha256, active)` tuples —
+  observes current on-disk bodies AND title/metadata changes that
+  re-ingest persists without touching bytes; defence-in-depth drops
+  any docs whose stored path resolves outside the base before
+  hashing) so a client can cheaply skip re-render when nothing
+  changed.
+  `nodes` / `edges` / `unresolved` are sorted (by path; then
+  `(source, target, target_text, anchor)`; then `(source, target_text,
+  anchor)`) so two back-to-back calls yield byte-equivalent payloads
+  modulo `generated_at`.
+* **Aggregation rules**: repeated byte-identical
+  `(source, target, target_text, anchor)` edges collapse to one entry
+  with `weight > 1`; `inbound` / `outbound` count *distinct* connected
+  pages, not raw link occurrences. Unresolved entries aggregate
+  byte-identical `(source, target_text, anchor)` pairs the same way.
+* **Read-only**: never triggers ingest, synth, or lint apply. Existing
+  `/v1/base/pages` and `/v1/base/pages/{path}` contracts unchanged.
+* **Engine reuse**: `api.list_graph` reuses
+  `domains/knowledge/links.parse_links` + `build_fuzzy_index` +
+  `normalize_for_match` — wikilink resolution stays in one place
+  (exact title → fuzzy normalize → collision-refuse). URLs are dropped
+  from both `edges` and `unresolved` (out-of-graph by design); markdown
+  links count as edges only when their href matches a base node.
+* **Issue #89 v1 omissions** (deliberate, deferred): no ghost nodes
+  for unresolved targets; no `layer=wiki|source|all` query (clients
+  filter the node set themselves); no `anchor_count` per node; no
+  `suggestions` on unresolved entries.
+* **New (CLI)**: `dikw client graph get [--no-active]` mirrors the
+  endpoint, agent-first JSON to stdout. Pipe into `jq` for slicing.
+
 ### fix(lint): broken_wikilink `--enable-llm` is now evidence-backed (#83)
 
 * **Semantics change**: `dikw client lint propose --rule broken_wikilink

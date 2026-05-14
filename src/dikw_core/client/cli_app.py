@@ -1420,6 +1420,59 @@ def assets_get_cmd(
     _run(_go())
 
 
+# ---- graph subcommand -------------------------------------------------
+
+graph_app = typer.Typer(
+    help="Read the full base graph (nodes + edges + unresolved wikilinks).",
+    no_args_is_help=True,
+)
+app.add_typer(graph_app, name="graph")
+
+
+@graph_app.command(
+    "get",
+    epilog=(
+        "Examples:\n\n"
+        "  dikw client graph get | jq '.stats'\n\n"
+        "  dikw client graph get --no-active | jq '.nodes | length'"
+    ),
+)
+def graph_get_cmd(
+    active: Annotated[
+        bool,
+        typer.Option(
+            "--active/--no-active",
+            help=(
+                "Whether to include only active docs (default true) or only "
+                "deactivated ones (--no-active). Mirrors GET /v1/base/pages."
+            ),
+        ),
+    ] = True,
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Fetch the full base graph in one read-only request.
+
+    Replaces the old web-side workaround of looping
+    ``dikw client pages get`` for every page and re-parsing wikilinks.
+    The server returns nodes (every doc), edges (every resolvable
+    wikilink / cross-page markdown link), and ``unresolved[]`` (broken
+    wikilinks). Output is single-payload JSON — pipe into ``jq`` or
+    your agent's JSON parser.
+    """
+
+    async def _go() -> None:
+        # str(bool).lower() so the wire receives ``true`` / ``false``
+        # (FastAPI's bool coercion accepts ``true``, ``false``, ``1``,
+        # ``0``, ``yes``, ``no``).
+        params = {"active": str(active).lower()}
+        async with Transport.from_config(_resolve(server, token)) as t:
+            payload = await t.get_json("/v1/base/graph", params=params)
+        console.print_json(json.dumps(payload, ensure_ascii=False))
+
+    _run(_go())
+
+
 # ---- tasks subcommands ------------------------------------------------
 
 tasks_app = typer.Typer(

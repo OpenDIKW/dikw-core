@@ -29,7 +29,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 
 | family | examples | shape |
 |---|---|---|
-| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
+| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `GET /v1/base/graph`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
 | **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval}` → `task_id`; `GET /v1/tasks/{id}/events` (NDJSON); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → stream NDJSON → final JSON |
 | **Streaming retrieve** | `POST /v1/retrieve` | NDJSON: `retrieve_started → retrieval_done → final`. **No LLM tokens stream from the server** — agents compose chunks with their own LLM. |
 | **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
@@ -42,6 +42,36 @@ Every error follows one envelope:
 
 `code` is the stable identifier — clients branch on it, never on the
 free-form `message`.
+
+### `GET /v1/base/graph` — full base graph
+
+One request returns every node + every edge + every unresolved wikilink
+in the base, so a web Knowledge Graph view doesn't have to loop
+`GET /v1/base/pages/{path}` and re-parse `[[wikilinks]]` in the
+browser. Query: `active` (`true` default = only active docs; `false` =
+deactivated subset; mirrors `GET /v1/base/pages`). Response shape:
+
+```json
+{
+  "base_revision": "<sha256 over (path, title, layer, mtime, body_sha256, active)>",
+  "generated_at": "2026-05-14T10:00:00Z",
+  "nodes":      [ { "id", "path", "title", "layer", "active", "mtime", "inbound", "outbound" } ],
+  "edges":      [ { "id", "source", "target", "type", "target_text", "anchor", "weight" } ],
+  "unresolved": [ { "source", "target_text", "anchor", "count" } ],
+  "stats":      { "node_count", "edge_count", "unresolved_count" }
+}
+```
+
+Determinism: identical base state hashes the same `base_revision`, and
+nodes / edges / unresolved are sorted (path; then `(source, target,
+target_text, anchor)`; then `(source, target_text, anchor)`) so two
+back-to-back calls return byte-equivalent payloads modulo
+`generated_at`. Endpoint is read-only — never triggers ingest, synth,
+or lint apply. Repeated `(source, target, target_text, anchor)` edges
+collapse to one edge with `weight > 1`. URLs and out-of-base markdown
+links are intentionally dropped (neither edge nor unresolved). Issue
+#89 v1 deliberately omits ghost nodes for unresolved targets and the
+`layer` query knob — clients filter the node set themselves.
 
 ## Bind and authentication
 

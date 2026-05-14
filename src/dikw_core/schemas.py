@@ -6,6 +6,7 @@ no SQL types, no ORM handles, no cursors.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -312,6 +313,87 @@ class PageLinksResult(BaseModel):
 # one place — bumping it (e.g. adding a hypothetical "diagonal") only
 # touches one site.
 LinkDirection = Literal["in", "out", "both"]
+
+
+class GraphNode(BaseModel):
+    """One vertex in the base graph returned by ``GET /v1/base/graph``.
+
+    ``inbound`` / ``outbound`` count *distinct connected pages*, not
+    raw link occurrences — a page that links to ``B`` three times
+    contributes 1 to ``B.inbound`` (issue #89).
+    """
+
+    id: str
+    path: str
+    title: str | None = None
+    layer: Layer
+    active: bool
+    mtime: float
+    inbound: int
+    outbound: int
+
+
+class GraphEdge(BaseModel):
+    """One directed edge in the base graph.
+
+    ``weight`` aggregates byte-identical
+    ``(source, target, target_text, anchor)`` occurrences; distinct
+    ``target_text`` / ``anchor`` variants between the same pair stay
+    as separate edges (so a renderer can label each), and ``id``
+    repeats when that happens — clients treat the 4-tuple as the
+    unique key, not ``id``.
+    """
+
+    id: str
+    source: str
+    target: str
+    type: LinkType
+    target_text: str
+    anchor: str | None = None
+    weight: int
+
+
+class GraphUnresolvedLink(BaseModel):
+    """A wikilink that could not be resolved to a node in the graph.
+
+    Issue #89 v1: no ghost nodes — broken wikilinks live only in this
+    list, never as fake nodes. ``suggestions`` is deliberately omitted
+    in v1; the lint subsystem owns that flow.
+    """
+
+    source: str
+    target_text: str
+    anchor: str | None = None
+    count: int
+
+
+class GraphStats(BaseModel):
+    """Top-level totals; ``unresolved_count`` sums per-pair counts (two
+    pages each linking ``[[Missing]]`` once → 2, not 1)."""
+
+    node_count: int
+    edge_count: int
+    unresolved_count: int
+
+
+class GraphResult(BaseModel):
+    """Wire payload for ``GET /v1/base/graph``.
+
+    ``base_revision`` is content-addressed (sha256 over sorted per-doc
+    ``(path, title, layer, mtime, body_sha256, active)`` tuples) so a
+    client can cheaply skip re-render when the base hasn't changed —
+    observes on-disk body edits between ingests AND title/metadata
+    changes that re-ingest persists without touching bytes.
+    ``generated_at`` is informational; the determinism contract is on
+    ``base_revision``.
+    """
+
+    base_revision: str
+    generated_at: datetime
+    nodes: list[GraphNode] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+    unresolved: list[GraphUnresolvedLink] = Field(default_factory=list)
+    stats: GraphStats
 
 
 class ChunkNeighborRecord(BaseModel):

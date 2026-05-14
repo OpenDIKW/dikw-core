@@ -311,3 +311,42 @@ would let an attacker probe which ids exist, so we deliberately don't.
 `get_assets`, `chunk_asset_refs_for_chunks`, and `list_chunks` that
 the ingest + retrieve channels already depend on. No new adapter
 behaviour, no new contract-suite cases.
+
+## Base graph exposure to remote clients
+
+`dikw-web`'s Knowledge Graph view used to loop
+`GET /v1/base/pages/{path}` for every page and re-do wikilink
+resolution in the browser. That works for a 50-page demo wiki but
+breaks on large bases (N HTTP requests, single hang stalls the whole
+view) and silently drifts from the engine's K-layer link semantics.
+Issue #89 moves graph construction into the engine:
+
+1. **`api.list_graph` (engine)** — one read-only pass over all docs:
+   read body via `parse_any` (front-matter stripped, in `asyncio.to_thread`
+   so disk I/O doesn't stall the loop), parse via
+   `domains/knowledge/links.parse_links`, resolve in-line with the same
+   three-stage `exact title → fuzzy normalize → collision-refuse` rules
+   `resolve_links` uses, aggregate edges with `weight` and unresolved
+   counts. No new storage primitives — `Storage.list_documents` is the
+   only DB call. Resolution universe equals the response's node set, so
+   in default `active=True` mode a wikilink to a deactivated page
+   surfaces as unresolved (matches the user-visible "this page is
+   hidden, treat the link as broken" expectation).
+
+2. **`GET /v1/base/graph` (`server/routes_graph.py`)** — thin handler
+   over `api.list_graph`; query is just `active` (mirrors
+   `/v1/base/pages`). `response_model=GraphResult` keeps the wire shape
+   pinned in pydantic so client codegen doesn't drift.
+
+3. **`dikw client graph get` (`client/cli_app.py`)** — agent-first JSON
+   to stdout (no `--format table` — graph data isn't tabular); pipes
+   straight into `jq`.
+
+`base_revision` is `sha256(sorted (path, mtime, active) triples)` —
+content-addressed and cheap (microseconds), so a client can
+short-circuit unchanged graphs by comparing the revision string before
+re-rendering. Not a cryptographic commitment to body content; clients
+that need that should hash the response themselves. v1 deliberately
+omits ghost nodes for unresolved targets, the `layer` query knob, and
+`anchor_count` / `suggestions` per-node fields — kept for follow-up
+once `dikw-web` has exercised the v1 surface.

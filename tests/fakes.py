@@ -42,6 +42,7 @@ __all__ = [
     "register_text_version",
     "register_text_version_or_skip",
     "seed_asset",
+    "seed_doc",
 ]
 
 
@@ -111,6 +112,50 @@ async def seed_asset(
         abs_path = wiki_root / stored_path
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_bytes(payload)
+
+
+async def seed_doc(
+    wiki_root: Path,
+    *,
+    layer: Any,
+    path: str,
+    body: str,
+    title: str | None = None,
+    active: bool = True,
+    mtime: float = 0.0,
+    doc_hash: str = "0" * 64,
+) -> None:
+    """Drop ``body`` to ``<wiki_root>/<path>`` and upsert a matching
+    ``DocumentRecord`` against the wiki's storage.
+
+    Bypasses the markdown parser + ingest pipeline so a test can
+    exercise routes that read the ``documents`` table without paying
+    for chunking or embeddings. Mirrors :func:`seed_asset`'s shape so
+    a test author already familiar with that helper picks it up
+    free. Used by graph / page-links / lint tests.
+    """
+    from dikw_core.api import _doc_id_for, _with_storage
+    from dikw_core.schemas import DocumentRecord
+
+    abs_p = wiki_root / path
+    abs_p.parent.mkdir(parents=True, exist_ok=True)
+    abs_p.write_text(body, encoding="utf-8")
+    cfg, _root, storage = await _with_storage(wiki_root)
+    del cfg
+    try:
+        await storage.upsert_document(
+            DocumentRecord(
+                doc_id=_doc_id_for(layer, path),
+                path=path,
+                title=title,
+                hash=doc_hash,
+                mtime=mtime,
+                layer=layer,
+                active=active,
+            )
+        )
+    finally:
+        await storage.close()
 
 
 # --------------------------------------------------------------------------- #

@@ -150,6 +150,26 @@ route emits a strong `ETag` + `Cache-Control: immutable, max-age=1y`;
 a browser or HTTP cache fronting the server can revalidate with a
 single `If-None-Match`.
 
+### Inspecting the link graph
+
+Every wikilink and cross-page markdown link the engine resolved is
+exposed as a single read-only graph payload — you don't have to walk
+the wiki tree page-by-page:
+
+```bash
+# Whole-base graph: nodes + edges + unresolved wikilinks.
+uv run dikw client graph get | jq '.stats'
+# → { "node_count": 42, "edge_count": 137, "unresolved_count": 3 }
+
+# What's broken? Each entry carries source path + the literal
+# [[target text]] + the count.
+uv run dikw client graph get | jq '.unresolved'
+```
+
+Use this in `dikw-web`'s Knowledge Graph view, in agent context-expansion
+flows, or whenever you need to reason about K-layer connectivity
+without re-implementing wikilink resolution per client.
+
 ## 5. Synthesise a Knowledge layer
 
 ```bash
