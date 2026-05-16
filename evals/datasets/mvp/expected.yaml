@@ -11,41 +11,6 @@
 # tighter eval pass might want to track.
 
 sources:
-  - path: design.md
-    expected_titles:
-      - "DIKW Pyramid"
-      - "Knowledge Base"
-      - "Storage Protocol"
-      - "Wikilink"
-    expected_keywords:
-      - "atomicity"
-      - "evidence"
-
-  - path: architecture.md
-    expected_titles:
-      - "Source Backend"
-      - "LLM Provider"
-      - "Embedding Provider"
-      - "Hybrid Search"
-    expected_keywords:
-      - "RRF"
-      - "chunking"
-
-  - path: getting-started.md
-    expected_titles:
-      - "dikw init"
-      - "dikw ingest"
-      - "dikw synth"
-    expected_keywords:
-      - "uv"
-      - "dikw.yml"
-
-  - path: README.md
-    expected_titles:
-      - "dikw-core"
-    expected_keywords:
-      - "DIKW"
-
   - path: karpathy-gist.md
     expected_titles:
       - "LLM Wiki"

@@ -337,7 +337,10 @@ run-to-run synth variance (~0.05) without flaking.
 First real-LLM calibration run for the synth quality framework shipped
 in #78 (2026-05-12). LLM = `openai_codex` (gpt-5.5 via ChatGPT
 subscription), embedding = `Qwen3-Embedding-0.6B@1024` via Gitee.
-Corpus = mvp 7 sources (dikw-core docs + 3 Karpathy essays).
+Corpus = mvp 7 sources (dikw-core docs + 3 Karpathy essays) at
+the time of this baseline. The dikw-core docs were removed from
+the mvp corpus 2026-05-16; subsequent runs operate on 3 Karpathy
+sources only and these numbers will need re-baselining.
 
 Observed metrics:
 

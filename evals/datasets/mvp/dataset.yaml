@@ -1,9 +1,8 @@
 name: mvp
 description: >
-  MVP dogfood corpus — dikw-core's own docs (design, architecture,
-  getting-started, README) plus three Karpathy essays (LLM-wiki gist,
-  Software 2.0, Recipe for Training Neural Networks). 10 hand-authored
-  queries with 4 exact-fact + 3 paraphrase + 3 multi-doc synthesis.
+  MVP dogfood corpus — three Karpathy essays (LLM-wiki gist,
+  Software 2.0, Recipe for Training Neural Networks). 3 in-domain
+  queries + 3 out-of-domain negatives.
 
   Supports two eval modes — ``retrieval`` (the original hermetic gate)
   and ``synth`` (K-layer quality eval added 2026-05-12). Both halves
@@ -12,18 +11,16 @@ description: >
 
 modes: [retrieval, synth]
 
-# Retrieval thresholds calibrated 2026-04-21:
-# observed hit@3 = 1.000, hit@10 = 1.000, MRR = 0.833 on 10 queries.
-# With 10 queries, each single-query change shifts hit@k by 0.1 — the
-# thresholds leave ~2 queries of slack so corpus tweaks don't flake
-# the gate while a real retrieval regression still fails it.
+# Retrieval thresholds: with 3 in-domain queries each result shifts
+# hit@k by 0.33 — the gate is intentionally lax (0.80) so a single
+# regression flips it but small corpus jitters don't flake.
 #
 # Synth thresholds calibrated 2026-05-13 against openai_codex (gpt-5.5)
-# LLM + Qwen3-Embedding-0.6B@1024 (Gitee). Observed metrics across 7
-# sources / 31 pages — see the 2026-05-13 BASELINES.md entry. Floors
-# sit well below observed values: a regression should drop synth
-# output noticeably to fail the gate, but a prompt tweak that nudges
-# one metric down a few % won't flake.
+# LLM + Qwen3-Embedding-0.6B@1024 (Gitee). Pre-cleanup baseline was
+# 7 sources / 31 pages; post-cleanup (3 Karpathy sources only) will
+# re-calibrate on the next baseline run — the floors below should
+# still pass since the metrics are corpus-agnostic, but re-record
+# observed values into BASELINES.md after the first post-cleanup run.
 thresholds:
   hit_at_3: 0.80
   hit_at_10: 0.80
@@ -33,12 +30,12 @@ thresholds:
   synth/duplicate_ratio_max: 0.05
   synth/wikilink_resolved_ratio: 0.55
   synth/language_fidelity: 0.95
-  # expected_coverage intentionally NOT gated yet — two real-LLM
-  # runs swung 0.238 → 0.143 (>0.09 noise), the expected_titles in
-  # expected.yaml don't match the LLM's actual title patterns
-  # ("DIKW Pyramid" vs "DIKW Layers in dikw-core"). Re-add once
-  # the fuzzy resolver / expected.yaml are reconciled (see the
-  # 2026-05-13 BASELINES.md entry, follow-up #2).
+  # expected_coverage intentionally NOT gated yet — pre-cleanup runs
+  # showed >0.09 noise between two real-LLM passes, and the
+  # expected_titles in expected.yaml didn't fuzzy-match the LLM's
+  # actual title patterns. Re-add once the fuzzy resolver /
+  # expected.yaml are reconciled against a fresh post-cleanup run
+  # (see the 2026-05-13 BASELINES.md entry, follow-up #2).
 
 synth:
   # grounding_threshold lowered from 0.65 → 0.50 after the 2026-05-13
