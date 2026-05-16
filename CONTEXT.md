@@ -81,7 +81,7 @@ _Avoid_: query, ask, search
 ## Plugin contract
 
 **converter plugin**:
-A pypi package that turns one non-markdown file (`paper.pdf`, `book.epub`, …) into the md+assets a **source** is made of. Plugins are discovered via the `dikw.client.converters` entry-points group, run in-process inside `dikw client`, and live in the sibling [`dikw-plugins`](https://github.com/opendikw/dikw-plugins) repo — never in dikw-core. The contract (`Converter` Protocol, `convert(input_path, output_dir)` signature, output layout) is defined in [`src/dikw_core/client/converters.py`](src/dikw_core/client/converters.py) and the rationale in [`docs/adr/0001-client-side-converter-plugins.md`](docs/adr/0001-client-side-converter-plugins.md).
+A pypi package that turns one non-markdown file (`paper.pdf`, `book.epub`, …) into the md+assets a **source** is made of. Plugins are discovered via the `dikw.client.converters` entry-points group, run in-process inside `dikw client`, and live in the sibling [`dikw-plugins`](https://github.com/opendikw/dikw-plugins) repo — never in dikw-core. The contract (`Converter` Protocol, `convert(input_path, output_dir)` signature, output layout) is defined in [`src/dikw_core/client/converters.py`](src/dikw_core/client/converters.py).
 _Avoid_: backend (`SourceBackend` is the engine-side D-layer parser — different concern, different layer), loader, importer (verb collision), adapter.
 
 **converter engine name**:

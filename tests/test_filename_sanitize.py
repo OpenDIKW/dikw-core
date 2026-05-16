@@ -1,6 +1,6 @@
 """Tests for the asset filename-sanitize + path-composition pipeline.
 
-These pin the spec from `docs/superpowers/specs/.../media-data-support` (v1):
+The pinned shape (asset path layout):
 
   assets/<h2>/<h8>-<sanitized-original-name>.<ext>
 

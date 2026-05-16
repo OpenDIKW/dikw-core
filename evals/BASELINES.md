@@ -241,10 +241,10 @@ Resolves follow-up #1 from the synth eval mvp baseline below. The
 default `synth.grounding_threshold = 0.65` — suspiciously low against
 synth output that hand-inspection said was well-grounded.
 
-Investigation: ran `scripts/tau_sweep_grounding.py` (a new throwaway
-script that mirrors `run_synth_eval`'s ingest+synth pipeline but
-dumps every claim's peak cosine against its source chunks, so the
-ratio can be reduced at multiple taus from one LLM run).
+Investigation: ran an ad-hoc tau-sweep script (since removed —
+it mirrored `run_synth_eval`'s ingest+synth pipeline but dumped
+every claim's peak cosine against its source chunks, so the ratio
+could be reduced at multiple taus from one LLM run).
 
 **Run 1, tau sweep before filter** — 30 pages, 293 claims:
 
@@ -302,10 +302,10 @@ against chunked-document sources.
   thresholds.
 - `compute_grounding_cosines` + `reduce_grounding_ratio` exposed as
   public symbols so future sweeps reuse the embedding work.
-- `scripts/tau_sweep_grounding.py` added — runs one ingest+synth,
-  dumps per-claim cosines, reduces ratios at multiple taus, prints
-  top/bottom 10 claims for manual inspection. Operational tool for
-  future re-sweeps (different embedder, different corpus).
+- Future re-sweeps (different embedder / different corpus): the
+  `compute_grounding_cosines` + `reduce_grounding_ratio` public
+  symbols above are the building blocks — write a fresh ad-hoc
+  driver when needed.
 
 **Verification** — `dikw client eval --dataset mvp --eval synth
 --pretty` against same wiki:
@@ -457,18 +457,20 @@ engine actually owns.
 LLM + Qwen3-Embedding-0.6B on Gitee AI; `dikw.yml` defaults
 elsewhere. PR2 fixers do not exercise the embedder leg yet.
 
-**Methodology:** `scripts/pr2_baseline_run.py` calls
+**Methodology:** an ad-hoc baseline script (since removed) called
 `api.lint_propose(..., enable_llm=True)` directly (no `dikw serve`)
-so the run is reproducible without server lifecycle. Each rule is
-gated by `--limit` to keep token spend small while still proving the
-LLM path end-to-end on real lint findings.
+so the run was reproducible without server lifecycle. Each rule was
+gated by a `--limit` to keep token spend small while still proving
+the LLM path end-to-end on real lint findings.
 
 ### Run 1 — `broken_wikilink` LLM stub fallback
+
+Invocation (historical):
 
 ```
 DIKW_PR2_BASELINE_RULE=broken_wikilink \
 DIKW_PR2_BASELINE_LIMIT=2 \
-uv run python scripts/pr2_baseline_run.py
+uv run python <baseline-script>
 ```
 
 | metric | value |
@@ -496,7 +498,7 @@ stubs:
 ```
 DIKW_PR2_BASELINE_RULE=non_atomic_page \
 DIKW_PR2_BASELINE_LIMIT=1 \
-uv run python scripts/pr2_baseline_run.py
+uv run python <baseline-script>
 ```
 
 | metric | value |
@@ -541,8 +543,8 @@ fixer's stub fallback or fuzzy match against any new entity page).
 (`feat/synth-existing-pages-context`, shipped as PR #69 commit
 `8c6d392`). Pre-PR2 snapshot captured before the rebuild; post-PR2
 column captured 2026-05-10 by wiping `wiki/` + `.dikw/index.sqlite`
-on the same base and re-running ingest + synth + lint via
-`scripts/pr69_baseline_run.py`. Codex SSE keepalive bug **did not
+on the same base and re-running ingest + synth + lint via an ad-hoc
+baseline script (since removed). Codex SSE keepalive bug **did not
 trigger** — synth fans out to 19 groups of ≤3600 tokens each, so the
 trigger condition (single oversize request) never appears.
 
@@ -576,8 +578,8 @@ new primitive (`get_chunk_embeddings`); pure SELECT, zero DDL.
 
 Pre-PR2 column captured from the wiki tree synthesised under the
 pre-PR2 prompt (2026-04 / 2026-05 commits). Post-PR2 column captured
-by `scripts/pr69_baseline_run.py` after a full wipe-and-rebuild on
-the same source + same provider config.
+by an ad-hoc baseline script (since removed) after a full
+wipe-and-rebuild on the same source + same provider config.
 
 ```
 source: ~/Project/opendikw/dikw-data/datasets/markdown-books/elon-musk.md
