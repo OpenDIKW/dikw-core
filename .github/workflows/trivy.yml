@@ -36,7 +36,7 @@ jobs:
             examples/docker
 
       - name: Trivy scan (image, SARIF for Security tab)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: dikw-core:scan
           format: sarif
