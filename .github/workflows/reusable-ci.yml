@@ -15,6 +15,9 @@ jobs:
   lint-type-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # Codecov OIDC tokenless upload
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +53,7 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
           flags: unit
+          use_oidc: true
 
   server-e2e:
     name: Server e2e (serve-and-run)

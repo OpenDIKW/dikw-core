@@ -9,6 +9,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  id-token: write   # needed for Codecov OIDC upload in reusable-ci.yml
+
 jobs:
   ci:
     # The actual job matrix lives in reusable-ci.yml so release.yml can
