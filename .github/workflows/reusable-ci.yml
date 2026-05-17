@@ -42,6 +42,17 @@ jobs:
       - name: Pytest (fast, excludes slow + perf)
         run: uv run pytest -v -m "not slow and not perf"
 
+      - name: Upload coverage to Codecov
+        # Tokenless OIDC for public repos (Codecov v4+, GA Apr 2024).
+        # Only 3.12 uploads — 3.13's coverage is near-identical and a
+        # duplicate upload just doubles the PR-comment noise.
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false   # report-only; coverage is data, not a gate
+          flags: unit
+
   server-e2e:
     name: Server e2e (serve-and-run)
     runs-on: ubuntu-latest

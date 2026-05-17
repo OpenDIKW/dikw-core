@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Python deps version updates are NOT enabled here on purpose —
+  # monthly cadence would generate PR noise the pre-alpha repo can't
+  # absorb. CVE alerts come instead through the repo-level "Dependabot
+  # security updates" toggle, which is event-driven (no noise).
+
+  # GitHub Actions versions: low churn, monthly cadence catches
+  # deprecated action versions before they break CI silently.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+      include: scope

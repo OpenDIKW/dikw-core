@@ -1,0 +1,53 @@
+name: Trivy
+
+# Container vulnerability scanning. Report-only — matches CodeQL's
+# posture so a freshly disclosed CVE in upstream base image doesn't
+# block PR merges. Findings land in the Security tab.
+
+on:
+  pull_request:
+    paths:
+      - 'examples/docker/Dockerfile'
+      - '.github/workflows/trivy.yml'
+  push:
+    branches: [main]
+  schedule:
+    # Weekly base-image rescan to catch CVEs disclosed against an
+    # unchanged Dockerfile. Mondays 05:23 UTC — doesn't clash with
+    # CodeQL's 04:23 slot.
+    - cron: '23 5 * * 1'
+
+jobs:
+  scan:
+    name: Scan dikw-core image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload to Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image locally
+        run: |
+          docker build \
+            -t dikw-core:scan \
+            -f examples/docker/Dockerfile \
+            examples/docker
+
+      - name: Trivy scan (image, SARIF for Security tab)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: dikw-core:scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true   # don't alert on CVEs with no patched version
+          exit-code: '0'         # report-only
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy

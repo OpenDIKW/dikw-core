@@ -1,5 +1,14 @@
 # dikw-core
 
+<p align="center">
+  <a href="https://github.com/OpenDIKW/dikw-core/actions/workflows/ci.yml"><img src="https://github.com/OpenDIKW/dikw-core/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/OpenDIKW/dikw-core/actions/workflows/codeql.yml"><img src="https://github.com/OpenDIKW/dikw-core/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://codecov.io/gh/OpenDIKW/dikw-core"><img src="https://codecov.io/gh/OpenDIKW/dikw-core/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://pypi.org/project/dikw-core/"><img src="https://img.shields.io/pypi/v/dikw-core" alt="PyPI"></a>
+  <a href="https://pypi.org/project/dikw-core/"><img src="https://img.shields.io/pypi/pyversions/dikw-core" alt="Python"></a>
+  <a href="https://github.com/OpenDIKW/dikw-core/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
+
 AI-native knowledge engine that turns your documents into **Data → Information → Knowledge → Wisdom**.
 
 Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown wiki (the K layer), `dikw-core` adds a first-class **Wisdom layer** — distilled principles, lessons, and patterns that apply beyond any single source.
