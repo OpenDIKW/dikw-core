@@ -1,0 +1,159 @@
+name: Reusable CI
+
+# Reusable workflow holding the actual test/build matrix. Both
+# ``ci.yml`` (push to main / PR) and ``release.yml`` (tag push) call
+# this so the release gate is byte-for-byte identical to the PR gate —
+# the v0.0.2 ``twine upload`` rejection happened because the release
+# path ran a thinner ``pytest -q`` than CI's ``-v -m "not slow and not
+# perf"`` + Postgres service + e2e + wheel smoke. One source of truth
+# kills that asymmetry.
+
+on:
+  workflow_call:
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Pytest (fast, excludes slow + perf)
+        run: uv run pytest -v -m "not slow and not perf"
+
+  server-e2e:
+    name: Server e2e (serve-and-run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Slow tests (subprocess + bind real port)
+        # Covers ``client/serve_and_run.py`` end-to-end: spawns the real
+        # ``dikw serve`` process, polls /v1/healthz, runs the inner
+        # client command, and asserts a clean shutdown. Splitting this
+        # out from the matrix job keeps the failure mode visible (a
+        # broken subprocess lifecycle dominates the CI report instead
+        # of being one row in a pytest summary).
+        run: uv run pytest -v -m "slow"
+
+  postgres-contract:
+    name: Postgres contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dikw
+          POSTGRES_PASSWORD: dikw
+          POSTGRES_DB: dikw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dikw -d dikw"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DIKW_TEST_POSTGRES_DSN: postgresql://dikw:dikw@localhost:5432/dikw
+      # Task store PG contract has its own env var so the wiki-DB DSN
+      # and the tasks-DB DSN can diverge in production (per Phase-0
+      # decision in store_postgres.py). For CI we point both at the
+      # same instance — different schemas, no cross-talk.
+      DIKW_TEST_POSTGRES_TASKS_DSN: postgresql://dikw:dikw@localhost:5432/dikw
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies (with postgres extra)
+        run: uv sync --all-extras
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U dikw; then
+              echo "postgres is ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres failed to become ready" >&2
+          exit 1
+
+      - name: Run storage + task-store contract tests against Postgres
+        run: |
+          uv run pytest -v \
+            tests/test_storage_contract.py \
+            tests/server/test_task_store_contract.py
+
+  wheel-smoke:
+    name: Wheel install smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Install wheel in a fresh venv
+        # Mirrors what ``pip install dikw-core`` does for an end user. The
+        # uv-managed dev venv has the source tree bind-mounted, so anything
+        # missing from the wheel (force-include misconfig, datasets not
+        # packaged, schema.sql excluded, etc.) is invisible there.
+        run: |
+          python -m venv /tmp/dikw-test
+          /tmp/dikw-test/bin/pip install --upgrade pip
+          /tmp/dikw-test/bin/pip install dist/*.whl
+
+      - name: Smoke test installed CLI
+        run: |
+          /tmp/dikw-test/bin/dikw --help
+          /tmp/dikw-test/bin/dikw version
