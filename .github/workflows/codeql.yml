@@ -1,0 +1,41 @@
+name: CodeQL
+
+# Defense-in-depth SAST. Findings appear in the repo's Security tab,
+# not on the PR conversation, so this workflow is informational, not
+# a merge blocker. Public repo → free Actions minutes for CodeQL.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly full scan to pick up new query packs without waiting for
+    # the next PR. Mondays 04:23 UTC — quiet slot.
+    - cron: '23 4 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # ``security-extended`` widens query coverage to catch deeper
+          # patterns (deserialization, injection, hardcoded secrets) at
+          # the cost of a few extra minutes per run. Acceptable.
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"

@@ -1,0 +1,60 @@
+name: Eval gate
+
+# Codifies CLAUDE.md's "Things not to do" final bullet:
+#   "Don't ship K-layer / Retrieval changes without an entry in
+#    evals/BASELINES.md showing real-data outcome."
+#
+# Until this gate landed, that discipline was pure human review. PRs
+# that quietly touched ``domains/knowledge/`` or ``domains/info/`` with
+# no baseline entry slipped through whenever the reviewer (typically
+# the author themselves) didn't catch it.
+#
+# Override: label the PR ``no-baseline-needed`` for rename-only or
+# comment-only refactors that genuinely don't shift retrieval behavior.
+
+on:
+  pull_request:
+    paths:
+      - 'src/dikw_core/domains/knowledge/**'
+      - 'src/dikw_core/domains/info/**'
+      - 'src/dikw_core/storage/**'
+
+jobs:
+  baseline-must-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for ``no-baseline-needed`` label
+        id: label-check
+        run: |
+          labels='${{ toJson(github.event.pull_request.labels) }}'
+          if echo "$labels" | grep -q '"name": *"no-baseline-needed"'; then
+            echo "override=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "override=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if override label present
+        if: steps.label-check.outputs.override == 'true'
+        run: |
+          echo "::notice::PR labeled 'no-baseline-needed' — skipping baseline check."
+          echo "Reviewer is expected to confirm the change is genuinely non-functional."
+
+      - name: Verify BASELINES.md updated
+        if: steps.label-check.outputs.override != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -q '^evals/BASELINES\.md$'; then
+            echo "::notice::evals/BASELINES.md updated alongside K-layer/Retrieval/storage change — gate passed."
+          else
+            echo "::error::This PR touches domains/knowledge/, domains/info/, or storage/ but evals/BASELINES.md is unchanged."
+            echo "::error::Per CLAUDE.md, K-layer / Retrieval / storage changes need a BASELINES.md entry with real-data outcome."
+            echo "::error::If this is a non-functional refactor (rename/comment/typing only), label the PR with 'no-baseline-needed'."
+            exit 1
+          fi
