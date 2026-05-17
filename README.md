@@ -57,7 +57,10 @@ uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?"
 > LLM. See [`AGENTS.md`](./AGENTS.md).
 
 Server deployment, security posture, and the wire contract live in
-[`docs/server.md`](./docs/server.md).
+[`docs/server.md`](./docs/server.md). For container deployment, see
+[`examples/docker/`](./examples/docker/) (Dockerfile + compose stack
+with `pgvector/pgvector:0.8.2-pg18`) and the long-form
+[`docs/deployment-docker.md`](./docs/deployment-docker.md).
 
 End-to-end walkthrough: [`docs/getting-started.md`](./docs/getting-started.md).
 Architecture brief: [`docs/architecture.md`](./docs/architecture.md).

@@ -1,0 +1,57 @@
+services:
+  postgres:
+    # Bare ``pg18`` follows upstream latest — never use it for prod.
+    image: pgvector/pgvector:0.8.2-pg18
+    environment:
+      POSTGRES_USER: dikw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: dikw
+    volumes:
+      # pg18 stores data under /var/lib/postgresql/<major>/docker, so the
+      # mount point is the parent — not /var/lib/postgresql/data like
+      # pg16/17. See docker-library/postgres#1259.
+      - postgres-data:/var/lib/postgresql
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dikw -d dikw"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dikw-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DIKW_SERVER_TOKEN: ${DIKW_SERVER_TOKEN:?required}
+      # libpq keyword conninfo — survives passwords with URL-reserved chars
+      # (/, #, ?, %, @, :) that would break a postgresql:// URL form.
+      DIKW_SERVER_TASKS_DSN: "host=postgres port=5432 user=dikw password=${POSTGRES_PASSWORD} dbname=dikw"
+      # Single-server PG task store: reclaim ``running`` rows from the
+      # previous incarnation on restart. UNSET this when scaling to
+      # multiple dikw-core replicas sharing the task DSN.
+      DIKW_TASK_REAP_ON_START: "1"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DIKW_EMBEDDING_API_KEY: ${DIKW_EMBEDDING_API_KEY:-}
+      DIKW_LOG_LEVEL: ${DIKW_LOG_LEVEL:-INFO}
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./base:/base
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request as r,os; r.urlopen(r.Request('http://localhost:8765/v1/healthz', headers={'Authorization': 'Bearer '+os.environ['DIKW_SERVER_TOKEN']})).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres-data:

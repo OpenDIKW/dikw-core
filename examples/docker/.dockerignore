@@ -1,0 +1,7 @@
+# Docker build context includes everything under examples/docker/ even
+# when the Dockerfile doesn't COPY anything — secrets and user data
+# would otherwise be uploaded to the daemon (or remote builder).
+.env
+.env.*
+!.env.example
+base/

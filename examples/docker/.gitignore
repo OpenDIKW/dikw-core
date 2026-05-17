@@ -1,0 +1,3 @@
+# User-owned base tree created by `docker compose run --rm dikw-core init /base`.
+# Lives next to the compose file for convenience but is not part of the example.
+base/

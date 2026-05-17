@@ -109,10 +109,12 @@ production:
   `Restart=on-failure`. Set `Environment=DIKW_SERVER_TOKEN=...` (or
   `EnvironmentFile=` to a 600-perm file) so the token doesn't end up in
   the unit listing.
-* **Docker** — base image with `uv pip install dikw-core[postgres]`,
-  mount the base tree at `/base`, expose 8765. The server expects to
-  own its bound base — don't share the same `.dikw/` directory across
-  multiple containers.
+* **Docker** — see [`../examples/docker/`](../examples/docker/) for a
+  ready-to-run `docker-compose.yml` (dikw-core +
+  `pgvector/pgvector:0.8.2-pg18`) and
+  [`deployment-docker.md`](deployment-docker.md) for the bootstrap
+  walkthrough. The server expects to own its bound base — don't share
+  the same `.dikw/` directory across multiple containers.
 * **Foreground / dev** — `uv run dikw serve` is fine for laptop work;
   `serve-and-run` is the right tool for one-shot commands.
 
