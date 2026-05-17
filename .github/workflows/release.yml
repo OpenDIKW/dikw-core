@@ -10,8 +10,18 @@ permissions:
   id-token: write   # required for PyPI trusted publishing
 
 jobs:
+  # Run the exact same gate PRs run before doing anything irreversible.
+  # Previously this workflow ran a thin ``ruff + mypy + pytest -q``
+  # gate, which missed the Postgres contract suite, the slow serve-and-
+  # run e2e, and the wheel install smoke test — v0.0.2's first PyPI
+  # upload was rejected for duplicate wheel entries even though the
+  # release gate had passed.
+  pre-release-gate:
+    uses: ./.github/workflows/reusable-ci.yml
+
   build:
     name: Build sdist + wheel
+    needs: pre-release-gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,13 +44,6 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match pyproject version $pyproject_version" >&2
             exit 1
           fi
-
-      - name: Run test gate before releasing
-        run: |
-          uv sync --all-extras
-          uv run ruff check .
-          uv run mypy src
-          uv run pytest -q
 
       - name: Build distributions
         run: uv build
