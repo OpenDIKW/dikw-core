@@ -8,12 +8,12 @@ After the task-first CLI flip, the subgroup is:
   paged GET to the cursor endpoint, raw JSON to stdout
 * ``tasks wait <id> --poll-wait K --timeout S`` (new) — long-poll loop
   until terminal, exit code mapped (0 / 1 / 130 / 124)
-* ``tasks cancel <id>`` (unchanged)
+* ``tasks cancel <id>`` — agent-first JSON by default, ``--pretty``
+  opts in to the colored human line
 * ~~``tasks follow``~~ — removed; ``tasks wait`` covers it
 
 This file owns the contract for the new commands + the removed-shape
-regression coverage; ``tasks list`` / ``tasks cancel`` already have
-coverage elsewhere.
+regression coverage; ``tasks list`` already has coverage elsewhere.
 """
 
 from __future__ import annotations
@@ -145,3 +145,51 @@ def test_tasks_follow_removed(
     patch_transport_factory()
     r = _run(["client", "tasks", "follow", "anything"])
     assert r.exit_code != 0
+
+
+# ---- cancel ------------------------------------------------------------
+
+
+def test_tasks_cancel_default_emits_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent-first default: ``tasks cancel`` writes the raw
+    ``CancelResponse`` JSON (``{task_id, cancelled, already_terminal}``)
+    to stdout so agents can parse it without stripping rich ANSI."""
+    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    patch_transport_factory()
+    submit = _run(["client", "ingest", "--no-embed"])
+    task_id = json.loads(submit.stdout)["task_id"]
+
+    result = _run(["client", "tasks", "cancel", task_id])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["task_id"] == task_id
+    assert isinstance(payload["cancelled"], bool)
+    assert isinstance(payload["already_terminal"], bool)
+
+
+def test_tasks_cancel_pretty_emits_human_line(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--pretty`` opts in to the colored human line — must not emit
+    JSON, must mention the task id, and must distinguish the
+    already-terminal no-op from a live cancel request."""
+    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    patch_transport_factory()
+    submit = _run(["client", "ingest", "--no-embed"])
+    task_id = json.loads(submit.stdout)["task_id"]
+
+    result = _run(["client", "tasks", "cancel", task_id, "--pretty"])
+    assert result.exit_code == 0, result.stdout
+    # Not JSON — stripping ANSI would still leave free-form text.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
+    assert task_id in result.stdout
+    assert ("already terminal" in result.stdout) or (
+        "cancel requested" in result.stdout
+    )
