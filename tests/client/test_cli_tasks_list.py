@@ -161,3 +161,56 @@ async def test_drain_task_list_raises_when_page_guard_exhausted() -> None:
     # The error must carry enough context for the user to resume manually.
     assert exc_info.value.pages == _DRAIN_PAGE_GUARD
     assert exc_info.value.last_cursor == f"c{_DRAIN_PAGE_GUARD}"
+
+
+@pytest.mark.asyncio
+async def test_drain_task_list_stops_on_non_dict_body() -> None:
+    """A malformed (non-dict) page body ends the walk gracefully with
+    whatever was collected so far, rather than crashing the loop."""
+    from dikw_core.client.cli_app import _drain_task_list
+
+    class _BadShape:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_json(
+            self, path: str, *, params: dict[str, Any] | None = None
+        ) -> Any:
+            self.calls += 1
+            return ["not", "a", "dict"]
+
+    t = _BadShape()
+    rows = await _drain_task_list(t)  # type: ignore[arg-type]
+    assert rows == []
+    assert t.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_task_list_stops_when_cursor_absent() -> None:
+    """``has_more=true`` with no usable ``next_cursor`` can't be followed —
+    return the rows collected so far instead of spinning the loop."""
+    from dikw_core.client.cli_app import _drain_task_list
+
+    class _NoCursor:
+        async def get_json(
+            self, path: str, *, params: dict[str, Any] | None = None
+        ) -> dict[str, Any]:
+            return {"tasks": [{"task_id": "t1"}], "has_more": True}
+
+    rows = await _drain_task_list(_NoCursor())  # type: ignore[arg-type]
+    assert [r["task_id"] for r in rows] == ["t1"]
+
+
+def test_run_maps_drain_page_guard_to_exit_1() -> None:
+    """``_run`` renders the page-guard failure and exits 1 rather than
+    leaking the raw traceback to the user."""
+    import typer
+
+    from dikw_core.client.cli_app import DrainPageGuardError, _run
+
+    async def _boom() -> None:
+        raise DrainPageGuardError(pages=200, rows_collected=3, last_cursor="c200")
+
+    with pytest.raises(typer.Exit) as exc:
+        _run(_boom())
+    assert exc.value.exit_code == 1

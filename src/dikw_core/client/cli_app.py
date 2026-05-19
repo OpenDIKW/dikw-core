@@ -608,8 +608,6 @@ def lint_proposals_cmd(
                 result_by_id[tid] = body.get("result")
         hydrated_propose_rows: list[dict[str, Any]] = []
         for row in propose_rows:
-            if not isinstance(row, dict):
-                continue
             tid = row.get("task_id")
             merged = dict(row)
             if isinstance(tid, str) and tid in result_by_id:
