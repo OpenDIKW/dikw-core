@@ -103,7 +103,7 @@ Known patterns to reuse from references (concrete sources):
 - **SQLite schema design + content-addressed storage** — `mineru-doc-explorer/src/db-schema.ts`, `mineru-doc-explorer/src/store.ts` (documents table with indexed content hash, links table, wiki_log).
 - **Smart markdown chunking (~900 tokens, 15% overlap, heading-aware)** — `mineru-doc-explorer/src/store.ts` chunking section; `qmd/src/store.ts` lines ~257–310.
 - **Wikilink parsing + forward/backward graph** — `mineru-doc-explorer/src/links.ts`, `mineru-doc-explorer/src/wiki/{log,lint,index-gen}.ts`. Port to a small `knowledge/links.py`.
-- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,retrieve}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / distill / eval) stream NDJSON via task handles; retrieve streams inline NDJSON (no task_id, short-lived); sync ops return JSON directly. **LLM synthesis is not a dikw-core verb** — agents call `retrieve` and run their own LLM on the returned chunks.
+- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,retrieve}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / distill / eval) return a `task_id` whose progress is consumed via the paged JSON cursor at `GET /v1/tasks/{id}/events` (long-poll with `wait>0`); retrieve streams inline NDJSON (no task_id, short-lived); sync ops return JSON directly. **LLM synthesis is not a dikw-core verb** — agents call `retrieve` and run their own LLM on the returned chunks.
 - **YAML config + schema validation** — `mineru-doc-explorer/src/config-schema.ts` (Zod) → Pydantic v2 equivalent in `dikw_core/config.py`.
 - **Strong-signal short-circuit** (skip expensive LLM expansion when FTS already gives a confident top hit) — `qmd/src/store.ts:4057–4076`.
 
@@ -531,7 +531,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 
 **HTTP surface** (the server is the canonical wire contract):
 - Sync RPC under `/v1/` — `status`, `check`, `lint`, `init`, wiki page list/read, doc search, chunk fetch, wisdom list/approve/reject.
-- Async tasks under `/v1/{ingest,synth,distill,eval}` — submit returns `task_id`; `GET /v1/tasks/{id}/events` streams NDJSON progress; `/result` and `/cancel` complete the lifecycle.
+- Async tasks under `/v1/{ingest,synth,distill,eval}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
 - Streaming retrieve — `POST /v1/retrieve` returns NDJSON: `retrieve_started → retrieval_done → final{succeeded|failed|cancelled}`. The final event payload carries ranked chunks (with full text) plus page refs. **No LLM tokens stream from the server** — synthesis is the agent's job. Applicable-wisdom surfacing lands in PR-5 via a separate `GET /v1/wisdom/applicable?q=...` endpoint, not on the retrieve payload.
 - Sources import — `POST /v1/import` accepts a manifest + tar.gz (multipart upload at the transport layer), validates sha256, stages atomically, then commits per-package into `<base>/sources/` before ingest reads from disk.
 

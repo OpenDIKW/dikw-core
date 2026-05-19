@@ -60,6 +60,107 @@ _EXIT_CANCELLED = 130  # POSIX SIGINT convention
 _EXIT_TIMEOUT = 124  # POSIX timeout(1) convention
 
 
+_DRAIN_PAGE_GUARD = 200
+
+
+class DrainPageGuardError(Exception):
+    """Raised when ``_drain_task_list`` hits ``_DRAIN_PAGE_GUARD`` with the
+    server still reporting ``has_more=true``.
+
+    Silently returning a partial list would make ``--all`` /
+    ``lint proposals`` look successful while losing rows past the
+    ceiling — agents (and cross-reference logic like apply→propose)
+    would then act on incomplete data. Fail loud instead; surface the
+    last cursor so the user can resume manually if their dataset is
+    genuinely that large.
+    """
+
+    def __init__(self, *, pages: int, rows_collected: int, last_cursor: str | None) -> None:
+        super().__init__(
+            f"drained {pages} pages ({rows_collected} rows) but server still "
+            f"reports has_more=true; refusing to silently truncate. Last "
+            f"cursor: {last_cursor!r}"
+        )
+        self.pages = pages
+        self.rows_collected = rows_collected
+        self.last_cursor = last_cursor
+
+
+async def _drain_task_list(
+    t: Transport,
+    *,
+    op: str | None = None,
+    status: str | None = None,
+    page_size: int = 200,
+) -> list[dict[str, Any]]:
+    """Walk ``GET /v1/tasks`` to completion, returning every matching row.
+
+    The 0.2.0 list endpoint returns a ``TaskListPage`` envelope with a
+    cursor — callers that want the *full* matching set (rather than
+    just the first page) need to follow ``next_cursor`` until
+    ``has_more`` flips to ``False``. This helper centralises that walk
+    so individual commands don't reinvent it.
+
+    Used by ``lint proposals`` (where the propose/apply listings must
+    be complete for the cross-reference to be correct) and any future
+    aggregator-style commands. The hard ceiling of ``_DRAIN_PAGE_GUARD``
+    pages guards against a server-side cursor bug looping forever; if
+    we exhaust it while the server still flags ``has_more=true``, we
+    raise ``DrainPageGuardError`` rather than handing back a partial
+    list that looks complete.
+    """
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(_DRAIN_PAGE_GUARD):
+        params: dict[str, Any] = {"limit": page_size}
+        if op is not None:
+            params["op"] = op
+        if status is not None:
+            params["status"] = status
+        if cursor is not None:
+            params["cursor"] = cursor
+        body = await t.get_json("/v1/tasks", params=params)
+        if not isinstance(body, dict):
+            return rows
+        tasks = body.get("tasks")
+        if isinstance(tasks, list):
+            rows.extend(r for r in tasks if isinstance(r, dict))
+        if not body.get("has_more"):
+            return rows
+        next_cursor = body.get("next_cursor")
+        if not isinstance(next_cursor, str) or not next_cursor:
+            return rows
+        cursor = next_cursor
+    raise DrainPageGuardError(
+        pages=_DRAIN_PAGE_GUARD, rows_collected=len(rows), last_cursor=cursor
+    )
+
+
+async def _gather_task_results(
+    t: Transport, rows: list[dict[str, Any]], *, concurrency: int = 8
+) -> list[Any]:
+    """Fan out ``GET /v1/tasks/{id}/result`` for every row carrying a
+    ``task_id``, bounded to ``concurrency`` in-flight requests.
+
+    The bound matters: ``Transport`` shares one ``httpx.AsyncClient``
+    whose pool keeps 20 keepalive connections behind a 5s acquisition
+    timeout. An unbounded gather over a base with hundreds of terminal
+    tasks would queue past the pool cap and raise ``PoolTimeout``
+    instead of merely running slowly.
+    """
+    ids = [
+        str(r["task_id"]) for r in rows
+        if isinstance(r, dict) and r.get("task_id")
+    ]
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(tid: str) -> Any:
+        async with sem:
+            return await t.get_json(f"/v1/tasks/{tid}/result")
+
+    return list(await asyncio.gather(*(_one(tid) for tid in ids)))
+
+
 def _serve_and_run_forces_wait() -> bool:
     """True when this CLI invocation is the inner command of a
     ``dikw client serve-and-run`` lifecycle without ``--keep-alive``.
@@ -175,6 +276,13 @@ def _run(coro: Any) -> Any:
     except SourceImportError as e:
         console.print(f"[red]import error:[/red] {e}")
         raise typer.Exit(code=2) from e
+    except DrainPageGuardError as e:
+        # The drain helper refused to silently truncate a paginated
+        # listing. Render the resume hint so the user can either retry
+        # with a more selective filter (``--op`` / ``--status``) or
+        # walk the cursor manually starting from ``last_cursor``.
+        console.print(f"[red]listing exhausted page guard:[/red] {e}")
+        raise typer.Exit(code=1) from e
 
 
 # ---- meta + sync commands ---------------------------------------------
@@ -474,21 +582,42 @@ def lint_proposals_cmd(
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
-            # Fetch propose + apply listings in parallel — they're
-            # independent reads and the second saves a round trip.
-            tasks_resp, applies_resp = await asyncio.gather(
-                t.get_json("/v1/tasks?op=lint.propose&status=succeeded"),
-                t.get_json("/v1/tasks?op=lint.apply&status=succeeded"),
+            # propose + apply listings are independent reads — walk both
+            # cursors concurrently.
+            propose_rows, apply_rows = await asyncio.gather(
+                _drain_task_list(t, op="lint.propose", status="succeeded"),
+                _drain_task_list(t, op="lint.apply", status="succeeded"),
             )
-        propose_rows = tasks_resp if isinstance(tasks_resp, list) else []
-        applies = applies_resp if isinstance(applies_resp, list) else []
-        # Cross-reference applies via apply.result.proposal_task_id.
-        # TaskRow exposes only ``params_digest`` (not raw params), so
-        # the cross-reference key has to live in the apply runner's
-        # result payload — which lint_op stamps in before completion.
+            # 0.2.0: ``GET /v1/tasks`` is summary-only. Re-fetch each
+            # row's result so the propose payload (``result.proposals`` /
+            # ``result.skipped``) and the apply cross-reference
+            # (``result.proposal_task_id``) both survive the projection.
+            propose_results, apply_results = await asyncio.gather(
+                _gather_task_results(t, propose_rows),
+                _gather_task_results(t, apply_rows),
+            )
+        # Stitch propose result payloads back into the summary rows so
+        # both JSON output and the table renderer see ``row["result"]``
+        # the way they did pre-0.2.0.
+        result_by_id: dict[str, Any] = {}
+        for body in propose_results:
+            if not isinstance(body, dict):
+                continue
+            tid = body.get("task_id")
+            if isinstance(tid, str):
+                result_by_id[tid] = body.get("result")
+        hydrated_propose_rows: list[dict[str, Any]] = []
+        for row in propose_rows:
+            if not isinstance(row, dict):
+                continue
+            tid = row.get("task_id")
+            merged = dict(row)
+            if isinstance(tid, str) and tid in result_by_id:
+                merged["result"] = result_by_id[tid]
+            hydrated_propose_rows.append(merged)
         applied_ids: set[str] = set()
-        for r in applies:
-            result = (r or {}).get("result") or {}
+        for body in apply_results:
+            result = (body or {}).get("result") or {}
             ref = result.get("proposal_task_id")
             if isinstance(ref, str):
                 applied_ids.add(ref)
@@ -496,12 +625,15 @@ def lint_proposals_cmd(
         if fmt == "json":
             console.print_json(
                 json.dumps(
-                    {"proposals": propose_rows, "applied_ids": sorted(applied_ids)},
+                    {
+                        "proposals": hydrated_propose_rows,
+                        "applied_ids": sorted(applied_ids),
+                    },
                     ensure_ascii=False,
                 )
             )
         else:
-            render_lint_proposals_listing(console, propose_rows, applied_ids)
+            render_lint_proposals_listing(console, hydrated_propose_rows, applied_ids)
 
     _run(_go())
 
@@ -1598,8 +1730,33 @@ def tasks_list_cmd(
         ),
     ] = None,
     limit: Annotated[
-        int, typer.Option("--limit", help="Max rows to return.")
+        int,
+        typer.Option(
+            "--limit",
+            help="Page size. Default 100, max 1000.",
+        ),
     ] = 100,
+    all_pages: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help=(
+                "Walk the cursor until exhausted and emit a flat array "
+                "(--format json) or a combined table. Default is a "
+                "single page with the server envelope passed through."
+            ),
+        ),
+    ] = False,
+    cursor: Annotated[
+        str | None,
+        typer.Option(
+            "--cursor",
+            help=(
+                "Opaque cursor from a prior response's ``next_cursor``. "
+                "Ignored when --all is set."
+            ),
+        ),
+    ] = None,
     fmt: Annotated[
         str,
         typer.Option(
@@ -1610,40 +1767,74 @@ def tasks_list_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """List server-side tasks."""
+    """List server-side tasks.
+
+    Default (single page): the server envelope ``{tasks, next_cursor,
+    has_more}`` flows through unchanged on ``--format json`` so agents
+    can advance the cursor themselves. ``--all`` drains the cursor and
+    emits a flat array — convenient for humans piping into ``jq`` /
+    ``less``.
+    """
     _validate_format(fmt)
 
     async def _go() -> None:
-        params: dict[str, Any] = {"limit": limit}
-        if op is not None:
-            params["op"] = op
-        if status_filter is not None:
-            params["status"] = status_filter
         async with Transport.from_config(_resolve(server, token)) as t:
-            rows = await t.get_json("/v1/tasks", params=params)
-        if fmt == "json":
-            console.print_json(json.dumps(rows, ensure_ascii=False))
-            return
-        if not rows:
-            console.print("[dim]no tasks[/dim]")
-            return
-        table = Table(title="tasks", show_header=True, header_style="bold")
-        table.add_column("task_id")
-        table.add_column("op")
-        table.add_column("status")
-        table.add_column("created_at")
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            table.add_row(
-                str(row.get("task_id") or ""),
-                str(row.get("op") or ""),
-                str(row.get("status") or ""),
-                str(row.get("created_at") or ""),
-            )
-        console.print(table)
+            if all_pages:
+                rows = await _drain_task_list(
+                    t,
+                    op=op,
+                    status=status_filter,
+                    page_size=limit,
+                )
+                if fmt == "json":
+                    console.print_json(
+                        json.dumps(rows, ensure_ascii=False)
+                    )
+                    return
+                _render_tasks_table(rows)
+                return
+
+            params: dict[str, Any] = {"limit": limit}
+            if op is not None:
+                params["op"] = op
+            if status_filter is not None:
+                params["status"] = status_filter
+            if cursor is not None:
+                params["cursor"] = cursor
+            envelope = await t.get_json("/v1/tasks", params=params)
+            if fmt == "json":
+                console.print_json(json.dumps(envelope, ensure_ascii=False))
+                return
+            tasks = (envelope or {}).get("tasks") or []
+            _render_tasks_table(tasks)
 
     _run(_go())
+
+
+def _render_tasks_table(rows: list[dict[str, Any]]) -> None:
+    """Shared table renderer for ``tasks list`` (single-page and --all).
+
+    Empty input prints the dim "no tasks" hint so the human-default
+    table mode still has an empty-state signal after the 0.2.0
+    envelope refactor."""
+    if not rows:
+        console.print("[dim]no tasks[/dim]")
+        return
+    table = Table(title="tasks", show_header=True, header_style="bold")
+    table.add_column("task_id")
+    table.add_column("op")
+    table.add_column("status")
+    table.add_column("created_at")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        table.add_row(
+            str(row.get("task_id") or ""),
+            str(row.get("op") or ""),
+            str(row.get("status") or ""),
+            str(row.get("created_at") or ""),
+        )
+    console.print(table)
 
 
 @tasks_app.command("status")

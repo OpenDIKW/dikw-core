@@ -130,7 +130,7 @@ def serve_cmd(
         typer.Option("--log-level", help="uvicorn log level."),
     ] = "info",
 ) -> None:
-    """Start the dikw HTTP server (FastAPI + NDJSON) on this host."""
+    """Start the dikw HTTP server (FastAPI, JSON long-poll task events) on this host."""
     import uvicorn
 
     from .server.app import build_app_from_disk

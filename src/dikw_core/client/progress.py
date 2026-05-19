@@ -24,7 +24,7 @@ sync RPC, no progress stream) can render it without owning a renderer.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -457,7 +457,7 @@ def render_lint_proposals_summary(
 
 def render_lint_proposals_listing(
     console: Console,
-    rows: list[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
     applied_ids: set[str],
 ) -> None:
     """Render the ``dikw client lint proposals`` table.
