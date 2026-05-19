@@ -1783,14 +1783,32 @@ def tasks_wait_cmd(
 @tasks_app.command("cancel")
 def tasks_cancel_cmd(
     task_id: Annotated[str, typer.Argument(help="Task id (12-char hex).")],
+    pretty: Annotated[
+        bool,
+        typer.Option(
+            "--pretty",
+            help=(
+                "Render a colored human-readable line instead of the "
+                "default raw CancelResponse JSON."
+            ),
+        ),
+    ] = False,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Request cancellation of a running task."""
+    """Request cancellation of a running task.
+
+    Default output is the raw ``CancelResponse`` JSON
+    (``{task_id, cancelled, already_terminal}``) on stdout so agents
+    can pipe to ``jq`` without stripping rich's ANSI. Pass
+    ``--pretty`` for the colored human line."""
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             payload = await t.post_json(f"/v1/tasks/{task_id}/cancel")
+        if not pretty:
+            print(json.dumps(payload, ensure_ascii=False))
+            return
         if payload.get("already_terminal"):
             console.print(
                 f"[dim]task {task_id} already terminal — no-op[/dim]"
