@@ -30,7 +30,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 | family | examples | shape |
 |---|---|---|
 | **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `GET /v1/base/graph`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
-| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval,lint.propose,lint.apply}` → `task_id`; `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
+| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval,lint.propose,lint.apply}` → `task_id`; `GET /v1/tasks?cursor=<opaque>&limit=M&op=…&status=…` (cursor JSON, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}` / `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
 | **Streaming retrieve** | `POST /v1/retrieve` | NDJSON: `retrieve_started → retrieval_done → final`. **No LLM tokens stream from the server** — agents compose chunks with their own LLM. |
 | **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
@@ -195,6 +195,17 @@ token comes from the file, and so on.
   with `wait>0` and re-issue with the returned `next_from_seq`. No
   heartbeat needed because the response cycle itself bounds connection
   lifetime to ≤ `wait`.
+* **Tasks list uses cursor JSON too** — `GET /v1/tasks` returns a
+  `TaskListPage` envelope (`{tasks, next_cursor, has_more}`) since
+  0.2.0; rows are **summary** projections of `TaskRow` (no `result`,
+  no `error`) so a 50 KB synth result never crosses the wire just
+  because someone browsed the list. Pull full detail through
+  `GET /v1/tasks/{id}` (whole row) or `GET /v1/tasks/{id}/result`
+  (terminal payload). The `next_cursor` is an opaque base64url token
+  encoding `(created_at, task_id)` under the
+  `(created_at DESC, task_id ASC)` keyset — clients must treat it as
+  opaque and replay it verbatim on the next request. A tampered or
+  forged cursor surfaces as `400 invalid_cursor`.
 * **Import payload size** — `POST /v1/import` accepts up to 1 GiB by
   default. Override via `DIKW_SERVER_MAX_IMPORT_BYTES=<int>`.
 

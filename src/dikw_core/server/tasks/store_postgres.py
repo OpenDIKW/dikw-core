@@ -21,6 +21,7 @@ from .store import (
     TaskRow,
     TaskStatus,
     TaskStoreError,
+    summary_row_to_task,
 )
 
 if TYPE_CHECKING:  # imports happen in init() so base install works without pg deps
@@ -52,6 +53,11 @@ CREATE INDEX IF NOT EXISTS tasks_op_created_idx
     ON {schema}.tasks(op, created_at DESC);
 CREATE INDEX IF NOT EXISTS tasks_instance_status_idx
     ON {schema}.tasks(instance_id, status);
+-- Covers the unfiltered keyset walk (``list_tasks`` with no status/op
+-- filter, ORDER BY created_at DESC, task_id ASC) so ``tasks list --all``
+-- pages index-only instead of seq-scan + sort.
+CREATE INDEX IF NOT EXISTS tasks_created_taskid_idx
+    ON {schema}.tasks(created_at DESC, task_id);
 
 CREATE TABLE IF NOT EXISTS {schema}.task_events (
     task_id  TEXT NOT NULL,
@@ -172,6 +178,8 @@ class PostgresTaskStore:
         status: TaskStatus | None = None,
         op: str | None = None,
         limit: int = 100,
+        after_created_at: str | None = None,
+        after_task_id: str | None = None,
     ) -> list[TaskRow]:
         # Always scoped to this server's instance — operator listings
         # must not enumerate tasks owned by another wiki sharing the DSN.
@@ -183,17 +191,30 @@ class PostgresTaskStore:
         if op is not None:
             clauses.append("op = %s")
             params.append(op)
+        # Keyset cursor under (created_at DESC, task_id ASC). OR form
+        # matches the sqlite implementation and keeps the plan stable
+        # whether Postgres picks the (status, created_at) or the
+        # (op, created_at) index.
+        if after_created_at is not None and after_task_id is not None:
+            clauses.append(
+                "(created_at < %s OR (created_at = %s AND task_id > %s))"
+            )
+            params.extend([after_created_at, after_created_at, after_task_id])
         where = " WHERE " + " AND ".join(clauses)
         params.append(int(limit))
         async with self._acquire() as conn, conn.cursor() as cur:
+            # Summary projection — never SELECT result/error here, so a
+            # 50 KB synth result never crosses the wire for a list call.
+            # Detail goes through ``get(task_id)`` / ``GET /v1/tasks/{id}``.
             await cur.execute(
                 f"SELECT task_id, op, status, created_at, started_at, "
-                f"finished_at, params_digest, result, error FROM "
-                f"{self._schema}.tasks{where} ORDER BY created_at DESC LIMIT %s",
+                f"finished_at, params_digest FROM "
+                f"{self._schema}.tasks{where} "
+                f"ORDER BY created_at DESC, task_id ASC LIMIT %s",
                 params,
             )
             rows = await cur.fetchall()
-        return [_row_to_task(r) for r in rows]
+        return [summary_row_to_task(r) for r in rows]
 
     async def list_running(self) -> list[TaskRow]:
         # Filter by ``instance_id`` so a restart in one ``dikw serve``

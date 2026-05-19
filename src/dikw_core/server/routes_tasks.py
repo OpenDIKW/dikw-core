@@ -2,12 +2,15 @@
 
 The cursor JSON ``/events`` endpoint serves both UI history paging
 (``wait=0``) and agent follow loops (``wait>0`` long-poll). It replaces
-the prior NDJSON streaming tail. See ``docs/server.md``.
+the prior NDJSON streaming tail. ``GET /v1/tasks`` itself is a
+cursor-paged summary view since 0.2.0 — full ``result``/``error``
+payloads live on ``GET /v1/tasks/{id}`` and ``/result``.
+See ``docs/server.md``.
 
 URL shape:
   POST   /v1/{op}                 → submit, returns {task_id, op, links}
-  GET    /v1/tasks                → list with status / op filters
-  GET    /v1/tasks/{task_id}      → row snapshot
+  GET    /v1/tasks                → TaskListPage {tasks, next_cursor, has_more}
+  GET    /v1/tasks/{task_id}      → row snapshot (full TaskRow incl. result)
   GET    /v1/tasks/{task_id}/result    → terminal result (404 until terminal)
   GET    /v1/tasks/{task_id}/events    → cursor JSON {events, next_from_seq, has_more, last_seq, task_status}
   POST   /v1/tasks/{task_id}/cancel    → request cancellation
@@ -16,7 +19,10 @@ URL shape:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import json
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query, Request
@@ -224,6 +230,89 @@ class CancelResponse(BaseModel):
     already_terminal: bool
 
 
+class TaskRowSummary(BaseModel):
+    """Summary projection of ``TaskRow`` served by ``GET /v1/tasks``.
+
+    Deliberately omits ``result`` and ``error`` — a synth/eval row's
+    full payload can be tens of KB, and the list view exists to *find*
+    tasks, not to read their bodies. Detail goes through
+    ``GET /v1/tasks/{id}/result`` or ``GET /v1/tasks/{id}``.
+    """
+
+    task_id: str
+    op: str
+    status: TaskStatus
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    params_digest: str = ""
+
+
+class TaskListPage(BaseModel):
+    """Cursor-paged response from ``GET /v1/tasks``.
+
+    The ``next_cursor`` value is an opaque base64url string — the
+    server's encoding is an internal detail and may evolve; clients
+    must only treat it as opaque and replay it verbatim on the next
+    request. When ``has_more`` is ``False``, ``next_cursor`` is
+    ``None``.
+    """
+
+    tasks: list[TaskRowSummary]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
+def _encode_cursor(*, created_at: str, task_id: str) -> str:
+    """Encode (created_at, task_id) into a base64url cursor token.
+
+    The payload is a tiny JSON object — base64url avoids `+/=` characters
+    that need URL escaping when the cursor flows through `?cursor=` query
+    parameters. Padding is stripped on encode and re-added on decode."""
+    raw = json.dumps(
+        {"created_at": created_at, "task_id": task_id},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(token: str) -> tuple[str, str]:
+    """Decode a ``_encode_cursor`` token back into (created_at, task_id).
+
+    Raises ``BadRequest("invalid_cursor")`` for any decode/shape error so
+    agents see a stable failure mode (their bug) instead of a 500.
+    Validation here is strict because the only legitimate way to obtain
+    a cursor is to read it from a prior response — any tampering or
+    forgery is by definition a client-side defect.
+    """
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except (binascii.Error, ValueError) as e:
+        # ``ValueError`` is the base class of both ``UnicodeEncodeError``
+        # (non-ASCII token hits ``encode("ascii")``) and
+        # ``UnicodeDecodeError`` (non-UTF-8 payload hits ``decode``), so it
+        # alone catches every malformed-cursor shape.
+        raise BadRequest(
+            "invalid cursor",
+            code="invalid_cursor",
+            detail={"reason": "decode_failed"},
+        ) from e
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("created_at"), str)
+        or not isinstance(payload.get("task_id"), str)
+    ):
+        raise BadRequest(
+            "invalid cursor",
+            code="invalid_cursor",
+            detail={"reason": "payload_shape"},
+        )
+    return payload["created_at"], payload["task_id"]
+
+
 class EventsPage(BaseModel):
     """Cursor-paged response from ``GET /v1/tasks/{id}/events``.
 
@@ -422,16 +511,51 @@ def make_router(*, auth_dep: Any) -> APIRouter:
 
     # ---- task lifecycle endpoints -------------------------------------
 
-    @router.get("/tasks", response_model=list[TaskRow])
+    @router.get("/tasks", response_model=TaskListPage)
     async def list_tasks(
         request: Request,
         status: TaskStatus | None = Query(default=None),
         op: str | None = Query(default=None),
         limit: int = Query(default=100, ge=1, le=1000),
-    ) -> list[TaskRow]:
+        cursor: str | None = Query(default=None),
+    ) -> TaskListPage:
+        """Cursor-paged summary listing.
+
+        Page boundary detection uses the "fetch limit+1" trick: ask the
+        store for one extra row, and if it comes back we know there's at
+        least one more page after this one — strip the sentinel before
+        returning and stamp its ``(created_at, task_id)`` into
+        ``next_cursor`` so the caller can resume from exactly where this
+        page ended.
+        """
         rt: ServerRuntime = get_runtime(request.app)
-        return await rt.task_store.list_tasks(
-            status=status, op=op, limit=limit
+        after_created_at: str | None = None
+        after_task_id: str | None = None
+        if cursor is not None:
+            after_created_at, after_task_id = _decode_cursor(cursor)
+        # Fetch one extra row to detect ``has_more`` without a second
+        # round-trip / count query.
+        rows = await rt.task_store.list_tasks(
+            status=status,
+            op=op,
+            limit=limit + 1,
+            after_created_at=after_created_at,
+            after_task_id=after_task_id,
+        )
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        next_cursor: str | None = None
+        if has_more and page_rows:
+            tail = page_rows[-1]
+            next_cursor = _encode_cursor(
+                created_at=tail.created_at, task_id=tail.task_id
+            )
+        summaries = [
+            TaskRowSummary.model_validate(r, from_attributes=True)
+            for r in page_rows
+        ]
+        return TaskListPage(
+            tasks=summaries, next_cursor=next_cursor, has_more=has_more
         )
 
     @router.get("/tasks/{task_id}", response_model=TaskRow)

@@ -7,6 +7,63 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.2.0 — 2026-05-19
+
+### BREAKING (HTTP): `GET /v1/tasks` response shape changed
+
+* `GET /v1/tasks` no longer returns a bare `list[TaskRow]`. It now
+  returns a `TaskListPage` envelope:
+
+  ```json
+  {
+    "tasks": [TaskRowSummary, ...],
+    "next_cursor": "<opaque base64url cursor or null>",
+    "has_more": true | false
+  }
+  ```
+
+* `TaskRowSummary` is a **summary** projection — it omits `result`
+  and `error`. A succeeded synth / eval task can stamp tens of KB
+  into `result`, and the list view exists to *find* tasks, not to
+  read their bodies. For full detail use `GET /v1/tasks/{id}` (whole
+  row, including `result` / `error`) or `GET /v1/tasks/{id}/result`
+  (terminal payload).
+* The CLI mirror `dikw client tasks list --format json` now emits
+  the envelope verbatim on a single page; pass `--all` to drain the
+  cursor and emit a flat JSON array.
+* **Migration**: any client that consumed the old bare-array shape
+  must unwrap `.tasks` and treat `result` / `error` as absent. Any
+  client that looped through results to read `r.result` (e.g. the
+  pre-0.2.0 `dikw client lint proposals` cross-reference) must fan
+  out to `GET /v1/tasks/{id}/result` per row — the in-tree client
+  already does this.
+
+### Added: cursor pagination on `GET /v1/tasks`
+
+* New `?cursor=<opaque>` query parameter; the server hands back the
+  next page's cursor in `next_cursor`. Pagination uses keyset over
+  `(created_at DESC, task_id ASC)` so same-millisecond submissions
+  page deterministically without skipping or repeating rows.
+* `?limit=` (default 100, max 1000) is the page size, not the total
+  cap. Pair with the cursor to walk arbitrarily large queues.
+* `?status=` and `?op=` filters compose with `?cursor=` — cursor
+  positions advance inside the filtered set, not the unfiltered one.
+* Malformed cursors fail loudly: `400 invalid_cursor` (stable error
+  code, suitable for agent branches).
+* CLI: `dikw client tasks list` gains `--all` (drain the cursor and
+  emit a flat array; default is single-page envelope passthrough)
+  and `--cursor <opaque>` (resume from a prior response).
+
+### Fixed: `dikw serve --help` no longer claims NDJSON for tasks
+
+* The `dikw serve` docstring previously described the server as
+  "FastAPI + NDJSON". Task events have been cursor JSON + long-poll
+  since the task-first flip; only `POST /v1/retrieve` is still
+  NDJSON. The help text now reads "FastAPI, JSON long-poll task
+  events".
+* `docs/design.md` references that called the task event endpoint a
+  "NDJSON streamer" have been corrected to "paged JSON cursor".
+
 ## 0.1.0 — 2026-05-18
 
 ### BREAKING (CLI): top-level short names for HTTP commands removed

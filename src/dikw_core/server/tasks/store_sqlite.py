@@ -32,6 +32,7 @@ from .store import (
     TaskRow,
     TaskStatus,
     TaskStoreError,
+    summary_row_to_task,
 )
 
 _SCHEMA_DDL = """
@@ -54,6 +55,11 @@ CREATE INDEX IF NOT EXISTS tasks_op_created_idx
     ON tasks(op, created_at DESC);
 CREATE INDEX IF NOT EXISTS tasks_instance_status_idx
     ON tasks(instance_id, status);
+-- Covers the unfiltered keyset walk (`list_tasks` with no status/op
+-- filter, ORDER BY created_at DESC, task_id ASC) so `tasks list --all`
+-- pages index-only instead of full-scan + filesort.
+CREATE INDEX IF NOT EXISTS tasks_created_taskid_idx
+    ON tasks(created_at DESC, task_id);
 
 CREATE TABLE IF NOT EXISTS task_events (
     task_id  TEXT NOT NULL,
@@ -165,14 +171,25 @@ class SqliteTaskStore:
         status: TaskStatus | None = None,
         op: str | None = None,
         limit: int = 100,
+        after_created_at: str | None = None,
+        after_task_id: str | None = None,
     ) -> list[TaskRow]:
-        return await asyncio.to_thread(self._list_sync, status, op, limit)
+        return await asyncio.to_thread(
+            self._list_sync,
+            status,
+            op,
+            limit,
+            after_created_at,
+            after_task_id,
+        )
 
     def _list_sync(
         self,
         status: TaskStatus | None,
         op: str | None,
         limit: int,
+        after_created_at: str | None,
+        after_task_id: str | None,
     ) -> list[TaskRow]:
         conn = self._open_conn()
         try:
@@ -184,16 +201,30 @@ class SqliteTaskStore:
             if op is not None:
                 clauses.append("op = ?")
                 params.append(op)
+            # Keyset cursor: "strictly after (after_created_at,
+            # after_task_id)" under the (created_at DESC, task_id ASC)
+            # sort order. Standard OR form so it works on SQLite < 3.15
+            # which lacks row-value tuple comparison.
+            if after_created_at is not None and after_task_id is not None:
+                clauses.append(
+                    "(created_at < ? OR (created_at = ? AND task_id > ?))"
+                )
+                params.extend(
+                    [after_created_at, after_created_at, after_task_id]
+                )
             where = " WHERE " + " AND ".join(clauses)
             params.append(int(limit))
+            # Summary view — never SELECT ``result`` / ``error``. Keeps
+            # ``GET /v1/tasks`` bandwidth bounded; ``get()`` still loads
+            # the full payload for single-task detail.
             cur = conn.execute(
-                "SELECT task_id, op, status, created_at, started_at, finished_at, "
-                "params_digest, result, error FROM tasks"
+                "SELECT task_id, op, status, created_at, started_at, "
+                "finished_at, params_digest FROM tasks"
                 + where
-                + " ORDER BY created_at DESC LIMIT ?",
+                + " ORDER BY created_at DESC, task_id ASC LIMIT ?",
                 params,
             )
-            return [_row_to_task(r) for r in cur.fetchall()]
+            return [summary_row_to_task(r) for r in cur.fetchall()]
         finally:
             conn.close()
 

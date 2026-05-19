@@ -107,6 +107,24 @@ def test_lint_propose_apply_cli_full_loop(
     assert r2.exit_code == 0, r2.stdout
     assert task_id in r2.stdout
 
+    # 2.5. Each propose row in the JSON payload MUST carry its
+    # ``result.proposals`` array. The 0.2.0 ``GET /v1/tasks`` is summary-
+    # only (no ``result``), so ``lint proposals`` must fan out to
+    # ``GET /v1/tasks/{id}/result`` to hydrate the propose payload
+    # before serializing — otherwise the rendered table shows
+    # ``proposals=0`` for every row even though there are real fixes
+    # queued, and downstream agents see an empty ``proposals`` array
+    # in JSON mode. Guard with a strict shape assertion.
+    import json as _json2
+    body2 = _json2.loads(r2.stdout)
+    row = next(
+        (r for r in body2["proposals"] if r.get("task_id") == task_id),
+        None,
+    )
+    assert row is not None, body2
+    assert isinstance(row.get("result"), dict), row
+    assert row["result"].get("proposals"), row
+
     # 3. apply <task_id> — ``--wait`` so the test sees the apply report.
     r3 = _run(["client", "lint", "apply", task_id, "--plain", "--wait"])
     assert r3.exit_code == 0, r3.stdout
@@ -117,6 +135,27 @@ def test_lint_propose_apply_cli_full_loop(
         encoding="utf-8"
     )
     assert "[[Foo Bar]]" in rewritten
+
+    # 5. After apply, ``proposals --format json`` must show the propose
+    # task_id under ``applied_ids``. This guards the 0.2.0 regression
+    # path: ``GET /v1/tasks`` no longer carries ``result``, so the
+    # cross-reference now fans out to ``GET /v1/tasks/{id}/result`` for
+    # every succeeded ``lint.apply`` row. If that fan-out is broken
+    # (forgot to migrate / wrong key), ``applied_ids`` silently empties
+    # while ``proposals`` still lists the propose row — and lint UX
+    # gets stuck in "always pending" mode.
+    import json as _json
+    r4 = _run(["client", "lint", "proposals", "--format", "json"])
+    assert r4.exit_code == 0, r4.stdout
+    body = _json.loads(r4.stdout)
+    assert task_id in body["applied_ids"], body
+
+    # 6. table mode (the human default) must render the listing without
+    # crashing — exercises the non-JSON ``render_lint_proposals_listing``
+    # branch over the same hydrated rows.
+    r5 = _run(["client", "lint", "proposals"])
+    assert r5.exit_code == 0, r5.stdout
+    assert "lint proposals" in r5.stdout.lower()
 
 
 @pytest.fixture()

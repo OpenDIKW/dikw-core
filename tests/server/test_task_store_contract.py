@@ -139,6 +139,111 @@ async def test_list_filters_and_orders(store: TaskStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_drops_result_and_error_payload(store: TaskStore) -> None:
+    """``list_tasks`` is the summary view: ``result`` and ``error`` come
+    back as ``None`` regardless of what is persisted. Fetching the heavy
+    payload happens via ``get(task_id)`` (or the HTTP ``/result`` endpoint
+    one layer up). Keeps `GET /v1/tasks` bandwidth-bounded."""
+    row = _row()
+    await store.create(row)
+    await store.update_status(
+        row.task_id,
+        TaskStatus.SUCCEEDED,
+        finished_at="2026-05-19T12:00:00.000Z",
+        result={"large": "x" * 10_000, "items": [1, 2, 3]},
+    )
+
+    listed = await store.list_tasks()
+    assert len(listed) == 1
+    assert listed[0].result is None
+    assert listed[0].error is None
+
+    full = await store.get(row.task_id)
+    assert full is not None
+    assert full.result == {"large": "x" * 10_000, "items": [1, 2, 3]}
+
+
+@pytest.mark.asyncio
+async def test_list_keyset_cursor_pagination(store: TaskStore) -> None:
+    """Keyset pagination order is ``(created_at DESC, task_id ASC)`` —
+    paging ``limit=2`` over 5 rows (with deliberate ``created_at`` ties)
+    yields every row exactly once. The tie-break is the source of truth
+    for the HTTP cursor's opaque payload, so it must be stable."""
+    t_high = "2026-05-19T12:00:03.000Z"
+    t_mid = "2026-05-19T12:00:02.000Z"
+    t_low = "2026-05-19T12:00:01.000Z"
+    rows = [
+        TaskRow(task_id="a1", op="echo", status=TaskStatus.PENDING, created_at=t_high),
+        TaskRow(task_id="m1", op="echo", status=TaskStatus.PENDING, created_at=t_mid),
+        TaskRow(task_id="m2", op="echo", status=TaskStatus.PENDING, created_at=t_mid),
+        TaskRow(task_id="z1", op="echo", status=TaskStatus.PENDING, created_at=t_low),
+        TaskRow(task_id="z2", op="echo", status=TaskStatus.PENDING, created_at=t_low),
+    ]
+    for r in rows:
+        await store.create(r)
+
+    page1 = await store.list_tasks(limit=2)
+    assert [r.task_id for r in page1] == ["a1", "m1"]
+
+    page2 = await store.list_tasks(
+        limit=2,
+        after_created_at=page1[-1].created_at,
+        after_task_id=page1[-1].task_id,
+    )
+    assert [r.task_id for r in page2] == ["m2", "z1"]
+
+    page3 = await store.list_tasks(
+        limit=2,
+        after_created_at=page2[-1].created_at,
+        after_task_id=page2[-1].task_id,
+    )
+    assert [r.task_id for r in page3] == ["z2"]
+
+    page4 = await store.list_tasks(
+        limit=2,
+        after_created_at=page3[-1].created_at,
+        after_task_id=page3[-1].task_id,
+    )
+    assert page4 == []
+
+
+@pytest.mark.asyncio
+async def test_list_cursor_with_status_filter(store: TaskStore) -> None:
+    """Cursor advances *within* the filter result set — the rows skipped
+    by ``status=`` must not consume cursor positions, otherwise paging
+    through a busy queue would silently drop entries that change status
+    mid-walk."""
+    t1 = "2026-05-19T12:00:01.000Z"
+    t2 = "2026-05-19T12:00:02.000Z"
+    t3 = "2026-05-19T12:00:03.000Z"
+    a = TaskRow(task_id="aaa", op="echo", status=TaskStatus.PENDING, created_at=t3)
+    b = TaskRow(task_id="bbb", op="echo", status=TaskStatus.PENDING, created_at=t2)
+    c = TaskRow(task_id="ccc", op="echo", status=TaskStatus.PENDING, created_at=t1)
+    for r in (a, b, c):
+        await store.create(r)
+    await store.update_status(b.task_id, TaskStatus.SUCCEEDED)
+
+    page1 = await store.list_tasks(status=TaskStatus.PENDING, limit=1)
+    assert [r.task_id for r in page1] == ["aaa"]
+
+    page2 = await store.list_tasks(
+        status=TaskStatus.PENDING,
+        limit=1,
+        after_created_at=page1[-1].created_at,
+        after_task_id=page1[-1].task_id,
+    )
+    assert [r.task_id for r in page2] == ["ccc"]
+
+    page3 = await store.list_tasks(
+        status=TaskStatus.PENDING,
+        limit=1,
+        after_created_at=page2[-1].created_at,
+        after_task_id=page2[-1].task_id,
+    )
+    assert page3 == []
+
+
+@pytest.mark.asyncio
 async def test_list_running_excludes_terminal(store: TaskStore) -> None:
     pending = _row()
     running = _row()

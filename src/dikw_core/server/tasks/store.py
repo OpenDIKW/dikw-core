@@ -53,6 +53,29 @@ class TaskRow(BaseModel):
     model_config = {"use_enum_values": False}
 
 
+def summary_row_to_task(row: tuple[Any, ...]) -> TaskRow:
+    """Build a ``TaskRow`` from a summary-projection row: the 7 columns
+    ``list_tasks`` SELECTs, in order ``(task_id, op, status, created_at,
+    started_at, finished_at, params_digest)``. ``result``/``error`` are
+    forced to ``None`` since they're never in the summary SELECT.
+
+    Shared by both adapters so the summary column contract lives in one
+    place.
+    """
+    task_id, op, status, created_at, started_at, finished_at, params_digest = row
+    return TaskRow(
+        task_id=task_id,
+        op=op,
+        status=TaskStatus(status),
+        created_at=created_at,
+        started_at=started_at,
+        finished_at=finished_at,
+        params_digest=params_digest or "",
+        result=None,
+        error=None,
+    )
+
+
 class TaskNotFound(LookupError):
     """Raised by ``get`` / ``update_status`` when the task_id is unknown."""
 
@@ -92,7 +115,28 @@ class TaskStore(Protocol):
         status: TaskStatus | None = None,
         op: str | None = None,
         limit: int = 100,
+        after_created_at: str | None = None,
+        after_task_id: str | None = None,
     ) -> list[TaskRow]:
+        """Summary listing of tasks, newest first.
+
+        Returns rows ordered by ``(created_at DESC, task_id ASC)`` —
+        ``task_id`` is the deterministic tie-breaker on identical
+        timestamps so keyset cursors stay stable.
+
+        ``result`` and ``error`` are **always** returned as ``None``;
+        ``list_tasks`` is the summary view. Callers needing the full
+        payload must use ``get(task_id)`` (or the HTTP ``/result``
+        endpoint one layer up). This keeps ``GET /v1/tasks`` bandwidth
+        bounded even when a synth/eval task stamped 50 KB of result
+        into the row.
+
+        Keyset paging: pass ``after_created_at`` + ``after_task_id``
+        together to fetch the page strictly *after* that (timestamp,
+        id) position in the sort order. Both must be set or both
+        omitted — passing exactly one is undefined and adapters MAY
+        treat it as "no cursor".
+        """
         ...
 
     async def list_running(self) -> list[TaskRow]:
