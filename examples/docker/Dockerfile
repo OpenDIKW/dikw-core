@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # .github/workflows/release.yml). Bumping it before publish wedges the
 # Trivy scan job, which builds this image from scratch on every PR and
 # would `pip install` a version that doesn't exist yet.
-ARG DIKW_VERSION=0.1.0
+ARG DIKW_VERSION=0.2.0
 RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
 
 RUN useradd --create-home --uid 1000 dikw
