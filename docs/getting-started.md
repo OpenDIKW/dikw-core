@@ -73,7 +73,7 @@ Two steps:
 # pre-flight rejects bad frontmatter, missing assets, and orphan
 # files BEFORE the network round trip. ``import`` commits the bytes
 # into ``<base>/sources/``; it does NOT chunk or embed.
-uv run dikw client import ./my-notes
+uv run dikw client import ./my-notes --format table
 
 # ``ingest`` is the next step: scans ``<base>/sources/``, chunks the
 # markdown, and writes the D/I layer. Offline mode indexes FTS only,
@@ -194,7 +194,7 @@ page, cross-linked via `[[wikilinks]]`. `wiki/index.md` and `wiki/log.md`
 regenerate automatically. Re-running is a no-op until you add new sources
 (or pass `--all` to resynthesise everything).
 
-Run `dikw client lint` to check for broken wikilinks, orphans, and duplicate titles.
+Run `dikw client lint --format table` to check for broken wikilinks, orphans, and duplicate titles (the default output is agent-facing JSON; add `--format table` for the human view).
 
 ### Watching synth progress on large sources
 
@@ -226,8 +226,8 @@ need DEBUG to spot one.
 
 ```bash
 uv run dikw client distill
-uv run dikw client review list
-uv run dikw client review approve W-abcdef123456
+uv run dikw client review list --format table
+uv run dikw client review approve W-abcdef123456 --pretty
 ```
 
 `distill` prompts the LLM for principles/lessons/patterns supported by **at

@@ -138,7 +138,7 @@ the module-level constants; baseline numbers in `evals/BASELINES.md`.
 
 ```powershell
 # Inspect orphan count first
-uv run dikw client lint --format json | python -c "import sys,json; d=json.load(sys.stdin); print(d['by_kind'].get('orphan_page', 0))"
+uv run dikw client lint | python -c "import sys,json; d=json.load(sys.stdin); print(d['by_kind'].get('orphan_page', 0))"
 
 # Heuristic-only propose (no LLM, no API cost). Generates link /
 # delete / mark_as_leaf proposals.
@@ -148,7 +148,7 @@ uv run dikw client lint propose --rule orphan_page --limit 50
 uv run dikw client lint propose --rule orphan_page --limit 50 --enable-llm
 
 # Review the proposal task — note the task_id printed at the end.
-uv run dikw client lint proposals --format json
+uv run dikw client lint proposals
 
 # Apply one proposal task. Proposals are aborted on first-op failure
 # (later ops are skipped with a "earlier op failed" reason) but earlier

@@ -150,10 +150,10 @@ def test_lint_propose_apply_cli_full_loop(
     body = _json.loads(r4.stdout)
     assert task_id in body["applied_ids"], body
 
-    # 6. table mode (the human default) must render the listing without
-    # crashing — exercises the non-JSON ``render_lint_proposals_listing``
+    # 6. table mode (opt-in via ``--format table``) must render the listing
+    # without crashing — exercises the non-JSON ``render_lint_proposals_listing``
     # branch over the same hydrated rows.
-    r5 = _run(["client", "lint", "proposals"])
+    r5 = _run(["client", "lint", "proposals", "--format", "table"])
     assert r5.exit_code == 0, r5.stdout
     assert "lint proposals" in r5.stdout.lower()
 

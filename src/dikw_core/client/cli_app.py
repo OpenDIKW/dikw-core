@@ -203,6 +203,13 @@ def _token_option() -> Any:
     )
 
 
+def _pretty_option() -> Any:
+    return typer.Option(
+        "--pretty",
+        help="Render a colored human-readable line instead of the default raw JSON.",
+    )
+
+
 def _resolve(server: str | None, token: str | None) -> ClientConfig:
     return resolve(server_url=server, token=token)
 
@@ -314,7 +321,7 @@ def status_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     server: Annotated[str | None, _server_option()] = None,
@@ -347,7 +354,7 @@ def health_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     server: Annotated[str | None, _server_option()] = None,
@@ -387,7 +394,7 @@ def check_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     llm_only: Annotated[
@@ -451,9 +458,9 @@ def lint_root(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'table' (default, human) or 'json' (agent-friendly).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
-    ] = "table",
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -571,9 +578,9 @@ def lint_proposals_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'table' (default) or 'json'.",
+            help="Output format: 'json' (default) or 'table'.",
         ),
-    ] = "table",
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -733,7 +740,7 @@ def retrieve_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     plain: Annotated[
@@ -883,6 +890,13 @@ def import_cmd(
             ),
         ),
     ] = None,
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format: 'json' (default) or 'table'.",
+        ),
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -905,6 +919,7 @@ def import_cmd(
     into the per-base auth store — different target, different command.
     """
 
+    _validate_format(fmt)
     cfg = _resolve(server, token)
     converter_for = _converter_resolver(converter, cfg)
 
@@ -922,7 +937,10 @@ def import_cmd(
                     },
                     data={"manifest": bundle.manifest_json},
                 )
-        render_import_report(console, response)
+        if fmt == "json":
+            console.print_json(json.dumps(response, ensure_ascii=False))
+        else:
+            render_import_report(console, response)
         if response.get("rejected"):
             raise typer.Exit(code=1)
 
@@ -1299,9 +1317,9 @@ def review_list_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'table' (default, human) or 'json' (agent-friendly).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
-    ] = "table",
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -1347,6 +1365,7 @@ def review_list_cmd(
 @review_app.command("approve")
 def review_approve_cmd(
     item_id: Annotated[str, typer.Argument(help="Wisdom item id (W-xxxxxx).")],
+    pretty: Annotated[bool, _pretty_option()] = False,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -1355,6 +1374,9 @@ def review_approve_cmd(
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             result = await t.post_json(f"/v1/wisdom/{item_id}/approve")
+        if not pretty:
+            print(json.dumps(result, ensure_ascii=False))
+            return
         console.print(
             f"[green]{result.get('item_id')} -> "
             f"{result.get('new_status')}[/green]"
@@ -1366,6 +1388,7 @@ def review_approve_cmd(
 @review_app.command("reject")
 def review_reject_cmd(
     item_id: Annotated[str, typer.Argument(help="Wisdom item id (W-xxxxxx).")],
+    pretty: Annotated[bool, _pretty_option()] = False,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -1374,6 +1397,9 @@ def review_reject_cmd(
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             result = await t.post_json(f"/v1/wisdom/{item_id}/reject")
+        if not pretty:
+            print(json.dumps(result, ensure_ascii=False))
+            return
         console.print(
             f"[yellow]{result.get('item_id')} -> "
             f"{result.get('new_status')}[/yellow]"
@@ -1412,7 +1438,7 @@ def pages_list_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     server: Annotated[str | None, _server_option()] = None,
@@ -1517,7 +1543,7 @@ def pages_links_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'json' (default, agent-friendly) or 'table' (human).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
     ] = "json",
     server: Annotated[str | None, _server_option()] = None,
@@ -1759,9 +1785,9 @@ def tasks_list_cmd(
         str,
         typer.Option(
             "--format",
-            help="Output format: 'table' (default, human) or 'json' (agent-friendly).",
+            help="Output format: 'json' (default) or 'table'.",
         ),
-    ] = "table",
+    ] = "json",
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
@@ -1972,16 +1998,7 @@ def tasks_wait_cmd(
 @tasks_app.command("cancel")
 def tasks_cancel_cmd(
     task_id: Annotated[str, typer.Argument(help="Task id (12-char hex).")],
-    pretty: Annotated[
-        bool,
-        typer.Option(
-            "--pretty",
-            help=(
-                "Render a colored human-readable line instead of the "
-                "default raw CancelResponse JSON."
-            ),
-        ),
-    ] = False,
+    pretty: Annotated[bool, _pretty_option()] = False,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
