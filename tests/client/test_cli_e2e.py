@@ -524,6 +524,34 @@ def test_review_reject_pretty_emits_human_line(
         json.loads(result.stdout)
 
 
+def test_review_reject_default_emits_json(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``review reject`` defaults to raw JSON (agent-first); reject maps the
+    candidate to ``archived``, not a ``rejected`` status."""
+    patch_transport_factory()
+    result = _run(["client", "review", "reject", seeded_candidate])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["item_id"] == seeded_candidate
+    assert parsed["new_status"] == "archived"
+
+
+def test_review_approve_pretty_emits_human_line(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--pretty`` opts into the colored human line instead of JSON: the
+    output mentions the item id and is NOT JSON-parseable."""
+    patch_transport_factory()
+    result = _run(["client", "review", "approve", seeded_candidate, "--pretty"])
+    assert result.exit_code == 0, result.stdout
+    assert seeded_candidate in result.stdout
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
+
+
 def test_check_unavailable_provider_exits_one(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],

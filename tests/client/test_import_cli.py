@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from dikw_core.cli import app
@@ -55,6 +56,25 @@ def test_import_default_emits_json(
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
     assert "committed" in parsed
+
+
+def test_import_table_renders_human_report(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    tmp_path: Path,
+) -> None:
+    """``--format table`` opts into the rich ``render_import_report`` summary
+    instead of JSON: the output carries the table labels and is NOT
+    JSON-parseable."""
+    patch_transport_factory()
+    note = tmp_path / "alpha.md"
+    note.write_text("# Alpha\nbody\n", encoding="utf-8")
+
+    result = _run(["client", "import", str(note), "--format", "table"])
+    assert result.exit_code == 0, result.stdout
+    assert "committed" in result.stdout
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
 
 
 def test_import_single_md_file(
