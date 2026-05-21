@@ -113,10 +113,10 @@ def test_tasks_list_table_mode_empty_still_prints_no_tasks(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
 ) -> None:
-    """Table mode is the human default — the empty-state hint must
-    survive the envelope refactor."""
+    """Table mode (opt-in via ``--format table``) — the empty-state hint
+    must survive the envelope refactor."""
     patch_transport_factory()
-    result = _run(["client", "tasks", "list"])
+    result = _run(["client", "tasks", "list", "--format", "table"])
     assert result.exit_code == 0, result.stdout
     assert "no tasks" in result.stdout.lower()
 

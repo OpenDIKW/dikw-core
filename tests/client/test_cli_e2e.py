@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,15 @@ from typer.testing import CliRunner
 
 from dikw_core import api
 from dikw_core.cli import app
-from dikw_core.schemas import DocumentRecord, Layer, LinkRecord, LinkType
+from dikw_core.schemas import (
+    DocumentRecord,
+    Layer,
+    LinkRecord,
+    LinkType,
+    WisdomItem,
+    WisdomKind,
+    WisdomStatus,
+)
 from dikw_core.server import synth_op
 from dikw_core.server.runtime import ServerRuntime
 
@@ -67,7 +76,7 @@ def test_lint_clean_on_fresh_wiki(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "lint"])
+    result = _run(["client", "lint", "--format", "table"])
     assert result.exit_code == 0, result.stdout
     assert "lint" in result.stdout.lower()
 
@@ -393,7 +402,7 @@ def test_review_list_empty_on_fresh_wiki(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "review", "list"])
+    result = _run(["client", "review", "list", "--format", "table"])
     assert result.exit_code == 0, result.stdout
     assert "no candidates" in result.stdout
 
@@ -403,7 +412,7 @@ def test_tasks_list_empty_on_fresh_server(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "tasks", "list"])
+    result = _run(["client", "tasks", "list", "--format", "table"])
     assert result.exit_code == 0, result.stdout
     assert "no tasks" in result.stdout
 
@@ -423,11 +432,10 @@ def test_format_json_emits_parseable_json(
     patch_transport_factory: Callable[[], None],
     argv: list[str],
 ) -> None:
-    """``--format json`` is the agent-friendly half of the four
-    table-default commands extended in PR 5. Smoke-test that each one
-    actually prints valid JSON instead of the rich-rendered table —
-    otherwise an agent piping ``| jq`` would silently get a banner
-    string that never parses."""
+    """``--format json`` stays valid (now redundant — these default to
+    JSON since the 0.2.5 agent-first flip). Smoke-test that each still
+    prints a parseable JSON document, not a rich banner that ``| jq``
+    can't parse."""
 
     patch_transport_factory()
     result = _run(argv)
@@ -436,6 +444,112 @@ def test_format_json_emits_parseable_json(
     # body must be a parseable JSON document either way.
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, list | dict)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["client", "lint"],
+        ["client", "lint", "proposals"],
+        ["client", "review", "list"],
+        ["client", "tasks", "list"],
+    ],
+    ids=["lint", "lint-proposals", "review-list", "tasks-list"],
+)
+def test_default_emits_parseable_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    argv: list[str],
+) -> None:
+    """0.2.5 agent-first flip: the four maintenance commands now default
+    to JSON. Without any ``--format`` flag each must print a parseable
+    JSON document — an agent piping ``| jq`` must never get a rich banner
+    like ``no tasks`` / ``lint clean``."""
+    patch_transport_factory()
+    result = _run(argv)
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert isinstance(parsed, list | dict)
+
+
+@pytest.fixture()
+async def seeded_candidate(
+    asgi_client: tuple[Any, ServerRuntime],
+) -> str:
+    """Seed one CANDIDATE wisdom item directly in storage, return its id.
+    Async fixture (not in-test) so the sync ``CliRunner`` tests don't nest
+    event loops. Empty evidence is fine — the ``>=2 evidence`` gate is
+    enforced at distill, not at approve/reject."""
+    _client, rt = asgi_client
+    item = WisdomItem(
+        item_id="W-rev0001",
+        kind=WisdomKind.PRINCIPLE,
+        status=WisdomStatus.CANDIDATE,
+        path=None,
+        title="Seeded review candidate",
+        body="A seeded candidate so review approve/reject have a target.",
+        confidence=0.8,
+        created_ts=time.time(),
+        approved_ts=None,
+    )
+    await rt.storage.put_wisdom(item, [])
+    return item.item_id
+
+
+def test_review_approve_default_emits_json(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``review approve`` defaults to raw JSON (agent-first); the payload
+    carries ``item_id`` + the new status."""
+    patch_transport_factory()
+    result = _run(["client", "review", "approve", seeded_candidate])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["item_id"] == seeded_candidate
+    assert parsed["new_status"] == "approved"
+
+
+def test_review_reject_pretty_emits_human_line(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--pretty`` opts into the colored human line instead of JSON: the
+    output mentions the item id and is NOT JSON-parseable."""
+    patch_transport_factory()
+    result = _run(["client", "review", "reject", seeded_candidate, "--pretty"])
+    assert result.exit_code == 0, result.stdout
+    assert seeded_candidate in result.stdout
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
+
+
+def test_review_reject_default_emits_json(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``review reject`` defaults to raw JSON (agent-first); reject maps the
+    candidate to ``archived``, not a ``rejected`` status."""
+    patch_transport_factory()
+    result = _run(["client", "review", "reject", seeded_candidate])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["item_id"] == seeded_candidate
+    assert parsed["new_status"] == "archived"
+
+
+def test_review_approve_pretty_emits_human_line(
+    seeded_candidate: str,
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--pretty`` opts into the colored human line instead of JSON: the
+    output mentions the item id and is NOT JSON-parseable."""
+    patch_transport_factory()
+    result = _run(["client", "review", "approve", seeded_candidate, "--pretty"])
+    assert result.exit_code == 0, result.stdout
+    assert seeded_candidate in result.stdout
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
 
 
 def test_check_unavailable_provider_exits_one(

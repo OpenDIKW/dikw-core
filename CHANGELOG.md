@@ -7,6 +7,33 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.2.5 — 2026-05-21
+
+### BREAKING (CLI): agent-first default-JSON audit completed
+
+The maintenance-side `dikw client` commands deferred by the 0.1.0
+agent-first audit now default to JSON, finishing the matrix: every
+`dikw client` command's default output is agent-parseable, and humans
+opt into rendered output via `--format table` (or `--pretty`).
+
+* **`dikw client lint`, `lint proposals`, `review list`, `tasks list`** —
+  default output flips from a rich table to JSON. Humans add
+  `--format table`. Exit codes are unchanged (`lint` still exits 1 when
+  issues are found, regardless of format).
+* **`dikw client review approve` / `review reject`** — now emit the raw
+  `{item_id, new_status}` JSON on stdout by default so agents can pipe to
+  `jq` without stripping ANSI. Pass `--pretty` for the colored human
+  line (mirrors `dikw client tasks cancel`).
+* **`dikw client import`** — gains `--format json|table`, default JSON.
+  The committed / rejected summary is now parseable; `--format table`
+  renders the previous human summary.
+* `--format` help text is unified across every command to
+  `Output format: 'json' (default) or 'table'.`.
+* **Migration**: any script/agent that scraped the human table or colored
+  line from these commands must either add `--format table` / `--pretty`
+  to keep the old rendering, or (recommended) switch to consuming the
+  JSON now emitted by default.
+
 ## 0.2.0 — 2026-05-19
 
 ### BREAKING (HTTP): `GET /v1/tasks` response shape changed
