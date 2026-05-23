@@ -540,8 +540,8 @@ def _strip_alias_anchor(target: str) -> str:
 
     The resolver matches the bare title — both ``[[Target|label]]`` and
     ``[[Target#section]]`` resolve against a page titled ``Target`` —
-    so the stub the LLM authors must use that bare name. Without this,
-    the LLM would title the stub ``Target|label`` and the next lint
+    so the page the LLM authors must use that bare name. Without this,
+    the LLM would title the page ``Target|label`` and the next lint
     pass would still report the wikilink as broken.
     """
     base = target.split("|", 1)[0]

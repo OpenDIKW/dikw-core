@@ -140,10 +140,10 @@ class LintProposeSubmit(BaseModel):
 
     ``enable_llm`` opts into LLM-powered fixer paths: broken_wikilink's
     evidence-backed grounded repair (writes a real page when D-layer
-    hybrid-search hits provide enough evidence) and the non_atomic_page
-    splitter. Default False keeps propose runs heuristic-only and free
-    of token spend; users opt in explicitly via ``--enable-llm`` on the
-    CLI.
+    hybrid-search hits provide enough evidence), the non_atomic_page
+    splitter, and orphan_page's merge_into_existing_page strategy.
+    Default False keeps propose runs heuristic-only and free of token
+    spend; users opt in explicitly via ``--enable-llm`` on the CLI.
     """
 
     rule: LintKind | None = None

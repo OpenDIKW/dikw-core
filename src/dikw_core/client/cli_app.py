@@ -518,9 +518,11 @@ def lint_propose_cmd(
                 "Allow fixers to call the configured LLM: broken_wikilink's "
                 "evidence-backed grounded repair (D-layer hybrid-search hits "
                 "feed the LLM, which writes a real page only when evidence "
-                "is sufficient; TODO/stub/placeholder outputs are rejected) "
-                "and the non_atomic_page splitter. Off by default — opt in "
-                "explicitly because each issue may incur a token cost."
+                "is sufficient; outputs containing `TODO` / `stub page` / "
+                "`placeholder` markers are rejected), the non_atomic_page "
+                "splitter, and orphan_page's merge_into_existing_page "
+                "strategy. Off by default — opt in explicitly because each "
+                "issue may incur a token cost."
             ),
         ),
     ] = False,

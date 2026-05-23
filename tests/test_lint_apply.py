@@ -1010,7 +1010,7 @@ async def test_create_page_apply_indexes_into_storage(
                 expected_hash=None,
             )
         ],
-        rationale="LLM-generated stub", source="llm",
+        rationale="test fixture", source="llm",
     )
 
     report = await run_lint_apply(
@@ -1079,7 +1079,7 @@ async def test_apply_then_lint_does_not_re_report_broken_wikilink(
             new_body="# Qin Dynasty\n\nTODO: stub.\n",
             expected_hash=None,
         )],
-        rationale="evidence-backed grounded repair", source="llm",
+        rationale="test fixture", source="llm",
     )
     await run_lint_apply(
         proposal_report=FixProposalReport(proposals=[proposal]),
@@ -1136,7 +1136,7 @@ async def test_apply_create_page_reconciles_referrer_outgoing_links(
             new_body="# Qin Dynasty\n\nstub\n",
             expected_hash=None,
         )],
-        rationale="evidence-backed grounded repair", source="llm",
+        rationale="test fixture", source="llm",
     )
     await run_lint_apply(
         proposal_report=FixProposalReport(proposals=[proposal]),
