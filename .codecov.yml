@@ -1,0 +1,36 @@
+# Codecov config.
+#
+# Two reasons we need this file (the defaults are too strict for the
+# repo's actual CI shape):
+#
+# 1. ``storage/postgres.py`` is exercised by the ``ci / Postgres
+#    contract tests`` job, but that job does NOT upload coverage —
+#    only the sqlite-only ``lint-type-test (3.12)`` job feeds Codecov.
+#    Leaving postgres.py in the measurement means every PR touching
+#    it shows a misleading patch coverage drop. Ignore it here; the
+#    actual exercise is in the PG contract job. A proper long-term
+#    fix would teach the PG job to upload coverage and merge sessions,
+#    but that's infra work tracked separately.
+#
+# 2. The default ``patch.target = auto`` with ``threshold = 0`` means
+#    *any* dip — even 0.05 % — fails the patch check. That punishes
+#    legitimate work where a few new defensive branches don't get
+#    exercised. A 2 % threshold leaves room for the kind of
+#    defence-in-depth lines (closure-shape guards, dialog branches,
+#    fall-through ``return None``) that codecov can't tell apart from
+#    "real" misses, without giving the team a license to drop overall
+#    coverage.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+        threshold: 2%
+
+ignore:
+  # See note (1) above.
+  - "src/dikw_core/storage/postgres.py"

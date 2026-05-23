@@ -178,6 +178,28 @@ Use this in `dikw-web`'s Knowledge Graph view, in agent context-expansion
 flows, or whenever you need to reason about K-layer connectivity
 without re-implementing wikilink resolution per client.
 
+### Inspecting page provenance
+
+Each K-page's `sources:` frontmatter is reconciled into a dedicated
+**provenance** edge — distinct from body `[[wikilinks]]`. Two questions
+it answers cheaply:
+
+```bash
+# Forward: which D-layer sources was this K-page synth-authored from?
+uv run dikw client pages provenance wiki/concepts/topic.md \
+  --direction out
+
+# Reverse: which K-pages claim this source in their `sources:`?
+uv run dikw client pages provenance sources/foo.md --direction in
+```
+
+Forward entries carry `resolved=true|false` — `false` means the
+frontmatter references a source the engine has never seen (typo,
+deleted source, renamed file). Reverse entries are only populated for
+`Layer.SOURCE` paths; asking a `wiki/...` path for `--direction in`
+returns an empty list by design. JSON is the default output; pass
+`--format table` for the human ✓/✗ rendering.
+
 ## 5. Synthesise a Knowledge layer
 
 ```bash
@@ -194,7 +216,7 @@ page, cross-linked via `[[wikilinks]]`. `wiki/index.md` and `wiki/log.md`
 regenerate automatically. Re-running is a no-op until you add new sources
 (or pass `--all` to resynthesise everything).
 
-Run `dikw client lint --format table` to check for broken wikilinks, orphans, and duplicate titles (the default output is agent-facing JSON; add `--format table` for the human view).
+Run `dikw client lint --format table` to check the K-layer for broken wikilinks, orphans, duplicate titles, non-atomic pages, and missing provenance edges (the default output is agent-facing JSON; add `--format table` for the human view). For `missing_provenance` issues on a legacy base, backfill in one shot via `dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>` — heuristic-only, no LLM required.
 
 ### Watching synth progress on large sources
 

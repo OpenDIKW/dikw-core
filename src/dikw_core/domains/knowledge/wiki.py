@@ -88,6 +88,26 @@ def now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
+def frontmatter_str_list(metadata: dict[str, Any], key: str) -> list[str]:
+    """Read a list-of-strings frontmatter field defensively.
+
+    ``sources:`` and ``tags:`` are both user-editable list fields on
+    every K-page. A hand-written scalar (``sources: foo.md``) parses as
+    a string, not a single-item list — iterating it would yield one
+    character per row. A dict / int / null value would raise. This
+    helper collapses all three malformed shapes to ``[]`` and drops
+    non-string entries from a well-formed list, so every caller can
+    write ``for item in frontmatter_str_list(meta, "sources")`` without
+    a per-site ``isinstance`` guard. See ADR-0001 for why ``sources``
+    in particular must never propagate garbage into the provenance
+    table.
+    """
+    raw = metadata.get(key)
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str)]
+
+
 def make_page_id(title: str, type_: str) -> str:
     digest = hashlib.blake2b(f"{type_}:{title}".encode(), digest_size=6).hexdigest()
     return f"K-{digest}"
@@ -110,14 +130,24 @@ def read_page(root: Path, path: str) -> WikiPage:
         raise FileNotFoundError(path)
     post = frontmatter.load(str(abs_path))
     meta = dict(post.metadata)
+    # ``tags`` and ``sources`` go through the shared malformed-shape
+    # guard for the same reason ``persist_wiki_page`` / ``run_lint`` /
+    # ``MissingProvenanceFixer`` do — a hand-written YAML scalar
+    # (``sources: foo.md``) would otherwise become a character-per-row
+    # list. The ``pop`` happens explicitly first so ``extras`` doesn't
+    # carry the raw value back out.
+    tags = frontmatter_str_list(meta, "tags")
+    sources = frontmatter_str_list(meta, "sources")
+    meta.pop("tags", None)
+    meta.pop("sources", None)
     return WikiPage(
         path=path,
         id=str(meta.pop("id", make_page_id(str(meta.get("title", path)), str(meta.get("type", "note"))))),
         type=str(meta.pop("type", "note")),
         title=str(meta.pop("title", _fallback_title(post.content, path))),
         body=post.content,
-        tags=list(meta.pop("tags", []) or []),
-        sources=list(meta.pop("sources", []) or []),
+        tags=tags,
+        sources=sources,
         created=str(meta.pop("created", now_iso())),
         updated=str(meta.pop("updated", now_iso())),
         extras=meta,

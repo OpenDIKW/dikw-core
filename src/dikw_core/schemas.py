@@ -261,6 +261,28 @@ class LinkRecord(BaseModel):
     line: int
 
 
+class ProvenanceEdge(BaseModel):
+    """One row of the ``provenance`` storage table.
+
+    Provenance is the K-page → D-source attribution recorded in a K-page's
+    ``sources:`` frontmatter list — a separate edge from ``LinkRecord``
+    (which is body-derived ``[[wikilink]]``s parsed into the ``links``
+    table). The two are deliberately kept in different tables because
+    provenance has no body-coordinate fields (no ``anchor`` / ``line``),
+    must NOT feed graph-leg retrieval, and is reconciled from frontmatter
+    instead of the body. See ADR-0001.
+
+    Mirrors the ``DocumentRecord.path`` / ``path_key`` pattern: the raw
+    spelling is preserved for faithful forward display, the NFC + casefold
+    normalized key powers reverse lookup (``provenance_to``) so that
+    case-drift / Unicode-form-drift on Windows or macOS still matches.
+    """
+
+    src_doc_id: str  # K-page doc_id (always ``layer:wiki``)
+    source_path: str  # frontmatter ``sources:`` entry, raw spelling
+    source_path_key: str  # ``normalize_path(source_path)``, reverse-lookup key
+
+
 class OutgoingLink(BaseModel):
     """One outgoing edge from a page (page → ``dst_path``).
 
@@ -313,6 +335,62 @@ class PageLinksResult(BaseModel):
 # one place — bumping it (e.g. adding a hypothetical "diagonal") only
 # touches one site.
 LinkDirection = Literal["in", "out", "both"]
+
+
+class ProvenanceSource(BaseModel):
+    """One forward provenance edge: K-page → a D-source it claims.
+
+    Mirrors ``OutgoingLink`` in spirit but carries resolution status
+    instead of ``link_type`` / ``anchor`` / ``line``. ``resolved=False``
+    means ``source_path`` does not currently index to an active
+    ``Layer.SOURCE`` document — the page references a source that was
+    deleted, renamed, or never ingested. Surfaced faithfully (not
+    silently dropped) so agents can detect provenance drift.
+    """
+
+    source_path: str  # as written in frontmatter (raw)
+    doc_id: str | None = None  # resolved Layer.SOURCE doc_id, None if dangling
+    title: str | None = None  # resolved source title, None if dangling
+    resolved: bool
+
+
+class DerivedPage(BaseModel):
+    """One reverse provenance edge: D-source → a K-page derived from it.
+
+    Mirrors ``IncomingLink``. Always carries ``doc_id`` / ``path`` /
+    ``title`` because ``src_doc_id`` always resolves to a real K-page
+    (``delete_document`` removes provenance rows when a K-page is
+    deleted, so dangling on the reverse side cannot occur).
+    """
+
+    doc_id: str
+    path: str
+    title: str | None = None
+
+
+class PageProvenanceResult(BaseModel):
+    """Final payload for ``GET /v1/base/pages/{path}/provenance``.
+
+    Splits the page-source attribution graph at a page boundary:
+    ``derived_from`` is meaningful when the path is a K-page
+    (``Layer.WIKI``); ``derived_pages`` is meaningful when the path is a
+    D-source (``Layer.SOURCE``). For a path that resolves to
+    ``Layer.WIKI``, ``derived_pages`` is always empty; vice versa for
+    ``Layer.SOURCE``. We do not filter — agents can ask
+    ``direction=both`` against any path; the empty list IS the answer.
+    ``direction=in|out|both`` on the request filters which lists are
+    populated.
+    """
+
+    path: str
+    derived_from: list[ProvenanceSource] = Field(default_factory=list)  # out
+    derived_pages: list[DerivedPage] = Field(default_factory=list)  # in
+
+
+# Shared closed-set type for the provenance direction parameter. Mirrors
+# ``LinkDirection`` so engine / server / CLI all reference the same
+# literal.
+ProvenanceDirection = Literal["in", "out", "both"]
 
 
 class GraphNode(BaseModel):

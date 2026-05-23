@@ -30,6 +30,7 @@ from ..info.chunk import chunk_markdown
 from ..info.embed import ChunkToEmbed, consume_embedding_stream, embed_chunks
 from ..info.tokenize import CjkTokenizer
 from .links import parse_links, resolve_links
+from .wiki import frontmatter_str_list
 
 
 def wiki_doc_id(path: str) -> str:
@@ -134,4 +135,22 @@ async def persist_wiki_page(
         fuzzy_index=fuzzy_index,
     )
     await storage.replace_links_from(doc_id, resolved)
+
+    # Reconcile provenance edges (K-page → D-source attribution) from
+    # the page's ``sources:`` frontmatter — frontmatter is the source of
+    # truth (the wiki tree is a user-editable Obsidian vault), so
+    # re-running this on every persist self-heals when the user hand-
+    # edits the list. Mirrors the wikilink reconcile above; deliberately
+    # kept off the wikilink graph (separate ``provenance`` table — see
+    # docs/adr/0001-provenance-as-separate-edge.md) so graph-leg
+    # retrieval and orphan/broken-link lint stay clean.
+    #
+    # ``frontmatter_str_list`` enforces the same malformed-shape guard
+    # as ``run_lint`` and ``MissingProvenanceFixer`` — a YAML scalar
+    # (``sources: foo.md``) collapses to ``[]`` rather than iterating
+    # character-by-character into the provenance table.
+    await storage.replace_provenance_from(
+        doc_id, frontmatter_str_list(parsed.frontmatter, "sources")
+    )
+
     return len(unresolved), resolved_title

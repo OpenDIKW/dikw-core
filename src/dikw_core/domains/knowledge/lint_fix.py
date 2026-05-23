@@ -30,6 +30,7 @@ import datetime as _dt
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -97,11 +98,23 @@ class FixOperation(BaseModel):
     Always ``None`` for ``create_page`` (the file shouldn't exist yet).
     """
 
-    kind: Literal["create_page", "update_page", "delete_page"]
+    kind: Literal[
+        "create_page",
+        "update_page",
+        "delete_page",
+        "reconcile_provenance",
+    ]
     path: str
     new_frontmatter: dict[str, Any] | None = None
     new_body: str | None = None
     expected_hash: str | None = None
+    # Carrier for ``reconcile_provenance`` only: the snapshot of
+    # frontmatter ``sources:`` the fixer observed. Apply passes this
+    # straight into ``storage.replace_provenance_from(doc_id, …)``; the
+    # op does NOT modify the wiki file (the frontmatter is already the
+    # source of truth — this op only syncs the storage index to it).
+    # See ``MissingProvenanceFixer`` and ADR-0001.
+    source_paths: list[str] | None = None
 
 
 class FixProposal(BaseModel):
@@ -606,10 +619,24 @@ async def run_lint_apply(
             )
             if skip_reason is None:
                 applied.append(op)
-                touched_paths.add(op.path)
                 if op.kind == "delete_page":
+                    touched_paths.add(op.path)
                     deleted_paths.add(op.path)
+                elif op.kind == "reconcile_provenance":
+                    # No file change → no Phase 1 ``persist_wiki_page``
+                    # re-chunk needed, no ``wiki_paths_changed`` entry,
+                    # and crucially no ``touched_paths`` entry either:
+                    # the conflict gate at line 601 exists to stop a
+                    # later op clobbering an earlier op's file write,
+                    # but reconcile never writes the file, so blocking
+                    # a sibling ``update_page`` / ``delete_page`` on the
+                    # same page (e.g., a page with both
+                    # ``missing_provenance`` and ``broken_wikilink``)
+                    # would be a false positive. The storage write
+                    # already happened inside ``_apply_one_op``.
+                    pass
                 else:
+                    touched_paths.add(op.path)
                     paths_changed.add(op.path)
             else:
                 skipped.append(skip_reason)
@@ -701,6 +728,50 @@ def _filter_proposals(
     ]
 
 
+def _preflight_hash_gate(
+    op: FixOperation,
+    *,
+    abs_path: Path,
+    exists: Callable[[str], bool],
+    sim_created: set[str],
+) -> str | None:
+    """Shared preflight gate for ops that mutate (or sync storage from)
+    a known-on-disk page: ``update_page`` / ``delete_page`` /
+    ``reconcile_provenance``.
+
+    Returns ``None`` when the gate passes, or a per-kind error string
+    (``f"{op.kind} target missing: …"`` / ``f"{op.kind} on …: hash
+    mismatch …"``) the caller appends to ``ApplyReport.skipped``. The
+    three call sites previously open-coded this 12-line block with
+    only the message prefix differing; centralising it removes a
+    correctness drift surface (e.g. one branch updating its hash check
+    without the others). Hash drift is skipped when the path was
+    sim-created within the same proposal — a within-proposal create
+    has no stable on-disk hash yet, and the real apply pass re-verifies.
+
+    ``exists`` is the closure ``_preflight_proposal`` builds over
+    ``sim_created`` / ``sim_deleted`` so simulated state propagates;
+    typed as ``Callable[[str], bool]`` to match the closure's
+    ``(op_path: str) -> bool`` signature without losing strict-mypy
+    coverage at the call boundary.
+    """
+    if not exists(op.path):
+        return f"{op.kind} target missing: {op.path!r}"
+    if not op.expected_hash:
+        return (
+            f"{op.kind} on {op.path!r} missing expected_hash "
+            "— required for safety"
+        )
+    if op.path not in sim_created:
+        actual = file_sha256(abs_path)
+        if actual != op.expected_hash:
+            return (
+                f"{op.kind} on {op.path!r}: hash mismatch "
+                "(concurrent edit detected)"
+            )
+    return None
+
+
 def _preflight_proposal(
     *,
     proposal: FixProposal,
@@ -752,41 +823,35 @@ def _preflight_proposal(
             sim_created.add(op.path)
             sim_deleted.discard(op.path)
         elif op.kind == "update_page":
-            if not _exists(op.path):
-                return f"update_page target missing: {op.path!r}"
-            if not op.expected_hash:
-                return (
-                    f"update_page on {op.path!r} missing expected_hash "
-                    "— required for safety"
-                )
-            # Hash drift only meaningful against current on-disk bytes.
-            # A simulated post-create file can't have a stable hash to
-            # check against, so skip the hash check on within-proposal
-            # creates. Real apply will compute and verify.
-            if op.path not in sim_created:
-                actual = file_sha256(abs_path)
-                if actual != op.expected_hash:
-                    return (
-                        f"update_page on {op.path!r}: hash mismatch "
-                        "(concurrent edit detected)"
-                    )
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
         elif op.kind == "delete_page":
-            if not _exists(op.path):
-                return f"delete_page target missing: {op.path!r}"
-            if not op.expected_hash:
-                return (
-                    f"delete_page on {op.path!r} missing expected_hash "
-                    "— required for safety"
-                )
-            if op.path not in sim_created:
-                actual = file_sha256(abs_path)
-                if actual != op.expected_hash:
-                    return (
-                        f"delete_page on {op.path!r}: hash mismatch "
-                        "(concurrent edit detected)"
-                    )
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
             sim_deleted.add(op.path)
             sim_created.discard(op.path)
+        elif op.kind == "reconcile_provenance":
+            # Doesn't change the file; doesn't change ``sim_created``
+            # / ``sim_deleted`` either. Same concurrent-edit safety as
+            # update_page — if the user edited ``sources:`` between scan
+            # and apply, the fixer's ``source_paths`` snapshot is stale
+            # and we skip, letting the next lint pass re-propose.
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
+            if op.source_paths is None:
+                return (
+                    f"reconcile_provenance on {op.path!r} missing "
+                    "source_paths"
+                )
         else:
             return f"unknown op kind {op.kind!r}"
 
@@ -821,13 +886,18 @@ async def _apply_one_op(
             f"refusing to operate outside wiki/ tree: {op.path!r}",
         )
 
-    if op.kind in ("update_page", "delete_page"):
+    if op.kind in ("update_page", "delete_page", "reconcile_provenance"):
         if not abs_path.is_file():
             return _skip(proposal_id, op, "file not found on disk")
         # ``expected_hash`` is the contract for these ops — a proposal
         # that omits it could no-op past the concurrent-edit guard
         # (custom / persisted reports can bypass the fixer's own
         # ``hash_bytes`` stamping). Missing hash = malformed proposal.
+        # ``reconcile_provenance`` rides the same gate because the op
+        # carries a frontmatter ``sources:`` snapshot whose freshness
+        # depends on the file hash matching at apply time — preflight
+        # already does the same check, but the TOCTOU window between
+        # preflight and apply is closed only by re-checking here.
         if not op.expected_hash:
             return _skip(
                 proposal_id, op,
@@ -869,6 +939,29 @@ async def _apply_one_op(
             )
         except OSError as e:
             return _skip(proposal_id, op, f"trash move failed: {e}")
+        return None
+
+    if op.kind == "reconcile_provenance":
+        # Sync storage to frontmatter snapshot. Frontmatter is the
+        # source of truth (the wiki tree is a user-editable Obsidian
+        # vault); this op only re-runs the same reconcile that
+        # ``persist_wiki_page`` does on every synth / lint-apply, but
+        # without needing an embedder or re-chunking. Concurrent edit
+        # check up front (above) catches the case where the user
+        # edited ``sources:`` between scan and apply.
+        if op.source_paths is None:
+            return _skip(
+                proposal_id, op,
+                "reconcile_provenance op missing source_paths",
+            )
+        doc_id = path_to_doc_id.get(op.path)
+        if doc_id is None:
+            return _skip(
+                proposal_id, op,
+                f"reconcile_provenance: no doc_id for path {op.path!r} "
+                "(deactivated since scan?)",
+            )
+        await storage.replace_provenance_from(doc_id, op.source_paths)
         return None
 
     return _skip(proposal_id, op, f"unknown op kind {op.kind!r}")

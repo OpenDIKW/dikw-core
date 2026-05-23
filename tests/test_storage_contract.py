@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from dikw_core.domains.data.path_norm import normalize_path
 from dikw_core.schemas import (
     AssetEmbeddingRow,
     AssetKind,
@@ -2563,3 +2564,240 @@ async def test_vec_search_resolves_active_text_version_when_omitted(
     # Sanity: get_active_embed_version reflects the latest registration.
     active = await storage.get_active_embed_version(modality="text")
     assert active is not None and active.version_id == v2
+
+
+# ---- Provenance (K-page → D-source attribution) -----------------------------
+#
+# The ``provenance`` table is the storage side of the K→D edge described in
+# ADR-0001. Schema mirrors ``links`` (no FK on either side, reverse-lookup
+# index on the right-hand side, atomic replace from the K-page side) but
+# carries no body-coordinate fields and lives off the wikilink graph so
+# graph-leg retrieval stays clean. These contract tests pin the seven
+# behaviours engine code relies on:
+#   * replace-from-empty (fresh page),
+#   * atomic swap (re-persist after edit),
+#   * NFC + casefold dedup on the normalized key,
+#   * deterministic forward iteration order,
+#   * reverse lookup hits every referencing K-page,
+#   * delete_document cascades both sides,
+#   * absent ``Layer.SOURCE`` row does not block insert (no FK).
+
+
+async def test_replace_provenance_from_empty_then_populate(
+    storage: Storage,
+) -> None:
+    """Fresh K-page with no prior provenance rows: ``replace_provenance_from``
+    with a non-empty input set inserts the rows; the leading DELETE no-ops
+    (matches the fresh-page contract documented on ``replace_links_from``).
+    Calling ``provenance_from`` on the unrelated K-page returns ``[]`` —
+    the per-src DELETE must not touch other pages' rows."""
+    page_a = _make_doc("wiki/page-a.md", layer=Layer.WIKI)
+    page_b = _make_doc("wiki/page-b.md", layer=Layer.WIKI)
+    for d in (page_a, page_b):
+        await storage.upsert_document(d)
+
+    assert await storage.provenance_from(page_a.doc_id) == []
+
+    await storage.replace_provenance_from(
+        page_a.doc_id, ["sources/foo.md", "sources/bar.md"]
+    )
+    rows = await storage.provenance_from(page_a.doc_id)
+    assert {r.source_path for r in rows} == {"sources/foo.md", "sources/bar.md"}
+    assert all(r.src_doc_id == page_a.doc_id for r in rows)
+    assert all(
+        r.source_path_key == normalize_path(r.source_path) for r in rows
+    )
+    # Unrelated page untouched.
+    assert await storage.provenance_from(page_b.doc_id) == []
+
+
+async def test_replace_provenance_from_deletes_then_inserts(
+    storage: Storage,
+) -> None:
+    """Re-running ``replace_provenance_from`` with a different set wipes
+    the prior rows and inserts the new ones — mirrors
+    ``replace_links_from``'s atomic delete-then-insert contract. The
+    reverse-lookup index must reflect the new state immediately."""
+    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    await storage.upsert_document(page)
+
+    await storage.replace_provenance_from(
+        page.doc_id, ["sources/old1.md", "sources/old2.md"]
+    )
+    # Reverse lookup sees old rows.
+    assert await storage.provenance_to(normalize_path("sources/old1.md"))
+
+    # Swap to a fresh set: drop old1/old2, install new1.
+    await storage.replace_provenance_from(page.doc_id, ["sources/new1.md"])
+    rows = await storage.provenance_from(page.doc_id)
+    assert {r.source_path for r in rows} == {"sources/new1.md"}
+    # Old reverse rows are gone.
+    assert await storage.provenance_to(normalize_path("sources/old1.md")) == []
+    assert await storage.provenance_to(normalize_path("sources/old2.md")) == []
+    # New reverse row is live.
+    new_reverse = await storage.provenance_to(normalize_path("sources/new1.md"))
+    assert [r.src_doc_id for r in new_reverse] == [page.doc_id]
+
+    # Empty list wipes the page's provenance entirely (frontmatter
+    # ``sources:`` removed). Idempotent — re-wiping is a no-op, not an
+    # error.
+    await storage.replace_provenance_from(page.doc_id, [])
+    assert await storage.provenance_from(page.doc_id) == []
+    await storage.replace_provenance_from(page.doc_id, [])
+    assert await storage.provenance_from(page.doc_id) == []
+
+
+async def test_replace_provenance_from_dedup_by_normalized_key(
+    storage: Storage,
+) -> None:
+    """Two frontmatter entries that normalize to the same key (case drift
+    on Windows / NFC drift after a macOS sync) collapse to one row.
+    The PK is ``(src_doc_id, source_path_key)`` so the second insert
+    must not raise — adapters dedupe deterministically. First occurrence
+    in input order wins on raw spelling."""
+    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    await storage.upsert_document(page)
+
+    await storage.replace_provenance_from(
+        page.doc_id,
+        ["Sources/Foo.md", "sources/foo.md", "sources/bar.md"],
+    )
+    rows = await storage.provenance_from(page.doc_id)
+    # Two distinct normalized keys → exactly two rows.
+    keys = {r.source_path_key for r in rows}
+    assert keys == {
+        normalize_path("Sources/Foo.md"),
+        normalize_path("sources/bar.md"),
+    }
+    # First-occurrence-wins on raw spelling for the colliding key.
+    by_key = {r.source_path_key: r.source_path for r in rows}
+    assert by_key[normalize_path("Sources/Foo.md")] == "Sources/Foo.md"
+
+
+async def test_provenance_from_returns_deterministic_order(
+    storage: Storage,
+) -> None:
+    """Forward iteration order is ``source_path_key ASC`` — locked by
+    contract so HTTP responses don't shuffle between adapters or between
+    calls. Insertion order is intentionally NOT preserved."""
+    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    await storage.upsert_document(page)
+
+    # Insert out-of-order; storage must hand them back sorted by key.
+    await storage.replace_provenance_from(
+        page.doc_id,
+        ["sources/zeta.md", "sources/alpha.md", "sources/mike.md"],
+    )
+    rows = await storage.provenance_from(page.doc_id)
+    keys = [r.source_path_key for r in rows]
+    assert keys == sorted(keys)
+
+
+async def test_provenance_to_returns_all_referencing_pages(
+    storage: Storage,
+) -> None:
+    """Reverse lookup ``provenance_to(source_path_key)`` returns every
+    K-page that claims this source. Ordering is ``src_doc_id ASC`` so the
+    response is stable across adapters. Excludes unrelated source keys."""
+    page_a = _make_doc("wiki/page-a.md", layer=Layer.WIKI)
+    page_b = _make_doc("wiki/page-b.md", layer=Layer.WIKI)
+    page_c = _make_doc("wiki/page-c.md", layer=Layer.WIKI)
+    for d in (page_a, page_b, page_c):
+        await storage.upsert_document(d)
+
+    await storage.replace_provenance_from(
+        page_a.doc_id, ["sources/shared.md", "sources/only-a.md"]
+    )
+    await storage.replace_provenance_from(
+        page_b.doc_id, ["sources/shared.md"]
+    )
+    await storage.replace_provenance_from(
+        page_c.doc_id, ["sources/only-c.md"]
+    )
+
+    shared = await storage.provenance_to(normalize_path("sources/shared.md"))
+    # Direct equality (not sorted) — the Protocol promises
+    # ``src_doc_id ASC`` ordering; sorting both sides would mask a
+    # regression where the adapter returns rows in insertion / random
+    # order. page_a.doc_id and page_b.doc_id are constructed as
+    # ``wiki:wiki/a.md`` / ``wiki:wiki/b.md``, so the lexicographic
+    # ASC order is deterministic.
+    assert [r.src_doc_id for r in shared] == [page_a.doc_id, page_b.doc_id]
+    only_c = await storage.provenance_to(normalize_path("sources/only-c.md"))
+    assert [r.src_doc_id for r in only_c] == [page_c.doc_id]
+    # Source nobody claims.
+    assert (
+        await storage.provenance_to(normalize_path("sources/orphan.md")) == []
+    )
+
+
+async def test_delete_document_cascades_provenance(storage: Storage) -> None:
+    """``delete_document`` purges provenance on both sides of the edge:
+    rows where the deleted doc is ``src_doc_id`` (K-page trash path)
+    AND rows where the deleted doc is the referenced source (D-source
+    deleted by user). For the D-source case the reverse-side K-pages
+    still hold the row pointing at the now-missing path — same shape
+    as ``links_to`` after a wikilink target is deleted; that drift is
+    deliberately surfaced via the ``resolved=False`` flag at query time."""
+    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    other_page = _make_doc("wiki/other.md", layer=Layer.WIKI)
+    src = _make_doc("sources/src.md", layer=Layer.SOURCE)
+    for d in (page, other_page, src):
+        await storage.upsert_document(d)
+
+    await storage.replace_provenance_from(
+        page.doc_id, ["sources/src.md", "sources/orphan.md"]
+    )
+    await storage.replace_provenance_from(
+        other_page.doc_id, ["sources/src.md"]
+    )
+
+    # Sanity.
+    assert len(await storage.provenance_from(page.doc_id)) == 2
+    reverse_pre = await storage.provenance_to(normalize_path("sources/src.md"))
+    assert {r.src_doc_id for r in reverse_pre} == {
+        page.doc_id,
+        other_page.doc_id,
+    }
+
+    # Delete the K-page → forward rows for `page` are gone.
+    await storage.delete_document(page.doc_id)
+    assert await storage.provenance_from(page.doc_id) == []
+    # Reverse-side rows for the surviving K-page remain.
+    reverse_post = await storage.provenance_to(normalize_path("sources/src.md"))
+    assert [r.src_doc_id for r in reverse_post] == [other_page.doc_id]
+    # The other dst-side row (orphan) only belonged to the deleted page
+    # → fully gone now.
+    assert (
+        await storage.provenance_to(normalize_path("sources/orphan.md")) == []
+    )
+
+    # Delete the D-source → the K-page row pointing at it survives in
+    # the table (mirrors ``links_to`` after a target is deleted). The
+    # row is "dangling"; api.read_provenance surfaces it with
+    # resolved=False.
+    await storage.delete_document(src.doc_id)
+    still_pointing = await storage.provenance_from(other_page.doc_id)
+    assert {r.source_path for r in still_pointing} == {"sources/src.md"}
+
+
+async def test_provenance_no_fk_allows_unindexed_source_path(
+    storage: Storage,
+) -> None:
+    """``source_path`` may point at a D-source that is not yet indexed —
+    the user can hand-edit ``sources:`` frontmatter before running
+    ``ingest`` on the new file, or reference a planned source that
+    doesn't exist yet. Storage must accept the row; resolution status
+    is a query-time concern (see ``api.read_provenance``)."""
+    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    await storage.upsert_document(page)
+    # Note: deliberately do NOT upsert a document for "sources/ghost.md".
+
+    await storage.replace_provenance_from(
+        page.doc_id, ["sources/ghost.md"]
+    )
+    rows = await storage.provenance_from(page.doc_id)
+    assert [r.source_path for r in rows] == ["sources/ghost.md"]
+    reverse = await storage.provenance_to(normalize_path("sources/ghost.md"))
+    assert [r.src_doc_id for r in reverse] == [page.doc_id]
+

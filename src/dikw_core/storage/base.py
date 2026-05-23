@@ -30,6 +30,7 @@ from ..schemas import (
     FTSHit,
     Layer,
     LinkRecord,
+    ProvenanceEdge,
     StorageCounts,
     VecHit,
     WikiLogEntry,
@@ -103,6 +104,12 @@ class Storage(Protocol):
         ``counts()`` no longer tallies the dead row. Idempotent —
         deleting an unknown ``doc_id`` is a no-op (matches
         ``replace_links_from([])`` semantics).
+
+        Also deletes provenance rows where ``src_doc_id = doc_id``
+        (the K-page → D-source attribution table — see ADR-0001).
+        Mirrors the explicit ``links`` cleanup: the dedicated
+        ``provenance`` table is FK-less by design, so cascade must
+        happen here.
 
         Inbound links from OTHER docs (``links_to(doc.path)``) are
         intentionally NOT cleared: after the page moves to trash,
@@ -253,6 +260,49 @@ class Storage(Protocol):
         Atomic in one transaction: if the insert phase fails the prior
         edge set survives. Caller-side contract: every ``link.src_doc_id``
         equals ``src_doc_id`` (single-source replace).
+        """
+        ...
+
+    # ---- K layer: provenance (K-page → D-source attribution) -------------
+
+    async def replace_provenance_from(
+        self, src_doc_id: str, source_paths: Iterable[str]
+    ) -> None:
+        """Atomically replace every provenance edge originating from
+        ``src_doc_id`` with the rows derived from ``source_paths``.
+
+        Each ``source_path`` is stored alongside its
+        ``normalize_path(source_path)`` key. Duplicates that collapse to
+        the same normalized key are deduped deterministically (first
+        occurrence in input order wins on raw spelling). Pass ``[]`` to
+        wipe the page's provenance edges entirely; pass a fresh page's
+        first set to no-op the leading delete.
+
+        Used by ``persist_wiki_page`` to reconcile a K-page's
+        provenance edges from its frontmatter ``sources:`` list on every
+        re-persist, so removing a source from frontmatter actually
+        drops the edge rather than leaving a ghost row. Mirrors
+        ``replace_links_from`` for the body-derived wikilink graph.
+        Atomic in one transaction. Caller-side contract: every emitted
+        row's ``src_doc_id`` equals the argument.
+        """
+        ...
+
+    async def provenance_from(self, src_doc_id: str) -> list[ProvenanceEdge]:
+        """All forward provenance edges from ``src_doc_id`` in
+        deterministic order (``source_path_key ASC``). Returns raw
+        ``source_path`` strings alongside the normalized key; the
+        caller resolves to ``Layer.SOURCE`` documents."""
+        ...
+
+    async def provenance_to(self, source_path_key: str) -> list[ProvenanceEdge]:
+        """All reverse provenance edges pointing at ``source_path_key``.
+
+        Returns rows ordered by ``src_doc_id ASC``. Caller is responsible
+        for normalizing the input via ``normalize_path`` before calling
+        (engine call sites already have the normalized form via the
+        ``DocumentRecord.path_key`` of the resolved source). The caller
+        resolves ``src_doc_id`` values to K-page documents.
         """
         ...
 

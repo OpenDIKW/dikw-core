@@ -132,6 +132,7 @@ from .schemas import (
     AssetRecord,
     ChunkAssetRef,
     ChunkRecord,
+    DerivedPage,
     DocumentRecord,
     EmbeddingVersion,
     GraphEdge,
@@ -150,8 +151,11 @@ from .schemas import (
     PageAnchor,
     PageAsset,
     PageLinksResult,
+    PageProvenanceResult,
     PageReadResult,
     PageRef,
+    ProvenanceDirection,
+    ProvenanceSource,
     RetrieveResult,
     StorageCounts,
     WikiLogEntry,
@@ -168,6 +172,7 @@ __all__ = [
     "AppliedWisdomRef",
     "AssetNotFound",
     "CheckReport",
+    "DerivedPage",
     "DistillReport",
     "EmbeddingInfo",
     "HealthReport",
@@ -182,9 +187,11 @@ __all__ = [
     "PageAnchor",
     "PageLinksResult",
     "PageNotFound",
+    "PageProvenanceResult",
     "PageReadResult",
     "PageRef",
     "ProbeResult",
+    "ProvenanceSource",
     "ProvidersInfo",
     "RetrieveResult",
     "ReviewError",
@@ -205,6 +212,7 @@ __all__ = [
     "load_wiki",
     "read_asset",
     "read_page",
+    "read_provenance",
     "reject_wisdom",
     "retrieve",
     "status",
@@ -1977,6 +1985,155 @@ async def list_links(
         await storage.close()
 
     return PageLinksResult(path=match.path, outgoing=outgoing, incoming=incoming)
+
+
+async def read_provenance(
+    root: str | Path | None,
+    path: str,
+    *,
+    direction: ProvenanceDirection = "both",
+    limit: int | None = None,
+) -> PageProvenanceResult:
+    """Return the page's K↔D provenance neighbourhood.
+
+    Provenance is the K-page → D-source attribution recorded in a
+    K-page's ``sources:`` frontmatter, reconciled into the dedicated
+    ``provenance`` storage table on every ``_persist_wiki_page``. It is a
+    different edge from ``[[wikilink]]`` (which lives in the body and the
+    ``links`` table — see :func:`list_links`); the two are deliberately
+    not unified so graph-leg retrieval and ``orphan_page`` /
+    ``broken_wikilink`` lint stay clean. See
+    ``docs/adr/0001-provenance-as-separate-edge.md``.
+
+    ``direction``:
+      * ``"out"`` — populates ``derived_from`` only (the K-page's
+        forward attribution; meaningful for ``Layer.WIKI`` paths,
+        always empty for ``Layer.SOURCE``).
+      * ``"in"`` — populates ``derived_pages`` only (every K-page
+        whose ``sources:`` claims this path; meaningful for
+        ``Layer.SOURCE`` paths, always empty for ``Layer.WIKI``).
+      * ``"both"`` — populates both lists; the empty side is the answer
+        for the path's layer.
+
+    Forward entries are returned **faithfully**, including ones whose
+    ``source_path`` does not currently resolve to an active
+    ``Layer.SOURCE`` document — those carry ``resolved=False`` so agents
+    can detect provenance drift (a user-deleted source, a frontmatter
+    typo) instead of having storage silently swallow them.
+
+    Index-driven path safety, same as ``list_links``: only paths present
+    in the ``documents`` table are reachable; reverse-side ``src_doc_id``
+    rows that no longer resolve to an active document are dropped (the
+    K-page was hard-deleted or deactivated).
+
+    ``limit`` caps each list independently so a hub source with many
+    derived pages doesn't starve the forward side and vice versa.
+    """
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit}")
+    if not path or not path.strip() or "\x00" in path:
+        raise PageNotFound(path)
+
+    cfg, _root, storage = await _with_storage(root)
+    del cfg
+    try:
+        match: DocumentRecord | None = None
+        for layer in (Layer.SOURCE, Layer.WIKI):
+            candidate = await storage.get_document(_doc_id_for(layer, path))
+            if candidate is not None and candidate.active:
+                match = candidate
+                break
+        if match is None:
+            raise PageNotFound(path)
+
+        derived_from: list[ProvenanceSource] = []
+        derived_pages: list[DerivedPage] = []
+
+        if direction in ("out", "both"):
+            edges_out = await storage.provenance_from(match.doc_id)
+            # Batch-resolve the source side. Forward edges from a
+            # K-page point at Layer.SOURCE only (we set the layer prefix
+            # explicitly when building the candidate doc_id). For a
+            # SOURCE-layer path, ``provenance_from`` returns [] by
+            # construction (nothing inserts SOURCE → SOURCE rows), so
+            # forward leg is naturally empty there.
+            candidate_ids = [
+                _doc_id_for(Layer.SOURCE, e.source_path) for e in edges_out
+            ]
+            src_docs = {
+                d.doc_id: d
+                for d in await storage.get_documents(candidate_ids)
+            }
+            for e in edges_out:
+                src = src_docs.get(_doc_id_for(Layer.SOURCE, e.source_path))
+                if src is not None and src.active:
+                    derived_from.append(
+                        ProvenanceSource(
+                            source_path=e.source_path,
+                            doc_id=src.doc_id,
+                            title=src.title,
+                            resolved=True,
+                        )
+                    )
+                else:
+                    # Dangling — source deleted, renamed, or never
+                    # ingested. Surfaced faithfully so agents can
+                    # detect provenance drift; storage already filters
+                    # nothing here.
+                    derived_from.append(
+                        ProvenanceSource(
+                            source_path=e.source_path,
+                            doc_id=None,
+                            title=None,
+                            resolved=False,
+                        )
+                    )
+            if limit is not None:
+                derived_from = derived_from[:limit]
+
+        # Reverse leg is meaningful only for ``Layer.SOURCE`` paths.
+        # ``storage.provenance_to`` is layer-agnostic and keyed by
+        # ``source_path_key``, so a WIKI path whose key happens to match
+        # a malformed K-page's frontmatter entry (e.g., a K-page that
+        # accidentally lists ``wiki/...`` in its ``sources:``) would
+        # otherwise come back as a ``derived_pages`` entry — violating
+        # the documented "WIKI paths have empty reverse provenance"
+        # contract and letting agents treat a K-page as a D-source.
+        # The forward leg already marks such malformed entries
+        # ``resolved=False``; this gate keeps the reverse leg honest.
+        if direction in ("in", "both") and match.layer == Layer.SOURCE:
+            edges_in = await storage.provenance_to(match.path_key)
+            src_docs_in = {
+                d.doc_id: d
+                for d in await storage.get_documents(
+                    e.src_doc_id for e in edges_in
+                )
+            }
+            for edge in edges_in:
+                src_doc = src_docs_in.get(edge.src_doc_id)
+                # Orphan rows (K-page deactivated / hard-deleted) are
+                # dropped — agents can't follow them anyway.
+                # ``delete_document`` cascades provenance, so the only
+                # way to hit this is a deactivate without delete.
+                if src_doc is None or not src_doc.active:
+                    continue
+                derived_pages.append(
+                    DerivedPage(
+                        doc_id=src_doc.doc_id,
+                        path=src_doc.path,
+                        title=src_doc.title,
+                    )
+                )
+            if limit is not None:
+                derived_pages = derived_pages[:limit]
+    finally:
+        await storage.close()
+
+    return PageProvenanceResult(
+        path=match.path,
+        derived_from=derived_from,
+        derived_pages=derived_pages,
+    )
 
 
 def _read_doc_body_for_graph(base_root: Path, doc: DocumentRecord) -> str | None:

@@ -78,6 +78,19 @@ CREATE TABLE IF NOT EXISTS links (
 
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst_path);
 
+-- See migrations/sqlite/schema.sql for the design rationale. Mirror of
+-- the SQLite shape; no FK on either side, explicit cleanup in
+-- ``delete_document``.
+CREATE TABLE IF NOT EXISTS provenance (
+    src_doc_id      TEXT NOT NULL,
+    source_path     TEXT NOT NULL,
+    source_path_key TEXT NOT NULL,
+    PRIMARY KEY (src_doc_id, source_path_key)
+);
+
+CREATE INDEX IF NOT EXISTS provenance_source_key
+    ON provenance(source_path_key);
+
 CREATE TABLE IF NOT EXISTS wiki_log (
     id     BIGSERIAL PRIMARY KEY,
     ts     DOUBLE PRECISION NOT NULL,

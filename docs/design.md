@@ -31,7 +31,7 @@ Design decisions already locked in (via clarifying Q&A):
 |---|---|---|---|
 | **D — Data** | Raw, immutable sources (markdown files the user curates) | filesystem + indexed `documents` table in SQLite (path, content hash, layer, active) | human |
 | **I — Information** | Parsed, chunked, embedded, indexed — enables fast lookup | SQLite FTS5 + sqlite-vec (`.dikw/index.sqlite`) | engine (deterministic) |
-| **K — Knowledge** | LLM-authored wiki pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md` | markdown files in `wiki/` | LLM, human-editable |
+| **K — Knowledge** | LLM-authored wiki pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md`; each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `wiki/` | LLM, human-editable |
 | **W — Wisdom** | Distilled principles, heuristics, lessons, patterns — transferable beyond a single source | markdown files in `wisdom/` with explicit provenance & review status | LLM proposes, human confirms |
 
 The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.

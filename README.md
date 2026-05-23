@@ -63,7 +63,7 @@ uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?"
 > are no top-level short aliases. **`dikw-core` no longer ships an in-engine
 > answer-synthesis path** — `retrieve` returns ranked chunks + page refs and
 > the agent (Claude Code, ChatGPT, your own script) feeds them into its own
-> LLM. See [`AGENTS.md`](./AGENTS.md).
+> LLM. See [`GUIDE_FOR_AGENTS.md`](./GUIDE_FOR_AGENTS.md).
 
 Server deployment, security posture, and the wire contract live in
 [`docs/server.md`](./docs/server.md). For container deployment, see

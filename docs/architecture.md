@@ -35,8 +35,9 @@ src/dikw_core/
 ├── api.py                 thin facade — init_wiki, ingest, retrieve,
 │                          synthesize, lint (+ lint_propose / lint_apply),
 │                          distill, review state machine, list_pages,
-│                          read_page, list_links, list_graph,
-│                          read_asset, status, health, check_providers
+│                          read_page, list_links, read_provenance,
+│                          list_graph, read_asset, status, health,
+│                          check_providers
 ├── config.py              Pydantic config + YAML loader
 ├── schemas.py             cross-layer DTOs
 ├── domains/                 DIKW domain model (the four layers)
@@ -59,9 +60,9 @@ src/dikw_core/
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
 │   │   ├── indexgen.py      regenerate wiki/index.md
 │   │   ├── log.py           render wiki/log.md from wiki_log rows
-│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles; lint.skip frontmatter suppression
-│   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect)
-│   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router)
+│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance; lint.skip frontmatter suppression
+│   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
+│   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
 │   └── wisdom/
 │       ├── distill.py       LLM -> <wisdom> blocks; enforces N>=2 evidence
 │       ├── io.py            candidate files + aggregate regenerators
@@ -203,11 +204,11 @@ each adapter doesn't re-implement RRF.
 > "Scoping should be deterministic, reasoning should be probabilistic."
 
 We take that seriously. Every navigation step (source listing, chunk
-lookup, link traversal, wisdom retrieval-by-title) is deterministic SQL +
-file I/O. LLM calls only enter at synthesis and distillation — the two
-engine-internal authoring legs that write the K and W layers. Answer
-synthesis happens **outside** dikw-core, in the agent layer, with the
-agent's own LLM and conversation context.
+lookup, link traversal, provenance lookup, wisdom retrieval-by-title)
+is deterministic SQL + file I/O. LLM calls only enter at synthesis and
+distillation — the two engine-internal authoring legs that write the K
+and W layers. Answer synthesis happens **outside** dikw-core, in the
+agent layer, with the agent's own LLM and conversation context.
 
 ### Wikilink resolve, as a concrete example
 
