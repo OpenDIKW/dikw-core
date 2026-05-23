@@ -24,6 +24,18 @@ _Avoid_: input file, raw doc, document (which is the indexed-row type, not the f
 A `documents` table row — the indexed handle for a source (or K-layer page). Has `doc_id`, `path`, `layer`, `hash`. Crosses the Storage Protocol.
 _Avoid_: source (which is the file on disk before it has been indexed)
 
+### Edges between pages
+
+Two distinct, deliberately separated relationships connect pages. Conflating them pollutes graph-leg retrieval.
+
+**wikilink** (a.k.a. **link**):
+A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src_doc_id → dst_path`, with `link_type`, `anchor`, `line`). Forms the K↔K graph that feeds graph-leg retrieval and orphan/broken-link lint. Reconciled from the body on every `persist_wiki_page` via `replace_links_from`.
+_Avoid_: reference, citation (overloaded), provenance (the other edge).
+
+**provenance**:
+The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the wiki tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_wiki_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint → lint fix apply` flow.
+_Avoid_: reference, link, citation; "sources" alone (that's the frontmatter key, not the relationship).
+
 ### Pipeline verbs
 
 **import**:
@@ -63,6 +75,7 @@ _Avoid_: query, ask, search
 - A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple wiki pages).
 - **distill** consumes K-layer documents, never D-layer sources directly.
 - The user owns `<base>/sources/`, `<base>/wiki/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging).
+- A K-layer **document** carries **provenance** edges back to the **source**(s) it was synth-authored from (`provenance` table, distinct from `links`). The reverse — "which K-pages derive from this source" — is the query this edge exists to answer.
 
 ## Example dialogue
 
@@ -77,6 +90,7 @@ _Avoid_: query, ask, search
 - **upload** was used as the user-facing verb for the import action. Resolved: `upload` is reserved for HTTP-wire descriptions only (multipart upload, payload upload). The user-facing verb is `import`. The two are honest at different layers — the CLI speaks domain, the HTTP path speaks transport.
 - **wiki** is used both for the K-layer role and for the on-disk directory `<base>/wiki/`. Resolved: say "K layer" for the role, "wiki tree" for the files. Bare "wiki" is ambiguous.
 - **document** vs **source**: in the D layer they're nearly synonymous (one source → one document, usually), but **source** is the file on disk and **document** is the indexed row. Keep them distinct because in K + W layers the documents have no corresponding source file — they were LLM-authored.
+- **reference / 引用** was used for "source X is used by page Y". Resolved into two distinct edges: **wikilink** (body `[[…]]`, the K↔K graph) and **provenance** (frontmatter `sources:`, page→source attribution). They are stored in separate tables and never mixed — a page can have one without the other.
 
 ## Plugin contract
 

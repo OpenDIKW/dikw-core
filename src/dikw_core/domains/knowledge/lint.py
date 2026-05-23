@@ -26,6 +26,7 @@ import frontmatter
 
 from ...schemas import Layer, LinkType
 from ...storage.base import Storage
+from ..data.path_norm import normalize_path
 from .links import build_fuzzy_index, parse_links, resolve_links
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
@@ -58,6 +59,7 @@ LintKind = Literal[
     "orphan_page",
     "duplicate_title",
     "non_atomic_page",
+    "missing_provenance",
 ]
 
 
@@ -242,6 +244,34 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             else ()
         )
         page_meta[doc.path] = PageMeta(sources=sources_tuple, tags=tags_tuple)
+
+        # Surface pages whose frontmatter declares ``sources:`` but
+        # whose provenance table is out of sync — typical on bases
+        # that existed before the provenance feature shipped, or after
+        # a user hand-edits ``sources:`` outside of synth / lint-apply.
+        # ``expected != existing`` catches three sub-cases with one
+        # comparison: zero existing rows (never reconciled), partial
+        # rows (interrupted reconcile), and stale rows (frontmatter
+        # edited after a prior reconcile). All resolve to the same
+        # fix — MissingProvenanceFixer is deterministic, no LLM. See
+        # docs/adr/0001-provenance-as-separate-edge.md.
+        if sources_tuple and "missing_provenance" not in skip_kinds:
+            existing_prov = await storage.provenance_from(doc.doc_id)
+            existing_keys = {e.source_path_key for e in existing_prov}
+            expected_keys = {normalize_path(s) for s in sources_tuple}
+            if existing_keys != expected_keys:
+                issues.append(
+                    LintIssue(
+                        kind="missing_provenance",
+                        path=doc.path,
+                        detail=(
+                            f"frontmatter declares {len(sources_tuple)} "
+                            f"source(s); provenance table has "
+                            f"{len(existing_prov)} matching row(s)"
+                        ),
+                    )
+                )
+
         page_links = parse_links(body)
         _, unresolved = resolve_links(
             doc.doc_id,

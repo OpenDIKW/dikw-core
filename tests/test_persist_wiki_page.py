@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from dikw_core import api
+from dikw_core.domains.data.path_norm import normalize_path
 from dikw_core.domains.knowledge.wiki import build_page, write_page
 from dikw_core.schemas import Layer, LinkType
 
@@ -182,3 +183,126 @@ def test_synth_report_carries_unresolved_wikilinks_field() -> None:
     assert report.unresolved_wikilinks == 0
     bumped = api._sr_replace(report, unresolved_wikilinks=7)
     assert bumped.unresolved_wikilinks == 7
+
+
+# ---- Provenance reconcile -------------------------------------------------
+#
+# Same invariant as the wikilink reconcile above but for the K-page →
+# D-source attribution edge: ``persist_wiki_page`` must reconcile the
+# ``provenance`` table from the page's ``sources:`` frontmatter on every
+# call. Without this, hand-editing ``sources:`` (or re-synth that drops a
+# source) would leave ghost rows that ``api.read_provenance`` still
+# surfaces — the same class of bug the wikilink tests above guard
+# against, but for the page-source attribution graph.
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_writes_provenance_from_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """A fresh page with ``sources: [A, B]`` lands two provenance rows
+    keyed by the page's doc_id. The reverse-lookup index also sees them
+    immediately — proves the call hit both the table and the index."""
+    wiki_root = tmp_path / "wiki"
+    init_test_wiki(wiki_root)
+    _cfg, root, storage = await api._with_storage(wiki_root)
+    try:
+        page = build_page(
+            title="Src",
+            body="Body.\n",
+            type_="concept",
+            path="wiki/src.md",
+            sources=["sources/foo.md", "sources/bar.md"],
+        )
+        write_page(root, page)
+        await _persist(storage, root, page)
+
+        doc_id = api._doc_id_for(Layer.WIKI, "wiki/src.md")
+        rows = await storage.provenance_from(doc_id)
+        assert {r.source_path for r in rows} == {
+            "sources/foo.md",
+            "sources/bar.md",
+        }
+        # Reverse lookup wired.
+        reverse = await storage.provenance_to(
+            normalize_path("sources/foo.md")
+        )
+        assert [r.src_doc_id for r in reverse] == [doc_id]
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_removes_stale_provenance_when_frontmatter_changes(
+    tmp_path: Path,
+) -> None:
+    """Editing ``sources:`` to drop an entry must remove the matching
+    provenance row — symmetric to the wikilink reconcile above. Without
+    the reconcile call, ``sources: [old]`` → ``sources: [new]`` leaves
+    a ghost row pointing at ``old``."""
+    wiki_root = tmp_path / "wiki"
+    init_test_wiki(wiki_root)
+    _cfg, root, storage = await api._with_storage(wiki_root)
+    try:
+        page_v1 = build_page(
+            title="Src",
+            body="Body.\n",
+            type_="concept",
+            path="wiki/src.md",
+            sources=["sources/old.md"],
+        )
+        write_page(root, page_v1)
+        await _persist(storage, root, page_v1)
+
+        doc_id = api._doc_id_for(Layer.WIKI, "wiki/src.md")
+        before = await storage.provenance_from(doc_id)
+        assert {r.source_path for r in before} == {"sources/old.md"}
+
+        # Rewrite the same page with a different sources list.
+        page_v2 = build_page(
+            title="Src",
+            body="Body.\n",
+            type_="concept",
+            path="wiki/src.md",
+            sources=["sources/new.md"],
+        )
+        write_page(root, page_v2)
+        await _persist(storage, root, page_v2)
+
+        after = await storage.provenance_from(doc_id)
+        assert {r.source_path for r in after} == {"sources/new.md"}
+        # Reverse lookup on the dropped source returns no rows.
+        assert (
+            await storage.provenance_to(normalize_path("sources/old.md")) == []
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_with_no_sources_frontmatter_leaves_provenance_empty(
+    tmp_path: Path,
+) -> None:
+    """A page whose frontmatter has no ``sources:`` key (or an empty
+    list) gets zero provenance rows. The reconcile call is unconditional
+    so the leading DELETE handles the "list previously non-empty,
+    user cleared it" case as well."""
+    wiki_root = tmp_path / "wiki"
+    init_test_wiki(wiki_root)
+    _cfg, root, storage = await api._with_storage(wiki_root)
+    try:
+        page = build_page(
+            title="Src",
+            body="Body.\n",
+            type_="concept",
+            path="wiki/src.md",
+            # No sources= argument → page.sources == [] → write_page
+            # omits the frontmatter key entirely (see wiki.py:140).
+        )
+        write_page(root, page)
+        await _persist(storage, root, page)
+
+        doc_id = api._doc_id_for(Layer.WIKI, "wiki/src.md")
+        assert await storage.provenance_from(doc_id) == []
+    finally:
+        await storage.close()

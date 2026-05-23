@@ -21,6 +21,7 @@ from typing import Any, Literal
 import sqlite_vec
 
 from ..domains.data.hashing import hash_bytes
+from ..domains.data.path_norm import normalize_path as _normalize_path
 from ..domains.info.tokenize import CjkTokenizer, initialize_jieba, preprocess_for_fts
 from ..schemas import (
     AssetEmbeddingRow,
@@ -38,6 +39,7 @@ from ..schemas import (
     Layer,
     LinkRecord,
     LinkType,
+    ProvenanceEdge,
     StorageCounts,
     VecHit,
     WikiLogEntry,
@@ -334,6 +336,18 @@ class SQLiteStorage:
                 # broken_wikilink on the next lint, which is the right
                 # signal for "this delete broke someone else's link".
                 conn.execute("DELETE FROM links WHERE src_doc_id = ?", (doc_id,))
+                # ``provenance`` is FK-less by design (see ADR-0001).
+                # K-page → D-source edges from this doc are wiped here;
+                # any *inbound* row pointing at this doc's path (i.e.
+                # other K-pages that listed this source in their
+                # frontmatter) is intentionally left alone — same
+                # surfacing pattern as ``links.dst_path``: a deletion
+                # that silently broke other pages' provenance would
+                # be invisible, so api.read_provenance reports it as
+                # ``resolved=False`` instead.
+                conn.execute(
+                    "DELETE FROM provenance WHERE src_doc_id = ?", (doc_id,)
+                )
                 # ``wisdom_evidence.doc_id`` is a non-cascading FK to
                 # ``documents``; without an explicit clear the next
                 # statement would fail with a FK violation on pages
@@ -785,6 +799,84 @@ class SQLiteStorage:
                     )
 
         await asyncio.to_thread(_run)
+
+    # ---- K layer: provenance --------------------------------------------
+
+    async def replace_provenance_from(
+        self, src_doc_id: str, source_paths: Iterable[str]
+    ) -> None:
+        # Dedupe in Python so we control which raw spelling survives a
+        # normalize-key collision (first-occurrence wins) — letting
+        # ``INSERT OR REPLACE`` resolve the collision instead would
+        # keep the *last* one and the choice would drift between
+        # adapter behaviour and the contract.
+        seen: dict[str, str] = {}
+        for raw in source_paths:
+            key = _normalize_path(raw)
+            if key not in seen:
+                seen[key] = raw
+
+        def _run() -> None:
+            conn = self._require_conn()
+            with conn:
+                conn.execute(
+                    "DELETE FROM provenance WHERE src_doc_id = ?",
+                    (src_doc_id,),
+                )
+                if seen:
+                    conn.executemany(
+                        "INSERT INTO provenance"
+                        "(src_doc_id, source_path, source_path_key) "
+                        "VALUES (?, ?, ?)",
+                        [
+                            (src_doc_id, raw, key)
+                            for key, raw in seen.items()
+                        ],
+                    )
+
+        await asyncio.to_thread(_run)
+
+    async def provenance_from(self, src_doc_id: str) -> list[ProvenanceEdge]:
+        def _run() -> list[ProvenanceEdge]:
+            conn = self._require_conn()
+            rows = conn.execute(
+                "SELECT src_doc_id, source_path, source_path_key "
+                "FROM provenance WHERE src_doc_id = ? "
+                "ORDER BY source_path_key",
+                (src_doc_id,),
+            ).fetchall()
+            return [
+                ProvenanceEdge(
+                    src_doc_id=r["src_doc_id"],
+                    source_path=r["source_path"],
+                    source_path_key=r["source_path_key"],
+                )
+                for r in rows
+            ]
+
+        return await asyncio.to_thread(_run)
+
+    async def provenance_to(
+        self, source_path_key: str
+    ) -> list[ProvenanceEdge]:
+        def _run() -> list[ProvenanceEdge]:
+            conn = self._require_conn()
+            rows = conn.execute(
+                "SELECT src_doc_id, source_path, source_path_key "
+                "FROM provenance WHERE source_path_key = ? "
+                "ORDER BY src_doc_id",
+                (source_path_key,),
+            ).fetchall()
+            return [
+                ProvenanceEdge(
+                    src_doc_id=r["src_doc_id"],
+                    source_path=r["source_path"],
+                    source_path_key=r["source_path_key"],
+                )
+                for r in rows
+            ]
+
+        return await asyncio.to_thread(_run)
 
     async def neighbor_chunks_via_links(
         self,

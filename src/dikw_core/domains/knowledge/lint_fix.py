@@ -97,11 +97,23 @@ class FixOperation(BaseModel):
     Always ``None`` for ``create_page`` (the file shouldn't exist yet).
     """
 
-    kind: Literal["create_page", "update_page", "delete_page"]
+    kind: Literal[
+        "create_page",
+        "update_page",
+        "delete_page",
+        "reconcile_provenance",
+    ]
     path: str
     new_frontmatter: dict[str, Any] | None = None
     new_body: str | None = None
     expected_hash: str | None = None
+    # Carrier for ``reconcile_provenance`` only: the snapshot of
+    # frontmatter ``sources:`` the fixer observed. Apply passes this
+    # straight into ``storage.replace_provenance_from(doc_id, …)``; the
+    # op does NOT modify the wiki file (the frontmatter is already the
+    # source of truth — this op only syncs the storage index to it).
+    # See ``MissingProvenanceFixer`` and ADR-0001.
+    source_paths: list[str] | None = None
 
 
 class FixProposal(BaseModel):
@@ -609,6 +621,13 @@ async def run_lint_apply(
                 touched_paths.add(op.path)
                 if op.kind == "delete_page":
                     deleted_paths.add(op.path)
+                elif op.kind == "reconcile_provenance":
+                    # No file change → no Phase 1 ``persist_wiki_page``
+                    # re-chunk needed, and no ``wiki_paths_changed``
+                    # entry. The storage write already happened inside
+                    # ``_apply_one_op``; that's the "narrowest possible
+                    # write" contract for this op kind.
+                    pass
                 else:
                     paths_changed.add(op.path)
             else:
@@ -787,6 +806,31 @@ def _preflight_proposal(
                     )
             sim_deleted.add(op.path)
             sim_created.discard(op.path)
+        elif op.kind == "reconcile_provenance":
+            # Doesn't change the file; doesn't change ``sim_created``
+            # / ``sim_deleted`` either. Same concurrent-edit safety as
+            # update_page — if the user edited ``sources:`` between scan
+            # and apply, the fixer's ``source_paths`` snapshot is stale
+            # and we skip, letting the next lint pass re-propose.
+            if not _exists(op.path):
+                return f"reconcile_provenance target missing: {op.path!r}"
+            if not op.expected_hash:
+                return (
+                    f"reconcile_provenance on {op.path!r} missing "
+                    "expected_hash — required for safety"
+                )
+            if op.source_paths is None:
+                return (
+                    f"reconcile_provenance on {op.path!r} missing "
+                    "source_paths"
+                )
+            if op.path not in sim_created:
+                actual = file_sha256(abs_path)
+                if actual != op.expected_hash:
+                    return (
+                        f"reconcile_provenance on {op.path!r}: hash "
+                        "mismatch (concurrent edit detected)"
+                    )
         else:
             return f"unknown op kind {op.kind!r}"
 
@@ -869,6 +913,29 @@ async def _apply_one_op(
             )
         except OSError as e:
             return _skip(proposal_id, op, f"trash move failed: {e}")
+        return None
+
+    if op.kind == "reconcile_provenance":
+        # Sync storage to frontmatter snapshot. Frontmatter is the
+        # source of truth (the wiki tree is a user-editable Obsidian
+        # vault); this op only re-runs the same reconcile that
+        # ``persist_wiki_page`` does on every synth / lint-apply, but
+        # without needing an embedder or re-chunking. Concurrent edit
+        # check up front (above) catches the case where the user
+        # edited ``sources:`` between scan and apply.
+        if op.source_paths is None:
+            return _skip(
+                proposal_id, op,
+                "reconcile_provenance op missing source_paths",
+            )
+        doc_id = path_to_doc_id.get(op.path)
+        if doc_id is None:
+            return _skip(
+                proposal_id, op,
+                f"reconcile_provenance: no doc_id for path {op.path!r} "
+                "(deactivated since scan?)",
+            )
+        await storage.replace_provenance_from(doc_id, op.source_paths)
         return None
 
     return _skip(proposal_id, op, f"unknown op kind {op.kind!r}")

@@ -21,6 +21,7 @@ from collections.abc import Iterable, Sequence
 from importlib import resources
 from typing import TYPE_CHECKING, Any, Literal
 
+from ..domains.data.path_norm import normalize_path as _normalize_path
 from ..domains.info.tokenize import (
     WORD_OR_CJK_CHARS,
     CjkTokenizer,
@@ -43,6 +44,7 @@ from ..schemas import (
     Layer,
     LinkRecord,
     LinkType,
+    ProvenanceEdge,
     StorageCounts,
     VecHit,
     WikiLogEntry,
@@ -292,6 +294,14 @@ class PostgresStorage:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "DELETE FROM links WHERE src_doc_id = %s", (doc_id,)
+                )
+                # ``provenance`` is FK-less by design (see ADR-0001);
+                # mirrors the explicit ``links`` cleanup above. Inbound
+                # rows (other K-pages whose frontmatter points at this
+                # doc) survive — api.read_provenance surfaces them with
+                # ``resolved=False``.
+                await cur.execute(
+                    "DELETE FROM provenance WHERE src_doc_id = %s", (doc_id,)
                 )
                 await cur.execute(
                     "DELETE FROM wisdom_evidence WHERE doc_id = %s", (doc_id,),
@@ -698,6 +708,75 @@ class PostgresStorage:
                         ],
                     )
             await conn.commit()
+
+    # ---- K layer: provenance --------------------------------------------
+
+    async def replace_provenance_from(
+        self, src_doc_id: str, source_paths: Iterable[str]
+    ) -> None:
+        # Dedupe in Python so first-occurrence-wins on raw spelling is
+        # adapter-invariant; PG's ON CONFLICT would keep EXCLUDED (last
+        # one) and drift from the SQLite path.
+        seen: dict[str, str] = {}
+        for raw in source_paths:
+            key = _normalize_path(raw)
+            if key not in seen:
+                seen[key] = raw
+
+        async with self._acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM provenance WHERE src_doc_id = %s",
+                    (src_doc_id,),
+                )
+                if seen:
+                    await cur.executemany(
+                        """
+                        INSERT INTO provenance(src_doc_id, source_path, source_path_key)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (src_doc_id, source_path_key) DO UPDATE SET
+                            source_path = EXCLUDED.source_path
+                        """,
+                        [
+                            (src_doc_id, raw, key)
+                            for key, raw in seen.items()
+                        ],
+                    )
+            await conn.commit()
+
+    async def provenance_from(self, src_doc_id: str) -> list[ProvenanceEdge]:
+        async with self._acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT src_doc_id, source_path, source_path_key "
+                "FROM provenance WHERE src_doc_id = %s "
+                "ORDER BY source_path_key",
+                (src_doc_id,),
+            )
+            rows = await cur.fetchall()
+        return [
+            ProvenanceEdge(
+                src_doc_id=r[0], source_path=r[1], source_path_key=r[2]
+            )
+            for r in rows
+        ]
+
+    async def provenance_to(
+        self, source_path_key: str
+    ) -> list[ProvenanceEdge]:
+        async with self._acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT src_doc_id, source_path, source_path_key "
+                "FROM provenance WHERE source_path_key = %s "
+                "ORDER BY src_doc_id",
+                (source_path_key,),
+            )
+            rows = await cur.fetchall()
+        return [
+            ProvenanceEdge(
+                src_doc_id=r[0], source_path=r[1], source_path_key=r[2]
+            )
+            for r in rows
+        ]
 
     async def neighbor_chunks_via_links(
         self,

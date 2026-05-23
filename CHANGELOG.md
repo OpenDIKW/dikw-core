@@ -7,6 +7,90 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.2.6 — 2026-05-23
+
+### Added: provenance edge (K-page → D-source attribution)
+
+The page→source attribution recorded in each K-page's `sources:`
+frontmatter is now a queryable edge in its own right — distinct from
+body-derived `[[wikilink]]` references. This closes the
+"which K-pages were synth-authored from this source?" gap that
+previously required scanning every wiki page's frontmatter by hand.
+See [`docs/adr/0001-provenance-as-separate-edge.md`](docs/adr/0001-provenance-as-separate-edge.md)
+for why provenance lives in a dedicated table.
+
+* New `provenance(src_doc_id, source_path, source_path_key)` storage
+  table on both SQLite + Postgres, with a reverse-lookup index on
+  `source_path_key`. PK on the normalized key collapses case / NFC
+  drift to one row. No FK on either side — mirrors the `links` table.
+* New `Storage` Protocol methods: `replace_provenance_from`,
+  `provenance_from`, `provenance_to`. `delete_document` now also
+  purges provenance rows where the deleted doc is `src_doc_id`.
+* `persist_wiki_page` reconciles provenance from frontmatter on every
+  persist, mirroring the existing wikilink reconcile. Edits to
+  `sources:` self-heal on the next synth / lint-apply pass.
+* New HTTP endpoint
+  `GET /v1/base/pages/{path}/provenance?direction=in|out|both&limit=N`
+  returns a `PageProvenanceResult` with `derived_from` (forward) +
+  `derived_pages` (reverse). Forward entries that don't resolve to an
+  active `Layer.SOURCE` document are surfaced with `resolved=false`
+  rather than silently dropped — agents can detect provenance drift.
+* New CLI `dikw client pages provenance <path> [--direction in|out|both]
+  [--limit N] [--format json|table]` — JSON default per the
+  agent-first contract. Table mode renders ✓/✗ in the resolved column.
+* New API: `dikw_core.api.read_provenance(root, path, *, direction,
+  limit)` — pure helper used by the HTTP route, exposed for in-process
+  agent embeddings.
+
+### Added: `missing_provenance` lint kind + deterministic fixer
+
+Legacy bases that existed before 0.2.6 carry K-pages whose
+frontmatter declares `sources:` but whose `provenance` table is empty.
+The same drift can happen when a user hand-edits `sources:` outside
+synth / lint-apply.
+
+* New `LintKind = "missing_provenance"`. Fires when a page's
+  frontmatter `sources:` exists but doesn't match the `provenance`
+  table. Suppressible per-page via
+  `lint: {skip: [missing_provenance]}` frontmatter (same shape as the
+  other kinds).
+* New `MissingProvenanceFixer` is pure-deterministic (no LLM call,
+  no provider dependencies). It emits a single
+  `reconcile_provenance` `FixOperation` carrying the frontmatter
+  snapshot + `expected_hash` for concurrent-edit safety.
+* New `FixOperation.kind = "reconcile_provenance"` — the narrowest
+  possible write: one `storage.replace_provenance_from` call, no file
+  mutation, no chunk / embedding / link side effects. Phase-1
+  re-persist is skipped; `wiki_paths_changed` stays empty for this
+  op kind.
+* Run `dikw client lint fix apply --kind missing_provenance` once
+  after upgrade to backfill legacy bases.
+
+### Changed (storage): schema fingerprint bumped to v3
+
+`SCHEMA_VERSION = 3` (was 2). The new `provenance` table is additive,
+but pre-alpha policy is "rebuild on incompatibility" — any DB at v2
+will refuse to migrate in place. The eval-cache fingerprint includes
+`SCHEMA_VERSION`, so snapshots from v2 will not be reused under v3.
+
+* **Migration (SQLite)**: `rm -rf <base>/.dikw/index*` then re-run
+  `dikw client ingest`.
+* **Migration (Postgres)**: drop and recreate the configured schema,
+  then re-run `dikw client ingest`.
+* After ingest, run `dikw client lint fix apply --kind missing_provenance`
+  to populate the new table from existing wiki frontmatter.
+
+### Notes
+
+* Provenance is a **navigation edge only** — it does not feed RRF
+  retrieval, does not affect `orphan_page` / `broken_wikilink` counts,
+  and required no eval-baseline update.
+* The pre-existing gap that `dikw client ingest` does not rescan
+  `wiki/` (and so does not detect hand-edits to wiki bodies or
+  frontmatter) is **not** addressed here. It applies equally to the
+  `links` table today. Tracked separately as a "wiki rescan in ingest"
+  follow-up.
+
 ## 0.2.5 — 2026-05-21
 
 ### BREAKING (CLI): agent-first default-JSON audit completed

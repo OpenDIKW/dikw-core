@@ -397,6 +397,143 @@ def test_pages_links_rejects_invalid_format(
     assert "must be 'json' or 'table'" in result.stdout
 
 
+def _seed_pages_provenance(rt: ServerRuntime) -> tuple[str, str, str]:
+    """Seed one D-source claimed by two K-pages (a, b) plus a dangling
+    source on ``a`` so the resolved/dangling marker is exercised. Returns
+    ``(src_path, a_path, b_path)`` for assertions."""
+    import asyncio
+
+    src_path = "sources/src.md"
+    ghost_path = "sources/ghost.md"
+    a_path = "wiki/a.md"
+    b_path = "wiki/b.md"
+
+    async def _seed() -> None:
+        cfg, _root, storage = await api._with_storage(rt.root)
+        del cfg
+        try:
+            await storage.upsert_document(
+                DocumentRecord(
+                    doc_id=api._doc_id_for(Layer.SOURCE, src_path),
+                    path=src_path,
+                    title="Src",
+                    hash="0" * 64,
+                    mtime=0.0,
+                    layer=Layer.SOURCE,
+                    active=True,
+                )
+            )
+            for p in (a_path, b_path):
+                await storage.upsert_document(
+                    DocumentRecord(
+                        doc_id=api._doc_id_for(Layer.WIKI, p),
+                        path=p,
+                        hash="0" * 64,
+                        mtime=0.0,
+                        layer=Layer.WIKI,
+                        active=True,
+                    )
+                )
+            await storage.replace_provenance_from(
+                api._doc_id_for(Layer.WIKI, a_path), [src_path, ghost_path]
+            )
+            await storage.replace_provenance_from(
+                api._doc_id_for(Layer.WIKI, b_path), [src_path]
+            )
+        finally:
+            await storage.close()
+
+    asyncio.run(_seed())
+    return src_path, a_path, b_path
+
+
+def test_pages_provenance_default_emits_both_directions_as_json(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``dikw client pages provenance <wiki-path>`` defaults to JSON
+    with ``both`` direction — agent-friendly. A K-page has its forward
+    sources populated and reverse empty (no K-page claims a K-page as
+    its source)."""
+    _, rt = asgi_client
+    src_path, a_path, _b = _seed_pages_provenance(rt)
+    patch_transport_factory()
+    result = _run(["client", "pages", "provenance", a_path])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["path"] == a_path
+    assert payload["derived_pages"] == []
+    by_path = {s["source_path"]: s for s in payload["derived_from"]}
+    assert by_path[src_path]["resolved"] is True
+    assert by_path["sources/ghost.md"]["resolved"] is False
+
+
+def test_pages_provenance_reverse_for_source(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """Querying the D-source path returns the K-pages that claim it —
+    the "which pages reference this source?" question this feature
+    exists for."""
+    _, rt = asgi_client
+    src_path, a_path, b_path = _seed_pages_provenance(rt)
+    patch_transport_factory()
+    result = _run(["client", "pages", "provenance", src_path])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["derived_from"] == []
+    assert sorted(dp["path"] for dp in payload["derived_pages"]) == sorted(
+        [a_path, b_path]
+    )
+
+
+def test_pages_provenance_table_renders_resolved_flag(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--format table`` mode renders a ✓/✗ column for ``resolved`` —
+    the dangling-source marker is the table's primary value-add over
+    JSON."""
+    _, rt = asgi_client
+    _src, a_path, _b = _seed_pages_provenance(rt)
+    patch_transport_factory()
+    result = _run(
+        ["client", "pages", "provenance", a_path, "--format", "table"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "derived_from" in result.stdout
+    assert "derived_pages" in result.stdout
+    # Resolved flag rendered as ✓ for the real source AND ✗ for the
+    # dangling one — both markers visible on the same page.
+    assert "✓" in result.stdout
+    assert "✗" in result.stdout
+
+
+def test_pages_provenance_direction_in(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    _, rt = asgi_client
+    src_path, _a, _b = _seed_pages_provenance(rt)
+    patch_transport_factory()
+    result = _run(
+        ["client", "pages", "provenance", src_path, "--direction", "in"]
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["derived_pages"] and payload["derived_from"] == []
+
+
+def test_pages_provenance_unknown_path_exits_one(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    patch_transport_factory()
+    result = _run(["client", "pages", "provenance", "wiki/missing.md"])
+    assert result.exit_code == 1
+    assert "page_not_found" in result.stdout or "404" in result.stdout
+
+
 def test_review_list_empty_on_fresh_wiki(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],

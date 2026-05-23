@@ -134,4 +134,17 @@ async def persist_wiki_page(
         fuzzy_index=fuzzy_index,
     )
     await storage.replace_links_from(doc_id, resolved)
+
+    # Reconcile provenance edges (K-page → D-source attribution) from
+    # the page's ``sources:`` frontmatter — frontmatter is the source of
+    # truth (the wiki tree is a user-editable Obsidian vault), so
+    # re-running this on every persist self-heals when the user hand-
+    # edits the list. Mirrors the wikilink reconcile above; deliberately
+    # kept off the wikilink graph (separate ``provenance`` table — see
+    # docs/adr/0001-provenance-as-separate-edge.md) so graph-leg
+    # retrieval and orphan/broken-link lint stay clean.
+    raw_sources = parsed.frontmatter.get("sources") or []
+    source_paths = [str(s) for s in raw_sources if isinstance(s, str)]
+    await storage.replace_provenance_from(doc_id, source_paths)
+
     return len(unresolved), resolved_title
