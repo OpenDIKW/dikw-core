@@ -63,8 +63,17 @@ synth / lint-apply.
   mutation, no chunk / embedding / link side effects. Phase-1
   re-persist is skipped; `wiki_paths_changed` stays empty for this
   op kind.
-* Run `dikw client lint fix apply --kind missing_provenance` once
-  after upgrade to backfill legacy bases.
+* On a legacy base whose storage *still has the K-layer rows* (i.e.,
+  you haven't rebuilt yet — see "Changed (storage)" below), run:
+
+  ```bash
+  dikw client lint propose --rule missing_provenance
+  dikw client lint apply <task_id>   # the id printed by propose
+  ```
+
+  to backfill the new table from existing wiki frontmatter without
+  touching any files. Heuristic-only — no LLM call, no embedder
+  required.
 
 ### Changed (storage): schema fingerprint bumped to v3
 
@@ -77,8 +86,16 @@ will refuse to migrate in place. The eval-cache fingerprint includes
   `dikw client ingest`.
 * **Migration (Postgres)**: drop and recreate the configured schema,
   then re-run `dikw client ingest`.
-* After ingest, run `dikw client lint fix apply --kind missing_provenance`
-  to populate the new table from existing wiki frontmatter.
+* `dikw client ingest` only rescans `sources/` — it does not re-index
+  `wiki/` (this is the pre-existing gap noted below). After a rebuild,
+  the K-layer rows are therefore gone and the `missing_provenance`
+  backfill above has no documents to operate on yet. The only
+  automated path to repopulate `wiki/` today is `dikw client synth …`
+  from the original sources, which regenerates wiki pages from
+  scratch — **back up any hand-edits under `wiki/` first**, or hold
+  off the rebuild until the "wiki rescan in ingest" follow-up lands.
+  Once `wiki/` rows are back in storage, run the propose + apply pair
+  shown above to populate `provenance`.
 
 ### Notes
 

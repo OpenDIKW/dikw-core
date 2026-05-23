@@ -249,14 +249,23 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         # frontmatter — typical on bases that existed before the
         # provenance feature shipped, or after a user hand-edits
         # ``sources:`` outside of synth / lint-apply. ``expected !=
-        # existing`` catches four sub-cases with one comparison: zero
+        # existing`` catches five sub-cases with one comparison: zero
         # existing rows (never reconciled), partial rows (interrupted
         # reconcile), stale rows (frontmatter edited after a prior
-        # reconcile), and *cleared* sources (user removed the
-        # frontmatter key but reconciled rows are still around). All
+        # reconcile), *cleared* sources (user removed the frontmatter
+        # key but reconciled rows are still around), and *raw-spelling
+        # drift* (the normalized keys still match, but the user edited
+        # casing / NFC form so the stored raw ``source_path`` no longer
+        # matches what the API now returns from frontmatter). All
         # resolve to the same fix — MissingProvenanceFixer is
         # deterministic, no LLM. See
         # docs/adr/0001-provenance-as-separate-edge.md.
+        #
+        # Comparison is dict (key -> raw) not set (keys only) because
+        # the API contract preserves raw frontmatter spelling
+        # faithfully — a key-only comparison would silently hide
+        # ``Sources/Foo.md`` -> ``sources/foo.md`` edits, leaving the
+        # forward-leg result drifting from the file.
         #
         # The storage probe is unconditional within the not-skipped
         # branch because the "frontmatter empty + table empty" case
@@ -265,9 +274,11 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         # stale-rows-when-cleared case.
         if "missing_provenance" not in skip_kinds:
             existing_prov = await storage.provenance_from(doc.doc_id)
-            existing_keys = {e.source_path_key for e in existing_prov}
-            expected_keys = {normalize_path(s) for s in sources_tuple}
-            if existing_keys != expected_keys:
+            existing_map = {
+                e.source_path_key: e.source_path for e in existing_prov
+            }
+            expected_map = {normalize_path(s): s for s in sources_tuple}
+            if existing_map != expected_map:
                 issues.append(
                     LintIssue(
                         kind="missing_provenance",

@@ -244,6 +244,60 @@ async def test_apply_clears_stale_rows_when_frontmatter_emptied(
 
 
 @pytest.mark.asyncio
+async def test_run_lint_emits_missing_provenance_when_raw_spelling_drifts(
+    empty_wiki: Path,
+) -> None:
+    """A user edits only the spelling/case/Unicode form of a ``sources:``
+    entry (e.g., ``Sources/Foo.md`` -> ``sources/foo.md``). The
+    normalized keys collapse to the same value, so a key-set comparison
+    would call it clean; but the API surfaces the raw frontmatter
+    spelling, so the table still holds the old casing and the
+    forward-leg ``read_provenance`` answer drifts from the file. Lint
+    must detect raw-value drift per normalized key so the apply pass
+    rewrites the row with the new spelling.
+    """
+    sources_lower = ["sources/foo.md"]
+    path, doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki, title="Page", sources=sources_lower
+    )
+    # Plant the row with a different RAW spelling but the same
+    # normalized key — simulates "user edited the casing in
+    # frontmatter after a prior reconcile".
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        await storage.replace_provenance_from(doc_id, ["Sources/Foo.md"])
+        # Sanity: row exists with the old spelling.
+        before = await storage.provenance_from(doc_id)
+        assert [r.source_path for r in before] == ["Sources/Foo.md"]
+    finally:
+        await storage.close()
+
+    report = await _run_lint(empty_wiki)
+    assert any(
+        i.kind == "missing_provenance" and i.path == path
+        for i in report.issues
+    ), (
+        "raw-spelling drift must surface as missing_provenance even when "
+        "normalized keys match"
+    )
+
+    # Apply the fixer and verify the table now carries the lowercase
+    # spelling — round-trip pins the actual user-visible fix.
+    proposal_report = await api.lint_propose(
+        empty_wiki, rule="missing_provenance", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+    await api.lint_apply(empty_wiki, proposal_report=proposal_report)
+
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        after = await storage.provenance_from(doc_id)
+        assert [r.source_path for r in after] == ["sources/foo.md"]
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_run_lint_skip_frontmatter_suppresses_missing_provenance(
     empty_wiki: Path,
 ) -> None:
