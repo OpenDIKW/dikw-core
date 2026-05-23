@@ -727,6 +727,49 @@ def _filter_proposals(
     ]
 
 
+def _preflight_hash_gate(
+    op: FixOperation,
+    *,
+    abs_path: Path,
+    exists: Any,
+    sim_created: set[str],
+) -> str | None:
+    """Shared preflight gate for ops that mutate (or sync storage from)
+    a known-on-disk page: ``update_page`` / ``delete_page`` /
+    ``reconcile_provenance``.
+
+    Returns ``None`` when the gate passes, or a per-kind error string
+    (``f"{op.kind} target missing: …"`` / ``f"{op.kind} on …: hash
+    mismatch …"``) the caller appends to ``ApplyReport.skipped``. The
+    three call sites previously open-coded this 12-line block with
+    only the message prefix differing; centralising it removes a
+    correctness drift surface (e.g. one branch updating its hash check
+    without the others). Hash drift is skipped when the path was
+    sim-created within the same proposal — a within-proposal create
+    has no stable on-disk hash yet, and the real apply pass re-verifies.
+
+    ``exists`` is the closure ``_preflight_proposal`` builds over
+    ``sim_created`` / ``sim_deleted`` so simulated state propagates;
+    typing it as ``Any`` avoids leaking the local-closure type into
+    the module API.
+    """
+    if not exists(op.path):
+        return f"{op.kind} target missing: {op.path!r}"
+    if not op.expected_hash:
+        return (
+            f"{op.kind} on {op.path!r} missing expected_hash "
+            "— required for safety"
+        )
+    if op.path not in sim_created:
+        actual = file_sha256(abs_path)
+        if actual != op.expected_hash:
+            return (
+                f"{op.kind} on {op.path!r}: hash mismatch "
+                "(concurrent edit detected)"
+            )
+    return None
+
+
 def _preflight_proposal(
     *,
     proposal: FixProposal,
@@ -778,39 +821,17 @@ def _preflight_proposal(
             sim_created.add(op.path)
             sim_deleted.discard(op.path)
         elif op.kind == "update_page":
-            if not _exists(op.path):
-                return f"update_page target missing: {op.path!r}"
-            if not op.expected_hash:
-                return (
-                    f"update_page on {op.path!r} missing expected_hash "
-                    "— required for safety"
-                )
-            # Hash drift only meaningful against current on-disk bytes.
-            # A simulated post-create file can't have a stable hash to
-            # check against, so skip the hash check on within-proposal
-            # creates. Real apply will compute and verify.
-            if op.path not in sim_created:
-                actual = file_sha256(abs_path)
-                if actual != op.expected_hash:
-                    return (
-                        f"update_page on {op.path!r}: hash mismatch "
-                        "(concurrent edit detected)"
-                    )
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
         elif op.kind == "delete_page":
-            if not _exists(op.path):
-                return f"delete_page target missing: {op.path!r}"
-            if not op.expected_hash:
-                return (
-                    f"delete_page on {op.path!r} missing expected_hash "
-                    "— required for safety"
-                )
-            if op.path not in sim_created:
-                actual = file_sha256(abs_path)
-                if actual != op.expected_hash:
-                    return (
-                        f"delete_page on {op.path!r}: hash mismatch "
-                        "(concurrent edit detected)"
-                    )
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
             sim_deleted.add(op.path)
             sim_created.discard(op.path)
         elif op.kind == "reconcile_provenance":
@@ -819,25 +840,16 @@ def _preflight_proposal(
             # update_page — if the user edited ``sources:`` between scan
             # and apply, the fixer's ``source_paths`` snapshot is stale
             # and we skip, letting the next lint pass re-propose.
-            if not _exists(op.path):
-                return f"reconcile_provenance target missing: {op.path!r}"
-            if not op.expected_hash:
-                return (
-                    f"reconcile_provenance on {op.path!r} missing "
-                    "expected_hash — required for safety"
-                )
+            gate = _preflight_hash_gate(
+                op, abs_path=abs_path, exists=_exists, sim_created=sim_created
+            )
+            if gate is not None:
+                return gate
             if op.source_paths is None:
                 return (
                     f"reconcile_provenance on {op.path!r} missing "
                     "source_paths"
                 )
-            if op.path not in sim_created:
-                actual = file_sha256(abs_path)
-                if actual != op.expected_hash:
-                    return (
-                        f"reconcile_provenance on {op.path!r}: hash "
-                        "mismatch (concurrent edit detected)"
-                    )
         else:
             return f"unknown op kind {op.kind!r}"
 

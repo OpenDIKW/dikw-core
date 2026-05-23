@@ -88,6 +88,26 @@ def now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
+def frontmatter_str_list(metadata: dict[str, Any], key: str) -> list[str]:
+    """Read a list-of-strings frontmatter field defensively.
+
+    ``sources:`` and ``tags:`` are both user-editable list fields on
+    every K-page. A hand-written scalar (``sources: foo.md``) parses as
+    a string, not a single-item list — iterating it would yield one
+    character per row. A dict / int / null value would raise. This
+    helper collapses all three malformed shapes to ``[]`` and drops
+    non-string entries from a well-formed list, so every caller can
+    write ``for item in frontmatter_str_list(meta, "sources")`` without
+    a per-site ``isinstance`` guard. See ADR-0001 for why ``sources``
+    in particular must never propagate garbage into the provenance
+    table.
+    """
+    raw = metadata.get(key)
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str)]
+
+
 def make_page_id(title: str, type_: str) -> str:
     digest = hashlib.blake2b(f"{type_}:{title}".encode(), digest_size=6).hexdigest()
     return f"K-{digest}"

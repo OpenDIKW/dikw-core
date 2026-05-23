@@ -28,6 +28,7 @@ from ...schemas import Layer, LinkType
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
 from .links import build_fuzzy_index, parse_links, resolve_links
+from .wiki import frontmatter_str_list
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
@@ -230,19 +231,13 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             suppressions[doc.path] = skip_kinds
         # Stash the frontmatter slice we already paid to parse so
         # ``lint_propose`` can build ``WikiPageMeta`` without a second
-        # disk pass over the same K-layer pages.
-        raw_sources = post.metadata.get("sources")
-        sources_tuple: tuple[str, ...] = (
-            tuple(s for s in raw_sources if isinstance(s, str))
-            if isinstance(raw_sources, list)
-            else ()
-        )
-        raw_tags_pm = post.metadata.get("tags")
-        tags_tuple: tuple[str, ...] = (
-            tuple(t for t in raw_tags_pm if isinstance(t, str))
-            if isinstance(raw_tags_pm, list)
-            else ()
-        )
+        # disk pass over the same K-layer pages. ``frontmatter_str_list``
+        # is the shared malformed-shape guard (scalar / dict / null →
+        # ``[]``) — same one ``persist_wiki_page`` and
+        # ``MissingProvenanceFixer`` use, so this lint pass's view of
+        # ``sources:`` matches what storage actually stored.
+        sources_tuple = tuple(frontmatter_str_list(post.metadata, "sources"))
+        tags_tuple = tuple(frontmatter_str_list(post.metadata, "tags"))
         page_meta[doc.path] = PageMeta(sources=sources_tuple, tags=tags_tuple)
 
         # Surface pages whose provenance table is out of sync with
@@ -310,13 +305,11 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                 )
 
         # atomicity check — delegate to the pure helper so eval/metrics
-        # can apply the exact same thresholds.
-        # Wiki pages are user-editable: a hand-written ``tags: 2024`` parses
-        # as a scalar, not a list. Normalise before passing in.
-        raw_tags = post.metadata.get("tags")
-        if not isinstance(raw_tags, list):
-            raw_tags = []
-        tag_list = [t for t in raw_tags if isinstance(t, str) and t.strip()]
+        # can apply the exact same thresholds. ``tags_tuple`` already
+        # absorbed the malformed-shape guard; drop the empty strings
+        # ``check_atomicity`` doesn't want here so the helper itself
+        # stays a pure "list of strings" extractor.
+        tag_list = [t for t in tags_tuple if t.strip()]
         verdict = check_atomicity(body=body, tags=tag_list)
         if not verdict.atomic and "non_atomic_page" not in skip_kinds:
             issues.append(

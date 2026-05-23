@@ -31,6 +31,7 @@ from ..lint_fix import (
     FixProposal,
     bytes_sha256,
 )
+from ..wiki import frontmatter_str_list
 
 
 class MissingProvenanceFixer:
@@ -62,18 +63,11 @@ class MissingProvenanceFixer:
         # verify against, with no second disk read in between.
         file_bytes = abs_path.read_bytes()
         post = frontmatter.loads(file_bytes.decode("utf-8"))
-        # Symmetric with ``persist_wiki_page`` and ``run_lint``: a
-        # malformed ``sources:`` value (YAML scalar, dict, anything not
-        # a list) is treated as zero sources rather than iterated.
-        # Without this guard, a scalar string would yield one
-        # ``source_path`` per character, overwriting stale rows with
-        # garbage on apply.
-        raw = post.metadata.get("sources")
-        source_paths = (
-            [str(s) for s in raw if isinstance(s, str)]
-            if isinstance(raw, list)
-            else []
-        )
+        # ``frontmatter_str_list`` is the shared malformed-shape guard
+        # — symmetric with ``persist_wiki_page`` and ``run_lint``. A
+        # YAML scalar / dict / null collapses to ``[]`` rather than
+        # being iterated character-by-character into apply.
+        source_paths = frontmatter_str_list(post.metadata, "sources")
 
         op = FixOperation(
             kind="reconcile_provenance",

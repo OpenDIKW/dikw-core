@@ -30,6 +30,7 @@ from ..info.chunk import chunk_markdown
 from ..info.embed import ChunkToEmbed, consume_embedding_stream, embed_chunks
 from ..info.tokenize import CjkTokenizer
 from .links import parse_links, resolve_links
+from .wiki import frontmatter_str_list
 
 
 def wiki_doc_id(path: str) -> str:
@@ -144,16 +145,12 @@ async def persist_wiki_page(
     # docs/adr/0001-provenance-as-separate-edge.md) so graph-leg
     # retrieval and orphan/broken-link lint stay clean.
     #
-    # ``isinstance(list)`` guard is symmetric with ``run_lint`` — a YAML
-    # scalar (``sources: foo.md``) is malformed shape, not a single-
-    # source page; without this guard the comprehension would iterate
-    # the string character by character and write one row per char.
-    raw_sources = parsed.frontmatter.get("sources")
-    source_paths = (
-        [str(s) for s in raw_sources if isinstance(s, str)]
-        if isinstance(raw_sources, list)
-        else []
+    # ``frontmatter_str_list`` enforces the same malformed-shape guard
+    # as ``run_lint`` and ``MissingProvenanceFixer`` — a YAML scalar
+    # (``sources: foo.md``) collapses to ``[]`` rather than iterating
+    # character-by-character into the provenance table.
+    await storage.replace_provenance_from(
+        doc_id, frontmatter_str_list(parsed.frontmatter, "sources")
     )
-    await storage.replace_provenance_from(doc_id, source_paths)
 
     return len(unresolved), resolved_title
