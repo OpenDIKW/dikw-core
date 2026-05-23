@@ -104,6 +104,40 @@ src/dikw_core/
 - **Orphan-page governance.** `OrphanPageFixer` (`domains/knowledge/lint_fixers/orphan_page.py`) routes each orphan to one of four strategies, deterministic-first: (1) `delete_page` for empty/TODO/unattributed stubs under 40 B; (2) `merge_into_existing_page` LLM-only when a candidate scores ≥ `MERGE_THRESHOLD = 6.0` (e.g. two shared `sources` entries) AND `--enable-llm`; (3) `link_from_existing_page` for scores ≥ `LINK_THRESHOLD = 3.0`, appending `[[orphan-title]]` under a stable `## 相关` heading on the parent; (4) `mark_as_leaf` writes `lint: {skip: [orphan_page], reason: …}` into the orphan's frontmatter, suppressed by `run_lint` on the next pass and surfaced via `LintReport.acknowledged_leaves`. Scoring weights live in `orphan_page.py`: shared `sources` ×3.0, shared full tag ×1.0, namespaced tag-domain ×0.5, title-jaccard ×2.0, embedding cosine ×3.0. The embedding leg goes through `storage.list_chunks` → `get_chunk_embeddings` → `vec_search(layer=Layer.WIKI)` with `asyncio.gather`; absence of an embedder degrades silently to pure heuristic. Ambiguous-title orphans (≥ 2 K-pages share the title) skip merge and link entirely and fall to leaf, because the backlink would resolve to the wrong page.
 - **Soft-delete via `<base>/trash/`.** `_apply_one_op` (`lint_fix.py`) executes `delete_page` ops by purging storage rows first (`storage.delete_document(doc_id)` — documents + chunks + embeddings + outgoing links + wisdom_evidence references) then `shutil.move`-ing the file to `<base>/trash/wiki/<original-rel-path>` with a `trashed: {at, reason, proposal_id}` frontmatter block injected for audit. Same-second collisions get a `-NNN` counter suffix (000…999). Recovery: drag the file back into `wiki/` and rerun `dikw ingest`; the `trashed:` block is harmless residue users can hand-strip. `ingest` only scans `wiki/`, so `trash/` is naturally excluded. `Storage.delete_document(doc_id)` is now a Protocol method (`storage/base.py`) — sqlite cleans virtual tables (`documents_fts`, `vec_chunks_v*`) explicitly because they don't honor FK cascades; postgres relies on FK cascade + explicit `links` / `wisdom_evidence` deletes.
 
+## Working principles
+
+Behavioral defaults — bias toward caution over speed; for trivial edits use judgment. These sit alongside `Conventions` and `Things not to do` below.
+
+- **Think before coding.** State assumptions; if uncertain ask one focused question instead of guessing. Surface tradeoffs and name alternatives — don't silently pick one. If a simpler approach exists, say so up-front rather than waiting for a /simplify pass (cf. `feedback_codex_review_loop`). `docs/design.md` is the source of truth for K- and W-layer intent — read it before designing changes there.
+- **Simplicity first.** Minimum code that solves the stated problem — no speculative features, no abstractions for single-use code, no flexibility that wasn't requested, no error handling for impossible scenarios. Karpathy's rule (above) is the project-level form: deterministic scoping does not deserve an LLM, probabilistic reasoning does not deserve a state machine. If the diff grew well past what the request implied, rewrite it before review.
+- **Surgical changes.** Touch only what the request requires. Don't reformat, rename, or refactor adjacent code outside the blast radius; match surrounding style even if you'd write it differently. If you notice unrelated dead code or smells, mention them — don't delete or rewrite without approval. Remove orphans (imports, helpers, tests) that *your* change made unused; don't sweep pre-existing dead code. Every changed line should trace to the request or a direct consequence.
+- **Goal-driven execution.** Transform tasks into `step → verify` pairs before starting and loop until verify passes. "Add validation" → failing test for the bad input first, then make it pass. "Fix the bug" → reproduce in a test first (K-layer / retrieval changes mandate this — see `feedback_tdd_discipline`). "Refactor X" → same tests pass before and after. Explicit steps in a `/goal` invocation count as pre-approval (see `feedback_goal_explicit_approves_steps`); only stop on real blockers (CHANGES_REQUESTED, red CI, mergeStateStatus ≠ CLEAN).
+
+Working when diffs stay small, rewrites due to overcomplication are rare, and clarifying questions arrive before implementation rather than after.
+
+## Delivery loop
+
+End-to-end protocol for any non-trivial change. Run it autonomously — only pause at the block signals listed at the bottom.
+
+1. **Clarify the request.** Don't start coding from a vague ask. Restate the goal, list assumptions, surface alternatives. For multi-decision work, escalate to the `grill-with-docs` skill or the `superpowers:brainstorming` skill until a written plan exists.
+2. **Plan in the user's language, default TDD.** Write the plan in the language the user uses (Chinese in this repo — see `feedback_language_chinese`); keep code, commits, and technical identifiers English. Each step lands as `failing test → implementation → passing test`. K-layer / retrieval changes mandate this (see `feedback_tdd_discipline`).
+3. **Codex review loop, up to 3 rounds.** When the implementation is feature-complete, run `/codex:review --background` and address each finding. Repeat up to 3 rounds (see `feedback_codex_review_loop`). When a finding implicates one CLI string / symbol / doc string, grep the whole repo before declaring it fixed (see `feedback_grep_cli_typos_across_docs` and `feedback_defensive_guard_grep_read_sites`).
+4. **Simplifier pass.** Run `/simplify` once the codex loop quiets down; resolve every finding before continuing.
+5. **Doc sync.** Audit all markdown (CLAUDE.md, CONTEXT.md, `docs/**`, CHANGELOG.md, plans, ADRs, GUIDE_FOR_AGENTS.md) against the diff. Update anything stale — especially CLI spellings, frontmatter keys, env vars, HTTP routes.
+6. **Commit + push + PR.** Local commit is fine without approval; `git push` and `gh pr create` proceed once steps 1–5 are done — the loop itself is the standing approval (see `feedback_pr_workflow`). K-layer / retrieval PRs need an `evals/BASELINES.md` entry or the `no-baseline-needed` label before CI can pass — handle this in step 6, not at merge time.
+7. **Watch CI + PR comments to green.** Monitor checks and reviewer comments (CodeRabbit / human). Fix every actionable finding; reject nitpicks with a one-line reason. Don't stop until every check is green and `mergeStateStatus` is CLEAN.
+8. **Squash merge + sync local.** Squash merge the PR, fast-forward local main, delete the feature branch.
+
+### Block signals — stop and ask
+
+- A required check is failing and the cause isn't obvious.
+- A reviewer marks `CHANGES_REQUESTED` or raises a design-level concern.
+- A finding requires widening a Storage / Provider Protocol or changing on-disk wiki/wisdom layout (see `Things not to do`).
+- A merge conflict appears that needs a domain decision (not just a mechanical resolve).
+- A force-push would be needed — **forbidden**; describe the situation and let the user handle it manually (see `feedback_pr_workflow`).
+
+Nitpicks, style preferences, and non-actionable suggestions are **not** block signals — note them and move on (see `feedback_goal_explicit_approves_steps`).
+
 ## Conventions
 
 - Types: code is fully typed; mypy runs strict. Don't widen types to silence errors — fix the root cause. Missing-import overrides (`sqlite_vec`, `frontmatter`, `markdown_it`, `pgvector`, `jieba`) live in `pyproject.toml`; extend deliberately.
