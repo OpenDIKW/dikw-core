@@ -306,3 +306,63 @@ async def test_persist_wiki_page_with_no_sources_frontmatter_leaves_provenance_e
         assert await storage.provenance_from(doc_id) == []
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_persist_wiki_page_treats_scalar_sources_as_no_op(
+    tmp_path: Path,
+) -> None:
+    """A hand-edited frontmatter with a YAML *scalar* ``sources:`` value
+    (e.g. ``sources: sources/a.md`` instead of ``sources: [sources/a.md]``)
+    must NOT iterate the string character-by-character. Without the
+    isinstance(list) guard, ``persist_wiki_page`` would insert one
+    provenance row per character — 14 ghost rows for ``sources/foo.md``.
+
+    The fix mirrors ``run_lint``'s frontmatter-meta extraction
+    (``isinstance(raw_sources, list)`` short-circuits before iteration)
+    so both the persist path and the lint detector treat a malformed
+    scalar as "no sources declared". A future feature could promote
+    scalars to single-element lists, but today's contract is symmetric:
+    invalid shape → empty.
+    """
+    wiki_root = tmp_path / "wiki"
+    init_test_wiki(wiki_root)
+    # build_page always wraps in list(), so we write the malformed
+    # frontmatter directly to simulate a user hand-edit. The body still
+    # needs valid frontmatter form so ``parse_any`` returns it intact.
+    page_path = wiki_root / "wiki" / "src.md"
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_text(
+        "---\n"
+        "id: src-id\n"
+        "type: concept\n"
+        "title: Src\n"
+        "sources: sources/foo.md\n"  # scalar, not list
+        "---\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+
+    # Build a WikiPage just for the persist call's required arg — the
+    # function re-parses the on-disk file so ``page.sources`` doesn't
+    # influence the provenance write.
+    page = build_page(
+        title="Src",
+        body="Body.\n",
+        type_="concept",
+        path="wiki/src.md",
+    )
+
+    _cfg, root, storage = await api._with_storage(wiki_root)
+    try:
+        await _persist(storage, root, page)
+        doc_id = api._doc_id_for(Layer.WIKI, "wiki/src.md")
+        rows = await storage.provenance_from(doc_id)
+        # Pre-fix: 14 rows (one per char in "sources/foo.md"). Fix:
+        # scalar treated as malformed → zero rows.
+        assert rows == [], (
+            f"scalar sources should produce no provenance rows; got "
+            f"{len(rows)} row(s): {[r.source_path for r in rows]}"
+        )
+    finally:
+        await storage.close()

@@ -158,17 +158,89 @@ async def test_run_lint_no_issue_when_keys_match(empty_wiki: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_lint_no_issue_when_no_sources_frontmatter(
+async def test_run_lint_no_issue_when_no_sources_and_table_empty(
     empty_wiki: Path,
 ) -> None:
-    """No ``sources:`` frontmatter → no issue regardless of provenance
-    table state. Symmetric with the existing pattern: missing
-    frontmatter key is not a hygiene problem we surface."""
+    """No ``sources:`` frontmatter AND no stale rows → no issue.
+
+    Pins the "both sides empty is clean" half of the four-case lookup
+    table (frontmatter empty / non-empty, table empty / non-empty). The
+    "frontmatter cleared but stale rows linger" case lives in the next
+    test.
+    """
     await _seed_wiki_page(
         wiki_root=empty_wiki, title="Page", sources=[]
     )
     report = await _run_lint(empty_wiki)
     assert not any(i.kind == "missing_provenance" for i in report.issues)
+
+
+@pytest.mark.asyncio
+async def test_run_lint_emits_missing_provenance_when_sources_cleared_but_rows_stale(
+    empty_wiki: Path,
+) -> None:
+    """Page previously had ``sources: [foo.md]`` (and reconciled
+    provenance rows), the user then hand-edited the frontmatter to drop
+    ``sources:`` entirely. The page now declares zero sources but the
+    table still holds the old row — lint must surface it so the apply
+    pass can call ``replace_provenance_from(doc_id, [])`` and clear the
+    ghosts. Without this, ``api.read_provenance`` would keep returning
+    sources the frontmatter no longer claims.
+    """
+    path, doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki, title="Page", sources=[]
+    )
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        await storage.replace_provenance_from(doc_id, ["sources/old.md"])
+    finally:
+        await storage.close()
+
+    report = await _run_lint(empty_wiki)
+    mp = [i for i in report.issues if i.kind == "missing_provenance"]
+    assert [i.path for i in mp] == [path]
+    assert "declares 0" in mp[0].detail
+
+
+@pytest.mark.asyncio
+async def test_apply_clears_stale_rows_when_frontmatter_emptied(
+    empty_wiki: Path,
+) -> None:
+    """Full lifecycle for the "sources cleared" case: detect → propose →
+    apply → re-lint clean. Asserts ``replace_provenance_from(doc_id,
+    [])`` actually fires (table becomes empty) and the next lint pass
+    has no ``missing_provenance`` issue."""
+    _path, doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki, title="Page", sources=[]
+    )
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        await storage.replace_provenance_from(doc_id, ["sources/old.md"])
+    finally:
+        await storage.close()
+
+    proposal_report = await api.lint_propose(
+        empty_wiki, rule="missing_provenance", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+    proposal = proposal_report.proposals[0]
+    op = proposal.operations[0]
+    assert op.kind == "reconcile_provenance"
+    assert op.source_paths == []  # the cleared snapshot
+
+    apply_report = await api.lint_apply(
+        empty_wiki, proposal_report=proposal_report
+    )
+    assert apply_report.applied and not apply_report.skipped
+
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        assert await storage.provenance_from(doc_id) == []
+    finally:
+        await storage.close()
+
+    post = await _run_lint(empty_wiki)
+    assert not any(i.kind == "missing_provenance" for i in post.issues)
 
 
 @pytest.mark.asyncio
@@ -336,3 +408,60 @@ async def test_apply_skips_when_file_edited_between_propose_and_apply(
     assert apply_report.applied == []
     assert len(apply_report.skipped) == 1
     assert "hash mismatch" in apply_report.skipped[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_apply_rechecks_hash_after_preflight_for_reconcile_provenance(
+    empty_wiki: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TOCTOU close: even if ``_preflight_proposal`` passed (because the
+    file matched the expected hash at preflight time), ``_apply_one_op``
+    must re-check the hash before writing storage rows. A
+    monkeypatch-neutered preflight simulates the race where the user
+    edits the file in the window between preflight and apply. Without
+    the apply-side recheck, stale ``source_paths`` from the proposal
+    would land in the table over the user's fresh state.
+
+    Mirrors the ``update_page`` / ``delete_page`` two-check pattern —
+    preflight catches the cheap mass case, apply closes the race.
+    """
+    path, doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki,
+        title="Page",
+        sources=["sources/a.md"],
+    )
+    proposal_report = await api.lint_propose(
+        empty_wiki, rule="missing_provenance", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+
+    # Bypass preflight entirely — simulates "preflight saw the unedited
+    # bytes, returned clean, then the user edited the file before apply
+    # got to this op". The bug is real even when preflight passes; this
+    # monkeypatch just removes preflight from the equation so the test
+    # exercises the apply-side recheck in isolation.
+    from dikw_core.domains.knowledge import lint_fix
+
+    monkeypatch.setattr(lint_fix, "_preflight_proposal", lambda **_: None)
+
+    file_path = empty_wiki / path
+    post = frontmatter.loads(file_path.read_text(encoding="utf-8"))
+    post.content = "# Page\n\nEdited body.\n"
+    file_path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+
+    apply_report = await api.lint_apply(
+        empty_wiki, proposal_report=proposal_report
+    )
+    assert apply_report.applied == []
+    assert len(apply_report.skipped) == 1
+    assert "hash mismatch" in apply_report.skipped[0]["reason"]
+
+    # And confirm the stale snapshot did NOT land — without the apply
+    # recheck, the table would be ``[sources/a.md]`` instead of empty
+    # (apply was holding the pre-edit snapshot from propose).
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        assert await storage.provenance_from(doc_id) == []
+    finally:
+        await storage.close()

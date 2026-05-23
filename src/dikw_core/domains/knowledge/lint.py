@@ -245,17 +245,25 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         )
         page_meta[doc.path] = PageMeta(sources=sources_tuple, tags=tags_tuple)
 
-        # Surface pages whose frontmatter declares ``sources:`` but
-        # whose provenance table is out of sync — typical on bases
-        # that existed before the provenance feature shipped, or after
-        # a user hand-edits ``sources:`` outside of synth / lint-apply.
-        # ``expected != existing`` catches three sub-cases with one
-        # comparison: zero existing rows (never reconciled), partial
-        # rows (interrupted reconcile), and stale rows (frontmatter
-        # edited after a prior reconcile). All resolve to the same
-        # fix — MissingProvenanceFixer is deterministic, no LLM. See
+        # Surface pages whose provenance table is out of sync with
+        # frontmatter — typical on bases that existed before the
+        # provenance feature shipped, or after a user hand-edits
+        # ``sources:`` outside of synth / lint-apply. ``expected !=
+        # existing`` catches four sub-cases with one comparison: zero
+        # existing rows (never reconciled), partial rows (interrupted
+        # reconcile), stale rows (frontmatter edited after a prior
+        # reconcile), and *cleared* sources (user removed the
+        # frontmatter key but reconciled rows are still around). All
+        # resolve to the same fix — MissingProvenanceFixer is
+        # deterministic, no LLM. See
         # docs/adr/0001-provenance-as-separate-edge.md.
-        if sources_tuple and "missing_provenance" not in skip_kinds:
+        #
+        # The storage probe is unconditional within the not-skipped
+        # branch because the "frontmatter empty + table empty" case
+        # only collapses cleanly *after* asking the table — we can't
+        # short-circuit on ``sources_tuple`` alone without losing the
+        # stale-rows-when-cleared case.
+        if "missing_provenance" not in skip_kinds:
             existing_prov = await storage.provenance_from(doc.doc_id)
             existing_keys = {e.source_path_key for e in existing_prov}
             expected_keys = {normalize_path(s) for s in sources_tuple}

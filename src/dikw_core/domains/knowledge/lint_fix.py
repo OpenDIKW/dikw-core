@@ -865,13 +865,18 @@ async def _apply_one_op(
             f"refusing to operate outside wiki/ tree: {op.path!r}",
         )
 
-    if op.kind in ("update_page", "delete_page"):
+    if op.kind in ("update_page", "delete_page", "reconcile_provenance"):
         if not abs_path.is_file():
             return _skip(proposal_id, op, "file not found on disk")
         # ``expected_hash`` is the contract for these ops — a proposal
         # that omits it could no-op past the concurrent-edit guard
         # (custom / persisted reports can bypass the fixer's own
         # ``hash_bytes`` stamping). Missing hash = malformed proposal.
+        # ``reconcile_provenance`` rides the same gate because the op
+        # carries a frontmatter ``sources:`` snapshot whose freshness
+        # depends on the file hash matching at apply time — preflight
+        # already does the same check, but the TOCTOU window between
+        # preflight and apply is closed only by re-checking here.
         if not op.expected_hash:
             return _skip(
                 proposal_id, op,

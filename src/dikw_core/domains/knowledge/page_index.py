@@ -143,8 +143,17 @@ async def persist_wiki_page(
     # kept off the wikilink graph (separate ``provenance`` table — see
     # docs/adr/0001-provenance-as-separate-edge.md) so graph-leg
     # retrieval and orphan/broken-link lint stay clean.
-    raw_sources = parsed.frontmatter.get("sources") or []
-    source_paths = [str(s) for s in raw_sources if isinstance(s, str)]
+    #
+    # ``isinstance(list)`` guard is symmetric with ``run_lint`` — a YAML
+    # scalar (``sources: foo.md``) is malformed shape, not a single-
+    # source page; without this guard the comprehension would iterate
+    # the string character by character and write one row per char.
+    raw_sources = parsed.frontmatter.get("sources")
+    source_paths = (
+        [str(s) for s in raw_sources if isinstance(s, str)]
+        if isinstance(raw_sources, list)
+        else []
+    )
     await storage.replace_provenance_from(doc_id, source_paths)
 
     return len(unresolved), resolved_title
