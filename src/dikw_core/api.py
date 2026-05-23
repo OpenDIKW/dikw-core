@@ -2091,7 +2091,17 @@ async def read_provenance(
             if limit is not None:
                 derived_from = derived_from[:limit]
 
-        if direction in ("in", "both"):
+        # Reverse leg is meaningful only for ``Layer.SOURCE`` paths.
+        # ``storage.provenance_to`` is layer-agnostic and keyed by
+        # ``source_path_key``, so a WIKI path whose key happens to match
+        # a malformed K-page's frontmatter entry (e.g., a K-page that
+        # accidentally lists ``wiki/...`` in its ``sources:``) would
+        # otherwise come back as a ``derived_pages`` entry — violating
+        # the documented "WIKI paths have empty reverse provenance"
+        # contract and letting agents treat a K-page as a D-source.
+        # The forward leg already marks such malformed entries
+        # ``resolved=False``; this gate keeps the reverse leg honest.
+        if direction in ("in", "both") and match.layer == Layer.SOURCE:
             edges_in = await storage.provenance_to(match.path_key)
             src_docs_in = {
                 d.doc_id: d

@@ -62,8 +62,18 @@ class MissingProvenanceFixer:
         # verify against, with no second disk read in between.
         file_bytes = abs_path.read_bytes()
         post = frontmatter.loads(file_bytes.decode("utf-8"))
-        raw = post.metadata.get("sources") or []
-        source_paths = [str(s) for s in raw if isinstance(s, str)]
+        # Symmetric with ``persist_wiki_page`` and ``run_lint``: a
+        # malformed ``sources:`` value (YAML scalar, dict, anything not
+        # a list) is treated as zero sources rather than iterated.
+        # Without this guard, a scalar string would yield one
+        # ``source_path`` per character, overwriting stale rows with
+        # garbage on apply.
+        raw = post.metadata.get("sources")
+        source_paths = (
+            [str(s) for s in raw if isinstance(s, str)]
+            if isinstance(raw, list)
+            else []
+        )
 
         op = FixOperation(
             kind="reconcile_provenance",

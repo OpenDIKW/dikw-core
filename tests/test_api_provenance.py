@@ -269,3 +269,51 @@ async def test_read_provenance_wiki_layer_path_returns_only_forward(
     )
     assert in_only.derived_from == []
     assert in_only.derived_pages == []
+
+
+@pytest.mark.asyncio
+async def test_read_provenance_wiki_path_reverse_ignores_malformed_wiki_sources(
+    tmp_path: Path,
+) -> None:
+    """Defence-in-depth: even when a K-page's ``sources:`` accidentally
+    lists another K-page path (malformed frontmatter), the reverse leg
+    for that WIKI target must still return empty. The forward query
+    marks the entry ``resolved=False`` (because only ``Layer.SOURCE``
+    is resolved), but ``storage.provenance_to`` is layer-agnostic and
+    keyed by ``source_path_key`` — without a layer gate, the reverse
+    lookup would return the offender as a ``derived_pages`` entry,
+    violating the documented "WIKI paths have empty reverse provenance"
+    contract and letting agents treat a K-page as if it were a D-source.
+
+    The gate (``if match.layer == Layer.SOURCE`` around the reverse
+    branch) keeps the contract honest regardless of malformed inputs.
+    """
+    init_test_wiki(tmp_path)
+    real_wiki = "wiki/real.md"
+    offender_wiki = "wiki/offender.md"
+
+    cfg, _root, storage = await _with_storage(tmp_path)
+    del cfg
+    try:
+        await storage.upsert_document(_doc(real_wiki, layer=Layer.WIKI))
+        await storage.upsert_document(
+            _doc(offender_wiki, layer=Layer.WIKI)
+        )
+        # Offender lists the WIKI path as if it were a source — malformed
+        # but possible (frontmatter is user-editable).
+        await storage.replace_provenance_from(
+            _doc_id_for(Layer.WIKI, offender_wiki), [real_wiki]
+        )
+    finally:
+        await storage.close()
+
+    # Querying the WIKI target's reverse leg must NOT surface the
+    # offender as a derived page — that would imply real_wiki is a
+    # D-source, which it isn't.
+    result = await api.read_provenance(
+        tmp_path, real_wiki, direction="both"
+    )
+    assert result.derived_pages == [], (
+        f"WIKI path must have empty reverse provenance regardless of "
+        f"malformed input; got {result.derived_pages}"
+    )

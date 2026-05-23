@@ -411,6 +411,153 @@ async def test_apply_skips_when_file_edited_between_propose_and_apply(
 
 
 @pytest.mark.asyncio
+async def test_fixer_treats_scalar_sources_as_no_op(
+    empty_wiki: Path,
+) -> None:
+    """``MissingProvenanceFixer`` reads the on-disk frontmatter directly,
+    so it needs the same ``isinstance(list)`` guard as ``persist_wiki_page``
+    and ``run_lint``. A scalar ``sources: foo.md`` (user hand-edit) must
+    NOT iterate per-character into the op's ``source_paths``; the apply
+    would then write 14 garbage rows over the stale ones we were trying
+    to clear, plus the apply could raise on truthy-non-iterable values.
+
+    Symmetric with the ``persist_wiki_page`` test in
+    ``test_persist_wiki_page.py`` — the fixer is the second place that
+    parses frontmatter for this field; both must agree on the
+    "malformed shape -> zero sources" contract.
+    """
+    # Write the page directly so we can produce a scalar frontmatter
+    # value (build_page always wraps in list()).
+    page_path = "wiki/scalar.md"
+    abs_path = empty_wiki / page_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(
+        "---\n"
+        "id: scalar-id\n"
+        "type: concept\n"
+        "title: Scalar\n"
+        "sources: sources/foo.md\n"
+        "---\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    # Register the doc + plant stale rows so the lint pass surfaces the
+    # issue (otherwise the scalar-empty + table-empty case would just be
+    # clean and the fixer would never fire).
+    doc_id = doc_id_for(Layer.WIKI, page_path)
+    _cfg, _root, storage = await api._with_storage(empty_wiki)
+    try:
+        await storage.upsert_document(
+            DocumentRecord(
+                doc_id=doc_id, path=page_path, title="Scalar",
+                hash="hash-scalar", mtime=0.0, layer=Layer.WIKI, active=True,
+            )
+        )
+        await storage.replace_provenance_from(doc_id, ["sources/stale.md"])
+    finally:
+        await storage.close()
+
+    proposal_report = await api.lint_propose(
+        empty_wiki, rule="missing_provenance", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+    op = proposal_report.proposals[0].operations[0]
+    assert op.kind == "reconcile_provenance"
+    # Pre-fix: source_paths = list(of chars). Fix: scalar -> empty list,
+    # so apply clears the stale row instead of overwriting with garbage.
+    assert op.source_paths == [], (
+        f"scalar sources must produce empty source_paths; got "
+        f"{op.source_paths}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_reconcile_op_does_not_block_sibling_op_on_same_path(
+    empty_wiki: Path,
+) -> None:
+    """A page that needs both ``reconcile_provenance`` and a real
+    file-mutating fix (here a hand-built ``update_page``) must let both
+    ops land in one apply pass. Reconcile doesn't change the file, so
+    it must NOT enter ``touched_paths`` — otherwise the second op gets
+    skipped as "superseded by earlier op on the same path".
+
+    Catches the regression where adding reconcile to the unconditional
+    ``touched_paths.add(op.path)`` line blocks unrelated lint fixes
+    from running together.
+    """
+    import uuid
+
+    from dikw_core.domains.knowledge.lint_fix import (
+        FixOperation,
+        FixProposal,
+        FixProposalReport,
+        bytes_sha256,
+    )
+
+    path, _doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki,
+        title="Page",
+        sources=["sources/a.md"],
+    )
+
+    file_bytes = (empty_wiki / path).read_bytes()
+    file_hash = bytes_sha256(file_bytes)
+
+    # Hand-built two-proposal report: same path, reconcile first then a
+    # contentless update_page (rewrite same body bytes). Both operate
+    # on the same page; only the second one would be a real file
+    # mutation. The update_page exercises the conflict gate.
+    post = frontmatter.loads(file_bytes.decode("utf-8"))
+    reconcile_proposal = FixProposal(
+        proposal_id=str(uuid.uuid4()),
+        issue_kind="missing_provenance",
+        issue_path=path,
+        issue_detail="reconcile",
+        operations=[
+            FixOperation(
+                kind="reconcile_provenance",
+                path=path,
+                source_paths=["sources/a.md"],
+                expected_hash=file_hash,
+            )
+        ],
+        rationale="reconcile",
+        source="heuristic",
+    )
+    update_proposal = FixProposal(
+        proposal_id=str(uuid.uuid4()),
+        issue_kind="broken_wikilink",
+        issue_path=path,
+        issue_detail="update",
+        operations=[
+            FixOperation(
+                kind="update_page",
+                path=path,
+                new_frontmatter=dict(post.metadata),
+                new_body=post.content + "\n\nNew line.\n",
+                expected_hash=file_hash,
+            )
+        ],
+        rationale="update",
+        source="heuristic",
+    )
+    report = FixProposalReport(
+        proposals=[reconcile_proposal, update_proposal]
+    )
+
+    apply_report = await api.lint_apply(
+        empty_wiki, proposal_report=report
+    )
+    applied_kinds = [op.kind for op in apply_report.applied]
+    assert applied_kinds == ["reconcile_provenance", "update_page"], (
+        f"both ops on the same path must apply; got applied={applied_kinds}, "
+        f"skipped={apply_report.skipped}"
+    )
+    # Sanity: the update_page write did land — file size grew.
+    assert (empty_wiki / path).read_bytes() != file_bytes
+
+
+@pytest.mark.asyncio
 async def test_apply_rechecks_hash_after_preflight_for_reconcile_provenance(
     empty_wiki: Path,
     monkeypatch: pytest.MonkeyPatch,

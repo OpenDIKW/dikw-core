@@ -618,17 +618,24 @@ async def run_lint_apply(
             )
             if skip_reason is None:
                 applied.append(op)
-                touched_paths.add(op.path)
                 if op.kind == "delete_page":
+                    touched_paths.add(op.path)
                     deleted_paths.add(op.path)
                 elif op.kind == "reconcile_provenance":
                     # No file change → no Phase 1 ``persist_wiki_page``
-                    # re-chunk needed, and no ``wiki_paths_changed``
-                    # entry. The storage write already happened inside
-                    # ``_apply_one_op``; that's the "narrowest possible
-                    # write" contract for this op kind.
+                    # re-chunk needed, no ``wiki_paths_changed`` entry,
+                    # and crucially no ``touched_paths`` entry either:
+                    # the conflict gate at line 601 exists to stop a
+                    # later op clobbering an earlier op's file write,
+                    # but reconcile never writes the file, so blocking
+                    # a sibling ``update_page`` / ``delete_page`` on the
+                    # same page (e.g., a page with both
+                    # ``missing_provenance`` and ``broken_wikilink``)
+                    # would be a false positive. The storage write
+                    # already happened inside ``_apply_one_op``.
                     pass
                 else:
+                    touched_paths.add(op.path)
                     paths_changed.add(op.path)
             else:
                 skipped.append(skip_reason)
