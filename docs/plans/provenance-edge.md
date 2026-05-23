@@ -1,9 +1,17 @@
 # Provenance edge — implementation plan
 
-**Status:** approved, ready to implement
+**Status:** **shipped in 0.2.6** (2026-05-23). Kept in-tree as the design-rationale record; for ongoing usage see [ADR-0001](../adr/0001-provenance-as-separate-edge.md), CHANGELOG `0.2.6`, and the in-code module docstrings.
 **Related:** [ADR-0001](../adr/0001-provenance-as-separate-edge.md) · [CONTEXT.md](../../CONTEXT.md) (terms: **provenance**, **wikilink**)
 **Target version:** `0.2.6` (additive HTTP + Storage Protocol; new LintKind is additive behavior, non-breaking to existing kinds)
 **Eval baseline required:** **No** (per decision #6 below — navigation-only, does not feed retrieval or existing lint counts)
+
+**Post-ship corrections** (codex review rounds 1–3 on the feat branch, not in this plan):
+
+- `missing_provenance` detection compares `{normalized_key: raw_path}` dicts, not key sets — catches raw-spelling drift (e.g. `Sources/Foo.md` → `sources/foo.md`) in addition to the four key-level sub-cases (zero / partial / stale / cleared).
+- `reconcile_provenance` op does **not** enter `touched_paths` in the apply loop — it doesn't change the file, so sibling `update_page` / `delete_page` ops on the same page are not falsely flagged as "superseded".
+- Reverse provenance leg in `api.read_provenance` is gated on `match.layer == Layer.SOURCE` — keeps the documented "WIKI paths have empty reverse provenance" contract honest even when a malformed K-page lists another `wiki/...` path in `sources:`.
+- `expected_hash` is re-checked inside `_apply_one_op` for `reconcile_provenance` (not just in preflight) — closes the TOCTOU race between preflight and apply.
+- The shared `frontmatter_str_list` helper (in `wiki.py`) guards every list-of-strings frontmatter read against malformed scalars / dicts / nulls — used by `persist_wiki_page`, `run_lint`, and `MissingProvenanceFixer`.
 
 ---
 
@@ -33,7 +41,7 @@ Forward direction (`page → its sources`) is exposed as a bonus, closing a pre-
 | 7 | Reconcile inside `persist_wiki_page` next to `replace_links_from`. Frontmatter is source of truth, self-heals on every persist. | §8 |
 | 8 | `delete_document` deletes provenance rows for the doc. Mirrors links cleanup. | §6 |
 | 9 | CLI: `dikw client pages provenance <path> [--direction in|out|both]`, JSON default. Mirrors `pages links`. | §11 |
-| 10 | Backfill for pre-existing wiki pages: new `LintKind = "missing_provenance"` + deterministic `MissingProvenanceFixer`. Walks the standard `lint → lint fix apply` flow. | §12 |
+| 10 | Backfill for pre-existing wiki pages: new `LintKind = "missing_provenance"` + deterministic `MissingProvenanceFixer`. Walks the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` + `dikw client lint apply <task_id>`). | §12 |
 
 ---
 
@@ -505,7 +513,7 @@ Under `## [0.2.6]`:
 - **`missing_provenance` lint** — surfaces wiki pages whose frontmatter declares
   `sources:` but whose provenance table rows are missing or stale, and a
   deterministic fixer (`source="deterministic"`, no LLM) that backfills via
-  the standard `lint fix apply` flow.
+  the standard `lint propose → lint apply` flow.
 
 ### Changed
 - `persist_wiki_page` now reconciles provenance edges from frontmatter on every
@@ -515,8 +523,10 @@ Under `## [0.2.6]`:
 ### Notes
 - **Legacy bases:** first `dikw client lint` run after upgrade will report one
   `missing_provenance` issue per pre-existing wiki page that has a `sources:`
-  frontmatter. Run `dikw client lint fix apply --kind missing_provenance` once
-  to backfill; issues stay resolved unless you edit frontmatter by hand.
+  frontmatter. Backfill via the standard two-step propose+apply flow:
+  `dikw client lint propose --rule missing_provenance` (returns a `task_id`),
+  then `dikw client lint apply <task_id>`. Issues stay resolved unless you
+  edit frontmatter by hand.
 - Provenance is a **navigation edge only**: it does not feed RRF retrieval,
   does not affect `orphan_page` / `broken_wikilink` counts, and required no
   eval baseline update.

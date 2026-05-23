@@ -33,7 +33,7 @@ A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src
 _Avoid_: reference, citation (overloaded), provenance (the other edge).
 
 **provenance**:
-The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the wiki tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_wiki_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint → lint fix apply` flow.
+The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the wiki tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_wiki_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
 _Avoid_: reference, link, citation; "sources" alone (that's the frontmatter key, not the relationship).
 
 ### Pipeline verbs

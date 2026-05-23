@@ -196,9 +196,12 @@ Use `dikw-skills` for the normal task-following workflow.
 Install and use `dikw-skills` for operational workflows:
 
 - observe server/base/provider state
-- retrieve chunks, pages, graph links, and assets
+- retrieve chunks, pages, graph links, provenance edges (page ↔ source
+  attribution), and assets
 - import local source material
-- ingest, synthesize, distill, lint, review, and eval
+- ingest, synthesize, distill, lint, review, and eval (lint includes
+  `missing_provenance` for backfilling the provenance table on legacy
+  bases)
 - follow async tasks with cursor events, status, wait, and cancel
 
 `dikw-skills` is the maintained agent-facing CLI SOP. Keep detailed command
