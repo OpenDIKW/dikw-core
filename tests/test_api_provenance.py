@@ -206,6 +206,37 @@ async def test_read_provenance_limit_caps_each_side_independently(
 
 
 @pytest.mark.asyncio
+async def test_read_provenance_reverse_limit_caps_derived_pages(
+    tmp_path: Path,
+) -> None:
+    """Reverse-leg ``limit`` truncates ``derived_pages`` for a SOURCE-layer
+    path. Companion to the forward-leg coverage above; both sides go
+    through symmetric ``[:limit]`` slicing and the asymmetric layer
+    gate means only this test exercises the reverse branch."""
+    init_test_wiki(tmp_path)
+    src_path = "sources/hub.md"
+    consumer_paths = [f"wiki/consumer-{i}.md" for i in range(5)]
+
+    cfg, _root, storage = await _with_storage(tmp_path)
+    del cfg
+    try:
+        await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
+        for cp in consumer_paths:
+            await storage.upsert_document(_doc(cp, layer=Layer.WIKI))
+            await storage.replace_provenance_from(
+                _doc_id_for(Layer.WIKI, cp), [src_path]
+            )
+    finally:
+        await storage.close()
+
+    result = await api.read_provenance(
+        tmp_path, src_path, direction="in", limit=2
+    )
+    assert len(result.derived_pages) == 2
+    assert result.derived_from == []
+
+
+@pytest.mark.asyncio
 async def test_read_provenance_path_not_found_raises_page_not_found(
     tmp_path: Path,
 ) -> None:

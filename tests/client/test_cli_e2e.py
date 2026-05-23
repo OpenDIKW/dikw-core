@@ -534,6 +534,43 @@ def test_pages_provenance_unknown_path_exits_one(
     assert "page_not_found" in result.stdout or "404" in result.stdout
 
 
+def test_pages_provenance_bad_direction_exits_two(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """The CLI front-validates ``--direction`` before sending an HTTP
+    request — invalid value short-circuits with exit 2 + a helpful
+    message. Pins the client-side guard so a typo doesn't leak through
+    to the server's 422."""
+    patch_transport_factory()
+    result = _run(
+        ["client", "pages", "provenance", "wiki/x.md", "--direction", "sideways"]
+    )
+    assert result.exit_code == 2
+    assert "--direction must be" in result.stdout
+
+
+def test_pages_provenance_limit_param_flows_through_to_server(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+) -> None:
+    """``--limit N`` propagates as the ``limit`` query param to the
+    server. We seed three forward sources on one page and assert the
+    JSON answer has exactly the requested cap — proves the CLI built
+    the query param (`if limit is not None: params['limit'] = ...`)."""
+    patch_transport_factory()
+    _src, a_path, _b = _seed_pages_provenance(asgi_client[1])
+    result = _run(
+        [
+            "client", "pages", "provenance", a_path,
+            "--direction", "out", "--limit", "1",
+        ]
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert len(payload["derived_from"]) == 1
+
+
 def test_review_list_empty_on_fresh_wiki(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],

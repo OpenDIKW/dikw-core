@@ -612,6 +612,179 @@ async def test_apply_reconcile_op_does_not_block_sibling_op_on_same_path(
 
 
 @pytest.mark.asyncio
+async def test_fixer_returns_none_when_target_file_vanished(
+    empty_wiki: Path,
+) -> None:
+    """Direct unit test on ``MissingProvenanceFixer.propose`` — feed it
+    an issue whose target file no longer exists on disk. The fixer's
+    first guard (``if not abs_path.is_file(): return None``) must fire
+    before ``read_bytes()``, returning ``None`` so the orchestrator
+    records the skip rather than the propose call crashing.
+
+    Hits this path directly (not via ``api.lint_propose``) because the
+    upstream ``run_lint`` scan skips vanished-file docs before the
+    fixer would ever be asked — the fixer's own guard exists for the
+    race window between lint scan and propose iteration."""
+    from dikw_core.domains.knowledge.lint import LintIssue
+    from dikw_core.domains.knowledge.lint_fix import FixerContext
+    from dikw_core.domains.knowledge.lint_fixers import MissingProvenanceFixer
+
+    issue = LintIssue(
+        kind="missing_provenance",
+        path="wiki/ghost.md",  # never written to disk
+        detail="phantom",
+    )
+    ctx = FixerContext(
+        storage=None, llm=None, embedding=None,
+        wiki_root=empty_wiki,
+        all_pages=[], enable_llm=False,
+    )
+
+    class _NoopReporter:
+        pass
+
+    proposal = await MissingProvenanceFixer().propose(
+        issue, ctx, _NoopReporter()
+    )
+    assert proposal is None
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_reconcile_op_with_missing_source_paths(
+    empty_wiki: Path,
+) -> None:
+    """A hand-crafted ``reconcile_provenance`` op without ``source_paths``
+    is structurally malformed — apply preflight skips with a clear
+    reason rather than calling ``replace_provenance_from(None)``. The
+    real fixer always stamps ``source_paths`` (even with ``[]``), so
+    this path only fires for malformed external proposal JSON."""
+    import uuid
+
+    from dikw_core.domains.knowledge.lint_fix import (
+        FixOperation,
+        FixProposal,
+        FixProposalReport,
+        bytes_sha256,
+    )
+
+    path, _doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki,
+        title="Page",
+        sources=["sources/a.md"],
+    )
+    file_hash = bytes_sha256((empty_wiki / path).read_bytes())
+
+    bad = FixProposal(
+        proposal_id=str(uuid.uuid4()),
+        issue_kind="missing_provenance",
+        issue_path=path,
+        issue_detail="bad",
+        operations=[
+            FixOperation(
+                kind="reconcile_provenance",
+                path=path,
+                source_paths=None,  # ← the bug we're guarding against
+                expected_hash=file_hash,
+            )
+        ],
+        rationale="malformed",
+        source="heuristic",
+    )
+
+    apply_report = await api.lint_apply(
+        empty_wiki, proposal_report=FixProposalReport(proposals=[bad])
+    )
+    assert apply_report.applied == []
+    assert len(apply_report.skipped) == 1
+    assert "source_paths" in apply_report.skipped[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_reconcile_op_when_doc_id_unknown(
+    empty_wiki: Path,
+) -> None:
+    """``_apply_one_op`` defends against a proposal whose path is no
+    longer a registered K-layer document — typically because the page
+    was deactivated between scan and apply. The op skips with a
+    "deactivated since scan?" reason instead of writing storage rows
+    for a phantom doc_id."""
+    import uuid
+
+    from dikw_core.domains.knowledge.lint_fix import (
+        FixOperation,
+        FixProposal,
+        FixProposalReport,
+        bytes_sha256,
+    )
+
+    # Stamp a phantom path that has a file on disk (so preflight
+    # exists-check + hash-check pass) but is NOT registered as a
+    # DocumentRecord. Manually write the file rather than seeding
+    # via ``_seed_wiki_page`` (which also upserts the doc).
+    phantom_path = "wiki/phantom.md"
+    file_path = empty_wiki / phantom_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(
+        "---\nid: x\ntype: concept\ntitle: P\nsources:\n  - sources/a.md\n"
+        "---\n\n# P\n\nBody.\n",
+        encoding="utf-8",
+    )
+    file_hash = bytes_sha256(file_path.read_bytes())
+
+    op = FixOperation(
+        kind="reconcile_provenance",
+        path=phantom_path,
+        source_paths=["sources/a.md"],
+        expected_hash=file_hash,
+    )
+    report = FixProposalReport(
+        proposals=[
+            FixProposal(
+                proposal_id=str(uuid.uuid4()),
+                issue_kind="missing_provenance",
+                issue_path=phantom_path,
+                issue_detail="phantom",
+                operations=[op],
+                rationale="ghost",
+                source="heuristic",
+            )
+        ]
+    )
+    apply_report = await api.lint_apply(empty_wiki, proposal_report=report)
+    assert apply_report.applied == []
+    assert len(apply_report.skipped) == 1
+    assert "no doc_id" in apply_report.skipped[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_skips_when_target_file_vanishes_before_apply(
+    empty_wiki: Path,
+) -> None:
+    """Preflight's `_preflight_hash_gate` returns the
+    ``{kind} target missing`` reason when the file is gone — the same
+    helper now serves update_page, delete_page, AND reconcile_provenance
+    after the refactor. Reconcile is the cheapest case to exercise this
+    branch from."""
+    path, _doc_id = await _seed_wiki_page(
+        wiki_root=empty_wiki,
+        title="Page",
+        sources=["sources/a.md"],
+    )
+    proposal_report = await api.lint_propose(
+        empty_wiki, rule="missing_provenance", limit=10
+    )
+    # File vanishes between propose (above) and apply (below) — the
+    # preflight is_file() guard fires before any hash work.
+    (empty_wiki / path).unlink()
+    apply_report = await api.lint_apply(
+        empty_wiki, proposal_report=proposal_report
+    )
+    assert apply_report.applied == []
+    assert len(apply_report.skipped) == 1
+    assert "target missing" in apply_report.skipped[0]["reason"]
+
+
+@pytest.mark.asyncio
 async def test_apply_rechecks_hash_after_preflight_for_reconcile_provenance(
     empty_wiki: Path,
     monkeypatch: pytest.MonkeyPatch,
