@@ -30,6 +30,7 @@ import datetime as _dt
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -731,7 +732,7 @@ def _preflight_hash_gate(
     op: FixOperation,
     *,
     abs_path: Path,
-    exists: Any,
+    exists: Callable[[str], bool],
     sim_created: set[str],
 ) -> str | None:
     """Shared preflight gate for ops that mutate (or sync storage from)
@@ -750,8 +751,9 @@ def _preflight_hash_gate(
 
     ``exists`` is the closure ``_preflight_proposal`` builds over
     ``sim_created`` / ``sim_deleted`` so simulated state propagates;
-    typing it as ``Any`` avoids leaking the local-closure type into
-    the module API.
+    typed as ``Callable[[str], bool]`` to match the closure's
+    ``(op_path: str) -> bool`` signature without losing strict-mypy
+    coverage at the call boundary.
     """
     if not exists(op.path):
         return f"{op.kind} target missing: {op.path!r}"

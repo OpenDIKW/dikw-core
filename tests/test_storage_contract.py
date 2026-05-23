@@ -2716,9 +2716,13 @@ async def test_provenance_to_returns_all_referencing_pages(
     )
 
     shared = await storage.provenance_to(normalize_path("sources/shared.md"))
-    assert sorted(r.src_doc_id for r in shared) == sorted(
-        [page_a.doc_id, page_b.doc_id]
-    )
+    # Direct equality (not sorted) — the Protocol promises
+    # ``src_doc_id ASC`` ordering; sorting both sides would mask a
+    # regression where the adapter returns rows in insertion / random
+    # order. page_a.doc_id and page_b.doc_id are constructed as
+    # ``wiki:wiki/a.md`` / ``wiki:wiki/b.md``, so the lexicographic
+    # ASC order is deterministic.
+    assert [r.src_doc_id for r in shared] == [page_a.doc_id, page_b.doc_id]
     only_c = await storage.provenance_to(normalize_path("sources/only-c.md"))
     assert [r.src_doc_id for r in only_c] == [page_c.doc_id]
     # Source nobody claims.

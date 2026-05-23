@@ -130,14 +130,24 @@ def read_page(root: Path, path: str) -> WikiPage:
         raise FileNotFoundError(path)
     post = frontmatter.load(str(abs_path))
     meta = dict(post.metadata)
+    # ``tags`` and ``sources`` go through the shared malformed-shape
+    # guard for the same reason ``persist_wiki_page`` / ``run_lint`` /
+    # ``MissingProvenanceFixer`` do — a hand-written YAML scalar
+    # (``sources: foo.md``) would otherwise become a character-per-row
+    # list. The ``pop`` happens explicitly first so ``extras`` doesn't
+    # carry the raw value back out.
+    tags = frontmatter_str_list(meta, "tags")
+    sources = frontmatter_str_list(meta, "sources")
+    meta.pop("tags", None)
+    meta.pop("sources", None)
     return WikiPage(
         path=path,
         id=str(meta.pop("id", make_page_id(str(meta.get("title", path)), str(meta.get("type", "note"))))),
         type=str(meta.pop("type", "note")),
         title=str(meta.pop("title", _fallback_title(post.content, path))),
         body=post.content,
-        tags=list(meta.pop("tags", []) or []),
-        sources=list(meta.pop("sources", []) or []),
+        tags=tags,
+        sources=sources,
         created=str(meta.pop("created", now_iso())),
         updated=str(meta.pop("updated", now_iso())),
         extras=meta,
