@@ -138,10 +138,12 @@ class LintProposeSubmit(BaseModel):
     consumes — the propose task runs serially over those, so ``limit``
     is also effectively a wall-clock cap on the LLM-heavy fixers.
 
-    ``enable_llm`` opts into LLM-fallback paths (broken_wikilink stub
-    pages, the non_atomic_page splitter). Default False keeps propose
-    runs heuristic-only and free of token spend; users opt in
-    explicitly via ``--enable-llm`` on the CLI.
+    ``enable_llm`` opts into LLM-powered fixer paths: broken_wikilink's
+    evidence-backed grounded repair (writes a real page when D-layer
+    hybrid-search hits provide enough evidence) and the non_atomic_page
+    splitter. Default False keeps propose runs heuristic-only and free
+    of token spend; users opt in explicitly via ``--enable-llm`` on the
+    CLI.
     """
 
     rule: LintKind | None = None

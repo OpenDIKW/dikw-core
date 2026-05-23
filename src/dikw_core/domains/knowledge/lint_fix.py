@@ -185,9 +185,10 @@ class FixerContext:
     O(1) lookup so per-orphan code paths can resolve ``doc_id`` without
     re-listing the entire WIKI layer.
 
-    ``enable_llm`` gates the LLM-fallback branch in fixers that have
-    one. Default False keeps propose runs heuristic-only — every LLM
-    call costs tokens, and a user must opt in via
+    ``enable_llm`` gates the evidence-backed LLM path inside fixers
+    that have one (broken_wikilink grounded repair, non_atomic_page
+    splitter). Default False keeps propose runs heuristic-only — every
+    LLM call costs tokens, and a user must opt in via
     ``dikw client lint propose --enable-llm``.
     """
 
@@ -292,8 +293,8 @@ async def safe_synthesize_pages(
         block as "2 valid children, good enough" would drop the
         malformed block's content along with the original page.
       - **strict=False (additive callers)** → ``pe.pages``. The
-        broken_wikilink stub fixer takes only ``pages[0]``; a
-        malformed sibling block does not represent lost content,
+        broken_wikilink evidence-backed fixer takes only ``pages[0]``;
+        a malformed sibling block does not represent lost content,
         just a wasted LLM token budget.
     * Any other exception (provider outage, network, JSON drift) →
       log at WARNING + ``None``. Cancellation
@@ -453,8 +454,8 @@ def _build_page_from_op(op: FixOperation) -> WikiPage:
     timestamps) come from :func:`wiki.build_page` so create / update
     paths share the same construction rules synth uses. Proposal
     frontmatter overrides those defaults when present, so a fixer that
-    *does* know the canonical ``id`` (e.g. an LLM stub-page proposal in
-    PR2) can pin it.
+    *does* know the canonical ``id`` (e.g. an LLM-grounded proposal
+    from the ``broken_wikilink`` evidence-backed path) can pin it.
     """
     if op.new_body is None:
         raise ValueError(f"op {op.kind} for {op.path} missing new_body")

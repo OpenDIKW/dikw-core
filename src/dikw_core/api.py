@@ -2820,12 +2820,15 @@ async def lint_propose(
 ) -> FixProposalReport:
     """Run lint + dispatch fixers, returning a :class:`FixProposalReport`.
 
-    ``enable_llm`` opts into the LLM-fallback paths inside fixers
-    (broken_wikilink stub-page generation, the entire non_atomic_page
-    fixer). When False, propose runs heuristic-only — no LLM call is
-    made and pure-heuristic fixers (``broken_wikilink`` fuzzy-match)
-    still work. The default keeps a ``propose`` invocation cheap and
-    deterministic; users opt in via ``--enable-llm``.
+    ``enable_llm`` opts into LLM-powered fixer paths: the
+    broken_wikilink evidence-backed grounded repair (D-layer hybrid
+    search must yield enough evidence before the LLM is asked to write
+    a real page; outputs containing TODO/stub/placeholder markers are
+    rejected) and the entire non_atomic_page splitter. When False,
+    propose runs heuristic-only — no LLM call is made and pure-heuristic
+    paths (``broken_wikilink`` fuzzy-match) still work. The default
+    keeps a ``propose`` invocation cheap and deterministic; users opt
+    in via ``--enable-llm``.
 
     ``llm`` / ``embedder`` are passthrough overrides used by tests; in
     production both are built from ``cfg.provider`` the same way

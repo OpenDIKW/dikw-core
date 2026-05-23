@@ -1,10 +1,10 @@
 """Tests for the per-rule lint fixers.
 
-PR1 ships only ``broken_wikilink`` with a heuristic-only path: fuzzy match
-the broken target against existing K-layer page titles and propose a
-``[[link]]`` rewrite when the match is confident enough; otherwise the
-fixer returns ``None`` so the orchestrator skips the issue (LLM stub
-fallback lands in PR2).
+PR1 shipped only ``broken_wikilink`` with a heuristic-only path: fuzzy
+match the broken target against existing K-layer page titles and propose
+a ``[[link]]`` rewrite when the match is confident enough; otherwise the
+fixer returns ``None`` so the orchestrator skips the issue (the
+evidence-backed LLM repair path shipped later in #83).
 """
 
 from __future__ import annotations
@@ -136,8 +136,9 @@ async def test_fuzzy_match_above_threshold_proposes_update_page(
 
 @pytest.mark.asyncio
 async def test_fuzzy_match_miss_returns_none_in_pr1(tmp_path: Path) -> None:
-    """When no existing title is close enough, PR1 returns ``None``
-    (LLM stub fallback ships in PR2)."""
+    """When no existing title is close enough, PR1's heuristic-only
+    path returns ``None`` (the evidence-backed LLM repair path shipped
+    later in #83)."""
     wiki_root = tmp_path
     other = _make_page("Completely Different", "# Completely Different\n")
     src_page = _make_page(

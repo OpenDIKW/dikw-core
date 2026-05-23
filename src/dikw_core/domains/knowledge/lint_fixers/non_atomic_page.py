@@ -15,7 +15,8 @@ External wikilinks pointing at the original page are intentionally
 **not** rewritten. Once the original is deleted, sibling pages with
 ``[[Original Title]]`` links surface as ``broken_wikilink`` issues
 under the next lint pass, where the broken_wikilink fixer (with
-``--enable-llm`` for stub fallback if needed) handles them. Keeping
+``--enable-llm`` for evidence-backed grounded repair if the heuristic
+fuzzy-match misses) handles them. Keeping
 this fixer's scope narrow avoids the embedding-similarity machinery
 needed to pick the "right" child for each external referrer.
 """

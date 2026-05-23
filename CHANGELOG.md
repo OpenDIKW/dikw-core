@@ -7,6 +7,39 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.2.7 — 2026-05-23
+
+### Fixed: stale `--enable-llm` copy from PR2 era
+
+The `broken_wikilink` lint fixer's `--enable-llm` behavior was upgraded
+in #83 from "LLM fabricates a TODO-laden placeholder page" to a real
+**evidence-backed grounded repair** (D-layer hybrid search gates an LLM
+call; outputs containing `TODO` / `stub page` / `placeholder` markers
+or shorter than 200 chars are rejected). The runtime landed correctly,
+but seven user-facing and internal description sites still described
+the obsolete behavior — most visibly the CLI `--enable-llm` help text,
+the `POST /v1/lint/propose` OpenAPI schema (via the Pydantic docstring),
+and the public engine `lint_propose` docstring. Users reading any of
+these would conclude that `--enable-llm` produces stub pages and avoid
+opting in, missing the new functionality's value.
+
+This release sweeps the stale copy across 14 sites: CLI help, OpenAPI
+schema, public engine docstring, the `lint_fixers` package docstring,
+the `FixerContext` and `synthesize_pages_from_text` docstrings, the
+`non_atomic_page` cross-reference to `broken_wikilink`, the
+`_build_page_from_op` docstring, an internal comment in
+`broken_wikilink.py`, the `synthesize_pages_from_text` use-case
+docstring, and several historical references and fixture strings in
+`tests/test_lint_*.py` and `tests/test_synthesize_*.py`. The
+`broken_wikilink.py` file-level docstring's "this replaces the PR2
+TODO-stub fallback" contrast paragraph is intentionally left in
+place — it explains the historical change to readers and is the
+canonical source for the new phrasing.
+
+**Pure documentation change. No runtime, schema, Protocol, or
+on-disk-format behavior changed.** Users who already had `--enable-llm`
+in production saw the new behavior land in 0.2.x at #83.
+
 ## 0.2.6 — 2026-05-23
 
 ### Added: provenance edge (K-page → D-source attribution)

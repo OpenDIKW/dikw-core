@@ -241,7 +241,7 @@ class GroupAwareLLM:
             f'<page path="wiki/concepts/group-{idx}.md" type="concept">\n'
             f"---\ntags: [synthetic]\n---\n\n"
             f"# Group {idx} concept\n\n"
-            f"Synthetic page emitted by the LLM stub on call {idx}.\n"
+            f"Synthetic page emitted by the FakeLLM on call {idx}.\n"
             f"</page>"
         )
         return LLMResponse(text=text, finish_reason="end_turn")
