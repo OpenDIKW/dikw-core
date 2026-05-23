@@ -2820,10 +2820,15 @@ async def lint_propose(
 ) -> FixProposalReport:
     """Run lint + dispatch fixers, returning a :class:`FixProposalReport`.
 
-    ``enable_llm`` opts into the LLM-fallback paths inside fixers
-    (broken_wikilink stub-page generation, the entire non_atomic_page
-    fixer). When False, propose runs heuristic-only — no LLM call is
-    made and pure-heuristic fixers (``broken_wikilink`` fuzzy-match)
+    ``enable_llm`` opts into LLM-powered fixer paths: the
+    broken_wikilink evidence-backed grounded repair (D-layer hybrid
+    search must yield enough evidence before the LLM is asked to write
+    a real page; outputs containing ``TODO`` / ``stub page`` /
+    ``placeholder`` markers are rejected), the entire non_atomic_page
+    splitter, and orphan_page's ``merge_into_existing_page`` strategy.
+    When False, propose runs heuristic-only — no LLM call is made and
+    pure-heuristic paths (``broken_wikilink`` fuzzy-match,
+    ``orphan_page`` delete/link/leaf strategies, ``missing_provenance``)
     still work. The default keeps a ``propose`` invocation cheap and
     deterministic; users opt in via ``--enable-llm``.
 

@@ -351,7 +351,8 @@ def test_dedup_preserves_input_order_for_distinct_paths() -> None:
 async def test_synthesize_pages_from_text_returns_parsed_pages() -> None:
     """Helper drives one ``llm.complete`` call and returns the parsed
     pages — the shared "text → N pages" primitive that lint fixers
-    (broken_wikilink LLM stub, non_atomic_page splitter) reuse."""
+    (broken_wikilink evidence-backed grounded repair, non_atomic_page
+    splitter) reuse."""
     fake = FakeLLM(response_text=_SINGLE_PAGE_RESPONSE)
 
     pages = await synthesize_pages_from_text(

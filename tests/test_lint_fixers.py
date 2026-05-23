@@ -1,10 +1,10 @@
 """Tests for the per-rule lint fixers.
 
-PR1 ships only ``broken_wikilink`` with a heuristic-only path: fuzzy match
-the broken target against existing K-layer page titles and propose a
-``[[link]]`` rewrite when the match is confident enough; otherwise the
-fixer returns ``None`` so the orchestrator skips the issue (LLM stub
-fallback lands in PR2).
+PR1 shipped only ``broken_wikilink`` with a heuristic-only path: fuzzy
+match the broken target against existing K-layer page titles and propose
+a ``[[link]]`` rewrite when the match is confident enough; otherwise the
+fixer returns ``None`` so the orchestrator skips the issue (the
+evidence-backed LLM repair path shipped later in #83).
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _ctx(
 def _default_cfg() -> Any:
     """Build a minimal ``DikwConfig`` for fixer tests.
 
-    Used by both ``broken_wikilink`` LLM-stub tests and the
+    Used by both ``broken_wikilink`` evidence-backed grounded repair tests and the
     ``non_atomic_page`` tests so the fixer's ``ctx.cfg.provider.*`` /
     ``ctx.cfg.schema_.*`` / ``ctx.cfg.synth.*`` reads land on real
     defaults rather than ``None``.
@@ -136,8 +136,9 @@ async def test_fuzzy_match_above_threshold_proposes_update_page(
 
 @pytest.mark.asyncio
 async def test_fuzzy_match_miss_returns_none_in_pr1(tmp_path: Path) -> None:
-    """When no existing title is close enough, PR1 returns ``None``
-    (LLM stub fallback ships in PR2)."""
+    """When no existing title is close enough, PR1's heuristic-only
+    path returns ``None`` (the evidence-backed LLM repair path shipped
+    later in #83)."""
     wiki_root = tmp_path
     other = _make_page("Completely Different", "# Completely Different\n")
     src_page = _make_page(
@@ -1280,10 +1281,10 @@ async def test_non_atomic_page_skips_when_llm_disabled(tmp_path: Path) -> None:
 # ``_MIN_TARGET_LEN = 4`` is a fuzzy-match guardrail (3-char ASCII
 # substrings hit 0.85 against too many titles by chance). The early
 # version of the fixer enforced it at the top of ``propose()``, before
-# the LLM-stub branch — which silently dropped 2-3 char CJK targets
-# like ``[[秦朝]]`` even when ``--enable-llm`` was set. The fix moves
-# the gate to the heuristic branch only; the LLM path stays gated by
-# ``enable_llm`` alone.
+# the evidence-backed grounded repair branch — which silently dropped
+# 2-3 char CJK targets like ``[[秦朝]]`` even when ``--enable-llm`` was
+# set. The fix moves the gate to the heuristic branch only; the
+# evidence-backed path stays gated by ``enable_llm`` alone.
 
 _CJK_GROUNDED_LLM_RESPONSE = (
     "<page path=\"wiki/concepts/qin-dynasty.md\" type=\"concept\">\n"

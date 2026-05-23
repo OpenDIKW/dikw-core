@@ -69,7 +69,8 @@ MERGE_THRESHOLD = 6.0
 
 #: Token budget for the merge LLM call. The merged body can be roughly
 #: ``parent + orphan`` in length plus light restructuring, so this needs
-#: more headroom than the broken_wikilink stub call.
+#: more headroom than the broken_wikilink evidence-backed grounded
+#: repair call.
 _MERGE_MAX_TOKENS = 4096
 
 _MERGE_SYSTEM = (

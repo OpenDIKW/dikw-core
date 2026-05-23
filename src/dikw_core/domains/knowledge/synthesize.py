@@ -278,8 +278,9 @@ async def synthesize_pages_from_text(
 
     * the ingestion pipeline (``_synth_pages_from_source`` in
       :mod:`api`) for per-chunk-group fan-out, and
-    * lint fixers (``broken_wikilink`` LLM stub fallback,
-      ``non_atomic_page`` splitter) that need to drive the same
+    * lint fixers (``broken_wikilink`` evidence-backed grounded repair,
+      ``non_atomic_page`` splitter, ``orphan_page``
+      merge_into_existing_page) that need to drive the same
       ``llm.complete → parse_synthesis_response`` pair from a different
       prompt template.
 

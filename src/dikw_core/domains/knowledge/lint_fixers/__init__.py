@@ -1,10 +1,10 @@
 """Per-rule fix-proposal implementations.
 
-Coverage: ``broken_wikilink`` (heuristic + LLM stub), ``non_atomic_page``
-(LLM split), ``orphan_page`` (heuristic strategy router),
-``missing_provenance`` (pure deterministic — sync provenance table from
-frontmatter). The ``duplicate_title`` rule has no fixer — the propose
-pipeline still reports it for human triage.
+Coverage: ``broken_wikilink`` (heuristic + evidence-backed LLM repair),
+``non_atomic_page`` (LLM split), ``orphan_page`` (heuristic strategy
+router), ``missing_provenance`` (pure deterministic — sync provenance
+table from frontmatter). The ``duplicate_title`` rule has no fixer —
+the propose pipeline still reports it for human triage.
 """
 
 from __future__ import annotations

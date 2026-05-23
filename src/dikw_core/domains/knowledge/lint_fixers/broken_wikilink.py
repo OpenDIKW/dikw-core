@@ -102,8 +102,9 @@ class BrokenWikilinkFixer:
         # Heuristic fuzzy match only runs above the length gate — short
         # targets (e.g. 2-3 char CJK like ``[[秦朝]]``) yield too many
         # spurious 0.85 ratios. Below the gate we skip heuristic and
-        # fall straight through to the LLM stub, which is still gated
-        # by ``enable_llm`` so heuristic-only users pay no LLM cost.
+        # fall straight through to the evidence-backed grounded repair,
+        # which is still gated by ``enable_llm`` so heuristic-only users
+        # pay no LLM cost.
         best_title: str | None = None
         best_ratio = 0.0
         if len(target_norm) >= _MIN_TARGET_LEN:
@@ -539,8 +540,8 @@ def _strip_alias_anchor(target: str) -> str:
 
     The resolver matches the bare title — both ``[[Target|label]]`` and
     ``[[Target#section]]`` resolve against a page titled ``Target`` —
-    so the stub the LLM authors must use that bare name. Without this,
-    the LLM would title the stub ``Target|label`` and the next lint
+    so the page the LLM authors must use that bare name. Without this,
+    the LLM would title the page ``Target|label`` and the next lint
     pass would still report the wikilink as broken.
     """
     base = target.split("|", 1)[0]

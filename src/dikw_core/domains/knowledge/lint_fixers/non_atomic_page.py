@@ -14,10 +14,12 @@ than two children.
 External wikilinks pointing at the original page are intentionally
 **not** rewritten. Once the original is deleted, sibling pages with
 ``[[Original Title]]`` links surface as ``broken_wikilink`` issues
-under the next lint pass, where the broken_wikilink fixer (with
-``--enable-llm`` for stub fallback if needed) handles them. Keeping
-this fixer's scope narrow avoids the embedding-similarity machinery
-needed to pick the "right" child for each external referrer.
+under the next lint pass, where the broken_wikilink fixer attempts
+to repair them — fuzzy-match first, then the evidence-backed grounded
+repair when ``--enable-llm`` is on (which may ``FixerSkip`` if
+evidence is insufficient or the LLM body fails the grounding checks).
+Keeping this fixer's scope narrow avoids the embedding-similarity
+machinery needed to pick the "right" child for each external referrer.
 """
 
 from __future__ import annotations

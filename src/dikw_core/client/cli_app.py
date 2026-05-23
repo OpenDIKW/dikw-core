@@ -515,10 +515,14 @@ def lint_propose_cmd(
         typer.Option(
             "--enable-llm",
             help=(
-                "Allow fixers to call the configured LLM for fallback "
-                "paths (broken_wikilink stub-page generation, the "
-                "non_atomic_page splitter). Off by default — opt in "
-                "explicitly because each issue may incur a token cost."
+                "Allow fixers to call the configured LLM: broken_wikilink's "
+                "evidence-backed grounded repair (D-layer hybrid-search hits "
+                "feed the LLM, which writes a real page only when evidence "
+                "is sufficient; outputs containing `TODO` / `stub page` / "
+                "`placeholder` markers are rejected), the non_atomic_page "
+                "splitter, and orphan_page's merge_into_existing_page "
+                "strategy. Off by default — opt in explicitly because each "
+                "issue may incur a token cost."
             ),
         ),
     ] = False,
