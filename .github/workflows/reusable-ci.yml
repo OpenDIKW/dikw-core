@@ -139,6 +139,56 @@ jobs:
             tests/test_storage_contract.py \
             tests/server/test_task_store_contract.py
 
+  dockerfile-version-guard:
+    name: Dockerfile DIKW_VERSION guard
+    # Belt-and-suspenders guard for the version drift between
+    # ``pyproject.toml`` and ``examples/docker/Dockerfile``. The
+    # ``sync-dockerfile`` job in ``release.yml`` is supposed to auto-bump
+    # the Dockerfile after every PyPI publish, but if it ever fails (PAT
+    # expired, branch protection mismatch, hand-edit going around the
+    # automation) this guard catches the drift on the very next PR.
+    #
+    # Invariant: ARG DIKW_VERSION in the Dockerfile must equal
+    # pyproject.toml's version OR be a version already published on PyPI
+    # (the publish-window transitional state where ``pyproject.toml``
+    # has been bumped to N but only N-1 is on PyPI yet, so the Dockerfile
+    # legitimately points at N-1 until ``sync-dockerfile`` runs).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Compare Dockerfile DIKW_VERSION against pyproject + PyPI
+        run: |
+          set -euo pipefail
+          dv=$(grep -oE '^ARG DIKW_VERSION=[0-9]+\.[0-9]+\.[0-9]+' examples/docker/Dockerfile | cut -d= -f2 || true)
+          if [ -z "$dv" ]; then
+            echo "::error file=examples/docker/Dockerfile::Failed to parse ARG DIKW_VERSION (line missing or shape changed)"
+            exit 1
+          fi
+          pv=$(python3 -c "import tomllib;print(tomllib.loads(open('pyproject.toml','rb').read().decode())['project']['version'])")
+          echo "Dockerfile DIKW_VERSION=$dv  pyproject=$pv"
+          if [ "$dv" = "$pv" ]; then
+            echo "OK: Dockerfile matches pyproject (post-sync steady state)"
+            exit 0
+          fi
+          echo "Versions differ; verifying $dv is published on PyPI (publish-window state)"
+          # ``curl --fail`` returns non-zero on 4xx/5xx so the test below
+          # distinguishes "version not on PyPI" from network blips.
+          if curl -fsS --max-time 10 "https://pypi.org/pypi/dikw-core/${dv}/json" >/dev/null; then
+            echo "OK: $dv is published on PyPI; sync PR is pending or in flight"
+            exit 0
+          fi
+          cat >&2 <<EOF
+          ::error file=examples/docker/Dockerfile::DIKW_VERSION drift: $dv is neither pyproject ($pv) nor published on PyPI
+
+          Fix one of:
+            (a) bump Dockerfile to match pyproject ($pv), if $pv is already on PyPI
+            (b) wait for release.yml's sync-dockerfile job to open the chore PR
+            (c) check network — pypi.org may be unreachable from this runner
+          EOF
+          exit 1
+
   wheel-smoke:
     name: Wheel install smoke test
     runs-on: ubuntu-latest

@@ -15,12 +15,17 @@ RUN apt-get update \
 # an older pip with known CVEs (CVE-2025-8869, CVE-2026-6357).
 RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 
-# Tracks the latest version already published to PyPI — bump only AFTER
-# the release tag pushes a new wheel (the trusted-publishing workflow in
-# .github/workflows/release.yml). Bumping it before publish wedges the
-# Trivy scan job, which builds this image from scratch on every PR and
-# would `pip install` a version that doesn't exist yet.
-ARG DIKW_VERSION=0.2.0
+# Pinned to the latest version already published to PyPI. Synced
+# automatically by the ``sync-dockerfile`` job in
+# ``.github/workflows/release.yml`` after every successful PyPI publish
+# (the job opens a chore PR; merging it closes the drift window). Do not
+# hand-bump this ahead of a publish: the Trivy scan job builds this image
+# from scratch on every PR and would ``pip install`` a version that
+# doesn't exist yet. The ``dockerfile-version-guard`` job in
+# ``.github/workflows/reusable-ci.yml`` enforces the invariant
+# (DIKW_VERSION must equal pyproject.toml's version OR be published on
+# PyPI) so any drift introduced by hand fails CI.
+ARG DIKW_VERSION=0.2.7
 RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
 
 RUN useradd --create-home --uid 1000 dikw
