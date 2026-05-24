@@ -161,11 +161,18 @@ jobs:
       - name: Compare Dockerfile DIKW_VERSION against pyproject + PyPI
         run: |
           set -euo pipefail
-          dv=$(grep -oE '^ARG DIKW_VERSION=[0-9]+\.[0-9]+\.[0-9]+' examples/docker/Dockerfile | cut -d= -f2 || true)
-          if [ -z "$dv" ]; then
-            echo "::error file=examples/docker/Dockerfile::Failed to parse ARG DIKW_VERSION (line missing or shape changed)"
+          # Anchor the full line shape (^…$) before extracting — without the
+          # trailing $, ``ARG DIKW_VERSION=0.2.7-bad`` or
+          # ``ARG DIKW_VERSION=0.2.7 # note`` would pass the parse step and
+          # extract just ``0.2.7``, then PyPI would (correctly) say 0.2.7
+          # exists, and the guard would let the malformed default ship to
+          # the Trivy image build (where ``pip install ...==0.2.7-bad``
+          # then fails). Mirrors the sync-dockerfile shape check.
+          if ! grep -qE '^ARG DIKW_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' examples/docker/Dockerfile; then
+            echo "::error file=examples/docker/Dockerfile::ARG DIKW_VERSION line missing or shape changed (must be 'ARG DIKW_VERSION=X.Y.Z', no suffix, no inline comment)"
             exit 1
           fi
+          dv=$(grep -oE '^ARG DIKW_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' examples/docker/Dockerfile | cut -d= -f2)
           pv=$(python3 -c "import tomllib;print(tomllib.loads(open('pyproject.toml','rb').read().decode())['project']['version'])")
           echo "Dockerfile DIKW_VERSION=$dv  pyproject=$pv"
           if [ "$dv" = "$pv" ]; then
