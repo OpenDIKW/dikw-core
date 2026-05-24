@@ -249,7 +249,13 @@ PyPI's side:
    - workflow: `release.yml`
    - environment: `pypi`
 
-After that, `git tag vX.Y.Z && git push --tags` is enough.
+After that, `git tag vX.Y.Z && git push --tags` is enough. The release
+workflow also opens a `chore(docker): bump DIKW_VERSION to vX.Y.Z` PR
+against `main` after a successful PyPI publish, keeping
+`examples/docker/Dockerfile` in lockstep with the latest published
+wheel; merge that chore PR to clear the post-release queue. The
+`dockerfile-version-guard` job in `reusable-ci.yml` enforces the
+invariant on every PR.
 
 ## License
 

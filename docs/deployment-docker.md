@@ -163,9 +163,16 @@ the right setup for single-machine personal use.
 ## Upgrading
 
 ```bash
-docker compose build --build-arg DIKW_VERSION=0.0.3
+docker compose build --build-arg DIKW_VERSION=0.2.7
 docker compose up -d
 ```
+
+Omit `--build-arg` to use the default baked into the Dockerfile. The
+default tracks the latest PyPI release via an auto-opened chore PR
+after each publish (see the `sync-dockerfile` job in
+`.github/workflows/release.yml`) — there's a short window after a new
+release where the default still points at the prior version until that
+PR lands.
 
 ## Single-writer constraint
 

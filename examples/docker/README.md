@@ -35,8 +35,14 @@ curl -H "Authorization: Bearer $DIKW_SERVER_TOKEN" http://localhost:8765/v1/heal
 ## Pinning a specific dikw-core version
 
 ```bash
-docker compose build --build-arg DIKW_VERSION=0.0.3
+docker compose build --build-arg DIKW_VERSION=0.2.7
 ```
 
-The Dockerfile defaults `DIKW_VERSION` to the version current at the
-time the example was written; bump in lockstep with each release.
+The Dockerfile default `DIKW_VERSION` advances via an auto-opened
+chore PR after each PyPI publish — see the `sync-dockerfile` job in
+`.github/workflows/release.yml`. Merging that PR moves the default on
+`main` forward; until the PR lands, `main` keeps the prior default.
+The `dockerfile-version-guard` job in
+`.github/workflows/reusable-ci.yml` fails CI on any default that's
+neither equal to `pyproject.toml`'s version nor already published on
+PyPI.

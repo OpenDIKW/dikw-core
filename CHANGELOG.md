@@ -7,6 +7,58 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Changed: Dockerfile DIKW_VERSION now auto-syncs after PyPI publish
+
+`examples/docker/Dockerfile`'s `ARG DIKW_VERSION` used to lag
+`pyproject.toml` whenever a maintainer forgot to hand-bump it after a
+release — 0.2.5 / 0.2.6 / 0.2.7 all shipped with the Dockerfile still
+pointing at 0.2.0, a 7-patch drift. The constraint (the Dockerfile
+must point at a version already on PyPI, because Trivy builds the image
+on every PR and `pip install`s from PyPI) cannot be solved by simply
+syncing the two files inside one commit — there's a real window where
+`pyproject.toml` is bumped but PyPI hasn't received the wheel yet.
+
+Two complementary fixes close the loop:
+
+1. **`sync-dockerfile` job in `.github/workflows/release.yml`** — after
+   the `publish` job successfully uploads to PyPI, this new job uses
+   `peter-evans/create-pull-request` (pinned by SHA, v8.1.1) to open a
+   `chore(docker): bump DIKW_VERSION to vX.Y.Z` PR against `main`. The
+   PR carries the `chore` / `automated` / `no-baseline-needed` labels.
+   The job refuses to edit if the `ARG DIKW_VERSION=…` line shape
+   changed (renamed arg, multi-line assignment, etc.) — better to fail
+   loudly than produce a malformed Dockerfile.
+
+2. **`dockerfile-version-guard` job in
+   `.github/workflows/reusable-ci.yml`** — runs on every PR (and as
+   part of the release pre-gate). Enforces the invariant
+   `DIKW_VERSION == pyproject.version` OR
+   `DIKW_VERSION ∈ published PyPI releases`. The first branch is the
+   post-sync steady state; the second is the legitimate publish-window
+   transitional state. Anything else (hand-edited drift, typo, stale
+   bump) fails the guard with an actionable `::error` annotation. The
+   job pins Python 3.12 via `actions/setup-python` (pinned by SHA,
+   v6.2.0) rather than relying on whatever `python3` ubuntu-latest
+   currently ships — `tomllib` is Python 3.11+ stdlib, so the explicit
+   pin keeps the guard valid across future runner-image rolls.
+
+Both halves share the same `^X.Y.Z$` version contract: sync-dockerfile
+refuses to write a PEP 440 pre-release (e.g. `0.2.7rc1`, `0.2.7.dev1`)
+into the Dockerfile so the guard cannot later jam on a shape-mismatch.
+If pre-release support is ever needed, relax the guard regex first.
+
+Caveat: PRs opened by the default `GITHUB_TOKEN` do not trigger other
+workflows on the new PR. Maintainers who want Trivy to scan the
+sync PR before merging should close and re-open it manually; otherwise
+the guard re-validates on the next non-sync PR. This is a documented
+GitHub-side limitation rather than a workaround we can paper over
+without provisioning a PAT or GitHub App.
+
+The current `examples/docker/Dockerfile` is also bumped from 0.2.0 to
+0.2.7 in this entry to absorb the historical drift before the guard
+goes live — without this catch-up, the very first PR after merge would
+fail the new guard.
+
 ### Changed: project status bumped from pre-alpha to alpha
 
 The repo-wide self-description graduates from **pre-alpha** to **alpha**:
