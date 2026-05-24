@@ -1,11 +1,34 @@
 # Changelog
 
 All notable changes to `dikw-core` are tracked here. The project is
-**pre-alpha** and follows [SemVer](https://semver.org) loosely — until
+**alpha** and follows [SemVer](https://semver.org) loosely — until
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
 ## Unreleased
+
+### Changed: project status bumped from pre-alpha to alpha
+
+The repo-wide self-description graduates from **pre-alpha** to **alpha**:
+the PyPI classifier (`pyproject.toml`) moves to `Development Status :: 3 -
+Alpha`, and every doc / docstring / SQL header / runtime hint string that
+previously said "pre-alpha" now says "alpha" — README, CLAUDE.md,
+`docs/architecture.md`, `docs/eval-plan.md`, `CHANGELOG.md` header,
+`.github/pull_request_template.md`, `storage/_schema.py`,
+`storage/migrations/{sqlite,postgres}/schema.sql`, and the
+`_REBUILD_HINT` strings in `storage/sqlite.py` + `storage/postgres.py`
+(which surface in `StorageError` when a user opens a DB whose schema
+fingerprint doesn't match the code's `SCHEMA_VERSION`). The
+"rebuild-on-incompatibility" storage policy and the "APIs / on-disk
+formats / DB schema / CLI may change" disclaimer are both unchanged in
+substance — alpha still means breaking changes can land in any minor
+version. The architecture-doc forward reference updates accordingly:
+the real migration framework now lands when we declare **beta**, not
+alpha. Two unrelated Delivery-loop doc fixes ride along: CLAUDE.md
+Working principles + step 4 now reference `/code-review` (the
+production skill) instead of the retired `/simplify` placeholder, and
+step 4 explicitly notes that doc-only PRs are not exempt from
+`/code-review` (per `feedback_code_review_not_optional`).
 
 ## 0.2.7 — 2026-05-24
 

@@ -60,7 +60,7 @@ from .base import NotSupported, StorageError
 MIGRATIONS_PACKAGE = "dikw_core.storage.migrations.sqlite"
 
 _REBUILD_HINT = (
-    "dikw-core is pre-alpha — the on-disk format is allowed to change, "
+    "dikw-core is alpha — the on-disk format is allowed to change, "
     "and there is no in-place upgrade path. Delete the SQLite database "
     "file (the path SQLiteStorage was constructed with, typically "
     "``.dikw/dikw.sqlite``) and re-run ``dikw client ingest`` to rebuild."

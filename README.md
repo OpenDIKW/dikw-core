@@ -13,7 +13,7 @@ AI-native knowledge engine that turns your documents into **Data → Information
 
 Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown wiki (the K layer), `dikw-core` adds a first-class **Wisdom layer** — distilled principles, lessons, and patterns that apply beyond any single source.
 
-> Status: pre-alpha. Under active construction; APIs and on-disk formats will change.
+> Status: alpha. Under active construction; APIs, on-disk formats, database schema, and CLI will change.
 
 ## What you get
 

@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 `dikw-core` is a Python 3.12+ AI-native knowledge engine spanning the full
 DIKW pyramid (**D**ata → **I**nformation → **K**nowledge → **W**isdom).
-Status: **pre-alpha** — APIs and on-disk formats will change.
+Status: **alpha** — APIs, on-disk formats, database schema, and CLI will change.
 
 Architecture is **client/server**: a `dikw serve` process (FastAPI + NDJSON)
 hosts the engine; every HTTP-bound command lives under `dikw client …`,
@@ -108,7 +108,7 @@ src/dikw_core/
 
 Behavioral defaults — bias toward caution over speed; for trivial edits use judgment. These sit alongside `Conventions` and `Things not to do` below.
 
-- **Think before coding.** State assumptions; if uncertain ask one focused question instead of guessing. Surface tradeoffs and name alternatives — don't silently pick one. If a simpler approach exists, say so up-front rather than waiting for a /simplify pass (cf. `feedback_codex_review_loop`). `docs/design.md` is the source of truth for K- and W-layer intent — read it before designing changes there.
+- **Think before coding.** State assumptions; if uncertain ask one focused question instead of guessing. Surface tradeoffs and name alternatives — don't silently pick one. If a simpler approach exists, say so up-front rather than waiting for `/code-review` to surface it (cf. `feedback_codex_review_loop`). `docs/design.md` is the source of truth for K- and W-layer intent — read it before designing changes there.
 - **Simplicity first.** Minimum code that solves the stated problem — no speculative features, no abstractions for single-use code, no flexibility that wasn't requested, no error handling for impossible scenarios. Karpathy's rule (above) is the project-level form: deterministic scoping does not deserve an LLM, probabilistic reasoning does not deserve a state machine. If the diff grew well past what the request implied, rewrite it before review.
 - **Surgical changes.** Touch only what the request requires. Don't reformat, rename, or refactor adjacent code outside the blast radius; match surrounding style even if you'd write it differently. If you notice unrelated dead code or smells, mention them — don't delete or rewrite without approval. Remove orphans (imports, helpers, tests) that *your* change made unused; don't sweep pre-existing dead code. Every changed line should trace to the request or a direct consequence.
 - **Goal-driven execution.** Transform tasks into `step → verify` pairs before starting and loop until verify passes. "Add validation" → failing test for the bad input first, then make it pass. "Fix the bug" → reproduce in a test first (K-layer / retrieval changes mandate this — see `feedback_tdd_discipline`). "Refactor X" → same tests pass before and after. Explicit steps in a `/goal` invocation count as pre-approval (see `feedback_goal_explicit_approves_steps`); only stop on real blockers (CHANGES_REQUESTED, red CI, mergeStateStatus ≠ CLEAN).
@@ -122,7 +122,7 @@ End-to-end protocol for any non-trivial change. Run it autonomously — only pau
 1. **Clarify the request.** Don't start coding from a vague ask. Restate the goal, list assumptions, surface alternatives. For multi-decision work, escalate to the `grill-with-docs` skill or the `superpowers:brainstorming` skill until a written plan exists.
 2. **Plan in the user's language, default TDD.** Write the plan in the language the user uses (Chinese in this repo — see `feedback_language_chinese`); keep code, commits, and technical identifiers English. Each step lands as `failing test → implementation → passing test`. K-layer / retrieval changes mandate this (see `feedback_tdd_discipline`).
 3. **Codex review loop, up to 3 rounds.** When the implementation is feature-complete, run `/codex:review --background` and address each finding. Repeat up to 3 rounds (see `feedback_codex_review_loop`). When a finding implicates one CLI string / symbol / doc string, grep the whole repo before declaring it fixed (see `feedback_grep_cli_typos_across_docs` and `feedback_defensive_guard_grep_read_sites`).
-4. **Simplifier pass.** Run `/simplify` once the codex loop quiets down; resolve every finding before continuing.
+4. **Code review pass.** Run `/code-review` once the codex loop quiets down; resolve every finding before continuing. Doc-only PRs included — see `feedback_code_review_not_optional` for why this step is never optional.
 5. **Doc sync.** Audit all markdown (CLAUDE.md, CONTEXT.md, `docs/**`, CHANGELOG.md, plans, ADRs, GUIDE_FOR_AGENTS.md) against the diff. Update anything stale — especially CLI spellings, frontmatter keys, env vars, HTTP routes.
 6. **Commit + push + PR.** Local commit is fine without approval; `git push` and `gh pr create` proceed once steps 1–5 are done — the loop itself is the standing approval (see `feedback_pr_workflow`). K-layer / retrieval PRs need an `evals/BASELINES.md` entry or the `no-baseline-needed` label before CI can pass — handle this in step 6, not at merge time.
 7. **Watch CI + PR comments to green.** Monitor checks and reviewer comments (CodeRabbit / human). Fix every actionable finding; reject nitpicks with a one-line reason. Don't stop until every check is green and `mergeStateStatus` is CLEAN.

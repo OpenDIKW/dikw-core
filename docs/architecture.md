@@ -111,7 +111,7 @@ engine depends only on their Protocol / abstract interface:
 
 ## Storage schema
 
-**Policy: pre-alpha "rebuild on incompatibility".** Each adapter ships a
+**Policy: alpha "rebuild on incompatibility".** Each adapter ships a
 single `schema.sql` under `storage/migrations/{sqlite,postgres}/` that
 represents the desired shape. `migrate()` applies the file verbatim to
 a fresh DB and writes the code's `SCHEMA_VERSION` constant
@@ -125,9 +125,9 @@ connect:
 
 There is **no in-place upgrade path** — bumping `SCHEMA_VERSION` in code
 invalidates every existing DB at the next connect. This is fit for
-pre-alpha (`CLAUDE.md` warns "APIs and on-disk formats will change");
-when we declare alpha we'll introduce a real migration framework.
-Schema history lives in `git log` on `migrations/`, not in a
+alpha (`CLAUDE.md` warns "APIs, on-disk formats, database schema, and
+CLI will change"); a real migration framework lands when we declare
+beta. Schema history lives in `git log` on `migrations/`, not in a
 deprecated-tables inventory.
 
 The runtime-created vector tables (`vec_chunks_v<id>` / `vec_assets_v<id>`)
