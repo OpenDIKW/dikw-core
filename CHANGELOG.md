@@ -36,7 +36,16 @@ Two complementary fixes close the loop:
    `DIKW_VERSION ∈ published PyPI releases`. The first branch is the
    post-sync steady state; the second is the legitimate publish-window
    transitional state. Anything else (hand-edited drift, typo, stale
-   bump) fails the guard with an actionable `::error` annotation.
+   bump) fails the guard with an actionable `::error` annotation. The
+   job pins Python 3.12 via `actions/setup-python` (pinned by SHA,
+   v6.2.0) rather than relying on whatever `python3` ubuntu-latest
+   currently ships — `tomllib` is Python 3.11+ stdlib, so the explicit
+   pin keeps the guard valid across future runner-image rolls.
+
+Both halves share the same `^X.Y.Z$` version contract: sync-dockerfile
+refuses to write a PEP 440 pre-release (e.g. `0.2.7rc1`, `0.2.7.dev1`)
+into the Dockerfile so the guard cannot later jam on a shape-mismatch.
+If pre-release support is ever needed, relax the guard regex first.
 
 Caveat: PRs opened by the default `GITHUB_TOKEN` do not trigger other
 workflows on the new PR. Maintainers who want Trivy to scan the

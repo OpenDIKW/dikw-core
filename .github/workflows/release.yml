@@ -81,6 +81,16 @@ jobs:
     # 0.2.5 / 0.2.6 / 0.2.7 in a row — automating it removes the
     # discipline tax entirely. PR (not direct push) so branch-protection
     # rules still apply and the chore lands through review.
+    #
+    # Concurrency note: if two tags (vN, vN+1) are pushed close together,
+    # both sync-dockerfile jobs may run in parallel and both checkout
+    # main at pre-merge state, opening two PRs that don't see each
+    # other's edit. We intentionally don't add a ``concurrency:`` block
+    # because queuing the second job would still re-checkout pre-merge
+    # main (the queued job runs after publish, not after the prior PR
+    # merges) — moving the race from "two open PRs" to "second PR
+    # silently has stale base" is strictly worse. Real fix: merge the
+    # first sync PR before tagging vN+1; or land vN+1's bump by hand.
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -93,14 +103,25 @@ jobs:
           ref: main
 
       - name: Bump DIKW_VERSION in Dockerfile
-        # Refuse to silently edit if the line shape drifted (e.g. someone
-        # renamed the arg or split the assignment) — surface the change
-        # for human review instead of producing a malformed Dockerfile.
+        # Refuse to silently edit if either side of the contract drifted:
+        #   (a) the existing Dockerfile line is no longer ``ARG DIKW_VERSION=X.Y.Z``
+        #       (someone renamed the arg, split the assignment, etc.), or
+        #   (b) the tag we're about to write is not strict ``X.Y.Z`` (e.g.
+        #       a PEP 440 pre-release like ``v0.2.7rc1`` or ``v0.2.7.dev1``).
+        # The Dockerfile guard in reusable-ci.yml only accepts the strict
+        # X.Y.Z shape; writing a pre-release into the Dockerfile here
+        # would jam the very next PR on the guard step. Fail loudly in
+        # the release workflow instead, where the maintainer who pushed
+        # the tag is paying attention.
         run: |
           set -euo pipefail
           v="${GITHUB_REF_NAME#v}"
+          if ! printf '%s\n' "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag ${GITHUB_REF_NAME} maps to version '${v}', which is not strict X.Y.Z; Dockerfile guard would reject it. If you intend to support PEP 440 pre-releases (rc/dev/post/local), relax the guard regex in reusable-ci.yml first." >&2
+            exit 1
+          fi
           if ! grep -qE '^ARG DIKW_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' examples/docker/Dockerfile; then
-            echo "examples/docker/Dockerfile: ARG DIKW_VERSION line missing or shape changed" >&2
+            echo "::error file=examples/docker/Dockerfile::ARG DIKW_VERSION line missing or shape changed" >&2
             exit 1
           fi
           sed -i -E "s/^ARG DIKW_VERSION=.*/ARG DIKW_VERSION=${v}/" examples/docker/Dockerfile
