@@ -38,10 +38,11 @@ curl -H "Authorization: Bearer $DIKW_SERVER_TOKEN" http://localhost:8765/v1/heal
 docker compose build --build-arg DIKW_VERSION=0.2.7
 ```
 
-The Dockerfile defaults `DIKW_VERSION` to the latest version already
-published to PyPI. The `sync-dockerfile` job in
-`.github/workflows/release.yml` opens a chore PR to bump this default
-after every PyPI publish, so the default stays current without
-hand-editing; the `dockerfile-version-guard` job in
-`.github/workflows/reusable-ci.yml` fails CI if the default ever drifts
-out of "matches `pyproject.toml`" or "exists on PyPI".
+The Dockerfile default `DIKW_VERSION` advances via an auto-opened
+chore PR after each PyPI publish — see the `sync-dockerfile` job in
+`.github/workflows/release.yml`. Merging that PR moves the default on
+`main` forward; until the PR lands, `main` keeps the prior default.
+The `dockerfile-version-guard` job in
+`.github/workflows/reusable-ci.yml` fails CI on any default that's
+neither equal to `pyproject.toml`'s version nor already published on
+PyPI.
