@@ -16,4 +16,4 @@
 
 ## Notes / breaking changes
 
-<!-- 列出 backward-incompat 的点（on-disk format、CLI surface、HTTP route、storage Protocol、env var、prompt template、配置字段名）。pre-alpha 阶段不一定要保兼容，但要让审查者看到代价。 -->
+<!-- 列出 backward-incompat 的点（on-disk format、CLI surface、HTTP route、storage Protocol、env var、prompt template、配置字段名）。alpha 阶段不一定要保兼容，但要让审查者看到代价。 -->

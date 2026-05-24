@@ -210,7 +210,7 @@ def test_sqlite_schema_declares_meta_kv() -> None:
 async def test_schema_version_mismatch_raises(storage: Storage) -> None:
     """A DB whose ``meta_kv['schema_version']`` doesn't match the code's
     ``SCHEMA_VERSION`` must be refused at ``migrate()`` time with
-    rebuild instructions. Pre-alpha policy is rebuild-on-incompatibility.
+    rebuild instructions. Alpha policy is rebuild-on-incompatibility.
     """
     from dikw_core.storage.base import StorageError
 

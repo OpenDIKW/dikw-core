@@ -1,6 +1,6 @@
 """Schema version fingerprint shared by SQL adapters.
 
-Pre-alpha policy is "rebuild on incompatibility": each adapter ships a
+Alpha policy is "rebuild on incompatibility": each adapter ships a
 single ``schema.sql`` representing the desired shape, and ``migrate()``
 either applies it to a fresh DB or refuses to touch a DB whose stored
 fingerprint doesn't match the code's expected ``SCHEMA_VERSION``. There

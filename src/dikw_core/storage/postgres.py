@@ -69,7 +69,7 @@ if TYPE_CHECKING:  # imports happen in connect() so base install works without p
 MIGRATIONS_PACKAGE = "dikw_core.storage.migrations.postgres"
 
 _REBUILD_HINT = (
-    "dikw-core is pre-alpha — the on-disk format is allowed to change, "
+    "dikw-core is alpha — the on-disk format is allowed to change, "
     "and there is no in-place upgrade path. Drop the configured Postgres "
     "schema (e.g. ``DROP SCHEMA <schema> CASCADE``) and re-run "
     "``dikw client ingest`` to rebuild."

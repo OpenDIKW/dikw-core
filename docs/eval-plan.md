@@ -74,7 +74,7 @@ Neither clearly dominates RAGAS for our stage.
 Stay on **Phase-A retrieval metrics only** until one of the triggers
 below fires. Rationale:
 
-1. **Retrieval dominates answer quality at pre-alpha.** If the right
+1. **Retrieval dominates answer quality at alpha.** If the right
    chunks aren't in context, the judge can't rescue the answer. Fixing
    retrieval first is strictly higher ROI.
 2. **Deterministic > noisy.** Phase A is hermetic; RAGAS is LLM-dependent

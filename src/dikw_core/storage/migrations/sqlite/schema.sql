@@ -1,8 +1,8 @@
--- dikw-core SQLite schema (pre-alpha, single source of truth).
+-- dikw-core SQLite schema (alpha, single source of truth).
 --
 -- Applied verbatim to a fresh DB by ``SQLiteStorage.migrate()``; bumping
 -- ``storage/_schema.py:SCHEMA_VERSION`` invalidates any DB carrying an
--- older fingerprint. There is no in-place upgrade path — pre-alpha
+-- older fingerprint. There is no in-place upgrade path — alpha
 -- policy is rebuild on incompatibility.
 --
 -- ``sqlite-vec`` must be loaded into the connection before this file

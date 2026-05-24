@@ -1,9 +1,9 @@
--- dikw-core Postgres schema (pre-alpha, single source of truth).
+-- dikw-core Postgres schema (alpha, single source of truth).
 --
 -- Applied verbatim to a fresh DB by ``PostgresStorage.migrate()``;
 -- bumping ``storage/_schema.py:SCHEMA_VERSION`` invalidates any DB
 -- carrying an older fingerprint. There is no in-place upgrade path —
--- pre-alpha policy is rebuild on incompatibility.
+-- alpha policy is rebuild on incompatibility.
 --
 -- The ``vector`` extension is enabled at connect-time in Python (not
 -- here) so the SQL below can use ``::vector`` casts on the first
