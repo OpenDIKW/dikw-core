@@ -133,6 +133,22 @@ def test_query_cmd_removed_from_cli(
     )
 
 
+@pytest.mark.parametrize("name", ["review", "distill"])
+def test_removed_wisdom_subcommands_absent_from_client_cli(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    name: str,
+) -> None:
+    """Guard: 0.3.0 PR1 removed `dikw client review` and
+    `dikw client distill`; they must stay gone."""
+    patch_transport_factory()
+    result = _run(["client", name, "--help"])
+    assert result.exit_code != 0, (
+        f"dikw client {name} should be removed but `--help` succeeded,"
+        f" suggesting the subcommand still exists. Output:\n{result.stdout}"
+    )
+
+
 def _drop_broken_markdown(rt: ServerRuntime) -> None:
     """Plant one valid + one YAML-broken file under the server's
     sources tree, ready for an in-place ingest (no import bundle

@@ -153,7 +153,7 @@ Expected shape:
   "layer_counts": {
     "sources": 0,
     "wiki_pages": 0,
-    "wisdom_items": 0,   // 0.3.0 PR1: always 0 (wisdom is not yet indexed; PR2 lands wisdom-as-documents)
+    "wisdom_items": 0,
     "chunks": 0
   },
   "providers": {
@@ -162,6 +162,9 @@ Expected shape:
   }
 }
 ```
+
+In 0.3.0 PR1 `wisdom_items` is always 0 — wisdom is not yet indexed.
+PR2 lands wisdom-as-documents and this counter starts moving.
 
 Provider connectivity:
 

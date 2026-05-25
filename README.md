@@ -22,7 +22,7 @@ Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6
   - **D**ata — raw sources you curate.
   - **I**nformation — parsed, chunked, embedded, indexed (FTS5 + vectors).
   - **K**nowledge — LLM-authored wiki pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
-  - **W**isdom — hand-written markdown principles / lessons / patterns under `wisdom/<author>/`, surfaced alongside K-layer hits at retrieve time. (W layer is being refactored to first-class documents in 0.3.0; see CHANGELOG. The 0.2.x LLM-distill + review workflow is no longer shipped.)
+  - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`. (W layer is being refactored to first-class documents in 0.3.0; PR1 removed the 0.2.x LLM-distill + review workflow, PR2 will index wisdom pages and PR3 will surface them in retrieve. See CHANGELOG.)
 - Pluggable LLM providers (API-first): Anthropic + OpenAI-compatible (covers OpenAI, Azure, Ollama, DeepSeek, Gemini-compat).
 - Pluggable storage: SQLite+sqlite-vec (default), Postgres+pgvector (enterprise) — swap by config.
 - **Client / server architecture.** A long-lived `dikw serve` (FastAPI + NDJSON) hosts the engine; the `dikw client …` Typer CLI talks to it over HTTP, streams progress events for long ops, and supports cancel / resume.

@@ -202,11 +202,13 @@ each adapter doesn't re-implement RRF.
 > "Scoping should be deterministic, reasoning should be probabilistic."
 
 We take that seriously. Every navigation step (source listing, chunk
-lookup, link traversal, provenance lookup, wisdom retrieval-by-title)
-is deterministic SQL + file I/O. LLM calls only enter at synthesis and
-synth — the one engine-internal authoring leg that writes the K
-and W layers. Answer synthesis happens **outside** dikw-core, in the
-agent layer, with the agent's own LLM and conversation context.
+lookup, link traversal, provenance lookup) is deterministic SQL + file
+I/O. LLM calls only enter at synth — the engine-internal authoring leg
+that writes the K layer. The W layer is hand-authored markdown the user
+writes in Obsidian; ingest/persistence indexes it (wisdom-as-documents
+lands in 0.3.0 PR2 — see CHANGELOG). Answer synthesis happens **outside**
+dikw-core, in the agent layer, with the agent's own LLM and conversation
+context.
 
 ### Wikilink resolve, as a concrete example
 
