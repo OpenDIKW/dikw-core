@@ -42,6 +42,7 @@ from ..schemas import (
     StorageCounts,
     VecHit,
     WikiLogEntry,
+    WisdomStatus,
     dump_media_meta,
     load_media_meta,
 )
@@ -192,9 +193,10 @@ class SQLiteStorage:
                 conn.execute(
                     """
                     INSERT INTO documents(
-                        doc_id, path, path_key, title, hash, mtime, layer, active
+                        doc_id, path, path_key, title, hash, mtime, layer,
+                        active, status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(doc_id) DO UPDATE SET
                         path = excluded.path,
                         path_key = excluded.path_key,
@@ -202,7 +204,8 @@ class SQLiteStorage:
                         hash = excluded.hash,
                         mtime = excluded.mtime,
                         layer = excluded.layer,
-                        active = excluded.active
+                        active = excluded.active,
+                        status = excluded.status
                     """,
                     (
                         doc.doc_id,
@@ -213,6 +216,7 @@ class SQLiteStorage:
                         doc.mtime,
                         doc.layer.value,
                         int(doc.active),
+                        doc.status.value if doc.status is not None else None,
                     ),
                 )
 
@@ -1511,6 +1515,7 @@ def _row_to_chunk(row: sqlite3.Row) -> ChunkRecord:
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRecord:
+    status_raw = row["status"]
     return DocumentRecord(
         doc_id=row["doc_id"],
         path=row["path"],
@@ -1520,6 +1525,7 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRecord:
         mtime=float(row["mtime"] or 0.0),
         layer=Layer(row["layer"]),
         active=bool(row["active"]),
+        status=WisdomStatus(status_raw) if status_raw else None,
     )
 
 

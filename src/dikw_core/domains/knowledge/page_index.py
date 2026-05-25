@@ -1,13 +1,17 @@
-"""Persist a K-layer wiki page into storage.
+"""Persist a K or W layer page into storage.
 
-Single source of truth for wiki-page indexing. Two callers today:
+Single source of truth for page indexing. Three callers today:
 
 * ``api._persist_wiki_page`` (synth path) — passes ``embedder`` and
   ``text_version_id`` so chunk embeddings land in the per-version
-  ``vec_chunks_v<id>`` table.
+  ``vec_chunks_v<id>`` table. Always ``layer=Layer.WIKI``.
 * ``run_lint_apply`` (lint-fix path) — passes ``embedder=None`` to keep
-  apply provider-free; the next ``dikw client ingest`` reconciles embeddings
-  via ``doc.hash`` drift.
+  apply provider-free; the next ``dikw client ingest`` reconciles
+  embeddings via ``doc.hash`` drift. Always ``layer=Layer.WIKI``.
+* ``api.ingest`` wisdom branch (0.3.0 PR2) — passes
+  ``layer=Layer.WISDOM`` and queues embeddings onto the shared
+  ``to_embed`` list rather than embedding inline, so wisdom and
+  source/wiki chunks all flow through one ``embed_chunks`` batch.
 
 The caller MUST have written ``page`` to disk before calling — we
 re-parse the file via the backend registry so the stored hash and
@@ -15,6 +19,11 @@ chunk offsets match what ``read_page`` will compute on read.
 ``frontmatter.dumps`` + ``frontmatter.loads`` is not byte-stable on the
 body portion, so hashing ``page.body`` directly diverges from the
 read-back parsed body.
+
+Title index for wikilink resolve is cross-layer: ``[[wikilinks]]`` in a
+wisdom page resolve against the union of WIKI + WISDOM titles, and
+vice versa. Title collisions across layers fall through the existing
+refuse-to-resolve mechanism in ``links.resolve_links``.
 """
 
 from __future__ import annotations
@@ -22,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...providers.base import EmbeddingProvider
-from ...schemas import ChunkRecord, DocumentRecord, Layer
+from ...schemas import ChunkRecord, DocumentRecord, Layer, WisdomStatus
 from ...storage.base import Storage
 from ..data.backends import parse_any
 from ..data.path_norm import normalize_path
@@ -33,16 +42,27 @@ from .links import parse_links, resolve_links
 from .wiki import frontmatter_str_list
 
 
+def page_doc_id(layer: Layer, path: str) -> str:
+    """The canonical ``"<layer>:<normalized_path>"`` doc-id for any page.
+
+    Cross-layer extractor introduced in 0.3.0 PR2 so wisdom and wiki
+    persistence share one identity scheme. ``wiki_doc_id`` is preserved
+    as a thin alias for legacy call sites that always meant K-layer.
+    """
+    return f"{layer.value}:{normalize_path(path)}"
+
+
 def wiki_doc_id(path: str) -> str:
-    """The canonical ``"wiki:<normalized_path>"`` doc-id for a K-layer page."""
-    return f"{Layer.WIKI.value}:{normalize_path(path)}"
+    """Backwards-compatible alias for ``page_doc_id(Layer.WIKI, path)``."""
+    return page_doc_id(Layer.WIKI, path)
 
 
-async def persist_wiki_page(
+async def persist_page(
     *,
     storage: Storage,
     root: Path,
     path: str,
+    layer: Layer = Layer.WIKI,
     title: str | None = None,
     embedder: EmbeddingProvider | None = None,
     embedding_model: str = "",
@@ -51,34 +71,24 @@ async def persist_wiki_page(
     title_to_path: dict[str, str] | None = None,
     fuzzy_index: dict[str, list[str]] | None = None,
 ) -> tuple[int, str]:
-    """Index a wiki page already on disk into the K layer.
+    """Index a page already on disk into the K or W layer.
 
-    Re-parses the file via the backend registry so the stored hash and
-    chunk offsets match what ``read_page`` will compute on read —
-    ``frontmatter.dumps`` is not byte-stable on the body, so hashing
-    ``page.body`` directly diverges from the read-back parsed body.
-
-    ``title`` overrides the title inferred from the file's frontmatter
-    when the caller already has a canonical value (synth path, where
-    the LLM's ``<page>`` block names the title). Lint-apply leaves it
-    ``None`` and trusts ``parse_any``.
-
-    ``title_to_path`` lets fan-out callers (Stage A synth) avoid a
-    per-page ``list_documents`` round-trip; when ``None`` we read it
-    once here.
-
-    When ``embedder`` is ``None`` (lint-apply) we skip the embedding
-    stream entirely — apply stays provider-free and embeddings
-    reconcile on the next ``dikw client ingest`` via ``doc.hash`` drift.
+    See module docstring for the cross-caller contract. ``layer``
+    controls (a) the doc-id prefix and (b) the cross-layer wikilink
+    index built when ``title_to_path`` is not supplied.
 
     Returns ``(unresolved_count, resolved_title)`` so callers can fold
     the unresolved count into reports and update an incremental
     ``title_to_path`` without re-reading the file's frontmatter.
     """
-    doc_id = wiki_doc_id(path)
+    doc_id = page_doc_id(layer, path)
     abs_path = (root / path).resolve()
     parsed = parse_any(abs_path, rel_path=path)
     resolved_title = title if title is not None else parsed.title
+
+    # status is wisdom-only; the engine clamps elsewhere too (api._to_document),
+    # but persist_page is its own write-path so the same invariant applies.
+    status: WisdomStatus | None = parsed.status if layer is Layer.WISDOM else None
 
     await storage.upsert_document(
         DocumentRecord(
@@ -87,8 +97,9 @@ async def persist_wiki_page(
             title=resolved_title,
             hash=parsed.hash,
             mtime=parsed.mtime,
-            layer=Layer.WIKI,
+            layer=layer,
             active=True,
+            status=status,
         )
     )
 
@@ -116,11 +127,18 @@ async def persist_wiki_page(
         )
 
     if title_to_path is None:
-        k_docs = await storage.list_documents(layer=Layer.WIKI, active=True)
-        title_to_path = {}
-        for d in k_docs:
-            if d.title and d.title not in title_to_path:
-                title_to_path[d.title] = d.path
+        # Cross-layer title index: a wisdom page may link to a wiki
+        # page and vice versa via title. PR1's resolve_links refusal
+        # mechanism handles collisions (wiki + wisdom share a title →
+        # the link stays unresolved and lint surfaces the ambiguity).
+        merged: dict[str, str] = {}
+        for layer_for_index in (Layer.WIKI, Layer.WISDOM):
+            for d in await storage.list_documents(
+                layer=layer_for_index, active=True
+            ):
+                if d.title and d.title not in merged:
+                    merged[d.title] = d.path
+        title_to_path = merged
 
     # Reconcile outgoing links atomically — removing a [[wikilink]]
     # from the body must drop the edge from storage, not leave a ghost
@@ -136,14 +154,14 @@ async def persist_wiki_page(
     )
     await storage.replace_links_from(doc_id, resolved)
 
-    # Reconcile provenance edges (K-page → D-source attribution) from
+    # Reconcile provenance edges (K/W-page → D-source attribution) from
     # the page's ``sources:`` frontmatter — frontmatter is the source of
-    # truth (the wiki tree is a user-editable Obsidian vault), so
-    # re-running this on every persist self-heals when the user hand-
-    # edits the list. Mirrors the wikilink reconcile above; deliberately
-    # kept off the wikilink graph (separate ``provenance`` table — see
-    # docs/adr/0001-provenance-as-separate-edge.md) so graph-leg
-    # retrieval and orphan/broken-link lint stay clean.
+    # truth (the wiki/wisdom tree is a user-editable Obsidian vault),
+    # so re-running this on every persist self-heals when the user
+    # hand-edits the list. Mirrors the wikilink reconcile above;
+    # deliberately kept off the wikilink graph (separate ``provenance``
+    # table — see docs/adr/0001-provenance-as-separate-edge.md) so
+    # graph-leg retrieval and orphan/broken-link lint stay clean.
     #
     # ``frontmatter_str_list`` enforces the same malformed-shape guard
     # as ``run_lint`` and ``MissingProvenanceFixer`` — a YAML scalar
@@ -154,3 +172,37 @@ async def persist_wiki_page(
     )
 
     return len(unresolved), resolved_title
+
+
+async def persist_wiki_page(
+    *,
+    storage: Storage,
+    root: Path,
+    path: str,
+    title: str | None = None,
+    embedder: EmbeddingProvider | None = None,
+    embedding_model: str = "",
+    text_version_id: int | None = None,
+    cjk_tokenizer: CjkTokenizer = "none",
+    title_to_path: dict[str, str] | None = None,
+    fuzzy_index: dict[str, list[str]] | None = None,
+) -> tuple[int, str]:
+    """Backwards-compatible K-layer wrapper around ``persist_page``.
+
+    Existing synth + lint-apply call sites land here unchanged; PR2
+    generalised the underlying implementation to take a ``layer``
+    parameter without churning every caller.
+    """
+    return await persist_page(
+        storage=storage,
+        root=root,
+        path=path,
+        layer=Layer.WIKI,
+        title=title,
+        embedder=embedder,
+        embedding_model=embedding_model,
+        text_version_id=text_version_id,
+        cjk_tokenizer=cjk_tokenizer,
+        title_to_path=title_to_path,
+        fuzzy_index=fuzzy_index,
+    )

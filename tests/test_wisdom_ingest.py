@@ -23,7 +23,7 @@ from dikw_core.domains.data.path_norm import doc_id_for
 from dikw_core.schemas import Layer, WisdomStatus
 from dikw_core.storage import build_storage
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki, seed_doc
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -261,14 +261,20 @@ async def test_wisdom_wikilink_resolves_to_wiki_page(tmp_path: Path) -> None:
     """A ``[[wikilink]]`` in a wisdom page must resolve to an existing
     wiki page via the shared cross-layer title index — wisdom pages
     cite wiki pages just like wiki pages cite wiki pages.
+
+    Wiki pages don't enter through ``api.ingest`` (they're synth-written),
+    so the test seeds the K-layer ``documents`` row + file directly via
+    ``seed_doc``, then runs wisdom ingest and asserts the link resolves
+    against the seeded title.
     """
     wiki = tmp_path / "wiki"
     init_test_wiki(wiki)
-
-    wiki_dir = wiki / "wiki" / "concepts"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-    (wiki_dir / "tesla.md").write_text(
-        "---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n", encoding="utf-8"
+    await seed_doc(
+        wiki,
+        layer=Layer.WIKI,
+        path="wiki/concepts/tesla.md",
+        body="---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n",
+        title="Tesla",
     )
     _drop_wisdom(
         wiki,
@@ -276,11 +282,6 @@ async def test_wisdom_wikilink_resolves_to_wiki_page(tmp_path: Path) -> None:
         "# Never Sell\n\nSee [[Tesla]] for context.\n",
     )
 
-    # ingest twice so wiki/tesla.md lands first, then wisdom's link can
-    # resolve against it. The within-run cross-layer resolve guarantee
-    # is itself worth a separate test but this run keeps the assertion
-    # narrowly on the resolved edge.
-    await api.ingest(wiki, embedder=FakeEmbeddings())
     await api.ingest(wiki, embedder=FakeEmbeddings())
 
     storage = await _open_storage(wiki)
@@ -290,7 +291,6 @@ async def test_wisdom_wikilink_resolves_to_wiki_page(tmp_path: Path) -> None:
     finally:
         await storage.close()
     resolved = [e.dst_path for e in edges]
-    # The wikilink to "Tesla" must resolve to the wiki file path.
     assert any(p.endswith("wiki/concepts/tesla.md") for p in resolved), resolved
 
 

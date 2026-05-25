@@ -238,6 +238,51 @@ WIKI_INIT_FILES: dict[str, str] = {
 }
 
 
+# Aggregate files the legacy 0.2.x wisdom workflow wrote next to
+# ``wisdom/_candidates/``. Upgrading bases may still carry them, and
+# they are drained queue artifacts — not first-class wisdom documents.
+# Hardcoded skip so an upgrading base doesn't accidentally index them.
+_WISDOM_LEGACY_AGGREGATE_FILES = frozenset(
+    {"principles.md", "lessons.md", "patterns.md"}
+)
+
+
+def _iter_wisdom_files(root: Path) -> Iterator[tuple[Path, str]]:
+    """Yield ``(abs_path, logical_path)`` for every wisdom markdown file.
+
+    Skips:
+
+    * Anything outside ``<root>/wisdom/`` (the directory is the contract).
+    * The legacy 0.2.x ``wisdom/_candidates/`` queue subdirectory.
+    * The legacy ``wisdom/{principles,lessons,patterns}.md`` aggregates
+      (drained on the upgrade, but a user may not have deleted them yet).
+    * Hidden / dotfiles and ``.gitkeep`` (not markdown content).
+
+    ``logical_path`` uses forward-slash separators so it stays portable
+    across platforms — same convention ``iter_source_files`` follows.
+    """
+    wisdom_root = root / "wisdom"
+    if not wisdom_root.is_dir():
+        return
+    for abs_path in sorted(wisdom_root.rglob("*.md")):
+        if not abs_path.is_file():
+            continue
+        try:
+            rel = abs_path.relative_to(root)
+        except ValueError:
+            continue
+        rel_parts = rel.parts
+        # rel_parts[0] is always "wisdom" because rglob is rooted there.
+        if len(rel_parts) >= 2 and rel_parts[1] == "_candidates":
+            continue
+        if len(rel_parts) == 2 and rel_parts[1] in _WISDOM_LEGACY_AGGREGATE_FILES:
+            continue
+        if any(p.startswith(".") for p in rel_parts):
+            continue
+        logical_path = "/".join(rel_parts)
+        yield abs_path, logical_path
+
+
 # One stderr Console for all embedding progress bars. Constructing one
 # per ingest pass would re-probe terminal capability + color system on
 # every call; rich's recommended pattern is a single shared instance.
@@ -1260,6 +1305,111 @@ async def ingest(
                 detail={"path": logical_path},
             )
 
+        # ---- W layer scan (0.3.0 PR2) ----
+        # Wisdom files under ``<root>/wisdom/<author>/**/*.md`` flow
+        # through the same ``persist_page`` pipeline as wiki pages —
+        # ``documents`` row + chunks + outgoing wikilinks + provenance
+        # — and queue their chunks onto the shared ``to_embed`` list so
+        # the bulk embed pass below covers both layers in one batch.
+        # See ``docs/design.md`` "Wisdom Layer Design" for the contract.
+        from .domains.knowledge.page_index import persist_page as _persist_page
+        for abs_path, logical_path in _iter_wisdom_files(root):
+            _reporter.cancel_token().raise_if_cancelled()
+            try:
+                parsed = parse_any(abs_path, rel_path=logical_path)
+            except (OSError, UnicodeError) as e:
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="read_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
+                continue
+            except Exception as e:
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="parse_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
+                continue
+
+            doc_id = _doc_id_for(Layer.WISDOM, logical_path)
+            existing = await storage.get_document(doc_id)
+            scanned = report.scanned + 1
+            # Hash-idempotent short-circuit, same shape as the source
+            # loop above. Wisdom pages do not currently carry asset
+            # refs (no chunk_asset_refs pipeline on wisdom), so we
+            # don't need the ``not parsed.asset_refs`` guard the
+            # source branch keeps.
+            if (
+                existing is not None
+                and existing.active
+                and existing.hash == parsed.hash
+            ):
+                report = _replace(
+                    report,
+                    scanned=scanned,
+                    unchanged=report.unchanged + 1,
+                )
+                continue
+
+            try:
+                # persist_page does upsert_document + replace_chunks +
+                # replace_links_from + replace_provenance_from.
+                # ``embedder=None`` keeps embedding out of the per-file
+                # critical path; the bulk pass below picks up the
+                # chunks via the shared ``to_embed`` queue.
+                await _persist_page(
+                    storage=storage,
+                    root=root,
+                    path=logical_path,
+                    layer=Layer.WISDOM,
+                    embedder=None,
+                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                )
+                new_chunks = await storage.list_chunks(doc_id)
+                if (
+                    embedder is not None
+                    and text_version_id is not None
+                    and new_chunks
+                ):
+                    to_embed.extend(
+                        ChunkToEmbed(chunk_id=c.chunk_id, text=c.text)
+                        for c in new_chunks
+                        if c.chunk_id is not None
+                    )
+                await storage.append_wiki_log(
+                    WikiLogEntry(ts=time.time(), action="ingest", src=logical_path)
+                )
+            except Exception as e:
+                with contextlib.suppress(Exception):
+                    await storage.deactivate_document(doc_id)
+                report = await _record_ingest_error(
+                    report,
+                    _reporter,
+                    path=logical_path,
+                    kind="storage_error",
+                    message=f"{type(e).__name__}: {e}",
+                )
+                continue
+
+            report = _replace(
+                report,
+                scanned=scanned,
+                added=report.added if existing is not None else report.added + 1,
+                updated=report.updated + 1 if existing is not None else report.updated,
+                chunks=report.chunks + len(new_chunks),
+            )
+            await _reporter.progress(
+                phase="scan",
+                current=scanned,
+                total=0,
+                detail={"path": logical_path},
+            )
+
         # Resume scan: pick up chunks that landed in storage during a
         # prior crashed run but never got their embedding written. The
         # doc-level shortcut above skips docs whose body_hash matched
@@ -1408,15 +1558,24 @@ async def ingest(
         await storage.close()
 
 
-def _to_document(parsed: ParsedDocument, *, doc_id: str) -> DocumentRecord:
+def _to_document(
+    parsed: ParsedDocument, *, doc_id: str, layer: Layer = Layer.SOURCE
+) -> DocumentRecord:
+    # ``status`` is wisdom-only — wiki/source rows always store NULL
+    # even if the user pasted ``status:`` into the wrong frontmatter.
+    # The CHECK constraint allows NULL anywhere, so this clamp is the
+    # invariant guard. See ``WisdomStatus`` docstring and
+    # ``test_wiki_page_status_frontmatter_forced_to_null``.
+    status = parsed.status if layer is Layer.WISDOM else None
     return DocumentRecord(
         doc_id=doc_id,
         path=parsed.path,
         title=parsed.title,
         hash=parsed.hash,
         mtime=parsed.mtime,
-        layer=Layer.SOURCE,
+        layer=layer,
         active=True,
+        status=status,
     )
 
 

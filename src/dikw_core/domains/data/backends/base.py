@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from ....schemas import AssetRef
+from ....schemas import AssetRef, WisdomStatus
 
 
 class ParsedDocument(BaseModel):
@@ -29,6 +29,14 @@ class ParsedDocument(BaseModel):
     hash: str
     mtime: float
     asset_refs: list[AssetRef] = Field(default_factory=list)
+    # Frontmatter ``status:`` enum, parsed only when the raw value is in
+    # the four-value set. An out-of-set value collapses to ``None`` so
+    # ingest is never blocked — ``invalid_wisdom_status`` lint surfaces
+    # the divergence using ``frontmatter.get("status")`` as the raw
+    # spelling. Wiki/source layers may carry this value through the
+    # parse but the engine clamps it to ``None`` at write time
+    # (``api._to_document``) — status is wisdom-only.
+    status: WisdomStatus | None = None
 
 
 @runtime_checkable
