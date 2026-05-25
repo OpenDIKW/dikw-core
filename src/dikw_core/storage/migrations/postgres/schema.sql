@@ -11,6 +11,12 @@
 -- tables are created lazily in Python so the engine can parameterise
 -- the embedding dimension at first insert. See storage/postgres.py.
 --
+-- W layer (wisdom) is being refactored in 0.3.0 to first-class
+-- documents under ``wisdom/<author>/<slug>.md``. PR1 removes the
+-- legacy ``wisdom_items`` / ``wisdom_evidence`` / ``wisdom_embed_meta``
+-- tables; PR2 wires wisdom files into ``documents`` via
+-- ``layer = 'wisdom'``.
+--
 -- FTS surface: ``chunks.fts`` is a plain ``tsvector NOT NULL`` indexed
 -- by GIN. The Python adapter populates it on INSERT via
 -- ``to_tsvector('simple', preprocess_for_fts(text, tokenizer=cjk_tokenizer))``
@@ -102,34 +108,6 @@ CREATE TABLE IF NOT EXISTS wiki_log (
 
 CREATE INDEX IF NOT EXISTS wiki_log_ts ON wiki_log(ts);
 
--- ---- W layer -------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS wisdom_items (
-    item_id     TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('principle','lesson','pattern')),
-    status      TEXT NOT NULL DEFAULT 'candidate'
-                CHECK (status IN ('candidate','approved','archived')),
-    path        TEXT,
-    title       TEXT NOT NULL,
-    body        TEXT NOT NULL,
-    confidence  DOUBLE PRECISION NOT NULL DEFAULT 0.5,
-    created_ts  DOUBLE PRECISION NOT NULL,
-    approved_ts DOUBLE PRECISION
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_status ON wisdom_items(status);
-CREATE INDEX IF NOT EXISTS wisdom_kind   ON wisdom_items(kind);
-
-CREATE TABLE IF NOT EXISTS wisdom_evidence (
-    id      BIGSERIAL PRIMARY KEY,
-    item_id TEXT NOT NULL REFERENCES wisdom_items(item_id) ON DELETE CASCADE,
-    doc_id  TEXT NOT NULL REFERENCES documents(doc_id),
-    excerpt TEXT NOT NULL,
-    line    INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_evidence_item ON wisdom_evidence(item_id);
-
 -- ---- Multimedia assets ---------------------------------------------------
 
 -- ``bytes`` widens to BIGINT because PG INTEGER is 32-bit; SQLite
@@ -201,20 +179,6 @@ CREATE TABLE IF NOT EXISTS asset_embed_meta (
 
 CREATE INDEX IF NOT EXISTS asset_embed_meta_version
     ON asset_embed_meta(version_id);
-
--- Per-wisdom-item embedding metadata. Mirror of chunk_embed_meta and
--- asset_embed_meta. The per-version vector lives in
--- vec_wisdom_v<version_id> (runtime-created in storage/postgres.py
--- because pgvector needs the dim parameterised into the vector(<dim>)
--- column type). Wisdom reuses the text modality on embed_versions.
-CREATE TABLE IF NOT EXISTS wisdom_embed_meta (
-    item_id    TEXT   NOT NULL REFERENCES wisdom_items(item_id) ON DELETE CASCADE,
-    version_id BIGINT NOT NULL REFERENCES embed_versions(version_id),
-    PRIMARY KEY (item_id, version_id)
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_embed_meta_version
-    ON wisdom_embed_meta(version_id);
 
 -- ---- Embedding cache ----------------------------------------------------
 

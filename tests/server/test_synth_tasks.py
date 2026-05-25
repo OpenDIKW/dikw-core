@@ -1,9 +1,9 @@
-"""HTTP-level tests for ``POST /v1/synth`` + ``POST /v1/distill``.
+"""HTTP-level tests for ``POST /v1/synth``.
 
-Both ops go through the ``TaskManager`` plumbing exercised in
-``test_ingest_task.py``; this file focuses on the synth/distill specific
-event vocabulary + final shape rather than re-testing event tape replay
-or cancellation (already covered for ingest).
+Goes through the ``TaskManager`` plumbing exercised in
+``test_ingest_task.py``; this file focuses on the synth-specific event
+vocabulary + final shape rather than re-testing event tape replay or
+cancellation (already covered for ingest).
 """
 
 from __future__ import annotations
@@ -129,92 +129,3 @@ async def test_synth_task_emits_per_source_progress_and_final_report(
     assert len(synth_progress) == 3
     assert {e["detail"]["outcome"] for e in synth_progress} == {"created"}
     assert events[-1]["type"] == "final" and events[-1]["status"] == "succeeded"
-
-
-# ---- distill -----------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_distill_task_emits_per_batch_progress(
-    server_client: httpx.AsyncClient,
-    wiki_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Seed sources + ingest + synthesise K-layer pages so distill has
-    # something to batch over.
-    dest = wiki_root / "sources" / "notes"
-    dest.mkdir(parents=True, exist_ok=True)
-    for src in FIXTURES.glob("*.md"):
-        shutil.copy2(src, dest / src.name)
-    embedder = FakeEmbeddings()
-    await api_module.ingest(wiki_root, embedder=embedder)
-
-    synth_script = {
-        "sources/notes/karpathy-wiki.md": (
-            '<page path="wiki/concepts/karpathy.md" type="concept">\n'
-            "---\ntags: [karpathy]\n---\n\n"
-            "# Karpathy\n\nScoping is deterministic.\n"
-            "</page>"
-        ),
-        "sources/notes/dikw.md": (
-            '<page path="wiki/concepts/dikw.md" type="concept">\n'
-            "---\ntags: [dikw]\n---\n\n"
-            "# DIKW\n\nFour layers stacked.\n"
-            "</page>"
-        ),
-        "sources/notes/retrieval.md": (
-            '<page path="wiki/concepts/retrieval.md" type="concept">\n'
-            "---\ntags: [retrieval]\n---\n\n"
-            "# Retrieval\n\nRRF fuses BM25 with dense.\n"
-            "</page>"
-        ),
-    }
-    await api_module.synthesize(
-        wiki_root,
-        llm=_ScriptedSynthLLM(synth_script),
-        embedder=embedder,
-    )
-
-    # Distill LLM: FakeLLM's "STUB: wired up." won't parse into
-    # candidates, but the per-batch progress events still fire so we can
-    # verify the task wrapper.
-    monkeypatch.setattr(
-        synth_op_module, "build_llm", lambda _cfg, **_kw: FakeLLM()
-    )
-
-    submit = await server_client.post(
-        "/v1/distill", json={"pages_per_call": 1}
-    )
-    assert submit.status_code == 200
-    task_id = submit.json()["task_id"]
-    row = await _wait_terminal(server_client, task_id, timeout=15.0)
-    assert row["status"] == "succeeded", row
-
-    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
-        "result"
-    ]
-    assert result["pages_read"] >= 3
-    assert result["candidates_added"] == 0  # FakeLLM body doesn't parse
-    assert result["rejected"] == 0
-
-    resp = await server_client.get(
-        f"/v1/tasks/{task_id}/events",
-        params={"from_seq": 0, "limit": 1000, "wait": 0},
-    )
-    events = resp.json()["events"]
-    distill_progress = [
-        e for e in events if e["type"] == "progress" and e["phase"] == "distill"
-    ]
-    assert len(distill_progress) == result["pages_read"]
-    assert events[-1]["type"] == "final"
-
-
-@pytest.mark.asyncio
-async def test_distill_rejects_invalid_pages_per_call(
-    server_client: httpx.AsyncClient,
-) -> None:
-    resp = await server_client.post(
-        "/v1/distill", json={"pages_per_call": 0}
-    )
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "bad_request"

@@ -1,9 +1,9 @@
 """Synchronous (millisecond-level) HTTP RPC endpoints.
 
 Each route maps 1:1 to an ``api.py`` method and returns the engine's
-DTO directly as JSON. Long-running ops (ingest / synth / distill /
-query) are NOT here — they live behind ``/v1/{op}`` in
-``routes_tasks.py`` and stream NDJSON.
+DTO directly as JSON. Long-running ops (ingest / synth / eval) are
+NOT here — they live behind ``/v1/{op}`` in ``routes_tasks.py`` and
+stream NDJSON.
 """
 
 from __future__ import annotations
@@ -11,23 +11,20 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Request
 from pydantic import BaseModel
 
 from .. import __version__, api
 from ..domains.info.search import HybridSearcher
 from ..domains.knowledge.lint import LintReport
-from ..domains.wisdom.review import ReviewError, ReviewResult
 from ..providers import build_embedder
 from ..schemas import (
     ChunkRecord,
     Hit,
     Layer,
     StorageCounts,
-    WisdomItem,
-    WisdomStatus,
 )
-from .errors import BadRequest, Conflict, NotFoundError
+from .errors import BadRequest, NotFoundError
 from .runtime import ServerRuntime, get_runtime
 
 logger = logging.getLogger(__name__)
@@ -201,62 +198,6 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         if chunk is None:
             raise NotFoundError(f"chunk_id {chunk_id} not found")
         return chunk
-
-    # ---- wisdom -------------------------------------------------------
-
-    @router.get("/wisdom", response_model=list[WisdomItem])
-    async def list_wisdom(
-        request: Request,
-        status: WisdomStatus | None = Query(default=None),
-        kind: str | None = Query(default=None),
-    ) -> list[WisdomItem]:
-        rt: ServerRuntime = get_runtime(request.app)
-        from ..schemas import WisdomKind
-
-        # Validate ``kind`` BEFORE opening storage so a typo'd query
-        # param surfaces as 4xx rather than crashing through the
-        # exception handler as a 500.
-        kind_enum: WisdomKind | None = None
-        if kind:
-            try:
-                kind_enum = WisdomKind(kind)
-            except ValueError as e:
-                valid = ", ".join(k.value for k in WisdomKind)
-                raise BadRequest(
-                    f"unknown wisdom kind {kind!r} (valid: {valid})",
-                    code="invalid_wisdom_kind",
-                ) from e
-
-        cfg, _root, storage = await api._with_storage(rt.root)
-        del cfg
-        try:
-            return await storage.list_wisdom(status=status, kind=kind_enum)
-        finally:
-            await storage.close()
-
-    @router.post(
-        "/wisdom/{item_id}/approve", response_model=ReviewResult
-    )
-    async def approve(
-        request: Request, item_id: str
-    ) -> ReviewResult:
-        rt: ServerRuntime = get_runtime(request.app)
-        try:
-            return await api.approve_wisdom(item_id, rt.root)
-        except ReviewError as e:
-            raise Conflict(str(e), code="review_conflict") from e
-
-    @router.post(
-        "/wisdom/{item_id}/reject", response_model=ReviewResult
-    )
-    async def reject(
-        request: Request, item_id: str
-    ) -> ReviewResult:
-        rt: ServerRuntime = get_runtime(request.app)
-        try:
-            return await api.reject_wisdom(item_id, rt.root)
-        except ReviewError as e:
-            raise Conflict(str(e), code="review_conflict") from e
 
     return router
 

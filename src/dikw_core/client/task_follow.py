@@ -2,8 +2,8 @@
 
 Used by:
 
-* ``--wait`` on ``dikw client {ingest, synth, distill, eval, lint
-  propose, lint apply}`` — submit + block + render + exit-code map.
+* ``--wait`` on ``dikw client {ingest, synth, eval, lint propose,
+  lint apply}`` — submit + block + render + exit-code map.
 * ``dikw client tasks wait <id>`` — same loop, applied to an existing
   task_id.
 

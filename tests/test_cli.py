@@ -41,7 +41,7 @@ def test_init_scaffolds_expected_tree(tmp_path: Path) -> None:
     assert (wiki / "sources").is_dir()
     assert (wiki / "wiki" / "index.md").is_file()
     assert (wiki / "wiki" / "log.md").is_file()
-    assert (wiki / "wisdom" / "principles.md").is_file()
+    assert (wiki / "wisdom" / ".gitkeep").is_file()
     assert (wiki / ".dikw").is_dir()
     assert (wiki / ".gitignore").read_text().strip() == ".dikw/"
 

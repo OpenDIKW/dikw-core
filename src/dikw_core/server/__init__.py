@@ -9,7 +9,7 @@ Phase 2 surface (this commit):
   * ``app.build_app`` — FastAPI app factory.
   * ``runtime`` — engine handle (cfg + storage + task subsystem) + lifespan.
   * ``auth`` — bearer token + localhost-default policy.
-  * ``routes_sync`` — status / check / lint / wiki / doc / wisdom.
+  * ``routes_sync`` — status / check / lint / wiki / doc / pages.
   * ``routes_tasks`` — submit (echo), list, get, result, events, cancel.
   * ``routes_import`` — multipart packages import → ``<base>/sources/``.
   * ``ndjson`` — replay + live tail + heartbeat helper.

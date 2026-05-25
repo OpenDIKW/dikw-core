@@ -20,7 +20,6 @@ from typing import Any, Literal
 
 import sqlite_vec
 
-from ..domains.data.hashing import hash_bytes
 from ..domains.data.path_norm import normalize_path as _normalize_path
 from ..domains.info.tokenize import CjkTokenizer, initialize_jieba, preprocess_for_fts
 from ..schemas import (
@@ -43,12 +42,6 @@ from ..schemas import (
     StorageCounts,
     VecHit,
     WikiLogEntry,
-    WisdomEmbeddingRow,
-    WisdomEvidence,
-    WisdomItem,
-    WisdomKind,
-    WisdomStatus,
-    WisdomVecHit,
     dump_media_meta,
     load_media_meta,
 )
@@ -347,17 +340,6 @@ class SQLiteStorage:
                 # ``resolved=False`` instead.
                 conn.execute(
                     "DELETE FROM provenance WHERE src_doc_id = ?", (doc_id,)
-                )
-                # ``wisdom_evidence.doc_id`` is a non-cascading FK to
-                # ``documents``; without an explicit clear the next
-                # statement would fail with a FK violation on pages
-                # that have been used as W-layer evidence. The
-                # ``wisdom_items`` row itself stays — it may have
-                # evidence from other docs and the constraint that
-                # every item carry ≥2 evidences is enforced at review
-                # time, not by storage.
-                conn.execute(
-                    "DELETE FROM wisdom_evidence WHERE doc_id = ?", (doc_id,),
                 )
                 conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
 
@@ -966,128 +948,6 @@ class SQLiteStorage:
 
         return await asyncio.to_thread(_run)
 
-    # ---- W layer ---------------------------------------------------------
-
-    async def put_wisdom(
-        self, item: WisdomItem, evidence: Sequence[WisdomEvidence]
-    ) -> None:
-        def _run() -> None:
-            conn = self._require_conn()
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO wisdom_items(
-                        item_id, kind, status, path, title, body,
-                        confidence, created_ts, approved_ts
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(item_id) DO UPDATE SET
-                        kind = excluded.kind,
-                        status = excluded.status,
-                        path = excluded.path,
-                        title = excluded.title,
-                        body = excluded.body,
-                        confidence = excluded.confidence,
-                        approved_ts = excluded.approved_ts
-                    """,
-                    (
-                        item.item_id,
-                        item.kind.value,
-                        item.status.value,
-                        item.path,
-                        item.title,
-                        item.body,
-                        item.confidence,
-                        item.created_ts,
-                        item.approved_ts,
-                    ),
-                )
-                conn.execute("DELETE FROM wisdom_evidence WHERE item_id = ?", (item.item_id,))
-                for e in evidence:
-                    conn.execute(
-                        "INSERT INTO wisdom_evidence(item_id, doc_id, excerpt, line) "
-                        "VALUES (?, ?, ?, ?)",
-                        (item.item_id, e.doc_id, e.excerpt, e.line),
-                    )
-
-        await asyncio.to_thread(_run)
-
-    async def list_wisdom(
-        self,
-        *,
-        status: WisdomStatus | None = None,
-        kind: WisdomKind | None = None,
-    ) -> list[WisdomItem]:
-        def _run() -> list[WisdomItem]:
-            conn = self._require_conn()
-            sql = "SELECT * FROM wisdom_items WHERE 1=1"
-            params: list[Any] = []
-            if status is not None:
-                sql += " AND status = ?"
-                params.append(status.value)
-            if kind is not None:
-                sql += " AND kind = ?"
-                params.append(kind.value)
-            sql += " ORDER BY created_ts DESC"
-            rows = conn.execute(sql, params).fetchall()
-            return [_row_to_wisdom(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
-    async def set_wisdom_status(
-        self,
-        item_id: str,
-        status: WisdomStatus,
-        *,
-        approved_ts: float | None = None,
-    ) -> None:
-        def _run() -> None:
-            conn = self._require_conn()
-            with conn:
-                if approved_ts is None:
-                    conn.execute(
-                        "UPDATE wisdom_items SET status = ? WHERE item_id = ?",
-                        (status.value, item_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE wisdom_items SET status = ?, approved_ts = ? "
-                        "WHERE item_id = ?",
-                        (status.value, approved_ts, item_id),
-                    )
-
-        await asyncio.to_thread(_run)
-
-    async def get_wisdom(self, item_id: str) -> WisdomItem | None:
-        def _run() -> WisdomItem | None:
-            conn = self._require_conn()
-            row = conn.execute(
-                "SELECT * FROM wisdom_items WHERE item_id = ?", (item_id,)
-            ).fetchone()
-            return _row_to_wisdom(row) if row is not None else None
-
-        return await asyncio.to_thread(_run)
-
-    async def get_wisdom_evidence(self, item_id: str) -> list[WisdomEvidence]:
-        def _run() -> list[WisdomEvidence]:
-            conn = self._require_conn()
-            rows = conn.execute(
-                "SELECT id, doc_id, excerpt, line FROM wisdom_evidence "
-                "WHERE item_id = ? ORDER BY id ASC",
-                (item_id,),
-            ).fetchall()
-            return [
-                WisdomEvidence(
-                    id=int(r["id"]),
-                    doc_id=r["doc_id"],
-                    excerpt=r["excerpt"],
-                    line=int(r["line"]) if r["line"] is not None else None,
-                )
-                for r in rows
-            ]
-
-        return await asyncio.to_thread(_run)
-
     # ---- D layer: multimedia assets --------------------------------------
 
     async def upsert_asset(self, asset: AssetRecord) -> None:
@@ -1271,22 +1131,6 @@ class SQLiteStorage:
 
         return await asyncio.to_thread(_run)
 
-    async def list_wisdom_missing_embedding(
-        self, *, version_id: int
-    ) -> list[WisdomItem]:
-        def _run() -> list[WisdomItem]:
-            conn = self._require_conn()
-            rows = conn.execute(
-                "SELECT * FROM wisdom_items "
-                "WHERE item_id NOT IN "
-                "(SELECT item_id FROM wisdom_embed_meta WHERE version_id = ?) "
-                "ORDER BY item_id",
-                (version_id,),
-            ).fetchall()
-            return [_row_to_wisdom(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
     async def upsert_asset_embeddings(
         self, rows: Sequence[AssetEmbeddingRow]
     ) -> None:
@@ -1410,150 +1254,6 @@ class SQLiteStorage:
 
         return await asyncio.to_thread(_run)
 
-    # ---- W layer: wisdom embeddings --------------------------------------
-
-    async def upsert_wisdom_embeddings(
-        self, rows: Sequence[WisdomEmbeddingRow]
-    ) -> None:
-        if not rows:
-            return
-
-        def _run() -> None:
-            conn = self._require_conn()
-            by_version: dict[int, list[WisdomEmbeddingRow]] = {}
-            for r in rows:
-                by_version.setdefault(r.version_id, []).append(r)
-            for version_id, batch in by_version.items():
-                version = _fetch_version(conn, version_id)
-                if version is None:
-                    raise StorageError(
-                        f"unknown embed version_id={version_id}; "
-                        "call upsert_embed_version first"
-                    )
-                if version.modality != "text":
-                    raise StorageError(
-                        f"wisdom embeddings require modality='text'; "
-                        f"version {version_id} has modality={version.modality!r} "
-                        "— wisdom rides on the active text version so chunks "
-                        "and wisdom share one cosine space"
-                    )
-                for r in batch:
-                    if len(r.embedding) != version.dim:
-                        raise StorageError(
-                            f"wisdom embedding dim {len(r.embedding)} != "
-                            f"version {version_id} dim {version.dim}"
-                        )
-                self._ensure_vec_table(conn, "wisdom", version_id, version.dim)
-                rowid_table = f"wisdom_vec_rowid_v{version_id}"
-                conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {rowid_table}("
-                    "rowid INTEGER PRIMARY KEY, "
-                    "item_id TEXT NOT NULL UNIQUE)"
-                )
-                vec_table = f"vec_wisdom_v{version_id}"
-                with conn:
-                    for r in batch:
-                        # sqlite-vec needs an integer rowid; derive a stable
-                        # 60-bit int from the (variable-length, not-pure-hex)
-                        # item_id by hashing it. Same shape as
-                        # ``_asset_id_to_rowid`` but the input domain is
-                        # arbitrary text (e.g. ``W-3a8f1c``), not a sha256
-                        # hex string. Birthday collisions are detected
-                        # explicitly so a hit corrupts no data.
-                        rowid = _wisdom_id_to_rowid(r.item_id)
-                        existing = conn.execute(
-                            f"SELECT item_id FROM {rowid_table} WHERE rowid = ?",
-                            (rowid,),
-                        ).fetchone()
-                        if existing is not None and existing["item_id"] != r.item_id:
-                            raise StorageError(
-                                f"wisdom rowid collision in version {version_id}: "
-                                f"rowid {rowid} already used by "
-                                f"{existing['item_id']!r}, refused for "
-                                f"{r.item_id!r}"
-                            )
-                        conn.execute(
-                            "INSERT OR REPLACE INTO wisdom_embed_meta"
-                            "(item_id, version_id) VALUES (?, ?)",
-                            (r.item_id, r.version_id),
-                        )
-                        # sqlite-vec's vec0 virtual table doesn't honor
-                        # INSERT OR REPLACE on the rowid PK — re-upserting
-                        # the same item_id would fail with a UNIQUE
-                        # violation. Delete-then-insert mimics upsert
-                        # semantics cleanly.
-                        conn.execute(
-                            f"DELETE FROM {vec_table} WHERE rowid = ?",
-                            (rowid,),
-                        )
-                        conn.execute(
-                            f"INSERT INTO {vec_table}(rowid, embedding) "
-                            "VALUES (?, ?)",
-                            (rowid, _serialize_vec(r.embedding)),
-                        )
-                        conn.execute(
-                            f"INSERT OR REPLACE INTO {rowid_table}"
-                            "(rowid, item_id) VALUES (?, ?)",
-                            (rowid, r.item_id),
-                        )
-
-        await asyncio.to_thread(_run)
-
-    async def vec_search_wisdom(
-        self,
-        embedding: list[float],
-        *,
-        version_id: int,
-        limit: int = 20,
-    ) -> list[WisdomVecHit]:
-        def _run() -> list[WisdomVecHit]:
-            conn = self._require_conn()
-            version = _fetch_version(conn, version_id)
-            if version is None:
-                raise NotSupported(
-                    f"no embed version_id={version_id} registered"
-                )
-            if version.modality != "text":
-                raise StorageError(
-                    f"vec_search_wisdom requires modality='text'; "
-                    f"version {version_id} has modality={version.modality!r}"
-                )
-            if len(embedding) != version.dim:
-                raise StorageError(
-                    f"query embedding dim {len(embedding)} != "
-                    f"version {version_id} dim {version.dim}"
-                )
-            table = f"vec_wisdom_v{version_id}"
-            row_table = f"wisdom_vec_rowid_v{version_id}"
-            # Empty index → no hits. Skip the SQL to avoid sqlite-vec errors
-            # on a non-existent virtual table.
-            tbl_exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            ).fetchone()
-            if tbl_exists is None:
-                return []
-            ranked = _knn(conn, table, embedding, limit)
-            if not ranked:
-                return []
-            rowids = [rid for rid, _ in ranked]
-            placeholders = ",".join("?" * len(rowids))
-            item_id_by_rowid: dict[int, str] = {
-                int(r["rowid"]): r["item_id"]
-                for r in conn.execute(
-                    f"SELECT rowid, item_id FROM {row_table} "
-                    f"WHERE rowid IN ({placeholders})",
-                    rowids,
-                ).fetchall()
-            }
-            return [
-                WisdomVecHit(item_id=item_id_by_rowid[rid], distance=dist)
-                for rid, dist in ranked
-                if rid in item_id_by_rowid
-            ]
-
-        return await asyncio.to_thread(_run)
-
     # ---- Embedding version registry --------------------------------------
 
     async def upsert_embed_version(self, v: EmbeddingVersion) -> int:
@@ -1672,11 +1372,6 @@ class SQLiteStorage:
             chunks = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
             embeddings = int(conn.execute("SELECT COUNT(*) FROM chunk_embed_meta").fetchone()[0])
             links = int(conn.execute("SELECT COUNT(*) FROM links").fetchone()[0])
-            by_status: dict[str, int] = {}
-            for row in conn.execute(
-                "SELECT status, COUNT(*) AS n FROM wisdom_items GROUP BY status"
-            ).fetchall():
-                by_status[row["status"]] = int(row["n"])
             last_log = conn.execute("SELECT MAX(ts) AS ts FROM wiki_log").fetchone()
             assets_count = int(conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0])
             asset_emb_count = int(
@@ -1687,7 +1382,6 @@ class SQLiteStorage:
                 chunks=chunks,
                 embeddings=embeddings,
                 links=links,
-                wisdom_by_status=by_status,
                 last_wiki_log_ts=float(last_log["ts"]) if last_log and last_log["ts"] else None,
                 assets=assets_count,
                 asset_embeddings=asset_emb_count,
@@ -1728,7 +1422,7 @@ class SQLiteStorage:
     def _ensure_vec_table(
         self,
         conn: sqlite3.Connection,
-        kind: Literal["chunks", "assets", "wisdom"],
+        kind: Literal["chunks", "assets"],
         version_id: int,
         dim: int,
     ) -> None:
@@ -1736,11 +1430,6 @@ class SQLiteStorage:
         the embedding dim baked into the table at CREATE time, so each
         version gets its own dim-locked virtual table — switching model
         creates a new version + new table, leaving prior data intact.
-
-        ``kind`` widens to include ``"wisdom"`` so the W layer can ride
-        on the active text version's vector space (chunks and wisdom
-        coexist in the same cosine space; the per-kind vec table only
-        differs by which identity column the rowid maps to).
         """
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_{kind}_v{version_id} "
@@ -1844,20 +1533,6 @@ def _row_to_link(row: sqlite3.Row) -> LinkRecord:
     )
 
 
-def _row_to_wisdom(row: sqlite3.Row) -> WisdomItem:
-    return WisdomItem(
-        item_id=row["item_id"],
-        kind=WisdomKind(row["kind"]),
-        status=WisdomStatus(row["status"]),
-        path=row["path"],
-        title=row["title"],
-        body=row["body"],
-        confidence=float(row["confidence"]),
-        created_ts=float(row["created_ts"]),
-        approved_ts=float(row["approved_ts"]) if row["approved_ts"] is not None else None,
-    )
-
-
 def _row_to_asset(row: sqlite3.Row) -> AssetRecord:
     return AssetRecord(
         asset_id=row["asset_id"],
@@ -1906,14 +1581,3 @@ def _asset_id_to_rowid(asset_id: str) -> int:
     return int(asset_id[:15], 16)
 
 
-def _wisdom_id_to_rowid(item_id: str) -> int:
-    """Stable, signed-INT64-safe rowid derived from a wisdom item_id.
-
-    Mirror of ``_asset_id_to_rowid`` for the W-layer. Wisdom item_ids are
-    short text (e.g. ``W-3a8f1c``) — not raw sha256 hex — so we hash
-    first to get a uniform high-entropy domain, then take the first 15
-    hex chars (60 bits, ~2^-30 birthday collision odds at 10^9 items).
-    Collisions are detected explicitly at upsert time so a hit corrupts
-    no data.
-    """
-    return int(hash_bytes(item_id.encode("utf-8"))[:15], 16)

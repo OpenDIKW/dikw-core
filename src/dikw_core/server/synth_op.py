@@ -1,15 +1,15 @@
-"""Synth + distill task wiring.
+"""Synth task wiring.
 
-These ops mirror ``ingest_op.make_ingest_runner``: build a
-``TaskRunner`` closure that ``TaskManager.submit`` schedules. Each runner
-owns its own provider clients (LLM, optional embedder) for the duration
-of the task and returns a JSON-serialisable result dict that the manager
-folds into the ``final`` event.
+Mirrors ``ingest_op.make_ingest_runner``: builds a ``TaskRunner`` closure
+that ``TaskManager.submit`` schedules. The runner owns its own provider
+clients (LLM, optional embedder) for the duration of the task and returns
+a JSON-serialisable result dict that the manager folds into the ``final``
+event.
 
-Synth + distill share the same provider-failure mode: a missing
-``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` surfaces as a runner-level
-``BadRequest``, so the task ends ``failed`` with a clear cause instead of
-a partially-progressed terminal that hid the misconfiguration.
+A missing ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` surfaces as a
+runner-level ``BadRequest``, so the task ends ``failed`` with a clear
+cause instead of a partially-progressed terminal that hid the
+misconfiguration.
 """
 
 from __future__ import annotations
@@ -68,33 +68,6 @@ def make_synth_runner(
             force_all=force_all,
             llm=llm,
             embedder=embedder,
-            reporter=reporter,
-        )
-        return dataclasses.asdict(report)
-
-    return _runner
-
-
-def make_distill_runner(
-    *,
-    wiki_root: Path,
-    pages_per_call: int,
-) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
-    """Build a ``TaskRunner`` that drives ``api.distill`` for one task."""
-
-    async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
-        cfg = load_config(wiki_root / CONFIG_FILENAME)
-        try:
-            llm = build_llm(cfg.provider, wiki_base=wiki_root)
-        except Exception as e:
-            raise BadRequest(
-                f"could not build LLM: {e}", code="llm_unavailable"
-            ) from e
-
-        report = await api.distill(
-            wiki_root,
-            llm=llm,
-            pages_per_call=pages_per_call,
             reporter=reporter,
         )
         return dataclasses.asdict(report)
@@ -326,7 +299,6 @@ def _resolve_eval_modes(
 
 
 __all__ = [
-    "make_distill_runner",
     "make_eval_runner",
     "make_synth_runner",
 ]

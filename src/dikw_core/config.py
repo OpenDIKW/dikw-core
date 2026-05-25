@@ -60,12 +60,11 @@ class ProviderConfig(BaseModel):
     # SDK's default endpoint (api.anthropic.com / api.openai.com).
     llm_base_url: str | None = None
     # Per-operation response budget handed to ``LLMProvider.complete`` via
-    # ``max_tokens``. Defaults match the values previously hardcoded in
+    # ``max_tokens``. Default matches the value previously hardcoded in
     # ``api.py``; shrink for cost-optimised models (some GLM-Flash / Gemini
-    # Nano variants cap below 2048), grow if synth/distill responses get
+    # Nano variants cap below 2048), grow if synth responses get
     # truncated.
     llm_max_tokens_synth: int = 2048
-    llm_max_tokens_distill: int = 2048
     # Per-leg SDK retry budget. Anthropic and OpenAI SDKs retry 408/409/429/5xx
     # (incl. MiniMax 529) with exponential backoff + jitter; their default is
     # 2. We bump to 5 by default to absorb intermittent overload without
@@ -204,9 +203,6 @@ StorageConfig = Annotated[
 class SchemaConfig(BaseModel):
     description: str = ""
     page_types: list[str] = Field(default_factory=lambda: ["entity", "concept", "note"])
-    wisdom_kinds: list[str] = Field(
-        default_factory=lambda: ["principle", "lesson", "pattern"]
-    )
     log_style: Literal["append", "daily"] = "append"
 
 

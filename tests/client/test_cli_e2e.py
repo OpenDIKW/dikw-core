@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -27,15 +26,11 @@ from dikw_core.schemas import (
     Layer,
     LinkRecord,
     LinkType,
-    WisdomItem,
-    WisdomKind,
-    WisdomStatus,
 )
-from dikw_core.server import synth_op
 from dikw_core.server.runtime import ServerRuntime
 
 from ..conftest import removed_top_level_short_names
-from ..fakes import FakeEmbeddings, FakeLLM
+from ..fakes import FakeEmbeddings
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "notes"
 
@@ -571,16 +566,6 @@ def test_pages_provenance_limit_param_flows_through_to_server(
     assert len(payload["derived_from"]) == 1
 
 
-def test_review_list_empty_on_fresh_wiki(
-    asgi_client: tuple[Any, ServerRuntime],
-    patch_transport_factory: Callable[[], None],
-) -> None:
-    patch_transport_factory()
-    result = _run(["client", "review", "list", "--format", "table"])
-    assert result.exit_code == 0, result.stdout
-    assert "no candidates" in result.stdout
-
-
 def test_tasks_list_empty_on_fresh_server(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
@@ -597,9 +582,8 @@ def test_tasks_list_empty_on_fresh_server(
         ["client", "status", "--format", "json"],
         ["client", "lint", "--format", "json"],
         ["client", "tasks", "list", "--format", "json"],
-        ["client", "review", "list", "--format", "json"],
     ],
-    ids=["status", "lint", "tasks-list", "review-list"],
+    ids=["status", "lint", "tasks-list"],
 )
 def test_format_json_emits_parseable_json(
     asgi_client: tuple[Any, ServerRuntime],
@@ -625,10 +609,9 @@ def test_format_json_emits_parseable_json(
     [
         ["client", "lint"],
         ["client", "lint", "proposals"],
-        ["client", "review", "list"],
         ["client", "tasks", "list"],
     ],
-    ids=["lint", "lint-proposals", "review-list", "tasks-list"],
+    ids=["lint", "lint-proposals", "tasks-list"],
 )
 def test_default_emits_parseable_json(
     asgi_client: tuple[Any, ServerRuntime],
@@ -644,86 +627,6 @@ def test_default_emits_parseable_json(
     assert result.exit_code == 0, result.stdout
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, list | dict)
-
-
-@pytest.fixture()
-async def seeded_candidate(
-    asgi_client: tuple[Any, ServerRuntime],
-) -> str:
-    """Seed one CANDIDATE wisdom item directly in storage, return its id.
-    Async fixture (not in-test) so the sync ``CliRunner`` tests don't nest
-    event loops. Empty evidence is fine — the ``>=2 evidence`` gate is
-    enforced at distill, not at approve/reject."""
-    _client, rt = asgi_client
-    item = WisdomItem(
-        item_id="W-rev0001",
-        kind=WisdomKind.PRINCIPLE,
-        status=WisdomStatus.CANDIDATE,
-        path=None,
-        title="Seeded review candidate",
-        body="A seeded candidate so review approve/reject have a target.",
-        confidence=0.8,
-        created_ts=time.time(),
-        approved_ts=None,
-    )
-    await rt.storage.put_wisdom(item, [])
-    return item.item_id
-
-
-def test_review_approve_default_emits_json(
-    seeded_candidate: str,
-    patch_transport_factory: Callable[[], None],
-) -> None:
-    """``review approve`` defaults to raw JSON (agent-first); the payload
-    carries ``item_id`` + the new status."""
-    patch_transport_factory()
-    result = _run(["client", "review", "approve", seeded_candidate])
-    assert result.exit_code == 0, result.stdout
-    parsed = json.loads(result.stdout)
-    assert parsed["item_id"] == seeded_candidate
-    assert parsed["new_status"] == "approved"
-
-
-def test_review_reject_pretty_emits_human_line(
-    seeded_candidate: str,
-    patch_transport_factory: Callable[[], None],
-) -> None:
-    """``--pretty`` opts into the colored human line instead of JSON: the
-    output mentions the item id and is NOT JSON-parseable."""
-    patch_transport_factory()
-    result = _run(["client", "review", "reject", seeded_candidate, "--pretty"])
-    assert result.exit_code == 0, result.stdout
-    assert seeded_candidate in result.stdout
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(result.stdout)
-
-
-def test_review_reject_default_emits_json(
-    seeded_candidate: str,
-    patch_transport_factory: Callable[[], None],
-) -> None:
-    """``review reject`` defaults to raw JSON (agent-first); reject maps the
-    candidate to ``archived``, not a ``rejected`` status."""
-    patch_transport_factory()
-    result = _run(["client", "review", "reject", seeded_candidate])
-    assert result.exit_code == 0, result.stdout
-    parsed = json.loads(result.stdout)
-    assert parsed["item_id"] == seeded_candidate
-    assert parsed["new_status"] == "archived"
-
-
-def test_review_approve_pretty_emits_human_line(
-    seeded_candidate: str,
-    patch_transport_factory: Callable[[], None],
-) -> None:
-    """``--pretty`` opts into the colored human line instead of JSON: the
-    output mentions the item id and is NOT JSON-parseable."""
-    patch_transport_factory()
-    result = _run(["client", "review", "approve", seeded_candidate, "--pretty"])
-    assert result.exit_code == 0, result.stdout
-    assert seeded_candidate in result.stdout
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(result.stdout)
 
 
 def test_check_unavailable_provider_exits_one(
@@ -832,20 +735,3 @@ def test_info_default_emits_parseable_json(
     assert isinstance(payload, dict)
 
 
-def test_distill_runs_through_task_pipeline(
-    asgi_client: tuple[Any, ServerRuntime],
-    patch_transport_factory: Callable[[], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """End-to-end: ``dikw client distill`` submits a task, follows the
-    NDJSON event stream, and renders the DistillReport. We use FakeLLM
-    so the report has zero candidates_added (the stub doesn't parse
-    into a candidate), but the report shape itself is the contract we
-    care about."""
-    monkeypatch.setattr(synth_op, "build_llm", lambda _cfg, **_kw: FakeLLM())
-    monkeypatch.setattr(synth_op, "build_embedder", lambda _cfg: FakeEmbeddings())
-    patch_transport_factory()
-    result = _run(["client", "distill", "--plain", "--wait"])
-    assert result.exit_code == 0, result.stdout
-    assert "K pages read" in result.stdout
-    assert "candidates added" in result.stdout

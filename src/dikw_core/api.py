@@ -13,13 +13,11 @@ Phase 2 surface:
     ``wiki/index.md`` + ``wiki/log.md``.
   * ``lint`` — report broken wikilinks, orphans, and duplicate titles.
 
-Phase 3 surface:
-  * ``distill`` — propose W-layer wisdom items from K-layer pages.
-  * ``list_candidates`` / ``approve_wisdom`` / ``reject_wisdom`` —
-    drive the review state machine.
-  * ``pick_applicable`` (in ``domains/wisdom/apply``) ranks approved
-    wisdom items against a question; PR-5 will surface it on a new
-    ``GET /v1/wisdom/applicable?q=...`` endpoint.
+W layer (wisdom) is being refactored to first-class documents under
+``wisdom/<author>/<slug>.md`` — the prior LLM-distilled candidate/review
+surface (``distill`` / ``list_candidates`` / ``approve_wisdom`` /
+``reject_wisdom``) has been removed in this PR; see CHANGELOG for the
+ongoing 0.3.0 refactor.
 
 Phase 0 surface (``init_wiki``, ``status``) stays unchanged.
 """
@@ -110,14 +108,6 @@ from .domains.knowledge.synthesize import (
     parse_synthesis_response,
 )
 from .domains.knowledge.wiki import WikiPage, now_iso, type_from_path, write_page
-from .domains.wisdom.distill import WisdomCandidate, parse_distill_response
-from .domains.wisdom.io import write_candidate_file
-from .domains.wisdom.review import (
-    ReviewError,
-    ReviewResult,
-)
-from .domains.wisdom.review import approve as _approve_item
-from .domains.wisdom.review import reject as _reject_item
 from .progress import CancelToken, NoopReporter, ProgressReporter
 from .providers import (
     EmbeddingProvider,
@@ -159,9 +149,6 @@ from .schemas import (
     RetrieveResult,
     StorageCounts,
     WikiLogEntry,
-    WisdomEvidence,
-    WisdomItem,
-    WisdomStatus,
 )
 from .storage import Storage, build_storage
 from .storage.base import NotSupported
@@ -169,11 +156,9 @@ from .storage.base import NotSupported
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "AppliedWisdomRef",
     "AssetNotFound",
     "CheckReport",
     "DerivedPage",
-    "DistillReport",
     "EmbeddingInfo",
     "HealthReport",
     "IncomingLink",
@@ -194,18 +179,13 @@ __all__ = [
     "ProvenanceSource",
     "ProvidersInfo",
     "RetrieveResult",
-    "ReviewError",
-    "ReviewResult",
     "SynthReport",
-    "approve_wisdom",
     "check_providers",
-    "distill",
     "find_config",
     "health",
     "ingest",
     "init_wiki",
     "lint",
-    "list_candidates",
     "list_graph",
     "list_links",
     "list_pages",
@@ -213,7 +193,6 @@ __all__ = [
     "read_asset",
     "read_page",
     "read_provenance",
-    "reject_wisdom",
     "retrieve",
     "status",
     "synthesize",
@@ -253,30 +232,7 @@ WIKI_INIT_FILES: dict[str, str] = {
     "wiki/entities/.gitkeep": "",
     "wiki/concepts/.gitkeep": "",
     "wiki/notes/.gitkeep": "",
-    "wisdom/principles.md": (
-        "---\n"
-        "type: wisdom-group\n"
-        "kind: principle\n"
-        "---\n\n"
-        "# Principles\n\n"
-        "Approved principles will be appended here. See `wisdom/_candidates/`\n"
-        "for candidates awaiting human review.\n"
-    ),
-    "wisdom/lessons.md": (
-        "---\n"
-        "type: wisdom-group\n"
-        "kind: lesson\n"
-        "---\n\n"
-        "# Lessons\n"
-    ),
-    "wisdom/patterns.md": (
-        "---\n"
-        "type: wisdom-group\n"
-        "kind: pattern\n"
-        "---\n\n"
-        "# Patterns\n"
-    ),
-    "wisdom/_candidates/.gitkeep": "",
+    "wisdom/.gitkeep": "",
     ".dikw/.gitkeep": "",
     ".gitignore": ".dikw/\n",
 }
@@ -425,28 +381,6 @@ class SynthReport:
     unresolved_wikilinks: int = 0
 
 
-@dataclass(frozen=True)
-class DistillReport:
-    pages_read: int = 0
-    candidates_added: int = 0
-    rejected: int = 0
-    errors: int = 0
-
-
-class AppliedWisdomRef(BaseModel):
-    """Reference to a wisdom item the engine marked applicable to a question.
-
-    Surfaced by ``GET /v1/wisdom/applicable?q=...`` and the
-    ``dikw client wisdom applicable`` command; agents inject the returned
-    items into their own LLM prompts.
-    """
-
-    ref: str
-    item_id: str
-    kind: str
-    title: str
-
-
 class ProbeResult(BaseModel):
     """One leg of a ``check`` — either the LLM or the embedding endpoint."""
 
@@ -492,7 +426,6 @@ class LlmInfo(BaseModel):
     base_url: str | None
     max_retries: int = Field(ge=0)
     max_tokens_synth: int = Field(gt=0)
-    max_tokens_distill: int = Field(gt=0)
     timeout_seconds: float = Field(gt=0)
     api_key_present: bool
 
@@ -541,8 +474,8 @@ class LayerCounts(BaseModel):
     """Flat agent-facing counts derived from ``StorageCounts``.
 
     Keep the shape stable across releases: agents probing health rely on
-    these names. The richer ``StorageCounts`` (per-status wisdom buckets,
-    embeddings, links, …) stays available via ``GET /v1/status``.
+    these names. The richer ``StorageCounts`` (embeddings, links, …)
+    stays available via ``GET /v1/status``.
     """
 
     sources: int
@@ -784,15 +717,15 @@ async def health(path: str | Path | None = None) -> HealthReport:
         await storage.close()
 
     by_layer = counts.documents_by_layer
-    # Wisdom items are *not* stored as documents (there is no row in
-    # ``documents`` with ``layer = wisdom``) — they live in
-    # ``wisdom_items`` and surface via ``wisdom_by_status``. Sum across
-    # statuses so the count reflects total wisdom regardless of review
-    # state (candidate / approved / archived).
+    # PR1 of the 0.3.0 wisdom refactor: ``wisdom_items`` count is 0 here
+    # — the legacy ``wisdom_items`` table is removed and wisdom pages
+    # don't yet flow into ``documents`` (PR2 lands that). Keep the
+    # ``LayerCounts.wisdom_items`` field for wire compatibility so
+    # agents reading health responses can transition over two releases.
     layer_counts = LayerCounts(
         sources=int(by_layer.get(Layer.SOURCE.value, 0)),
         wiki_pages=int(by_layer.get(Layer.WIKI.value, 0)),
-        wisdom_items=sum(int(v) for v in counts.wisdom_by_status.values()),
+        wisdom_items=int(by_layer.get(Layer.WISDOM.value, 0)),
         chunks=counts.chunks,
     )
 
@@ -803,7 +736,6 @@ async def health(path: str | Path | None = None) -> HealthReport:
         base_url=_sanitize_base_url(p.llm_base_url),
         max_retries=p.llm_max_retries,
         max_tokens_synth=p.llm_max_tokens_synth,
-        max_tokens_distill=p.llm_max_tokens_distill,
         timeout_seconds=p.llm_timeout_seconds,
         api_key_present=_llm_credentials_present(p.llm, wiki_base=root),
     )
@@ -1713,9 +1645,9 @@ async def list_pages(
     docs are not surfaced).
 
     The W (wisdom) layer is reachable here via ``layer=Layer.WISDOM``
-    only as a forward-compat hook — Phase 1 never registers wisdom
-    files as documents (they live in the separate ``wisdom_items``
-    table), so the result is empty until that pipeline lands.
+    only as a forward-compat hook — PR1 of the 0.3.0 wisdom refactor
+    removes the legacy ``wisdom_items`` table but doesn't yet wire
+    wisdom files into ``documents``; PR2 lands that pipeline.
     """
     cfg, _root, storage = await _with_storage(root)
     del cfg
@@ -1754,9 +1686,10 @@ async def read_page(
     chunk via ``/v1/retrieve`` fetch the full page body and align hit
     chunks back onto it via ``Hit.chunk_id`` / ``Hit.seq``.
 
-    The W (wisdom) layer is **not** probed: wisdom items live in the
-    separate ``wisdom_items`` table, never as ``DocumentRecord`` rows,
-    so a wisdom probe would always miss and just waste a PK lookup.
+    The W (wisdom) layer is reachable here via the standard
+    ``documents``-table path once PR2 of the 0.3.0 wisdom refactor wires
+    wisdom files into ``documents``. PR1 leaves wisdom unreachable via
+    ``read_page`` because no wisdom files are indexed yet.
     """
     # Reject obviously-malformed paths up front so a bare ``Path()``
     # call later doesn't surface as a 500 (``\x00`` raises ValueError on
@@ -3401,196 +3334,3 @@ def _sr_replace(r: SynthReport, **kw: int) -> SynthReport:
     return dataclasses.replace(r, **kw)
 
 
-# ---- Phase 3: distill + review ------------------------------------------
-
-
-async def distill(
-    path: str | Path | None = None,
-    *,
-    llm: LLMProvider | None = None,
-    pages_per_call: int = 8,
-    reporter: ProgressReporter | None = None,
-) -> DistillReport:
-    """Propose W-layer wisdom items from the current K-layer pages.
-
-    ``pages_per_call`` caps how many K pages are fed to a single LLM call;
-    each call produces zero or more ``<wisdom>`` blocks that are persisted
-    as candidates when they satisfy the N≥2-evidence invariant.
-
-    ``reporter`` (optional) emits one ``progress`` event per LLM batch.
-    """
-    cfg, root, storage = await _with_storage(path)
-    _reporter: ProgressReporter = reporter or NoopReporter()
-    try:
-        _llm = llm or build_llm(cfg.provider, wiki_base=root)
-
-        k_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
-        # Aggregate pages we can cite later — D and K together count as evidence sources
-        source_docs = list(await storage.list_documents(layer=Layer.SOURCE, active=True))
-        path_to_doc_id: dict[str, str] = {
-            **{d.path: d.doc_id for d in k_docs},
-            **{d.path: d.doc_id for d in source_docs},
-        }
-
-        report = DistillReport(pages_read=len(k_docs))
-        if not k_docs:
-            return report
-
-        tmpl = prompts.load("distill")
-        seen_ids: set[str] = {
-            item.item_id
-            for item in await storage.list_wisdom()
-        }
-
-        batches = list(_chunked(k_docs, pages_per_call))
-        total_batches = len(batches)
-        for batch_idx, batch in enumerate(batches, start=1):
-            _reporter.cancel_token().raise_if_cancelled()
-            pages_block = _render_pages_block(root, batch)
-            user_prompt = tmpl.format(pages_block=pages_block)
-            response = await _llm.complete(
-                system="You distil W-layer wisdom items from a K-layer wiki.",
-                user=user_prompt,
-                model=cfg.provider.llm_model,
-                max_tokens=cfg.provider.llm_max_tokens_distill,
-                temperature=0.25,
-            )
-            parsed = parse_distill_response(response.text)
-            report = _dr_replace(
-                report,
-                rejected=report.rejected + len(parsed.rejected),
-            )
-            batch_added = 0
-            for cand in parsed.candidates:
-                if cand.item_id in seen_ids:
-                    continue
-                try:
-                    await _persist_candidate(storage, root, cand, path_to_doc_id)
-                except ValueError:
-                    report = _dr_replace(report, errors=report.errors + 1)
-                    continue
-                seen_ids.add(cand.item_id)
-                report = _dr_replace(report, candidates_added=report.candidates_added + 1)
-                batch_added += 1
-            await _reporter.progress(
-                phase="distill",
-                current=batch_idx,
-                total=total_batches,
-                detail={
-                    "pages": len(batch),
-                    "candidates_added": batch_added,
-                    "rejected": len(parsed.rejected),
-                },
-            )
-
-        # Keep the append-only log up to date even if no candidates landed
-        if report.candidates_added:
-            await storage.append_wiki_log(
-                WikiLogEntry(
-                    ts=time.time(),
-                    action="distill",
-                    note=f"+{report.candidates_added} candidates",
-                )
-            )
-            entries = await storage.list_wiki_log()
-            render_log(root, entries, updated=now_iso())
-
-        return report
-    finally:
-        await storage.close()
-
-
-async def list_candidates(path: str | Path | None = None) -> list[WisdomItem]:
-    _cfg, _root, storage = await _with_storage(path)
-    try:
-        return await storage.list_wisdom(status=WisdomStatus.CANDIDATE)
-    finally:
-        await storage.close()
-
-
-async def approve_wisdom(
-    item_id: str, path: str | Path | None = None
-) -> ReviewResult:
-    _cfg, root, storage = await _with_storage(path)
-    try:
-        return await _approve_item(storage, root=root, item_id=item_id)
-    finally:
-        await storage.close()
-
-
-async def reject_wisdom(
-    item_id: str, path: str | Path | None = None
-) -> ReviewResult:
-    _cfg, root, storage = await _with_storage(path)
-    try:
-        return await _reject_item(storage, root=root, item_id=item_id)
-    finally:
-        await storage.close()
-
-
-async def _persist_candidate(
-    storage: Storage,
-    root: Path,
-    candidate: WisdomCandidate,
-    path_to_doc_id: dict[str, str],
-) -> None:
-    """Resolve candidate evidence against real doc_ids and persist everything."""
-    resolved: list[WisdomEvidence] = []
-    for ev in candidate.evidence:
-        doc_id = path_to_doc_id.get(ev.doc_id)
-        if doc_id is None:
-            continue  # evidence pointing at an unknown doc — silently drop it
-        resolved.append(
-            WisdomEvidence(doc_id=doc_id, excerpt=ev.excerpt, line=ev.line)
-        )
-    if len(resolved) < 2:
-        raise ValueError("candidate lost evidence after resolution")
-
-    created_iso = now_iso()
-    item = WisdomItem(
-        item_id=candidate.item_id,
-        kind=candidate.kind,
-        status=WisdomStatus.CANDIDATE,
-        path=None,
-        title=candidate.title,
-        body=candidate.body,
-        confidence=candidate.confidence,
-        created_ts=time.time(),
-        approved_ts=None,
-    )
-    await storage.put_wisdom(item, resolved)
-    write_candidate_file(root, candidate, created_iso=created_iso)
-
-
-def _render_pages_block(root: Path, docs: list[DocumentRecord]) -> str:
-    """Render a human-readable markdown dump of K pages for the distill prompt."""
-    parts: list[str] = []
-    for doc in docs:
-        abs_path = (root / doc.path).resolve()
-        if not abs_path.is_file():
-            continue
-        try:
-            text = abs_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        # strip front-matter to keep the prompt compact
-        if text.startswith("---\n"):
-            _, _, rest = text.partition("\n---\n")
-            text = rest.lstrip("\n")
-        parts.append(f"### PAGE: {doc.path}\n\n{text.strip()}\n")
-    return "\n---\n\n".join(parts)
-
-
-def _chunked(seq: list[DocumentRecord], n: int) -> list[list[DocumentRecord]]:
-    if n <= 0:
-        return [seq]
-    return [seq[i : i + n] for i in range(0, len(seq), n)]
-
-
-def _dr_replace(r: DistillReport, **kw: int) -> DistillReport:
-    return DistillReport(
-        pages_read=kw.get("pages_read", r.pages_read),
-        candidates_added=kw.get("candidates_added", r.candidates_added),
-        rejected=kw.get("rejected", r.rejected),
-        errors=kw.get("errors", r.errors),
-    )

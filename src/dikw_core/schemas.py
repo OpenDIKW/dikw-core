@@ -27,18 +27,6 @@ class LinkType(StrEnum):
     URL = "url"
 
 
-class WisdomKind(StrEnum):
-    PRINCIPLE = "principle"
-    LESSON = "lesson"
-    PATTERN = "pattern"
-
-
-class WisdomStatus(StrEnum):
-    CANDIDATE = "candidate"
-    APPROVED = "approved"
-    ARCHIVED = "archived"
-
-
 class AssetKind(StrEnum):
     """Multimedia asset modality. v1 ships ``IMAGE`` only; ``AUDIO`` /
     ``VIDEO`` are reserved for v2 transcription support."""
@@ -505,34 +493,11 @@ class WikiLogEntry(BaseModel):
     # skip done sources without misfiring on partial-failure or legal
     # zero-page responses (which never write a per-page ``synth`` row).
     action: Literal[
-        "ingest", "synth", "synth_source_done", "distill", "review", "lint", "delete"
+        "ingest", "synth", "synth_source_done", "lint", "delete"
     ]
     src: str | None = None
     dst: str | None = None
     note: str | None = None
-
-
-class WisdomEvidence(BaseModel):
-    # ``id`` is None on construction; the storage layer assigns it on
-    # insert via SQLite AUTOINCREMENT / Postgres BIGSERIAL. Mirrors the
-    # ``WikiLogEntry.id`` pattern — ``get_wisdom_evidence`` orders by
-    # this so insertion order survives across adapters.
-    id: int | None = None
-    doc_id: str
-    excerpt: str
-    line: int | None = None
-
-
-class WisdomItem(BaseModel):
-    item_id: str
-    kind: WisdomKind
-    status: WisdomStatus = WisdomStatus.CANDIDATE
-    path: str | None = None
-    title: str
-    body: str
-    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
-    created_ts: float
-    approved_ts: float | None = None
 
 
 class StorageCounts(BaseModel):
@@ -542,7 +507,6 @@ class StorageCounts(BaseModel):
     chunks: int = 0
     embeddings: int = 0
     links: int = 0
-    wisdom_by_status: dict[str, int] = Field(default_factory=dict)
     last_wiki_log_ts: float | None = None
     assets: int = 0
     asset_embeddings: int = 0
@@ -675,28 +639,6 @@ class AssetVecHit(BaseModel):
     """One result row from ``Storage.vec_search_assets``."""
 
     asset_id: str
-    distance: float  # smaller = more similar (cosine distance, by default)
-
-
-class WisdomEmbeddingRow(BaseModel):
-    """One wisdom-item-level embedding, written to ``vec_wisdom_v<version_id>``.
-
-    Wisdom rides on the active text ``embed_versions`` row (chunks and
-    wisdom share one cosine space so apply-at-query can compare a chunk
-    embedding against a wisdom embedding directly). The dim must match
-    that version's ``dim``; mismatched rows are rejected at the storage
-    boundary, mirroring ``EmbeddingRow`` and ``AssetEmbeddingRow``.
-    """
-
-    item_id: str
-    version_id: int
-    embedding: list[float]
-
-
-class WisdomVecHit(BaseModel):
-    """One result row from ``Storage.vec_search_wisdom``."""
-
-    item_id: str
     distance: float  # smaller = more similar (cosine distance, by default)
 
 

@@ -90,7 +90,6 @@ def test_provider_config_llm_max_tokens_defaults() -> None:
     """Per-op max_tokens fields default to the values currently hardcoded in api.py."""
     cfg = ProviderConfig()
     assert cfg.llm_max_tokens_synth == 2048
-    assert cfg.llm_max_tokens_distill == 2048
 
 
 def test_provider_config_llm_max_tokens_override_via_yaml(tmp_path: Path) -> None:
@@ -104,14 +103,12 @@ provider:
   embedding_normalize: true
   embedding_distance: cosine
   llm_max_tokens_synth: 4096
-  llm_max_tokens_distill: 1536
 sources: []
 """,
         encoding="utf-8",
     )
     cfg = load_config(path)
     assert cfg.provider.llm_max_tokens_synth == 4096
-    assert cfg.provider.llm_max_tokens_distill == 1536
 
 
 def test_provider_config_max_retries_defaults() -> None:

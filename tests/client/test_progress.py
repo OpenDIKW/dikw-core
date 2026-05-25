@@ -13,7 +13,6 @@ from rich.console import Console
 
 from dikw_core.client.progress import (
     TaskProgressRenderer,
-    render_distill_report,
     render_eval_report,
     render_health_report,
     render_import_report,
@@ -131,21 +130,10 @@ def test_render_status_handles_missing_keys() -> None:
             "chunks": 0,
             "embeddings": 0,
             "links": 0,
-            "wisdom_by_status": {},
         },
     )
     out = console.export_text()
     assert "source" in out and "wisdom" in out
-
-
-def test_render_distill_report_renders_zeroes() -> None:
-    console = Console(record=True, width=80, force_terminal=False)
-    render_distill_report(
-        console,
-        {"pages_read": 3, "candidates_added": 0, "rejected": 0, "errors": 0},
-    )
-    out = console.export_text()
-    assert "K pages read" in out
 
 
 def test_render_health_report_renders_all_blocks() -> None:
