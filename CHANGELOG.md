@@ -57,6 +57,31 @@ to the wisdom layer; PR4 is the docs/CHANGELOG/ADR final pass.
   frontmatter `status:` is set to a value not in the enum. Lint-only,
   ingest is never blocked. Skip-able via per-page `lint: {skip:
   [invalid_wisdom_status]}` frontmatter.
+- `domains/knowledge/links.py::build_title_indexes` — central helper
+  that builds `(exact_match, fuzzy_index)` from `(title, path)` pairs
+  and drops exact-title collisions from the exact-match dict so
+  `resolve_links`'s ≥2-candidate refusal actually fires when a wiki
+  and wisdom page share a title. Used by `persist_page` and hoisted
+  before the `dikw ingest` wisdom loop so wisdom→wisdom links inside
+  the same ingest pass resolve on the first run.
+- `iter_source_files` now hard-skips paths under `wisdom/` since it's
+  a reserved first-class layer; a broad user config like
+  `sources: [{path: '.', pattern: '**/*.md'}]` no longer
+  double-yields wisdom files as `Layer.SOURCE`.
+
+**Known limitations**:
+
+- Image assets referenced from wisdom pages (`![alt](photo.png)`,
+  Obsidian `![[file.png]]`) are NOT yet bridged through the
+  `chunk_asset_refs` pipeline. `extract_image_refs` runs on parse but
+  `persist_page` doesn't call `materialize_asset` for wisdom — assets
+  on wisdom pages don't surface through multimodal retrieve. The
+  wiki/synth path is unaffected; wisdom-asset parity will land in a
+  follow-up PR.
+- `read_page`, `list_links`, `list_pages`, and `read_provenance` still
+  iterate `(Layer.SOURCE, Layer.WIKI)` only — wisdom documents are
+  written into storage but not yet readable via the HTTP page APIs.
+  PR3 wires them, alongside `dikw client pages --layer wisdom`.
 
 **Manual cleanup before re-ingest** (in addition to PR1 cleanup):
 
