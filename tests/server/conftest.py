@@ -148,7 +148,7 @@ async def wait_task_terminal(
 
     Shared by every HTTP-level task test that needs to wait for a
     submitted runner to finish before asserting on the event tape or
-    final result. Default 10s timeout — synth/distill paths that need
+    final result. Default 10s timeout — synth/eval paths that need
     more should pass an explicit value."""
     import asyncio as _asyncio
 

@@ -4,9 +4,9 @@ Wraps the official ``anthropic`` SDK and points at any Anthropic-protocol-
 compatible endpoint via ``base_url`` (api.anthropic.com by default; MiniMax's
 ``https://api.minimaxi.com/anthropic`` and other gateway endpoints work too).
 Prompt caching is applied to the system prompt via ``cache_control`` — the
-system prompt is the near-static part across ``synthesize``/``query``/``distill``
-sessions, so it benefits most. The Anthropic protocol has no embeddings
-endpoint; embeddings must go through the OpenAI-compatible provider.
+system prompt is the near-static part across ``synthesize`` sessions, so
+it benefits most. The Anthropic protocol has no embeddings endpoint;
+embeddings must go through the OpenAI-compatible provider.
 """
 
 from __future__ import annotations

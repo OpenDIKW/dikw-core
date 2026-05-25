@@ -33,7 +33,7 @@ from .errors import BadRequest, NotFoundError
 from .ingest_op import make_ingest_runner
 from .lint_op import make_lint_apply_runner, make_lint_propose_runner
 from .runtime import ServerRuntime, get_runtime
-from .synth_op import make_distill_runner, make_eval_runner, make_synth_runner
+from .synth_op import make_eval_runner, make_synth_runner
 from .tasks import (
     TERMINAL_STATUSES,
     TaskRow,
@@ -117,17 +117,6 @@ class SynthSubmit(BaseModel):
 
     force_all: bool = False
     no_embed: bool = False
-
-
-class DistillSubmit(BaseModel):
-    """Body for ``POST /v1/distill``.
-
-    ``pages_per_call`` caps how many K-layer pages are fed to a single
-    LLM call; the default mirrors ``api.distill`` and keeps prompt
-    tokens bounded for vendors with tight context limits.
-    """
-
-    pages_per_call: int = 8
 
 
 class LintProposeSubmit(BaseModel):
@@ -391,27 +380,6 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "force_all": body.force_all,
                 "no_embed": body.no_embed,
             },
-        )
-        return _handle(row)
-
-    @router.post("/distill", response_model=TaskHandle)
-    async def submit_distill(
-        request: Request,
-        body: DistillSubmit = Body(default_factory=DistillSubmit),
-    ) -> TaskHandle:
-        rt: ServerRuntime = get_runtime(request.app)
-        if body.pages_per_call < 1:
-            raise BadRequest(
-                f"pages_per_call must be >= 1, got {body.pages_per_call}"
-            )
-        runner: TaskRunner = make_distill_runner(
-            wiki_root=rt.root,
-            pages_per_call=body.pages_per_call,
-        )
-        row = await rt.manager.submit(
-            op="distill",
-            runner=runner,
-            params={"pages_per_call": body.pages_per_call},
         )
         return _handle(row)
 

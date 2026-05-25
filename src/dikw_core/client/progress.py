@@ -375,21 +375,6 @@ def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     console.print(table)
 
 
-def render_distill_report(console: Console, report: Mapping[str, Any]) -> None:
-    table = Table(title="dikw client distill", show_header=True, header_style="bold")
-    table.add_column("metric", justify="left")
-    table.add_column("count", justify="right")
-    table.add_row("K pages read", str(int(report.get("pages_read") or 0)))
-    table.add_row(
-        "candidates added", str(int(report.get("candidates_added") or 0))
-    )
-    table.add_row(
-        "rejected (invariant)", str(int(report.get("rejected") or 0))
-    )
-    table.add_row("errors", str(int(report.get("errors") or 0)))
-    console.print(table)
-
-
 def render_lint_report(console: Console, report: Mapping[str, Any]) -> None:
     issues = report.get("issues") or []
     if not isinstance(issues, list) or not issues:
@@ -609,13 +594,6 @@ def render_status(console: Console, counts: Mapping[str, Any]) -> None:
     table.add_row("chunks (I)", str(int(counts.get("chunks") or 0)))
     table.add_row("embeddings (I)", str(int(counts.get("embeddings") or 0)))
     table.add_row("links (K)", str(int(counts.get("links") or 0)))
-    wisdom = counts.get("wisdom_by_status") or {}
-    if isinstance(wisdom, dict):
-        for status_name in ("candidate", "approved", "archived"):
-            table.add_row(
-                f"wisdom {status_name}",
-                str(int(wisdom.get(status_name) or 0)),
-            )
     console.print(table)
     last = counts.get("last_wiki_log_ts")
     if last is not None:
@@ -811,7 +789,6 @@ __all__ = [
     "RetrieveStreamRenderer",
     "TaskProgressRenderer",
     "render_check_report",
-    "render_distill_report",
     "render_eval_report",
     "render_health_report",
     "render_ingest_report",

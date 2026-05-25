@@ -2,7 +2,7 @@
 
 Every command resolves a :class:`ClientConfig`, opens a single
 :class:`Transport`, calls the matching HTTP endpoint, and renders the
-response. Long ops (ingest / synth / distill / eval) submit a task,
+response. Long ops (ingest / synth / eval) submit a task,
 follow its NDJSON event stream, and dispatch to the op-specific final
 renderer; sync ops just decode the JSON body and render directly.
 
@@ -37,7 +37,6 @@ from .progress import (
     RetrieveStreamRenderer,
     TaskProgressRenderer,
     render_check_report,
-    render_distill_report,
     render_eval_report,
     render_health_report,
     render_import_report,
@@ -1079,59 +1078,6 @@ def synth_cmd(
     _run(_go())
 
 
-@app.command("distill")
-def distill_cmd(
-    pages_per_call: Annotated[
-        int,
-        typer.Option(
-            "--batch",
-            help="K-layer pages packed into one distill LLM call.",
-        ),
-    ] = 8,
-    wait: Annotated[
-        bool,
-        typer.Option(
-            "--wait",
-            help=(
-                "Block until the task finishes; render the DistillReport "
-                "and map the final status to the standard exit code."
-            ),
-        ),
-    ] = False,
-    plain: Annotated[
-        bool,
-        typer.Option("--plain", help="Disable progress widget."),
-    ] = False,
-    server: Annotated[str | None, _server_option()] = None,
-    token: Annotated[str | None, _token_option()] = None,
-) -> None:
-    """Propose W-layer candidates from current K-layer pages.
-
-    Default is async — submit + print JSON task handle. Use ``--wait``
-    to block + render + exit with task status."""
-
-    async def _go() -> None:
-        async with Transport.from_config(_resolve(server, token)) as t:
-            handle = await t.post_json(
-                "/v1/distill", json_body={"pages_per_call": pages_per_call}
-            )
-            task_id = str(handle["task_id"])
-            if not wait and not _serve_and_run_forces_wait():
-                _print_task_handle(task_id, str(handle.get("status") or "pending"))
-                return
-            status, payload = await _wait_and_render(t, task_id, plain=plain)
-        if status == "succeeded" and payload is not None:
-            render_distill_report(console, payload)
-            if int(payload.get("candidates_added") or 0):
-                console.print(
-                    "Review with [cyan]dikw client review list[/cyan] / "
-                    "[cyan]dikw client review approve <id>[/cyan]."
-                )
-        _exit_for_status(status, payload)
-
-    _run(_go())
-
-
 @app.command("eval")
 def eval_cmd(
     dataset: Annotated[
@@ -1305,111 +1251,6 @@ def _render_eval_result(result: Mapping[str, Any], *, pretty: bool) -> None:
             render_synth_eval_report(console, row)
         else:
             render_eval_report(console, row)
-
-
-# ---- review subcommands -----------------------------------------------
-
-review_app = typer.Typer(
-    help="Review wisdom candidates.", no_args_is_help=True
-)
-app.add_typer(review_app, name="review")
-
-
-@review_app.command("list")
-def review_list_cmd(
-    fmt: Annotated[
-        str,
-        typer.Option(
-            "--format",
-            help="Output format: 'json' (default) or 'table'.",
-        ),
-    ] = "json",
-    server: Annotated[str | None, _server_option()] = None,
-    token: Annotated[str | None, _token_option()] = None,
-) -> None:
-    """List candidate W-layer items awaiting review."""
-    _validate_format(fmt)
-
-    async def _go() -> None:
-        async with Transport.from_config(_resolve(server, token)) as t:
-            items = await t.get_json(
-                "/v1/wisdom", params={"status": "candidate"}
-            )
-        if fmt == "json":
-            console.print_json(json.dumps(items, ensure_ascii=False))
-            return
-        if not items:
-            console.print("[green]no candidates[/green]")
-            return
-        table = Table(
-            title="wisdom candidates", show_header=True, header_style="bold"
-        )
-        table.add_column("id")
-        table.add_column("kind")
-        table.add_column("conf", justify="right")
-        table.add_column("title")
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            conf_val = item.get("confidence")
-            conf_str = (
-                f"{float(conf_val):.2f}" if isinstance(conf_val, int | float) else "-"
-            )
-            table.add_row(
-                str(item.get("item_id") or ""),
-                str(item.get("kind") or ""),
-                conf_str,
-                str(item.get("title") or ""),
-            )
-        console.print(table)
-
-    _run(_go())
-
-
-@review_app.command("approve")
-def review_approve_cmd(
-    item_id: Annotated[str, typer.Argument(help="Wisdom item id (W-xxxxxx).")],
-    pretty: Annotated[bool, _pretty_option()] = False,
-    server: Annotated[str | None, _server_option()] = None,
-    token: Annotated[str | None, _token_option()] = None,
-) -> None:
-    """Approve a candidate."""
-
-    async def _go() -> None:
-        async with Transport.from_config(_resolve(server, token)) as t:
-            result = await t.post_json(f"/v1/wisdom/{item_id}/approve")
-        if not pretty:
-            print(json.dumps(result, ensure_ascii=False))
-            return
-        console.print(
-            f"[green]{result.get('item_id')} -> "
-            f"{result.get('new_status')}[/green]"
-        )
-
-    _run(_go())
-
-
-@review_app.command("reject")
-def review_reject_cmd(
-    item_id: Annotated[str, typer.Argument(help="Wisdom item id (W-xxxxxx).")],
-    pretty: Annotated[bool, _pretty_option()] = False,
-    server: Annotated[str | None, _server_option()] = None,
-    token: Annotated[str | None, _token_option()] = None,
-) -> None:
-    """Reject a candidate."""
-
-    async def _go() -> None:
-        async with Transport.from_config(_resolve(server, token)) as t:
-            result = await t.post_json(f"/v1/wisdom/{item_id}/reject")
-        if not pretty:
-            print(json.dumps(result, ensure_ascii=False))
-            return
-        console.print(
-            f"[yellow]{result.get('item_id')} -> "
-            f"{result.get('new_status')}[/yellow]"
-        )
-
-    _run(_go())
 
 
 # ---- pages subcommands ------------------------------------------------

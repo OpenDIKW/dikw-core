@@ -1,6 +1,6 @@
 """Async task subsystem: TaskManager, TaskStore, event schemas.
 
-Long-running engine operations (ingest, synth, distill, eval) are dispatched
+Long-running engine operations (ingest, synth, eval) are dispatched
 through a TaskManager that persists task rows + an append-only event log to a
 TaskStore (independent of wiki storage). Per-task ``asyncio.Condition``
 instances wake long-poll ``GET /v1/tasks/{id}/events`` handlers; cursor

@@ -56,12 +56,6 @@ _CLI_: `dikw client synth`
 _HTTP_: `POST /v1/synth`
 _Avoid_: summarize, build wiki
 
-**distill**:
-LLM-propose W-layer candidates from K-layer pages. Each candidate must cite ≥ 2 evidence pieces from K or D. Output requires `dikw client review approve` before becoming live wisdom.
-_CLI_: `dikw client distill`
-_HTTP_: `POST /v1/distill`
-_Avoid_: extract, derive
-
 **retrieve**:
 End-of-pipeline read path. Hybrid search (BM25 + vector + RRF) over the I layer returns ranked chunks + page refs. **No LLM call** — the agent owns synthesis (rewrite, expansion, conversation context, the final answer prompt). `dikw-core` no longer ships an in-engine `query` verb.
 _CLI_: `dikw client retrieve "..."`
@@ -73,8 +67,7 @@ _Avoid_: query, ask, search
 - **import** writes to `<base>/sources/`; **ingest** reads from it. Without import the user puts files there by hand; without ingest the files don't reach D/I.
 - A **source** becomes one or more **documents** after **ingest** (markdown front-matter splits, asset attachments, etc.).
 - A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple wiki pages).
-- **distill** consumes K-layer documents, never D-layer sources directly.
-- The user owns `<base>/sources/`, `<base>/wiki/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging).
+- The user owns `<base>/sources/`, `<base>/wiki/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written in 0.3.0; PR2 of the W refactor wires them into the documents table so they participate in retrieve/lint.
 - A K-layer **document** carries **provenance** edges back to the **source**(s) it was synth-authored from (`provenance` table, distinct from `links`). The reverse — "which K-pages derive from this source" — is the query this edge exists to answer.
 
 ## Example dialogue

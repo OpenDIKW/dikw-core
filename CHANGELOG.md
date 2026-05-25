@@ -7,6 +7,66 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### BREAKING: Wisdom layer refactor — PR1 of 4 (0.3.0)
+
+W layer is being reshaped from a LLM-distilled candidate/review
+pipeline into a hand-written first-class document layer. PR1 (this
+commit) is destructive — it removes the legacy surface so PR2 can wire
+wisdom files into the `documents` table on a clean slate.
+
+**Removed (this commit)**:
+
+- Engine: `api.distill` / `api.list_candidates` / `api.approve_wisdom` /
+  `api.reject_wisdom` / `api.DistillReport` / `api.AppliedWisdomRef`.
+- Storage Protocol: `put_wisdom` / `list_wisdom` / `set_wisdom_status` /
+  `get_wisdom` / `get_wisdom_evidence` / `upsert_wisdom_embeddings` /
+  `list_wisdom_missing_embedding` / `vec_search_wisdom`.
+- Schemas: `WisdomKind` (`principle`/`lesson`/`pattern`),
+  `WisdomStatus` (`candidate`/`approved`/`archived`), `WisdomItem`,
+  `WisdomEvidence`, `WisdomEmbeddingRow`, `WisdomVecHit`.
+  `WikiLogEntry.action` no longer accepts `"distill"` or `"review"`.
+  `StorageCounts.wisdom_by_status` field removed.
+- SQL tables: `wisdom_items` / `wisdom_evidence` / `wisdom_embed_meta`
+  / per-version `vec_wisdom_v<id>`. SCHEMA_VERSION bumped to 4 so
+  existing databases are rebuilt on next connect.
+- CLI: `dikw client distill`, `dikw client review list|approve|reject`.
+- HTTP: `POST /v1/distill`, `GET /v1/wisdom`,
+  `POST /v1/wisdom/{id}/approve|reject`.
+- Config: `provider.llm_max_tokens_distill` (was a dead knob now that
+  no engine call needs it), `schema.wisdom_kinds` (kind taxonomy gone).
+- Prompts: `src/dikw_core/prompts/distill.md`.
+- Init scaffold: `dikw init` no longer creates `wisdom/principles.md`
+  / `wisdom/lessons.md` / `wisdom/patterns.md` /
+  `wisdom/_candidates/.gitkeep`; just `wisdom/.gitkeep`.
+
+**Manual cleanup before re-ingest**:
+
+- Delete `wisdom/_candidates/` (if it exists) and the engine-generated
+  `wisdom/principles.md` / `wisdom/lessons.md` / `wisdom/patterns.md`
+  aggregates — preserve any content worth keeping by moving it into
+  `wisdom/<author>/<slug>.md` (the 0.3.0 layout PR2 will index). If
+  your existing `dikw.yml` lists `sources:` that overlaps `wisdom/`,
+  exclude `wisdom/` from that glob (PR2 will hardcode-skip it inside
+  `_iter_wisdom_files`; PR1 has no such guard).
+- Reset the storage backend — the `SCHEMA_VERSION` bump (3 → 4)
+  invalidates the existing fingerprint:
+  * SQLite: `rm -rf .dikw/` and rerun `dikw ingest`.
+  * Postgres: `DROP SCHEMA <your-dikw-schema> CASCADE; CREATE SCHEMA
+    <your-dikw-schema>;` against the configured DSN, then rerun
+    `dikw ingest`. The schema name comes from
+    `storage.schema` in `dikw.yml` (default `dikw`).
+- Remove `provider.llm_max_tokens_distill` and `schema.wisdom_kinds`
+  from any `dikw.yml`. **The pydantic models do not set
+  `extra='forbid'`** so these keys are *silently ignored*, not
+  rejected — leaving them in place is harmless today but accumulates
+  confusion as the schema continues to drift in 0.3.0 PR2/3/4. Treat
+  the removal as housekeeping.
+
+PR2 lands `dikw ingest` scanning `<root>/wisdom/**/*.md`,
+`DocumentRecord.status: WisdomStatus | None`
+(`{draft, published, favorite, archived}`), and the new
+`invalid_wisdom_status` lint kind.
+
 ### Changed: Dockerfile DIKW_VERSION now auto-syncs after PyPI publish
 
 `examples/docker/Dockerfile`'s `ARG DIKW_VERSION` used to lag

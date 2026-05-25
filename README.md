@@ -11,7 +11,7 @@
 
 AI-native knowledge engine that turns your documents into **Data → Information → Knowledge → Wisdom**.
 
-Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown wiki (the K layer), `dikw-core` adds a first-class **Wisdom layer** — distilled principles, lessons, and patterns that apply beyond any single source.
+Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown wiki (the K layer), `dikw-core` adds a first-class **Wisdom layer** for human-authored principles, lessons, and patterns that apply beyond any single source.
 
 > Status: alpha. Under active construction; APIs, on-disk formats, database schema, and CLI will change.
 
@@ -22,7 +22,7 @@ Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6
   - **D**ata — raw sources you curate.
   - **I**nformation — parsed, chunked, embedded, indexed (FTS5 + vectors).
   - **K**nowledge — LLM-authored wiki pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
-  - **W**isdom — evidence-backed principles / lessons / patterns, human-approved, surfaced at query time.
+  - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`. (W layer is being refactored to first-class documents in 0.3.0; PR1 removed the 0.2.x LLM-distill + review workflow, PR2 will index wisdom pages and PR3 will surface them in retrieve. See CHANGELOG.)
 - Pluggable LLM providers (API-first): Anthropic + OpenAI-compatible (covers OpenAI, Azure, Ollama, DeepSeek, Gemini-compat).
 - Pluggable storage: SQLite+sqlite-vec (default), Postgres+pgvector (enterprise) — swap by config.
 - **Client / server architecture.** A long-lived `dikw serve` (FastAPI + NDJSON) hosts the engine; the `dikw client …` Typer CLI talks to it over HTTP, streams progress events for long ops, and supports cancel / resume.
@@ -53,9 +53,6 @@ uv run dikw serve --base .   # in one terminal
 # in another:
 uv run dikw client status
 uv run dikw client synth               # K layer (needs ANTHROPIC_API_KEY or OpenAI-compat)
-uv run dikw client distill             # W-layer candidates
-uv run dikw client review list
-uv run dikw client review approve W-abcdef123456
 uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?"
 ```
 
@@ -100,8 +97,6 @@ keeps the local-vs-HTTP boundary unambiguous for both agents and humans:
 | `dikw client retrieve "<q>"` | hybrid search returning ranked chunks + page refs (no LLM call); agent supplies its own synthesis |
 | `dikw client synth [--all]` | LLM turns source docs into K-layer wiki pages; maintains `index.md`+`log.md`  |
 | `dikw client lint [propose\|proposals\|apply]` | report broken wikilinks / orphan pages / duplicate titles; propose + apply structured fixes |
-| `dikw client distill`       | LLM proposes W-layer candidates (each needs ≥ 2 pieces of evidence)           |
-| `dikw client review {list,approve,reject}` | drive the candidate -> approved / archived state machine       |
 | `dikw client pages {list,get,links}` | enumerate pages / read a page body + chunk anchors / walk the K-layer link graph |
 | `dikw client graph get`     | fetch the whole base graph (nodes + edges + unresolved wikilinks) in one read |
 | `dikw client assets get <id> --output <file>` | download a content-addressed asset by sha256 id              |
@@ -135,7 +130,7 @@ provider:
 actual vendor is whatever `llm_base_url` points at.
 
 - `anthropic_compat` → uses the `anthropic` async SDK with `cache_control`
-  on the system prompt, so repeated synth/distill calls hit the prompt cache.
+  on the system prompt, so repeated synth calls hit the prompt cache.
   Set `llm_base_url` to retarget the SDK at any Anthropic-protocol-compatible
   endpoint (e.g., MiniMax's `https://api.minimaxi.com/anthropic`); leave null
   for api.anthropic.com.
@@ -184,7 +179,7 @@ export ANTHROPIC_API_KEY=<your-MiniMax-key>
 export DIKW_EMBEDDING_API_KEY=<your-Gitee-key>
 ```
 
-Verify connectivity **before** running ingest/synth/distill. The two legs can be
+Verify connectivity **before** running ingest/synth. The two legs can be
 probed separately, which is useful when you set up one vendor first:
 
 ```bash

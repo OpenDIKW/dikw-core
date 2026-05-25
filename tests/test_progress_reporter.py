@@ -219,63 +219,6 @@ class _ScriptedSynthLLM:
 
 
 @pytest.mark.asyncio
-async def test_distill_emits_one_event_per_batch(
-    wiki_with_fixtures: Path,
-) -> None:
-    embedder = FakeEmbeddings()
-    await api.ingest(wiki_with_fixtures, embedder=embedder)
-
-    # Seed K-layer pages via synthesize so distill has docs to batch over.
-    synth_script = {
-        "sources/notes/karpathy-wiki.md": (
-            '<page path="wiki/concepts/karpathy.md" type="concept">\n'
-            "---\ntags: [karpathy]\n---\n\n"
-            "# Karpathy\n\nDeterministic scoping matters.\n"
-            "</page>"
-        ),
-        "sources/notes/dikw.md": (
-            '<page path="wiki/concepts/dikw.md" type="concept">\n'
-            "---\ntags: [dikw]\n---\n\n"
-            "# DIKW\n\nFour layers stacked.\n"
-            "</page>"
-        ),
-        "sources/notes/retrieval.md": (
-            '<page path="wiki/concepts/retrieval.md" type="concept">\n'
-            "---\ntags: [retrieval]\n---\n\n"
-            "# Retrieval\n\nRRF fuses BM25 with dense.\n"
-            "</page>"
-        ),
-    }
-    await api.synthesize(
-        wiki_with_fixtures,
-        llm=_ScriptedSynthLLM(synth_script),
-        embedder=embedder,
-    )
-
-    reporter = ListReporter()
-    # FakeLLM returns "STUB: wired up." — parse_distill_response will
-    # produce zero candidates per batch, but the per-batch progress event
-    # still fires regardless of LLM output quality.
-    llm = FakeLLM()
-    report = await api.distill(
-        wiki_with_fixtures, llm=llm, pages_per_call=1, reporter=reporter
-    )
-
-    distill_events = [
-        e for e in reporter.events
-        if e.kind == "progress" and e.payload["phase"] == "distill"
-    ]
-    # pages_per_call=1 → one event per K-layer page synthesised above.
-    assert report.pages_read >= 3
-    assert len(distill_events) == report.pages_read
-    # detail dict carries the per-batch counters server clients render.
-    for ev in distill_events:
-        detail = ev.payload["detail"]
-        assert detail is not None
-        assert {"pages", "candidates_added", "rejected"} <= set(detail.keys())
-
-
-@pytest.mark.asyncio
 async def test_cancellation_aborts_ingest(wiki_with_fixtures: Path) -> None:
     reporter = ListReporter()
     reporter.cancel_token().cancel()  # pre-seed: bail on first checkpoint

@@ -2,7 +2,7 @@
 
 Reports four classes of issue that are safe to detect deterministically:
 
-* ``broken_wikilink`` — wikilinks whose target title isn't a known K/W page.
+* ``broken_wikilink`` — wikilinks whose target title isn't a known K page.
 * ``orphan_page`` — pages with no inbound wikilinks and no listing source.
 * ``duplicate_title`` — more than one K-layer page with identical title.
 * ``non_atomic_page`` — page body looks like multiple wikipage worth of
@@ -10,8 +10,8 @@ Reports four classes of issue that are safe to detect deterministically:
   Layer-3 backstop for the Zettelkasten atomicity rule the synth prompt
   enforces in layer 1; the prompt can drift, this can't.
 
-Phases 3+ may add semantic checks (stale claims, missing evidence for
-approved wisdom items, etc.); this module intentionally stays lexical.
+Later phases may add semantic checks; this module intentionally stays
+lexical.
 """
 
 from __future__ import annotations

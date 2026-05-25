@@ -34,12 +34,6 @@ from ..schemas import (
     StorageCounts,
     VecHit,
     WikiLogEntry,
-    WisdomEmbeddingRow,
-    WisdomEvidence,
-    WisdomItem,
-    WisdomKind,
-    WisdomStatus,
-    WisdomVecHit,
 )
 
 
@@ -329,86 +323,6 @@ class Storage(Protocol):
         self, *, since_ts: float | None = None, limit: int | None = None
     ) -> list[WikiLogEntry]:
         """Return wiki-log entries in chronological order."""
-        ...
-
-    # ---- W layer ---------------------------------------------------------
-
-    async def put_wisdom(
-        self, item: WisdomItem, evidence: Sequence[WisdomEvidence]
-    ) -> None: ...
-    async def list_wisdom(
-        self,
-        *,
-        status: WisdomStatus | None = None,
-        kind: WisdomKind | None = None,
-    ) -> list[WisdomItem]: ...
-    async def set_wisdom_status(
-        self,
-        item_id: str,
-        status: WisdomStatus,
-        *,
-        approved_ts: float | None = None,
-    ) -> None:
-        """Update a wisdom item's status. Pass ``approved_ts`` to stamp approvals."""
-        ...
-
-    async def get_wisdom_evidence(self, item_id: str) -> list[WisdomEvidence]:
-        """Return evidence rows attached to ``item_id`` in insert order."""
-        ...
-
-    async def get_wisdom(self, item_id: str) -> WisdomItem | None: ...
-
-    # ---- W layer: wisdom embeddings --------------------------------------
-
-    async def upsert_wisdom_embeddings(
-        self, rows: Sequence[WisdomEmbeddingRow]
-    ) -> None:
-        """Persist wisdom-item embedding vectors.
-
-        Mirror of ``upsert_asset_embeddings``: per-row dim must match the
-        ``dim`` recorded on the row's ``version_id`` in ``embed_versions``;
-        otherwise raise ``StorageError``. Re-upserting the same
-        ``(item_id, version_id)`` replaces in place — there is exactly
-        one vector per (item, version).
-
-        Wisdom items reuse the **text** modality so a single active text
-        ``embed_versions`` row covers both chunks and wisdom — apply-at-
-        query compares a question's text embedding against wisdom
-        embeddings in the same cosine space. Per-version vector tables
-        stay separate (``vec_wisdom_v<id>`` keyed by ``item_id TEXT`` vs
-        ``vec_chunks_v<id>`` keyed by ``chunk_id INTEGER``) because the
-        identity columns can't share a table.
-        """
-        ...
-
-    async def list_wisdom_missing_embedding(
-        self, *, version_id: int
-    ) -> list[WisdomItem]:
-        """Wisdom items with no ``wisdom_embed_meta`` row for ``version_id``.
-
-        Symmetric API to ``list_assets_missing_embedding`` /
-        ``list_chunks_missing_embedding``; reserved for the wisdom-
-        embedding pipeline that will follow once distill+approve learn
-        to enqueue items here. No call site in the engine yet.
-        """
-        ...
-
-    async def vec_search_wisdom(
-        self,
-        embedding: list[float],
-        *,
-        version_id: int,
-        limit: int = 20,
-    ) -> list[WisdomVecHit]:
-        """ANN search against the wisdom vector table for ``version_id``.
-
-        Returns at most ``limit`` ``WisdomVecHit`` rows ordered by
-        ascending cosine distance (smaller = more similar). Empty index
-        returns ``[]`` — same shape as ``vec_search`` /
-        ``vec_search_assets``. Adapters with no wisdom vectors yet raise
-        ``NotSupported``; the caller in ``wisdom/apply.py`` falls back
-        to the Jaccard path.
-        """
         ...
 
     # ---- D layer: multimedia assets --------------------------------------

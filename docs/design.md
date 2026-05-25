@@ -1,5 +1,17 @@
 # dikw-core — AI-Native Knowledge Engine (Plan)
 
+> **⚠ 0.3.0 W-layer refactor in flight (PR1 of 4) — many sections
+> below are stale.** This document still describes the prior W layer
+> as an LLM-distilled candidate/review pipeline (`distill` /
+> `_candidates/` / `wisdom_items` table / `review approve|reject` /
+> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind` /
+> `WisdomStatus` etc.). All of those are removed in 0.3.0 PR1 and
+> being replaced with a hand-written first-class document layer
+> under `wisdom/<author>/<slug>.md`. The Wisdom Layer Design section
+> further down carries a current `[WIP — being replaced]` block;
+> treat **every** other distill/wisdom_items mention in this file as
+> historical until PR4 rewrites the spec end-to-end. See CHANGELOG.
+
 ## Context
 
 `dikw-core` is a greenfield, open-source project. The goal is an **AI-native knowledge engine** inspired by Karpathy's "LLM Wiki" pattern ([gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), but extended end-to-end across the **DIKW pyramid** — Data → Information → Knowledge → Wisdom.
@@ -377,62 +389,47 @@ Each operation is implemented in `dikw_core.api` and surfaced over HTTP by the s
 |---|---|---|---|
 | `ingest(paths)` | file paths | updated `documents`/`chunks`/`documents_fts`/`vec_chunks_v<id>` | D→I; deterministic; idempotent by content hash |
 | `synthesize(scope)` | source doc_ids (or "new since log") | new/updated wiki pages + wiki_log entries | I→K; LLM call with prompts/synthesize.md |
-| `distill(window)` | optional time/topic window | candidate wisdom items in `wisdom/_candidates/` + `wisdom_items(status='candidate')` | K→W; LLM call with prompts/distill.md; always produces candidates, never auto-approves |
-| `review()` | — | interactive CLI workflow to approve/edit/reject candidates | W gate; writes final files to `wisdom/*.md` |
-| `retrieve(q)` | user question | ranked chunks + page refs (no LLM call) | hybrid search via `info/search.py` (BM25 + vec RRF); applicable wisdom surfaces separately via `GET /v1/wisdom/applicable?q=...` (PR-5); **LLM synthesis is the agent's responsibility, not dikw-core's** |
-| `lint()` | — | report of broken links, stale claims, orphan pages, duplicated entities | K+W hygiene; prompts/lint.md |
+| `retrieve(q)` | user question | ranked chunks + page refs (no LLM call) | hybrid search via `info/search.py` (BM25 + vec RRF); **LLM synthesis is the agent's responsibility, not dikw-core's** |
+| `lint()` | — | report of broken links, orphan pages, duplicated entities | K+W hygiene; prompts/lint.md |
 | `status()` | — | counts per layer, last-ingest, last-synthesize, pending review | for CLI and HTTP `/v1/status` |
 
-## Wisdom Layer Design (the novel bit)
+## Wisdom Layer Design
 
-**What "wisdom" means operationally** — a short, human-readable claim that (a) can be stated independent of any single source, (b) has at least N≥2 pieces of evidence drawn from K-layer pages or D-layer passages, (c) carries a kind and a status.
+> **[WIP — being replaced in 0.3.0]** The 0.3.0 refactor reshapes W from
+> an LLM-distilled candidate/review pipeline into a hand-written
+> first-class document layer. PR1 (this commit) removes the legacy
+> `distill` / `list_candidates` / `approve_wisdom` / `reject_wisdom` API
+> + the `wisdom_items` / `wisdom_evidence` / `wisdom_embed_meta` tables
+> + the `_candidates/` queue + the `principles.md` / `lessons.md` /
+> `patterns.md` aggregate files. PR2 wires wisdom files into the
+> `documents` table; PR3 surfaces them on `dikw client retrieve` and
+> `dikw client lint`; PR4 finalises this section. See CHANGELOG for
+> the migration path.
 
-**Kinds** (opinionated, fixed small vocabulary; MVP):
-- `principle` — normative: "Prefer deterministic scoping over probabilistic retrieval."
-- `lesson` — retrospective: "Mocked DB tests hid the prod-migration failure last quarter."
-- `pattern` — structural: "When ingesting PDFs, cache per-page text before chunking."
+The 0.3.0 endpoint:
 
-**Page format** — each wisdom file is markdown with front-matter:
-```markdown
----
-id: W-000042
-kind: principle
-status: approved
-confidence: 0.82
-created: 2026-04-21
-approved: 2026-04-22
-evidence:
-  - doc: wiki/concepts/rag-vs-wiki.md
-    excerpt: "Karpathy argues scoping should be deterministic..."
-  - doc: sources/notes/2026-04-10-meeting.md
-    excerpt: "We agreed to stop using live LLM calls for routing."
----
+- Wisdom is a plain markdown file under `wisdom/<author>/<slug>.md` that
+  a human writes by hand in Obsidian. Authorship is encoded by directory
+  (`wisdom/elon-musk/...` attributes the page to `elon-musk`).
+- YAML frontmatter: optional `sources: [...]` list (same semantics as
+  wiki pages — populates the `provenance` table), optional
+  `status: draft | published | favorite | archived` enum (omitted ≡
+  published), free-form additional keys.
+- Body: markdown with `[[wikilinks]]` that resolve across both wiki and
+  wisdom layers via title.
+- Persistence: `dikw ingest` scans `<root>/wisdom/**/*.md` after the
+  `sources:` scan, hash-idempotent, runs the same `persist_page` pipeline
+  as wiki (`documents` row + `chunks` + per-version embedding + `links`
+  + `provenance`).
+- Retrieval: another searchable layer. `dikw client retrieve` returns
+  `Hit` rows whose `layer` field is `"wisdom"` or `"wiki"` so the caller
+  can group or weight.
+- Lint (`broken_wikilink`, `missing_provenance`, `orphan_page`,
+  `invalid_wisdom_status`) automatically covers both layers.
 
-# Prefer deterministic scoping over probabilistic retrieval
-
-Use the index and link graph to narrow scope; only invoke the LLM after
-the candidate set is small and the question is concrete. This compresses
-cost and improves reproducibility, especially for queries the agent will
-re-ask many times.
-```
-
-**Distillation workflow** (`wisdom/distill.py`):
-1. Scope: recent wiki activity (since last `distill` entry in wiki_log) or user-given topic.
-2. Retrieve: top-K K-layer pages + their wikilinked neighbors via the link graph.
-3. Prompt the LLM with `prompts/distill.md` — asks for candidate claims + evidence excerpts + kind + confidence.
-4. Persist each candidate as `wisdom/_candidates/<slug>.md` AND as a row in `wisdom_items(status='candidate')`.
-5. Never auto-promote. A candidate becomes approved only via `dikw client review`.
-
-**Surfacing to agents** (`wisdom/apply.py`):
-- Exposes `pick_applicable(q, limit)` as a pure function over approved wisdom items: lexical overlap + a cheap semantic pass against the question.
-- Server publishes this via `GET /v1/wisdom/applicable?q=...` so agents can preview which wisdom would shape an answer **before** burning any of their own LLM calls.
-- Agents decide whether to inject the returned items into their own prompt. dikw-core does not perform the synthesis itself — `retrieve` returns chunk hits, the wisdom endpoint above returns wisdom refs, and the agent stitches them together client-side.
-
-**Why this design pulls its weight**:
-- Evidence is required → reduces hallucinated "axioms."
-- Explicit `status` and `_candidates/` queue → preserves human oversight without blocking throughput.
-- Kind vocabulary is small and fixed → schema stability; wiki doesn't devolve into free-form prose.
-- Surfacing via `/v1/wisdom/applicable` → agents can ground their answers in approved wisdom, the W layer actually shapes outputs (not just archival).
+There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
+machine. `status` is a flat enum the human sets; the engine validates it
+via lint but does not (yet) consume it for retrieval filtering or boost.
 
 ## Storage Abstraction
 

@@ -14,6 +14,12 @@
 -- runtime. Switching a model = new ``embed_versions`` row = new vec
 -- table; prior vectors survive in-place under their own version_id.
 --
+-- W layer (wisdom) is being refactored in 0.3.0 to first-class
+-- documents under ``wisdom/<author>/<slug>.md``. PR1 removes the
+-- legacy ``wisdom_items`` / ``wisdom_evidence`` / ``wisdom_embed_meta``
+-- tables; PR2 wires wisdom files into ``documents`` via
+-- ``layer = 'wisdom'``.
+--
 -- ``meta_kv`` is redeclared here (it is also created inline ahead of
 -- this file by ``migrate()`` so the schema-version reader has a row to
 -- query against) so a schema diff sees the full shape in one place.
@@ -128,37 +134,6 @@ CREATE TABLE IF NOT EXISTS wiki_log (
 
 CREATE INDEX IF NOT EXISTS wiki_log_ts ON wiki_log(ts);
 
--- ---- W layer -------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS wisdom_items (
-    item_id     TEXT PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('principle','lesson','pattern')),
-    status      TEXT NOT NULL DEFAULT 'candidate'
-                CHECK (status IN ('candidate','approved','archived')),
-    path        TEXT,
-    title       TEXT NOT NULL,
-    body        TEXT NOT NULL,
-    confidence  REAL NOT NULL DEFAULT 0.5,
-    created_ts  REAL NOT NULL,
-    approved_ts REAL
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_status ON wisdom_items(status);
-CREATE INDEX IF NOT EXISTS wisdom_kind ON wisdom_items(kind);
-
--- ``id`` mirrors the Postgres ``BIGSERIAL PRIMARY KEY`` so the two
--- adapters return evidence rows in the same insertion order via the
--- same ``ORDER BY id`` clause.
-CREATE TABLE IF NOT EXISTS wisdom_evidence (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id TEXT NOT NULL REFERENCES wisdom_items(item_id) ON DELETE CASCADE,
-    doc_id  TEXT NOT NULL REFERENCES documents(doc_id),
-    excerpt TEXT NOT NULL,
-    line    INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_evidence_item ON wisdom_evidence(item_id);
-
 -- ---- Multimedia assets ---------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -238,21 +213,6 @@ CREATE TABLE IF NOT EXISTS asset_embed_meta (
 
 CREATE INDEX IF NOT EXISTS asset_embed_meta_version
     ON asset_embed_meta(version_id);
-
--- Per-wisdom-item embedding metadata. Mirror of chunk_embed_meta and
--- asset_embed_meta. The per-version vector lives in
--- vec_wisdom_v<version_id> (runtime-created in storage/sqlite.py because
--- sqlite-vec needs the dim parameterized into the virtual-table CREATE).
--- Wisdom rides on the text modality so a single active text
--- embed_versions row covers both chunks and wisdom.
-CREATE TABLE IF NOT EXISTS wisdom_embed_meta (
-    item_id    TEXT    NOT NULL REFERENCES wisdom_items(item_id) ON DELETE CASCADE,
-    version_id INTEGER NOT NULL REFERENCES embed_versions(version_id),
-    PRIMARY KEY (item_id, version_id)
-);
-
-CREATE INDEX IF NOT EXISTS wisdom_embed_meta_version
-    ON wisdom_embed_meta(version_id);
 
 -- ---- Embedding cache ----------------------------------------------------
 

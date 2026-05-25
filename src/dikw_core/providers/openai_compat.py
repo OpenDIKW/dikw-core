@@ -142,8 +142,8 @@ class OpenAICompatLLM:
         tools: list[ToolSpec] | None = None,
     ) -> AsyncIterator[LLMStreamEvent]:
         # Tool-call streaming would need to interleave token + tool_use
-        # events; query/synth/distill don't use tools yet, so the stream
-        # path mirrors ``complete``'s tool-free shape.
+        # events; synth doesn't use tools yet, so the stream path mirrors
+        # ``complete``'s tool-free shape.
         _ = tools
         client = self._get_client()
         messages = [

@@ -1,11 +1,10 @@
 """CLI op-command contract: async-by-default + ``--wait`` opt-in.
 
-Covers the 6 task-submitting op commands — ``ingest``, ``synth``,
-``distill``, ``eval``, ``lint propose``, ``lint apply`` — flipped from
-blocking-by-default (stream until terminal) to async-by-default (submit
-+ print task handle + exit 0). The blocking shape is opt-in via
-``--wait`` and the exit-code mapping under that flag is the agent
-contract.
+Covers the task-submitting op commands — ``ingest``, ``synth``,
+``eval``, ``lint propose``, ``lint apply`` — flipped from blocking-by-
+default (stream until terminal) to async-by-default (submit + print
+task handle + exit 0). The blocking shape is opt-in via ``--wait`` and
+the exit-code mapping under that flag is the agent contract.
 
 Exit code mapping under ``--wait``:
 
@@ -79,20 +78,6 @@ def test_synth_default_async_prints_task_handle(
     assert "events_url" in handle
 
 
-def test_distill_default_async_prints_task_handle(
-    asgi_client: tuple[Any, ServerRuntime],
-    patch_transport_factory: Callable[[], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(synth_op, "build_llm", lambda _cfg, **_kw: FakeLLM())
-    monkeypatch.setattr(synth_op, "build_embedder", lambda _cfg: FakeEmbeddings())
-    patch_transport_factory()
-    result = _run(["client", "distill"])
-    assert result.exit_code == 0, result.stdout
-    handle = json.loads(result.stdout)
-    assert handle.get("task_id")
-
-
 def test_lint_propose_default_async_prints_task_handle(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
@@ -122,14 +107,3 @@ def test_ingest_wait_renders_report_exits_zero(
     assert "scanned" in result.stdout.lower()
 
 
-def test_distill_wait_renders_report(
-    asgi_client: tuple[Any, ServerRuntime],
-    patch_transport_factory: Callable[[], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(synth_op, "build_llm", lambda _cfg, **_kw: FakeLLM())
-    monkeypatch.setattr(synth_op, "build_embedder", lambda _cfg: FakeEmbeddings())
-    patch_transport_factory()
-    result = _run(["client", "distill", "--wait", "--plain"])
-    assert result.exit_code == 0, result.stdout
-    assert "K pages read" in result.stdout

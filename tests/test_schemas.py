@@ -13,8 +13,6 @@ from dikw_core.schemas import (
     AssetKind,
     AssetRecord,
     ImageMediaMeta,
-    WisdomEmbeddingRow,
-    WisdomVecHit,
 )
 
 
@@ -87,43 +85,3 @@ def test_asset_record_with_image_meta_round_trips() -> None:
     assert restored.media_meta.height == 480
 
 
-# ---- Wisdom embedding DTOs (P0) ------------------------------------------
-
-
-def test_wisdom_embedding_row_round_trips() -> None:
-    """``WisdomEmbeddingRow`` carries the (item_id, version_id, embedding)
-    triple needed by ``upsert_wisdom_embeddings``. The shape mirrors
-    ``EmbeddingRow`` and ``AssetEmbeddingRow``; only the identity column
-    flips from int chunk_id / sha asset_id to text item_id."""
-    row = WisdomEmbeddingRow(
-        item_id="W-3a8f1c",
-        version_id=1,
-        embedding=[0.1, 0.2, 0.3, 0.4],
-    )
-    payload = row.model_dump_json()
-    restored = WisdomEmbeddingRow.model_validate_json(payload)
-    assert restored == row
-
-
-def test_wisdom_embedding_row_does_not_carry_chunk_or_asset_id() -> None:
-    """Pinned dead so a future copy-paste from ``EmbeddingRow`` /
-    ``AssetEmbeddingRow`` doesn't smuggle the wrong identity column in."""
-    fields = WisdomEmbeddingRow.model_fields
-    assert "chunk_id" not in fields
-    assert "asset_id" not in fields
-    assert "item_id" in fields
-
-
-def test_wisdom_vec_hit_round_trips() -> None:
-    hit = WisdomVecHit(item_id="W-3a8f1c", distance=0.123)
-    payload = hit.model_dump_json()
-    restored = WisdomVecHit.model_validate_json(payload)
-    assert restored == hit
-
-
-def test_wisdom_vec_hit_distance_smaller_means_closer() -> None:
-    """Sanity: same convention as ``VecHit`` / ``AssetVecHit`` — distance is
-    cosine distance, lower is more similar. Engine code sorts ascending."""
-    near = WisdomVecHit(item_id="W-near", distance=0.05)
-    far = WisdomVecHit(item_id="W-far", distance=0.95)
-    assert near.distance < far.distance

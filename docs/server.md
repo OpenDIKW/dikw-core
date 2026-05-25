@@ -29,8 +29,8 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 
 | family | examples | shape |
 |---|---|---|
-| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `GET /v1/base/pages/{path}/provenance`, `GET /v1/base/graph`, `POST /v1/doc/search`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve` | request / response JSON |
-| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,distill,eval,lint.propose,lint.apply}` → `task_id`; `GET /v1/tasks?cursor=<opaque>&limit=M&op=…&status=…` (cursor JSON, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}` / `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
+| **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `GET /v1/base/pages/{path}/provenance`, `GET /v1/base/graph`, `POST /v1/doc/search` | request / response JSON |
+| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,eval,lint.propose,lint.apply}` → `task_id`; `GET /v1/tasks?cursor=<opaque>&limit=M&op=…&status=…` (cursor JSON, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}` / `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
 | **Streaming retrieve** | `POST /v1/retrieve` | NDJSON: `retrieve_started → retrieval_done → final`. **No LLM tokens stream from the server** — agents compose chunks with their own LLM. |
 | **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
@@ -142,8 +142,8 @@ in-memory state is gone.
 * **Postgres** — multiple `dikw serve` instances against one base are
   supported by the storage layer (each task is one transaction), but
   there's no orchestration logic. If you need multi-server topologies,
-  put a load balancer in front and accept that ingest/synth/distill
-  tasks racing on the same source will produce one winner per `(path,
+  put a load balancer in front and accept that ingest/synth tasks
+  racing on the same source will produce one winner per `(path,
   content_hash)` pair via storage-level upsert.
 * **Filesystem backend** — single-writer only by design. Don't run two
   servers against the same base.
