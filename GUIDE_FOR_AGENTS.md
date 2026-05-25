@@ -153,7 +153,7 @@ Expected shape:
   "layer_counts": {
     "sources": 0,
     "wiki_pages": 0,
-    "wisdom_items": 0,
+    "wisdom_items": 0,   // 0.3.0 PR1: always 0 (wisdom is not yet indexed; PR2 lands wisdom-as-documents)
     "chunks": 0
   },
   "providers": {
@@ -199,9 +199,12 @@ Install and use `dikw-skills` for operational workflows:
 - retrieve chunks, pages, graph links, provenance edges (page ↔ source
   attribution), and assets
 - import local source material
-- ingest, synthesize, distill, lint, review, and eval (lint includes
-  `missing_provenance` for backfilling the provenance table on legacy
-  bases)
+- ingest, synthesize, lint, and eval (lint includes `missing_provenance`
+  for backfilling the provenance table on legacy bases). 0.3.0 PR1
+  removed the prior `distill` + `review` verbs; the W layer is being
+  refactored into a hand-written first-class document layer
+  (PR2 wires `wisdom/` files into ingest)
+
 - follow async tasks with cursor events, status, wait, and cancel
 
 `dikw-skills` is the maintained agent-facing CLI SOP. Keep detailed command

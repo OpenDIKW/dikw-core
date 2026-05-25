@@ -1,5 +1,17 @@
 # dikw-core — AI-Native Knowledge Engine (Plan)
 
+> **⚠ 0.3.0 W-layer refactor in flight (PR1 of 4) — many sections
+> below are stale.** This document still describes the prior W layer
+> as an LLM-distilled candidate/review pipeline (`distill` /
+> `_candidates/` / `wisdom_items` table / `review approve|reject` /
+> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind` /
+> `WisdomStatus` etc.). All of those are removed in 0.3.0 PR1 and
+> being replaced with a hand-written first-class document layer
+> under `wisdom/<author>/<slug>.md`. The Wisdom Layer Design section
+> further down carries a current `[WIP — being replaced]` block;
+> treat **every** other distill/wisdom_items mention in this file as
+> historical until PR4 rewrites the spec end-to-end. See CHANGELOG.
+
 ## Context
 
 `dikw-core` is a greenfield, open-source project. The goal is an **AI-native knowledge engine** inspired by Karpathy's "LLM Wiki" pattern ([gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), but extended end-to-end across the **DIKW pyramid** — Data → Information → Knowledge → Wisdom.

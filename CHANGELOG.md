@@ -44,11 +44,23 @@ wisdom files into the `documents` table on a clean slate.
 - Delete `wisdom/_candidates/` (if it exists) and the engine-generated
   `wisdom/principles.md` / `wisdom/lessons.md` / `wisdom/patterns.md`
   aggregates — preserve any content worth keeping by moving it into
-  `wisdom/<author>/<slug>.md` (the 0.3.0 layout PR2 will index).
-- Delete `.dikw/` (or run a Postgres rebuild) — the SCHEMA_VERSION bump
-  invalidates the existing fingerprint.
+  `wisdom/<author>/<slug>.md` (the 0.3.0 layout PR2 will index). If
+  your existing `dikw.yml` lists `sources:` that overlaps `wisdom/`,
+  exclude `wisdom/` from that glob (PR2 will hardcode-skip it inside
+  `_iter_wisdom_files`; PR1 has no such guard).
+- Reset the storage backend — the `SCHEMA_VERSION` bump (3 → 4)
+  invalidates the existing fingerprint:
+  * SQLite: `rm -rf .dikw/` and rerun `dikw ingest`.
+  * Postgres: `DROP SCHEMA <your-dikw-schema> CASCADE; CREATE SCHEMA
+    <your-dikw-schema>;` against the configured DSN, then rerun
+    `dikw ingest`. The schema name comes from
+    `storage.schema` in `dikw.yml` (default `dikw`).
 - Remove `provider.llm_max_tokens_distill` and `schema.wisdom_kinds`
-  from any `dikw.yml`; pydantic config validation will refuse them.
+  from any `dikw.yml`. **The pydantic models do not set
+  `extra='forbid'`** so these keys are *silently ignored*, not
+  rejected — leaving them in place is harmless today but accumulates
+  confusion as the schema continues to drift in 0.3.0 PR2/3/4. Treat
+  the removal as housekeeping.
 
 PR2 lands `dikw ingest` scanning `<root>/wisdom/**/*.md`,
 `DocumentRecord.status: WisdomStatus | None`

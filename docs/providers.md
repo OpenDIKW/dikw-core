@@ -14,7 +14,7 @@ to speak), not the vendor — vendor is whatever `llm_base_url` points at:
   `llm_base_url` retargets it at any Anthropic-protocol-compatible
   endpoint (e.g., MiniMax's `https://api.minimaxi.com/anthropic`).
   Applies `cache_control: ephemeral` on the system prompt, so repeated
-  synth / distill within the 5-minute TTL hit the prompt cache.
+  synth calls within the 5-minute TTL hit the prompt cache.
   Leave `llm_base_url` null to talk to api.anthropic.com directly.
 - **`openai_compat`** — uses the `openai` async SDK against any
   `llm_base_url` that speaks the OpenAI HTTP surface. Covers OpenAI,
@@ -138,9 +138,9 @@ automation, wrap the call in your own retry layer (e.g., `tenacity`).
 
 The `AnthropicCompatLLM` provider passes `cache_control: {"type": "ephemeral"}`
 on the system prompt, cutting repeat-call input-token cost by ~90%
-within a 5-minute TTL. Synth / distill both benefit. (Retrieve never
-calls the LLM — answer synthesis is the agent's job — so prompt caching
-is irrelevant on the read path.)
+within a 5-minute TTL. Synth benefits. (Retrieve never calls the LLM —
+answer synthesis is the agent's job — so prompt caching is irrelevant on
+the read path.)
 
 **`openai_compat` does not expose prompt caching** — GLM / Gemini /
 DeepSeek pay full price on every call even with a stable system
@@ -149,15 +149,15 @@ cost model is different from the Anthropic leg.
 
 ### 5. `max_tokens` is per-op, configurable via `dikw.yml`
 
-Defaults (in [`config.py`](../src/dikw_core/config.py)):
-`provider.llm_max_tokens_synth = 2048`,
-`provider.llm_max_tokens_distill = 2048`. These are comfortable for all
-tested vendors, but some cost-optimized models (a few GLM-Flash
-variants, smaller Gemini Nano endpoints) cap responses below 2048 and
-return 400. Override per-base by adding the field(s) to your
-`dikw.yml` `provider:` block — no code change needed. There is no
-`llm_max_tokens_query` knob; `retrieve` doesn't call an LLM, so the
-read-path budget lives on the agent side.
+Default (in [`config.py`](../src/dikw_core/config.py)):
+`provider.llm_max_tokens_synth = 2048`. Comfortable for all tested
+vendors, but some cost-optimized models (a few GLM-Flash variants,
+smaller Gemini Nano endpoints) cap responses below 2048 and return 400.
+Override per-base by adding the field to your `dikw.yml` `provider:`
+block — no code change needed. There is no `llm_max_tokens_query` knob;
+`retrieve` doesn't call an LLM, so the read-path budget lives on the
+agent side. (The 0.2.x `llm_max_tokens_distill` knob was removed in
+the 0.3.0 W refactor; pydantic ignores it if still present in your yml.)
 
 ### 6. Two separate keys, on purpose
 
@@ -239,9 +239,9 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
 - **gpt-5.5 / gpt-5.4-mini / gpt-5.3-codex are ChatGPT-only.** They are
   not exposed at `api.openai.com`; pointing `llm_base_url` at the public
   OpenAI API will return `model_not_found`.
-- **No prompt caching.** Repeated synth / distill within the same
-  session pay full input-token cost — same caveat as `openai_compat`,
-  unlike `anthropic_compat`'s `cache_control: ephemeral`.
+- **No prompt caching.** Repeated synth calls within the same session
+  pay full input-token cost — same caveat as `openai_compat`, unlike
+  `anthropic_compat`'s `cache_control: ephemeral`.
 - **Reasoning fragments are dropped today.** dikw's `LLMStreamEvent`
   Protocol carries a `reasoning` event type and the codex provider emits
   it for `response.reasoning_summary_text.delta` events, but the
@@ -459,7 +459,7 @@ config:
 - [ ] If you're migrating from another vendor, `.dikw/index.sqlite` is
       deleted (see gotcha #1).
 - [ ] Costs understood: if the LLM leg is `openai_compat`, you pay full
-      input-token price on every synth / distill — no prompt caching.
+      input-token price on every synth call — no prompt caching.
 - [ ] If the LLM leg is `openai_codex`, you've authenticated via
       `dikw auth login openai-codex --wiki .` (or `dikw auth import`)
       and `dikw auth status` reports `active` (gotcha #8).

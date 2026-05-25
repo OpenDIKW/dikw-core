@@ -1,10 +1,9 @@
 # Getting started
 
-This walkthrough takes a blank directory to a queryable knowledge base with a
-curated Wisdom layer in about five minutes. It only needs Python 3.12+ and
-`uv`; LLM keys are optional until you hit `dikw client synth` or `dikw client distill`
-(the engine-internal authoring legs). Plain `dikw client retrieve` runs
-without any LLM key.
+This walkthrough takes a blank directory to a queryable knowledge base in
+about five minutes. It only needs Python 3.12+ and `uv`; LLM keys are
+optional until you hit `dikw client synth` (the engine-internal K-layer
+authoring leg). Plain `dikw client retrieve` runs without any LLM key.
 
 ## 1. Install and scaffold
 
@@ -28,11 +27,8 @@ my-base/
 │   ├── index.md
 │   ├── log.md
 │   └── {entities,concepts,notes}/
-├── wisdom/               # principles / lessons / patterns (LLM proposes, you approve)
-│   ├── principles.md
-│   ├── lessons.md
-│   ├── patterns.md
-│   └── _candidates/
+├── wisdom/               # hand-written principles / lessons / patterns (you author these in
+│   └── .gitkeep          # Obsidian; PR2 of the 0.3.0 W refactor wires them into retrieve)
 └── .dikw/                # engine state (gitignored)
     └── index.sqlite
 ```
@@ -244,24 +240,24 @@ section count, response chars). A parser failure surfaces at WARNING
 even at the default INFO level — operators tailing the server don't
 need DEBUG to spot one.
 
-## 6. Distil Wisdom (the W layer)
+## 6. Author Wisdom (the W layer)
 
-```bash
-uv run dikw client distill
-uv run dikw client review list --format table
-uv run dikw client review approve W-abcdef123456 --pretty
-```
+`wisdom/` is yours to fill by hand. Drop markdown files under
+`wisdom/<author>/<slug>.md` (e.g. `wisdom/elon-musk/first-principles.md`)
+in Obsidian — the directory name is the author. The 0.3.0 W refactor is
+in flight:
 
-`distill` prompts the LLM for principles/lessons/patterns supported by **at
-least two pieces of evidence** across the wiki. Approval deletes the
-candidate file, promotes the item to approved status, and regenerates
-`wisdom/<kind>s.md`. Rejected items are archived.
+- **PR1 (this release)** removes the legacy LLM-distill + review
+  pipeline. No CLI verb writes wisdom; no HTTP endpoint serves it. You
+  can already keep markdown under `wisdom/` for editing, but the engine
+  doesn't index it yet.
+- **PR2 (next)** wires `dikw ingest` to scan `<root>/wisdom/**/*.md`
+  through the same `persist_page` pipeline as wiki, so wisdom pages
+  participate in retrieve + lint with `Layer.WISDOM`.
 
-Approved wisdom is exposed to agents through `GET /v1/wisdom/applicable?q=...`
-(once PR-5 lands). Until then, list active items by hitting the existing
-`GET /v1/wisdom?status=approved` HTTP endpoint and inject them into your
-own LLM prompt — dikw-core no longer ships an in-engine query path that
-auto-injects them.
+See CHANGELOG and `docs/design.md` for the migration shape. Until PR2
+lands, hand-written wisdom is invisible to `dikw client retrieve` —
+edit freely, but don't expect retrieval hits yet.
 
 ## 7. Check retrieval quality on your corpus
 

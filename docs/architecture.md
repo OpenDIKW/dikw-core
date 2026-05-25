@@ -19,14 +19,15 @@ Everything else is plumbing.
 | **D** — Data         | raw source files (markdown)                      | human                          |
 | **I** — Information  | parsed, chunked, FTS-indexed, embedded           | engine (deterministic)         |
 | **K** — Knowledge    | LLM-authored wiki pages, link graph, `index.md`  | LLM, human-editable            |
-| **W** — Wisdom       | principles / lessons / patterns with evidence    | LLM proposes, human approves   |
+| **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
-The W layer is the differentiator. Every item must cite **≥ 2 pieces of
-evidence** drawn from the K or D layers, and every state change passes
-through the review flow (`dikw client review approve|reject`). Approved items
-are exposed to agents (via `GET /v1/wisdom/applicable?q=...`, PR-5)
-so the agent can inject them into its own LLM prompt; dikw-core itself
-no longer performs answer synthesis.
+The W layer is being refactored across 0.3.0 (this is PR1 of 4). The
+prior LLM-distilled candidate/review pipeline is removed. PR2 wires
+`dikw ingest` to scan `<root>/wisdom/**/*.md` through the same
+`persist_page` pipeline as wiki pages; PR3 surfaces wisdom hits on
+`dikw client retrieve` with `Hit.layer == "wisdom"`. dikw-core does not
+perform answer synthesis — `retrieve` returns ranked chunks + page refs
+and the agent layer runs its own LLM.
 
 ## Module map
 
@@ -34,8 +35,7 @@ no longer performs answer synthesis.
 src/dikw_core/
 ├── api.py                 thin facade — init_wiki, ingest, retrieve,
 │                          synthesize, lint (+ lint_propose / lint_apply),
-│                          distill, review state machine, list_pages,
-│                          read_page, list_links, read_provenance,
+│                          list_pages, read_page, list_links, read_provenance,
 │                          list_graph, read_asset, status, health,
 │                          check_providers
 ├── config.py              Pydantic config + YAML loader
@@ -63,11 +63,9 @@ src/dikw_core/
 │   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance; lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
-│   └── wisdom/
-│       ├── distill.py       LLM -> <wisdom> blocks; enforces N>=2 evidence
-│       ├── io.py            candidate files + aggregate regenerators
-│       ├── review.py        approve/reject state machine
-│       └── apply.py         stem-aware token overlap; surfaced to agents via /v1/wisdom/applicable (PR-5)
+│   └── wisdom/             (empty in 0.3.0 PR1 — `__init__.py` only;
+│                            PR2 repopulates with `page.py::author_from_path`
+│                            + the new `persist_page(layer=Layer.WISDOM)` dispatch)
 ├── providers/
 │   ├── base.py              LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │   ├── anthropic_compat.py  anthropic SDK, system-prompt cache_control; retargets via llm_base_url
@@ -206,7 +204,7 @@ each adapter doesn't re-implement RRF.
 We take that seriously. Every navigation step (source listing, chunk
 lookup, link traversal, provenance lookup, wisdom retrieval-by-title)
 is deterministic SQL + file I/O. LLM calls only enter at synthesis and
-distillation — the two engine-internal authoring legs that write the K
+synth — the one engine-internal authoring leg that writes the K
 and W layers. Answer synthesis happens **outside** dikw-core, in the
 agent layer, with the agent's own LLM and conversation context.
 

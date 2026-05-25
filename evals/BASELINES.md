@@ -220,8 +220,10 @@ uv run dikw client lint proposals --format json > props.json
 - End-to-end ASGI roundtrip in
   `tests/client/test_cli_lint_fix.py::test_lint_orphan_page_propose_apply_roundtrip`.
 - Storage contract additions: `test_delete_document_purges_all_rows`,
-  `test_delete_document_missing_is_noop`,
-  `test_delete_document_clears_wisdom_evidence_references`.
+  `test_delete_document_missing_is_noop`.
+  (`test_delete_document_clears_wisdom_evidence_references` was also added
+  here originally; removed in the 0.3.0 W refactor PR1 alongside the
+  `wisdom_evidence` table itself — see CHANGELOG.)
 
 ### Open follow-ups
 
