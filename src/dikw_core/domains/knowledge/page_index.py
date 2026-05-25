@@ -34,27 +34,17 @@ from ...providers.base import EmbeddingProvider
 from ...schemas import ChunkRecord, DocumentRecord, Layer, WisdomStatus
 from ...storage.base import Storage
 from ..data.backends import parse_any
-from ..data.path_norm import normalize_path
+from ..data.path_norm import doc_id_for
 from ..info.chunk import chunk_markdown
 from ..info.embed import ChunkToEmbed, consume_embedding_stream, embed_chunks
 from ..info.tokenize import CjkTokenizer
-from .links import parse_links, resolve_links
+from .links import build_title_indexes, parse_links, resolve_links
 from .wiki import frontmatter_str_list
 
 
-def page_doc_id(layer: Layer, path: str) -> str:
-    """The canonical ``"<layer>:<normalized_path>"`` doc-id for any page.
-
-    Cross-layer extractor introduced in 0.3.0 PR2 so wisdom and wiki
-    persistence share one identity scheme. ``wiki_doc_id`` is preserved
-    as a thin alias for legacy call sites that always meant K-layer.
-    """
-    return f"{layer.value}:{normalize_path(path)}"
-
-
 def wiki_doc_id(path: str) -> str:
-    """Backwards-compatible alias for ``page_doc_id(Layer.WIKI, path)``."""
-    return page_doc_id(Layer.WIKI, path)
+    """Backwards-compatible alias for ``doc_id_for(Layer.WIKI, path)``."""
+    return doc_id_for(Layer.WIKI, path)
 
 
 async def persist_page(
@@ -81,7 +71,7 @@ async def persist_page(
     the unresolved count into reports and update an incremental
     ``title_to_path`` without re-reading the file's frontmatter.
     """
-    doc_id = page_doc_id(layer, path)
+    doc_id = doc_id_for(layer, path)
     abs_path = (root / path).resolve()
     parsed = parse_any(abs_path, rel_path=path)
     resolved_title = title if title is not None else parsed.title
@@ -128,17 +118,22 @@ async def persist_page(
 
     if title_to_path is None:
         # Cross-layer title index: a wisdom page may link to a wiki
-        # page and vice versa via title. PR1's resolve_links refusal
-        # mechanism handles collisions (wiki + wisdom share a title →
-        # the link stays unresolved and lint surfaces the ambiguity).
-        merged: dict[str, str] = {}
+        # page and vice versa via title. ``build_title_indexes`` drops
+        # exact-title collisions from the exact-match dict and pushes
+        # both colliding paths into the fuzzy bucket — that way the
+        # second-stage ≥2-candidate refusal in ``resolve_links``
+        # actually fires when a wiki and wisdom page share a title,
+        # rather than the first-seen layer silently winning.
+        docs_iter: list[tuple[str, str]] = []
         for layer_for_index in (Layer.WIKI, Layer.WISDOM):
             for d in await storage.list_documents(
                 layer=layer_for_index, active=True
             ):
-                if d.title and d.title not in merged:
-                    merged[d.title] = d.path
-        title_to_path = merged
+                if d.title:
+                    docs_iter.append((d.title, d.path))
+        title_to_path, derived_fuzzy = build_title_indexes(docs_iter)
+        if fuzzy_index is None:
+            fuzzy_index = derived_fuzzy
 
     # Reconcile outgoing links atomically — removing a [[wikilink]]
     # from the body must drop the edge from storage, not leave a ghost

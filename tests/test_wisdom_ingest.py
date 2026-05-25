@@ -20,8 +20,9 @@ import pytest
 from dikw_core import api
 from dikw_core.config import load_config
 from dikw_core.domains.data.path_norm import doc_id_for
+from dikw_core.domains.data.sources import iter_source_files
 from dikw_core.schemas import Layer, WisdomStatus
-from dikw_core.storage import build_storage
+from dikw_core.storage import Storage, build_storage
 
 from .fakes import FakeEmbeddings, init_test_wiki, seed_doc
 
@@ -32,7 +33,7 @@ def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
     p.write_text(body, encoding="utf-8")
 
 
-async def _open_storage(wiki: Path):  # type: ignore[no-untyped-def]
+async def _open_storage(wiki: Path) -> Storage:
     cfg = load_config(wiki / "dikw.yml")
     storage = build_storage(
         cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
@@ -292,6 +293,174 @@ async def test_wisdom_wikilink_resolves_to_wiki_page(tmp_path: Path) -> None:
         await storage.close()
     resolved = [e.dst_path for e in edges]
     assert any(p.endswith("wiki/concepts/tesla.md") for p in resolved), resolved
+
+
+@pytest.mark.asyncio
+async def test_wisdom_status_frontmatter_only_edit_propagates(tmp_path: Path) -> None:
+    """Editing ONLY the ``status:`` frontmatter (body unchanged) must
+    still update ``documents.status`` on the next ingest. PR2's body-only
+    content hash short-circuits when ``existing.hash == parsed.hash``;
+    without an additional status check, a user flipping ``draft`` →
+    ``published`` in Obsidian sees zero effect on storage and the new
+    column silently desyncs from the file the user authored.
+    """
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    rel = "wisdom/elon-musk/edit-me.md"
+    _drop_wisdom(wiki, rel, "---\nstatus: draft\n---\n# Edit Me\n\nstable body.\n")
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    # Flip ONLY status; body bytes (including the heading + paragraph)
+    # are byte-identical to the first pass.
+    _drop_wisdom(
+        wiki, rel, "---\nstatus: published\n---\n# Edit Me\n\nstable body.\n"
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = await _open_storage(wiki)
+    try:
+        doc = await storage.get_document(doc_id_for(Layer.WISDOM, rel))
+    finally:
+        await storage.close()
+    assert doc is not None
+    assert doc.status == WisdomStatus.PUBLISHED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename",
+    ["Principles.md", "LESSONS.MD", "Patterns.Md"],
+)
+async def test_wisdom_legacy_aggregate_skip_is_case_insensitive(
+    tmp_path: Path, filename: str
+) -> None:
+    """On NTFS / APFS / HFS+ the legacy aggregate ``Principles.md`` may
+    exist with capitalized spelling. The skip-set must match
+    case-insensitively or the legacy file leaks in as a first-class
+    wisdom document on upgrading bases.
+    """
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    _drop_wisdom(wiki, f"wisdom/{filename}", "# aggregate\n\nbody.\n")
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = await _open_storage(wiki)
+    try:
+        docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
+    finally:
+        await storage.close()
+    assert docs == []
+
+
+@pytest.mark.asyncio
+async def test_wisdom_to_wisdom_link_resolves_within_same_ingest(
+    tmp_path: Path,
+) -> None:
+    """Two new wisdom pages in the SAME ingest: page A links to page B
+    by title. Without a hoisted, batch-aware title index, the wisdom
+    loop resolves each file against whatever is already in storage —
+    so a forward reference stays unresolved until a second ingest.
+    PR2 must pre-seed so all wisdom titles in the batch are
+    addressable from each other on the first pass.
+    """
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/a-page.md",
+        "---\ntitle: A Page\n---\n# A Page\n\nSee [[B Page]].\n",
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/b-page.md",
+        "---\ntitle: B Page\n---\n# B Page\n\nthe second page.\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = await _open_storage(wiki)
+    try:
+        a_id = doc_id_for(Layer.WISDOM, "wisdom/elon-musk/a-page.md")
+        edges = await storage.links_from(a_id)
+    finally:
+        await storage.close()
+    resolved = [e.dst_path for e in edges]
+    assert any(p.endswith("wisdom/elon-musk/b-page.md") for p in resolved), resolved
+
+
+@pytest.mark.asyncio
+async def test_wiki_wisdom_title_collision_refuses_exact_resolve(
+    tmp_path: Path,
+) -> None:
+    """When a wiki page and a wisdom page share the same exact title,
+    ``[[Title]]`` from a third wisdom page must NOT silently bind to
+    either — the refuse-to-resolve invariant (cf. design.md) requires
+    the wikilink to stay broken so ``dikw lint`` surfaces the
+    ambiguity, rather than the dict-merge picking whichever layer
+    iterates first.
+    """
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    # Seed a wiki page titled "Tesla".
+    await seed_doc(
+        wiki,
+        layer=Layer.WIKI,
+        path="wiki/concepts/tesla.md",
+        body="---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n",
+        title="Tesla",
+    )
+    # User authors a wisdom page also titled "Tesla".
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/tesla.md",
+        "---\ntitle: Tesla\n---\n# Tesla\n\npersonal note.\n",
+    )
+    # A third wisdom page references the ambiguous title.
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/musings.md",
+        "# Musings\n\nSee [[Tesla]] for context.\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = await _open_storage(wiki)
+    try:
+        musings_id = doc_id_for(Layer.WISDOM, "wisdom/elon-musk/musings.md")
+        edges = await storage.links_from(musings_id)
+    finally:
+        await storage.close()
+    # The wikilink edge must NOT have been written — neither layer should
+    # win the exact-match resolve when both carry the title.
+    wikilink_edges = [e for e in edges if e.link_type.value == "wikilink"]
+    assert wikilink_edges == [], (
+        "title collision must refuse to resolve, got: "
+        f"{[(e.dst_path, e.link_type.value) for e in edges]}"
+    )
+
+
+def test_iter_source_files_excludes_wisdom_prefix(tmp_path: Path) -> None:
+    """``iter_source_files`` is the D-layer scan entry. ``wisdom/`` is a
+    reserved first-class layer (own ingest branch), so even a broad
+    user config like ``sources: [{path: '.', pattern: '**/*.md'}]``
+    must not double-yield wisdom files as source rows — that would
+    produce a duplicate ``source:`` doc-id, double chunks, and double
+    embedding spend for the same on-disk file.
+    """
+    root = tmp_path / "wiki"
+    root.mkdir()
+    # A wisdom file under wisdom/...
+    (root / "wisdom" / "elon-musk").mkdir(parents=True)
+    (root / "wisdom" / "elon-musk" / "note.md").write_text(
+        "# Wisdom\n", encoding="utf-8"
+    )
+    # And a legit source file at the root.
+    (root / "real-source.md").write_text("# Source\n", encoding="utf-8")
+
+    from dikw_core.config import SourceConfig
+
+    yielded = list(iter_source_files([SourceConfig(path=".", pattern="**/*.md")], root=root))
+    logical_paths = [logical for _, logical in yielded]
+    assert "real-source.md" in logical_paths
+    assert not any(p.startswith("wisdom/") for p in logical_paths), logical_paths
 
 
 @pytest.mark.asyncio

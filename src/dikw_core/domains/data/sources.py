@@ -18,7 +18,16 @@ from ...config import SourceConfig
 def iter_source_files(
     sources: list[SourceConfig], *, root: Path
 ) -> Iterator[tuple[Path, str]]:
-    """Yield (absolute, logical) path pairs for every file matching a source entry."""
+    """Yield (absolute, logical) path pairs for every file matching a source entry.
+
+    ``wisdom/`` is a reserved first-class layer with its own ingest branch
+    in ``api.ingest``; we hard-skip it here so a broad user config like
+    ``sources: [{path: '.', pattern: '**/*.md'}]`` cannot double-yield
+    wisdom files as ``Layer.SOURCE`` rows. Without this guard the same
+    file ingests twice (once at ``source:wisdom/...``, once at
+    ``wisdom:wisdom/...``), producing duplicate chunks + double embed
+    spend for one on-disk page.
+    """
     for src in sources:
         base = Path(src.path)
         if not base.is_absolute():
@@ -32,6 +41,8 @@ def iter_source_files(
                 continue
             rel = path.relative_to(root) if path.is_relative_to(root) else path
             rel_str = str(rel).replace("\\", "/")
+            if rel_str == "wisdom" or rel_str.startswith("wisdom/"):
+                continue
             if _matches_any(rel_str, ignore_spec) or _matches_any(
                 str(path.relative_to(base)).replace("\\", "/"), ignore_spec
             ):

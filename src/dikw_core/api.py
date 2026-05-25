@@ -275,7 +275,13 @@ def _iter_wisdom_files(root: Path) -> Iterator[tuple[Path, str]]:
         # rel_parts[0] is always "wisdom" because rglob is rooted there.
         if len(rel_parts) >= 2 and rel_parts[1] == "_candidates":
             continue
-        if len(rel_parts) == 2 and rel_parts[1] in _WISDOM_LEGACY_AGGREGATE_FILES:
+        # Case-insensitive compare so NTFS / APFS / HFS+ users with a
+        # capitalized ``Principles.md`` on disk still skip the legacy
+        # aggregate (the skip-set is lowercase).
+        if (
+            len(rel_parts) == 2
+            and rel_parts[1].casefold() in _WISDOM_LEGACY_AGGREGATE_FILES
+        ):
             continue
         if any(p.startswith(".") for p in rel_parts):
             continue
@@ -1312,7 +1318,33 @@ async def ingest(
         # — and queue their chunks onto the shared ``to_embed`` list so
         # the bulk embed pass below covers both layers in one batch.
         # See ``docs/design.md`` "Wisdom Layer Design" for the contract.
+        from .domains.knowledge.links import build_title_indexes
         from .domains.knowledge.page_index import persist_page as _persist_page
+
+        # Hoist the cross-layer title index ONCE before the loop so
+        # (a) ``persist_page`` doesn't issue 2N ``list_documents``
+        # round-trips on a wisdom-heavy base, and (b) wisdom pages
+        # added earlier in the same ingest are visible to wisdom pages
+        # added later — without pre-seeding, a forward ``[[wisdom B]]``
+        # from page A stays unresolved until a second ingest.
+        wisdom_title_docs: list[tuple[str, str]] = []
+        for _layer in (Layer.WIKI, Layer.WISDOM):
+            for _d in await storage.list_documents(layer=_layer, active=True):
+                if _d.title:
+                    wisdom_title_docs.append((_d.title, _d.path))
+        for _abs_path, _logical_path in _iter_wisdom_files(root):
+            try:
+                _parsed_title_only = parse_any(_abs_path, rel_path=_logical_path)
+            except Exception:
+                continue
+            if _parsed_title_only.title:
+                wisdom_title_docs.append(
+                    (_parsed_title_only.title, _logical_path)
+                )
+        wisdom_title_to_path, wisdom_fuzzy_index = build_title_indexes(
+            wisdom_title_docs
+        )
+
         for abs_path, logical_path in _iter_wisdom_files(root):
             _reporter.cancel_token().raise_if_cancelled()
             try:
@@ -1344,10 +1376,18 @@ async def ingest(
             # refs (no chunk_asset_refs pipeline on wisdom), so we
             # don't need the ``not parsed.asset_refs`` guard the
             # source branch keeps.
+            #
+            # Status comparison is wisdom-specific: ``content_hash``
+            # hashes body bytes only, so editing ONLY the ``status:``
+            # frontmatter (draft → published) leaves the hash unchanged.
+            # Without this check the new ``documents.status`` column
+            # silently desyncs from the file the user authored — frontmatter
+            # is meant to be the source of truth (Obsidian-native vault).
             if (
                 existing is not None
                 and existing.active
                 and existing.hash == parsed.hash
+                and existing.status == parsed.status
             ):
                 report = _replace(
                     report,
@@ -1369,6 +1409,8 @@ async def ingest(
                     layer=Layer.WISDOM,
                     embedder=None,
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                    title_to_path=wisdom_title_to_path,
+                    fuzzy_index=wisdom_fuzzy_index,
                 )
                 new_chunks = await storage.list_chunks(doc_id)
                 if (
