@@ -21,13 +21,19 @@ Everything else is plumbing.
 | **K** — Knowledge    | LLM-authored wiki pages, link graph, `index.md`  | LLM, human-editable            |
 | **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
-The W layer is being refactored across 0.3.0 (this is PR1 of 4). The
-prior LLM-distilled candidate/review pipeline is removed. PR2 wires
-`dikw ingest` to scan `<root>/wisdom/**/*.md` through the same
-`persist_page` pipeline as wiki pages; PR3 surfaces wisdom hits on
-`dikw client retrieve` with `Hit.layer == "wisdom"`. dikw-core does not
-perform answer synthesis — `retrieve` returns ranked chunks + page refs
-and the agent layer runs its own LLM.
+The W layer is being refactored across 0.3.0 (this is PR2 of 4). PR1
+removed the prior LLM-distilled candidate/review pipeline. PR2 (this
+commit) wires `dikw ingest` to scan `<root>/wisdom/**/*.md` through the
+same `persist_page` pipeline as wiki pages, indexes them as
+`Layer.WISDOM` documents with chunks/embeddings/links/provenance, and
+adds the wisdom-only `documents.status` column (CHECK-constrained to
+`draft | published | favorite | archived`) validated by the new
+`invalid_wisdom_status` lint kind. PR3 surfaces wisdom hits on
+`dikw client retrieve` with `Hit.layer == "wisdom"` and extends
+`broken_wikilink` / `missing_provenance` / `orphan_page` lint coverage
+to the wisdom layer. dikw-core does not perform answer synthesis —
+`retrieve` returns ranked chunks + page refs and the agent layer runs
+its own LLM.
 
 ## Module map
 
@@ -55,7 +61,7 @@ src/dikw_core/
 │   │   └── search.py        RRF-fused FTS + vector hybrid
 │   ├── knowledge/
 │   │   ├── wiki.py          WikiPage I/O (Obsidian-compatible front-matter)
-│   │   ├── page_index.py    persist_wiki_page — K-layer indexing entrypoint reused by synth + lint apply
+│   │   ├── page_index.py    persist_page(layer=...) — K + W layer indexing entrypoint reused by synth, ingest, lint apply
 │   │   ├── synthesize.py    LLM -> <page> blocks -> WikiPage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
 │   │   ├── indexgen.py      regenerate wiki/index.md
@@ -63,9 +69,8 @@ src/dikw_core/
 │   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance; lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
-│   └── wisdom/             (empty in 0.3.0 PR1 — `__init__.py` only;
-│                            PR2 repopulates with `page.py::author_from_path`
-│                            + the new `persist_page(layer=Layer.WISDOM)` dispatch)
+│   └── wisdom/
+│       └── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
 ├── providers/
 │   ├── base.py              LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │   ├── anthropic_compat.py  anthropic SDK, system-prompt cache_control; retargets via llm_base_url
