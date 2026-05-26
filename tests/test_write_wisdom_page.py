@@ -457,3 +457,96 @@ async def test_concurrent_writes_same_path_serialize(tmp_path: Path) -> None:
     # ``get_document`` before either writes, and both claim created.
     assert (r1.created, r2.created).count(True) == 1
     assert (r1.created, r2.created).count(False) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_aliased_paths_share_lock(tmp_path: Path) -> None:
+    """Two concurrent writes targetting the same canonical base via
+    different path expressions (e.g. base dir vs ``dikw.yml`` file)
+    must still be serialised — the lock key has to canonicalise the
+    base before stringifying, otherwise the per-path lock degrades to a
+    per-input-string lock and two API callers using different aliases
+    can both observe ``created=True``."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    # Alias 1: directory; alias 2: the dikw.yml file inside it.
+    # ``resolve_wiki_root`` accepts either and walks back to the same
+    # base directory.
+    config_path = wiki / "dikw.yml"
+    assert config_path.is_file()
+
+    async def write(path_arg: Path, body: str) -> object:
+        return await api.write_wisdom_page(
+            path_arg,
+            slug="alias-race",
+            title="Alias Race",
+            body=body,
+            embedder=FakeEmbeddings(),
+        )
+
+    r1, r2 = await asyncio.gather(
+        write(wiki, "from-dir\n"), write(config_path, "from-yml\n")
+    )
+    assert (r1.created, r2.created).count(True) == 1
+    assert (r1.created, r2.created).count(False) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_excludes_own_old_title_from_resolve(
+    tmp_path: Path,
+) -> None:
+    """When an update changes a wisdom page's title, the body's
+    ``[[Old Title]]`` references must NOT resolve back to the page
+    itself via the stale storage row — the cross-layer title index
+    must exclude the document we're about to overwrite."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    # First write with the old title.
+    await api.write_wisdom_page(
+        wiki,
+        slug="renamed",
+        title="Old Title",
+        body="initial body.\n",
+        embedder=FakeEmbeddings(),
+    )
+
+    # Now rewrite the same page with a new title, and link to "Old
+    # Title" in the body. After the write, that wikilink should be
+    # UNresolved — "Old Title" is no longer the title of any page.
+    report = await api.write_wisdom_page(
+        wiki,
+        slug="renamed",
+        title="New Title",
+        body="references [[Old Title]] which no longer exists.\n",
+        embedder=FakeEmbeddings(),
+    )
+    assert report.created is False
+    assert report.unresolved_wikilinks >= 1
+
+
+@pytest.mark.asyncio
+async def test_extras_cannot_override_author_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """``author`` is encoded into the on-disk path
+    (``wisdom/<author>/<slug>.md``); ``extras={"author": "other"}``
+    must not silently put a contradicting ``author`` into the
+    frontmatter."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    await api.write_wisdom_page(
+        wiki,
+        author="elon-musk",
+        slug="authored",
+        title="Authored",
+        body="body.\n",
+        extras={"author": "imposter"},
+        embedder=FakeEmbeddings(),
+    )
+
+    text = (wiki / "wisdom" / "elon-musk" / "authored.md").read_text(
+        encoding="utf-8"
+    )
+    assert "imposter" not in text

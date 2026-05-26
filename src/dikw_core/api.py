@@ -3161,11 +3161,15 @@ async def write_wisdom_page(
     logical_path = make_wisdom_path(slug=slug, author=author)
     used_reporter: ProgressReporter = reporter or NoopReporter()
 
-    # Key locks by (resolved base path, logical wisdom path). Use the
-    # resolved base path so two ``path=None`` calls from the same CWD
-    # share a lock, and two different bases never block each other.
-    base_for_key = Path(path) if path is not None else Path.cwd()
-    lock_key = f"{base_for_key.resolve()}::{logical_path}"
+    # Key locks by (canonical base root, logical wisdom path). Resolve
+    # the base via ``resolve_wiki_root`` *before* acquiring the lock so
+    # two callers targetting the same base through different aliases
+    # (the base dir, the dikw.yml file inside it, a relative path)
+    # map to the same lock. ``resolve_wiki_root`` is a pure path walk
+    # + config-file lookup with no side effects, so running it here
+    # and again inside ``_with_storage`` is cheap and safe.
+    canonical_root = resolve_wiki_root(path).resolve()
+    lock_key = f"{canonical_root}::{logical_path}"
     lock = await _acquire_wisdom_write_lock(lock_key)
     async with lock:
         cfg, root, storage = await _with_storage(path)
@@ -3208,14 +3212,20 @@ async def write_wisdom_page(
 
             # Build the cross-layer title index that ``persist_page`` uses
             # for ``[[wikilink]]`` resolve. Mirrors the ingest wisdom branch
-            # (around line 1330) - include the new page's own title so a
-            # self-reference resolves and so the index reflects what storage
-            # will look like immediately after this write.
+            # (around line 1330) - include the new page's own NEW title so
+            # a self-reference resolves, but EXCLUDE the stored row for
+            # ``logical_path`` itself: on an update that changes the page's
+            # title, the storage row still holds the old title until
+            # ``_persist_page`` rewrites it, and pulling that into the index
+            # would let ``[[Old Title]]`` in the new body resolve to this
+            # same page via the stale title.
             title_docs: list[tuple[str, str]] = []
             for layer_for_index in (Layer.WIKI, Layer.WISDOM):
                 for d in await storage.list_documents(
                     layer=layer_for_index, active=True
                 ):
+                    if d.path == logical_path:
+                        continue
                     if d.title:
                         title_docs.append((d.title, d.path))
             title_docs.append((title, logical_path))

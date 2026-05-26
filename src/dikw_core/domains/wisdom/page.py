@@ -66,7 +66,16 @@ def make_wisdom_path(*, slug: str, author: str | None) -> str:
 # write access to them so a caller can't silently desynchronise the
 # on-disk frontmatter from the validated request (and from the storage
 # row, which always sees the typed values).
-_RESERVED_FRONTMATTER_KEYS = frozenset({"title", "status", "tags", "sources"})
+#
+# ``author`` is reserved even though :func:`write_wisdom_file` itself
+# doesn't take an ``author`` parameter — author is encoded by the
+# on-disk directory (``wisdom/<author>/<slug>.md``), and allowing
+# ``extras={"author": ...}`` to inject a contradicting value into the
+# frontmatter would break the invariant that path author and
+# frontmatter author agree.
+_RESERVED_FRONTMATTER_KEYS = frozenset(
+    {"title", "status", "tags", "sources", "author"}
+)
 
 
 def write_wisdom_file(
