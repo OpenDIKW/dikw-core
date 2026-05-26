@@ -1910,7 +1910,7 @@ async def read_page(
         # so the read-by-path policy matches the list endpoint's
         # ``active=True`` default.
         match: DocumentRecord | None = None
-        for layer in (Layer.SOURCE, Layer.WIKI):
+        for layer in (Layer.SOURCE, Layer.WIKI, Layer.WISDOM):
             candidate = await storage.get_document(_doc_id_for(layer, path))
             if candidate is not None and candidate.active:
                 match = candidate
@@ -2038,7 +2038,7 @@ async def list_links(
     del cfg
     try:
         match: DocumentRecord | None = None
-        for layer in (Layer.SOURCE, Layer.WIKI):
+        for layer in (Layer.SOURCE, Layer.WIKI, Layer.WISDOM):
             candidate = await storage.get_document(_doc_id_for(layer, path))
             if candidate is not None and candidate.active:
                 match = candidate
@@ -2062,15 +2062,18 @@ async def list_links(
             for e in edges_out:
                 candidate_ids.append(_doc_id_for(Layer.SOURCE, e.dst_path))
                 candidate_ids.append(_doc_id_for(Layer.WIKI, e.dst_path))
+                candidate_ids.append(_doc_id_for(Layer.WISDOM, e.dst_path))
             dst_docs = {
                 d.doc_id: d
                 for d in await storage.get_documents(candidate_ids)
             }
             resolved_out: list[OutgoingLink] = []
             for e in edges_out:
-                dst = dst_docs.get(
-                    _doc_id_for(Layer.SOURCE, e.dst_path)
-                ) or dst_docs.get(_doc_id_for(Layer.WIKI, e.dst_path))
+                dst = (
+                    dst_docs.get(_doc_id_for(Layer.SOURCE, e.dst_path))
+                    or dst_docs.get(_doc_id_for(Layer.WIKI, e.dst_path))
+                    or dst_docs.get(_doc_id_for(Layer.WISDOM, e.dst_path))
+                )
                 if dst is None or not dst.active:
                     continue
                 resolved_out.append(
@@ -2172,7 +2175,7 @@ async def read_provenance(
     del cfg
     try:
         match: DocumentRecord | None = None
-        for layer in (Layer.SOURCE, Layer.WIKI):
+        for layer in (Layer.SOURCE, Layer.WIKI, Layer.WISDOM):
             candidate = await storage.get_document(_doc_id_for(layer, path))
             if candidate is not None and candidate.active:
                 match = candidate

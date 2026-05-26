@@ -27,7 +27,7 @@ import frontmatter
 from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
-from .links import build_fuzzy_index, parse_links, resolve_links
+from .links import build_title_indexes, parse_links, resolve_links
 from .wiki import frontmatter_str_list
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
@@ -205,27 +205,47 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     suppressions: dict[str, set[LintKind]] = {}
     page_meta: dict[str, PageMeta] = {}
 
-    wiki_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
+    # ``page_docs`` aggregates the K + W layers because PR3 promoted
+    # wisdom to a first-class document layer: a wikilink from a wisdom
+    # page to a wiki page (and vice versa) must surface here just like
+    # wiki↔wiki, and an orphan_page check on wiki must credit incoming
+    # backlinks from wisdom so a legitimate wisdom citation doesn't
+    # trigger destructive lint apply on the wiki page. SYNTH context
+    # builds (``api._synth_pages_from_source``) deliberately keep
+    # Layer.WIKI only — wisdom is hand-written and not LLM-authored.
+    page_docs = list(
+        await storage.list_documents(layer=Layer.WIKI, active=True)
+    ) + list(
+        await storage.list_documents(layer=Layer.WISDOM, active=True)
+    )
     title_to_paths: dict[str, list[str]] = defaultdict(list)
     inbound: Counter[str] = Counter()
     paths: list[str] = []
 
-    for doc in wiki_docs:
+    for doc in page_docs:
         title = doc.title or Path(doc.path).stem
         title_to_paths[title].append(doc.path)
         paths.append(doc.path)
 
     # Share the same resolve semantics as engine persistence
-    # (``_persist_wiki_page``): exact -> fuzzy normalize -> collision
-    # refusal. Without this lint reports broken_wikilink on plurals that
+    # (``persist_page``): exact -> fuzzy normalize -> collision refusal.
+    # Without this lint reports ``broken_wikilink`` on plurals that
     # storage already resolved, and silently swallows fuzzy collisions
     # that storage refused to guess.
-    title_to_path: dict[str, str] = {
-        t: dup_paths[0] for t, dup_paths in title_to_paths.items()
-    }
-    fuzzy_index = build_fuzzy_index(title_to_path)
+    #
+    # ``build_title_indexes`` is the single source of truth for the
+    # cross-layer collision policy — exact-title collisions across
+    # WIKI + WISDOM are dropped from ``title_to_path`` so the fuzzy
+    # stage's ≥2-candidate refusal fires (Karpathy's wrong-merge rule).
+    # The previous local ``{t: dup_paths[0]}`` shape silently let the
+    # first-iterated layer win, contradicting what ``persist_page``
+    # actually wrote into storage and causing ``broken_wikilink`` and
+    # ``duplicate_title`` lint to disagree with the persisted graph.
+    title_to_path, fuzzy_index = build_title_indexes(
+        (doc.title or Path(doc.path).stem, doc.path) for doc in page_docs
+    )
 
-    for doc in wiki_docs:
+    for doc in page_docs:
         abs_path = (root / doc.path).resolve()
         if not abs_path.is_file():
             continue
@@ -337,9 +357,36 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             if stored.link_type is LinkType.WIKILINK:
                 inbound[stored.dst_path] += 1
 
-    # orphans — no inbound wikilinks AND not referenced from index.md/log.md
+        # ``invalid_wisdom_status`` is wisdom-only — the parser already
+        # collapsed unknown frontmatter values to ``None`` before they
+        # hit storage, so we re-read the raw spelling from disk to
+        # quote back to the user. Folded into the main loop so the
+        # frontmatter parse + suppressions populate happens once per
+        # wisdom page, not twice (the previous trailing wisdom-only
+        # loop clobbered ``suppressions[doc.path]`` and doubled disk I/O).
+        if doc.layer is Layer.WISDOM and "invalid_wisdom_status" not in skip_kinds:
+            raw = post.metadata.get("status")
+            if raw is not None and (
+                not isinstance(raw, str) or raw not in _VALID_WISDOM_STATUS_VALUES
+            ):
+                issues.append(
+                    LintIssue(
+                        kind="invalid_wisdom_status",
+                        path=doc.path,
+                        detail=(
+                            f"status: {raw!r} is not in "
+                            f"{sorted(_VALID_WISDOM_STATUS_VALUES)}"
+                        ),
+                    )
+                )
+
+    # orphans — no inbound wikilinks AND not referenced from index.md/log.md.
+    # Both K and W layer pages are now scanned for orphans; the
+    # exclusions are wiki-only because ``wiki/index.md`` + ``wiki/log.md``
+    # are the K-layer scaffolds synth always writes. Wisdom has no
+    # equivalent built-in scaffold — every author's choice.
     orphan_exclusions = {"wiki/index.md", "wiki/log.md"}
-    for doc in wiki_docs:
+    for doc in page_docs:
         if doc.path in orphan_exclusions:
             continue
         if "orphan_page" in suppressions.get(doc.path, set()):
@@ -349,7 +396,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                 LintIssue(
                     kind="orphan_page",
                     path=doc.path,
-                    detail="no inbound wikilinks from other K-layer pages",
+                    detail="no inbound wikilinks from other K- or W-layer pages",
                 )
             )
 
@@ -367,43 +414,6 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                         detail=f"title '{title}' also used by {primary}",
                     )
                 )
-
-    # ---- W layer scan (0.3.0 PR2) ----
-    # Only ``invalid_wisdom_status`` runs against wisdom pages in PR2 —
-    # broken_wikilink / orphan_page / missing_provenance extend their
-    # coverage to wisdom in PR3, alongside the retrieve wiring. We read
-    # the frontmatter from disk (rather than ``DocumentRecord.status``)
-    # because the parser already collapsed unknown values to ``None``
-    # before they hit storage, and we need the raw spelling to quote
-    # back to the user in ``detail``.
-    wisdom_docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
-    for doc in wisdom_docs:
-        abs_path = (root / doc.path).resolve()
-        if not abs_path.is_file():
-            continue
-        try:
-            post = frontmatter.load(str(abs_path))
-        except Exception:
-            continue
-        skip_kinds = _read_lint_skip(post.metadata)
-        if skip_kinds:
-            suppressions[doc.path] = skip_kinds
-        if "invalid_wisdom_status" in skip_kinds:
-            continue
-        raw = post.metadata.get("status")
-        if raw is None:
-            continue
-        if not isinstance(raw, str) or raw not in _VALID_WISDOM_STATUS_VALUES:
-            issues.append(
-                LintIssue(
-                    kind="invalid_wisdom_status",
-                    path=doc.path,
-                    detail=(
-                        f"status: {raw!r} is not in "
-                        f"{sorted(_VALID_WISDOM_STATUS_VALUES)}"
-                    ),
-                )
-            )
 
     return LintReport(
         issues=issues,

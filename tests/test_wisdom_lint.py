@@ -23,7 +23,7 @@ from dikw_core.config import load_config
 from dikw_core.domains.knowledge.lint import run_lint
 from dikw_core.storage import build_storage
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_wiki, seed_doc
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -100,3 +100,272 @@ async def test_valid_wisdom_status_does_not_warn(tmp_path: Path) -> None:
 
     invalid = [i for i in lint_report.issues if i.kind == "invalid_wisdom_status"]
     assert invalid == []
+
+
+@pytest.mark.asyncio
+async def test_wisdom_broken_wikilink_surfaces(tmp_path: Path) -> None:
+    """A wisdom page with ``[[Nonexistent Page]]`` must surface as a
+    ``broken_wikilink`` lint issue. PR2 ingested wisdom into storage
+    but PR3 is what makes the lint pass examine wisdom-layer docs;
+    without the layer extension the broken link is silently lost.
+    """
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    from dikw_core.schemas import Layer
+
+    await seed_doc(
+        wiki,
+        layer=Layer.WIKI,
+        path="wiki/existing.md",
+        body="---\ntitle: Existing\n---\n# Existing\n",
+        title="Existing",
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/refs.md",
+        "# Refs\n\nGood [[Existing]] but bad [[Definitely Missing Page]].\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    broken = [
+        i for i in lint_report.issues
+        if i.kind == "broken_wikilink"
+        and i.path == "wisdom/elon-musk/refs.md"
+    ]
+    assert len(broken) == 1, [
+        (i.kind, i.path, i.detail) for i in lint_report.issues
+    ]
+    assert "Definitely Missing Page" in broken[0].detail
+
+
+@pytest.mark.asyncio
+async def test_wisdom_orphan_not_flagged_when_wisdom_links_in(
+    tmp_path: Path,
+) -> None:
+    """An orphan-page lint pass must scan W-layer pages alongside K
+    and credit incoming wikilinks: a wisdom page cited by another
+    wisdom page (the most common author pattern) must not surface as
+    orphan. Without lint expansion the cited wisdom page wasn't even
+    iterated; with the expansion the inbound counter must see the
+    intra-wisdom edge."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/cited.md",
+        "---\ntitle: Cited Wisdom\n---\n# Cited Wisdom\n\nbody.\n",
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/refs.md",
+        "# Refs\n\nSee [[Cited Wisdom]].\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    orphans = [
+        i.path for i in lint_report.issues if i.kind == "orphan_page"
+    ]
+    assert "wisdom/elon-musk/cited.md" not in orphans
+
+
+@pytest.mark.asyncio
+async def test_wiki_not_orphan_when_only_wisdom_links_in(
+    tmp_path: Path,
+) -> None:
+    """Reverse case: a wiki page cited ONLY from wisdom must not be
+    flagged as orphan_page. PR2 lets users author wisdom that backlinks
+    to wiki concepts; PR3 must make the lint pass credit those edges,
+    otherwise OrphanPageFixer could delete legitimately-referenced
+    wiki pages on the next ``lint apply``."""
+    from dikw_core.domains.knowledge.page_index import persist_page
+    from dikw_core.schemas import Layer
+
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    # Use persist_page directly to land both the wiki page document AND
+    # its outgoing links / no-links so the lint pass sees a real K-layer
+    # row (seed_doc bypasses links table population).
+    (wiki / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
+    (wiki / "wiki" / "concepts" / "tesla.md").write_text(
+        "---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n", encoding="utf-8"
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/musings.md",
+        "# Musings\n\nSee [[Tesla]].\n",
+    )
+
+    # Persist the wiki page first (so the title index sees it), then
+    # ingest the wisdom page (which writes its outgoing wikilink to the
+    # wiki dst path).
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await persist_page(
+            storage=storage,
+            root=wiki,
+            path="wiki/concepts/tesla.md",
+            layer=Layer.WIKI,
+        )
+    finally:
+        await storage.close()
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    orphans = [
+        i.path for i in lint_report.issues if i.kind == "orphan_page"
+    ]
+    assert "wiki/concepts/tesla.md" not in orphans
+
+
+@pytest.mark.asyncio
+async def test_cross_layer_title_collision_surfaces_as_duplicate_title(
+    tmp_path: Path,
+) -> None:
+    """A wiki page and a wisdom page sharing the same title must trigger
+    ``duplicate_title`` lint — verifying that PR3's switch to the
+    ``build_title_indexes`` helper drops collisions into the per-title
+    bucket the duplicate scan reads, instead of silently shadowing one
+    layer behind the other (the bug PR2 introduced and PR3 inherited
+    via the local ``{t: dup_paths[0]}`` shortcut)."""
+    from dikw_core.domains.knowledge.page_index import persist_page
+    from dikw_core.schemas import Layer
+
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    (wiki / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
+    (wiki / "wiki" / "concepts" / "tesla.md").write_text(
+        "---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n", encoding="utf-8"
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/tesla.md",
+        "---\ntitle: Tesla\n---\n# Tesla\n\npersonal note.\n",
+    )
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await persist_page(
+            storage=storage,
+            root=wiki,
+            path="wiki/concepts/tesla.md",
+            layer=Layer.WIKI,
+        )
+    finally:
+        await storage.close()
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    duplicate = [
+        i for i in lint_report.issues if i.kind == "duplicate_title"
+    ]
+    assert len(duplicate) >= 1, [
+        (i.kind, i.path, i.detail) for i in lint_report.issues
+    ]
+    paths = {i.path for i in duplicate}
+    assert (
+        "wiki/concepts/tesla.md" in paths
+        or "wisdom/elon-musk/tesla.md" in paths
+    ), paths
+
+
+@pytest.mark.asyncio
+async def test_wisdom_missing_provenance_surfaces(tmp_path: Path) -> None:
+    """A wisdom page with ``sources:`` frontmatter pointing at a path
+    that has no provenance row triggers ``missing_provenance``. PR3's
+    lint expansion to wisdom must scan the K- AND W-layer
+    ``sources:`` declarations symmetrically; without this a future
+    regression to WIKI-only lint would silently skip every wisdom
+    page's provenance scan."""
+    from dikw_core.schemas import Layer
+
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    src_dir = wiki / "sources" / "notes"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "musk-bio.md").write_text(
+        "# Bio\n\nfacts.\n", encoding="utf-8"
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/from-bio.md",
+        "---\nsources:\n  - sources/notes/musk-bio.md\n---\n# From Bio\n\nbody.\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    # Manually clear the provenance row so the lint pass sees
+    # frontmatter-without-table mismatch.
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await storage.replace_provenance_from(
+            f"{Layer.WISDOM.value}:wisdom/elon-musk/from-bio.md",
+            [],
+        )
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    missing = [
+        i for i in lint_report.issues
+        if i.kind == "missing_provenance"
+        and i.path == "wisdom/elon-musk/from-bio.md"
+    ]
+    assert len(missing) == 1, [
+        (i.kind, i.path) for i in lint_report.issues
+    ]

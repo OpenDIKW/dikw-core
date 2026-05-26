@@ -7,6 +7,59 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Wisdom layer refactor — PR3 of 4 (0.3.0)
+
+PR3 surfaces wisdom on the read + retrieve + lint paths so a user who
+ingested `wisdom/*.md` in PR2 can actually find what they wrote. The
+underlying ranking is unchanged — wisdom chunks already participated
+in retrieve as soon as PR2 wrote them into the shared vec table; PR3
+just owns the test coverage that locks the contract and extends the
+HTTP page APIs + lint scan to the wisdom layer.
+
+**Added**:
+
+- `read_page`, `list_links`, and `read_provenance` now include
+  `Layer.WISDOM` in their layer-probe sequence. A `GET
+  /v1/base/pages/wisdom/<author>/<slug>.md` no longer 404s on a
+  PR2-indexed wisdom page, and `direction=in` on a wiki page returns
+  inbound wikilinks from wisdom (so the wisdom-side conversations
+  surface in the wiki page's backlink view).
+- `list_links` outgoing leg resolves `dst_path` candidates across
+  SOURCE + WIKI + WISDOM, so a `[[wikilink]]` from a wisdom page to
+  another wisdom page (or wiki↔wisdom) is recognized as a resolved
+  edge instead of being dropped because `get_documents` couldn't
+  find its dst under the old two-layer probe. (The `OutgoingLink`
+  shape itself stays unchanged — no per-edge `layer` field; callers
+  pivot off the `dst_path` prefix or follow the link to fetch the
+  target page.)
+- `domains/knowledge/lint.py::run_lint` aggregates `page_docs` across
+  `Layer.WIKI` + `Layer.WISDOM`. `broken_wikilink`, `orphan_page`,
+  and `missing_provenance` now scan wisdom pages, and the orphan
+  inbound counter credits cross-layer wikilinks — a wiki page cited
+  only from wisdom is no longer falsely flagged as an orphan (and
+  `OrphanPageFixer` no longer destructively merges/deletes it on
+  `lint apply`).
+- `tests/test_wisdom_retrieve.py` locks `Hit.layer == "wisdom"`
+  tagging on retrieve hits, plus mixed-layer ranking sanity.
+- `tests/test_wisdom_read_apis.py` covers all three read APIs across
+  forward + reverse + cross-layer cases.
+- `tests/test_wisdom_lint.py` adds wisdom-side `broken_wikilink` /
+  `orphan_page` cases.
+- `evals/BASELINES.md` entry "wisdom as first-class retrieval layer"
+  documents why no fresh elon-musk eval was needed (purely
+  additive — wisdom rows that don't exist in the dataset can't shift
+  fusion ranks) and the unit-level coverage that locks the contract.
+
+**Notes**:
+
+- The K-layer synth context (`api._synth_pages_from_source` and
+  `eval/runner.py` synth eval) deliberately keeps `Layer.WIKI` only.
+  Synth never writes wisdom — wisdom is hand-written by the user.
+- Cross-layer title collisions still rely on the `build_title_indexes`
+  helper PR2 shipped: same-title wiki + wisdom pages are dropped
+  from the exact-match dict so the fuzzy stage's ≥2-candidate refusal
+  fires and `duplicate_title` lint surfaces the ambiguity.
+
 ### Wisdom layer refactor — PR2 of 4 (0.3.0)
 
 PR2 wires hand-written wisdom files into the same indexing pipeline as
