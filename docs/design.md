@@ -219,7 +219,7 @@ my-wiki/
 
 **Obsidian vault compatibility** — `my-wiki/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
 - `[[Wikilinks]]` — the canonical link form in `wiki/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
-- **YAML front-matter** — every engine-authored page has `---`-delimited front-matter with at least `id`, `kind` (for wisdom) or `type` (for wiki), `created`, `updated`, and `tags: [...]`. Obsidian reads `tags` natively.
+- **YAML front-matter** — engine-authored wiki pages carry `---`-delimited front-matter (typically `title`, `type`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
 - **Folder = category** — `wiki/entities/`, `wiki/concepts/`, `wiki/notes/`, `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior.
 - **Daily-note style log** — `wiki/log.md` keeps Karpathy's chronological format; optionally daily files under `wiki/log/YYYY/MM/YYYY-MM-DD.md` for vaults that already use Obsidian's daily-notes plugin (opt-in via `schema.log_style: daily`).
 - **Engine state stays out of the vault** — the `.dikw/` sidecar directory is gitignored and Obsidian-ignored (`.obsidian/app.json` `userIgnoreFilters` receives a `.dikw/` entry on `dikw init`).
@@ -526,9 +526,9 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
 - `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` AND `wisdom/` trees, stream progress
 - `dikw client synth [--all]` — K-layer synthesis (W layer is hand-written, not LLM-authored)
-- `dikw client pages {list,read,links,provenance} [--layer wiki|wisdom|source]` — read-side page APIs across all three layers
+- `dikw client pages {list,get,links,provenance} [--layer wiki|wisdom|source]` — read-side page APIs across all three layers
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
-- `dikw client lint [propose,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W)
+- `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; some kinds have no fixer yet)
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
 - `dikw client tasks {list,show,follow,cancel}` — inspect the server's async task queue
 
@@ -574,7 +574,7 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 3. Populate `sources/` with ~20 markdown notes (fixtures); `uv run dikw client ingest`; confirm FTS and vec rows via a diagnostic `dikw client status`.
 4. `uv run dikw client retrieve "what is DIKW?" --format json` returns at least one chunk hit with `path`, `text`, and `score`; LLM synthesis on top of these chunks is the agent's responsibility.
 5. `uv run dikw client synth`; check `wiki/index.md` and `wiki/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
-6. Hand-write a wisdom page at `wisdom/<author>/<slug>.md` with optional `sources:` frontmatter pointing at a real source path; `uv run dikw client ingest` indexes it; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages read wisdom/<author>/<slug>.md` returns its body + chunk anchors.
+6. Hand-write a wisdom page at `wisdom/<author>/<slug>.md` with optional `sources:` frontmatter pointing at a real source path; `uv run dikw client ingest` indexes it; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages get wisdom/<author>/<slug>.md` returns its body + chunk anchors.
 7. `uv run dikw client retrieve "<query that matches the wisdom body>" --format json` returns at least one hit with `layer: wisdom`; the agent groups by layer and assembles its own wisdom-grounded answer.
 8. `uv run dikw serve --base .` launches; a `GET /v1/base/pages/wisdom/<author>/<slug>.md` round-trip from any HTTP client returns the same page as step 6, and a `POST /v1/retrieve` round-trip returns chunks (including wisdom chunks) consumable by any HTTP agent.
 9. Swap provider in `dikw.yml` from Anthropic to OpenAI-compatible (pointed at Ollama locally or OpenAI) and repeat step 4 — works unchanged.

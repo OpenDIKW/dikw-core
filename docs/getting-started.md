@@ -267,7 +267,7 @@ Then:
 dikw client ingest                           # indexes wisdom alongside sources
 dikw client pages list --layer wisdom        # confirm the page landed
 dikw client retrieve "first principles" \
-  --pretty                                   # hit arrives tagged layer=wisdom
+  --format table                             # hit arrives tagged layer=wisdom
 dikw client lint                             # broken_wikilink / orphan_page /
                                              # missing_provenance / invalid_wisdom_status
                                              # cover both K and W
