@@ -10,6 +10,7 @@ update one wisdom note and have it immediately retrievable.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ import pytest
 from dikw_core import api
 from dikw_core.config import load_config
 from dikw_core.domains.data.path_norm import doc_id_for
+from dikw_core.domains.wisdom import write_wisdom_file
 from dikw_core.schemas import Layer, WisdomStatus
 from dikw_core.storage import Storage, build_storage
 
@@ -365,3 +367,93 @@ async def test_write_status_frontmatter_persisted_to_disk(tmp_path: Path) -> Non
 
     text = (wiki / "wisdom" / "draft-page.md").read_text(encoding="utf-8")
     assert "status: draft" in text
+
+
+@pytest.mark.asyncio
+async def test_extras_cannot_override_reserved_keys(tmp_path: Path) -> None:
+    """``extras`` is a passthrough for caller-supplied frontmatter, but
+    must not silently overwrite the validated ``title`` / ``status`` /
+    ``tags`` / ``sources`` fields. A request that names ``title`` in
+    both ``title=`` and ``extras={"title": ...}`` is otherwise free to
+    desync the on-disk frontmatter from the storage row (which always
+    stores the validated ``title``)."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    await api.write_wisdom_page(
+        wiki,
+        slug="reserved",
+        title="Real Title",
+        body="body.\n",
+        status=WisdomStatus.DRAFT,
+        tags=["real-tag"],
+        sources=["real/source.md"],
+        extras={
+            "title": "EVIL Title",
+            "status": "not-a-status",
+            "tags": ["evil-tag"],
+            "sources": ["evil/source.md"],
+            "custom_key": "ok-to-pass-through",
+        },
+        embedder=FakeEmbeddings(),
+    )
+
+    text = (wiki / "wisdom" / "reserved.md").read_text(encoding="utf-8")
+    assert "Real Title" in text
+    assert "EVIL Title" not in text
+    assert "status: draft" in text
+    assert "not-a-status" not in text
+    assert "real-tag" in text
+    assert "evil-tag" not in text
+    assert "real/source.md" in text
+    assert "evil/source.md" not in text
+    # Non-reserved extras keys still pass through:
+    assert "custom_key: ok-to-pass-through" in text
+
+
+def test_write_wisdom_file_rejects_path_escape(tmp_path: Path) -> None:
+    """The low-level file writer must refuse a ``logical_path`` that
+    resolves outside ``root`` — defense in depth for any direct caller
+    that bypasses :func:`make_wisdom_path`."""
+    root = tmp_path / "wiki"
+    root.mkdir()
+    with pytest.raises(ValueError, match="outside"):
+        write_wisdom_file(
+            root,
+            logical_path="../escape.md",
+            title="x",
+            body="x\n",
+        )
+    with pytest.raises(ValueError, match="outside"):
+        write_wisdom_file(
+            root,
+            logical_path="wisdom/../../escape.md",
+            title="x",
+            body="x\n",
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_same_path_serialize(tmp_path: Path) -> None:
+    """Two concurrent ``write_wisdom_page`` calls for the same
+    ``(author, slug)`` must not both observe an empty document row and
+    both report ``created=True``; the writes must be serialised so
+    exactly one creates and any subsequent calls see the existing row."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    async def write(body: str) -> object:
+        return await api.write_wisdom_page(
+            wiki,
+            slug="hot-path",
+            title="Hot Path",
+            body=body,
+            embedder=FakeEmbeddings(),
+        )
+
+    r1, r2 = await asyncio.gather(write("first\n"), write("second\n"))
+    # At least one of the two must observe the other had already
+    # created the row. With no lock, both can race past
+    # ``get_document`` before either writes, and both claim created.
+    assert (r1.created, r2.created).count(True) == 1
+    assert (r1.created, r2.created).count(False) == 1

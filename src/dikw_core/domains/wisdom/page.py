@@ -62,6 +62,13 @@ def make_wisdom_path(*, slug: str, author: str | None) -> str:
     return f"wisdom/{slug}.md"
 
 
+# Frontmatter keys that the typed parameters own; ``extras`` is denied
+# write access to them so a caller can't silently desynchronise the
+# on-disk frontmatter from the validated request (and from the storage
+# row, which always sees the typed values).
+_RESERVED_FRONTMATTER_KEYS = frozenset({"title", "status", "tags", "sources"})
+
+
 def write_wisdom_file(
     root: Path,
     *,
@@ -83,8 +90,28 @@ def write_wisdom_file(
     which always serialises ``id``/``type``/``created``/``updated`` —
     those are wiki-only frontmatter conventions and would pollute a
     user-authored wisdom file with engine metadata.
+
+    ``logical_path`` must resolve under ``root`` — defense in depth for
+    any caller that bypasses :func:`make_wisdom_path` (e.g. a unit test
+    or a future write path that constructs its own relative path). The
+    higher-level API enforces ASCII kebab-case on ``slug`` / ``author``
+    via ``make_wisdom_path`` so this guard only fires on a direct
+    misuse, not on validated user input.
+
+    ``extras`` is a passthrough for caller-supplied frontmatter, but it
+    is denied write access to the reserved keys
+    (``title``/``status``/``tags``/``sources``) — those are owned by
+    the typed parameters and silently overwriting them would
+    desynchronise the on-disk frontmatter from the storage row.
     """
     abs_path = (root / logical_path).resolve()
+    try:
+        abs_path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"wisdom logical_path {logical_path!r} resolves outside root "
+            f"{root!s}"
+        ) from exc
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] = {"title": title}
     if status is not None:
@@ -94,7 +121,10 @@ def write_wisdom_file(
     if sources:
         meta["sources"] = list(sources)
     if extras:
-        meta.update(extras)
+        for key, value in extras.items():
+            if key in _RESERVED_FRONTMATTER_KEYS:
+                continue
+            meta[key] = value
     post = frontmatter.Post(body.rstrip() + "\n", **meta)
     abs_path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
     return abs_path
