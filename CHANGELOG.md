@@ -26,8 +26,12 @@ HTTP page APIs + lint scan to the wisdom layer.
   surface in the wiki page's backlink view).
 - `list_links` outgoing leg resolves `dst_path` candidates across
   SOURCE + WIKI + WISDOM, so a `[[wikilink]]` from a wisdom page to
-  another wisdom page (or to a wiki page, or vice versa) shows up
-  with its actual layer in the response.
+  another wisdom page (or wiki↔wisdom) is recognized as a resolved
+  edge instead of being dropped because `get_documents` couldn't
+  find its dst under the old two-layer probe. (The `OutgoingLink`
+  shape itself stays unchanged — no per-edge `layer` field; callers
+  pivot off the `dst_path` prefix or follow the link to fetch the
+  target page.)
 - `domains/knowledge/lint.py::run_lint` aggregates `page_docs` across
   `Layer.WIKI` + `Layer.WISDOM`. `broken_wikilink`, `orphan_page`,
   and `missing_provenance` now scan wisdom pages, and the orphan

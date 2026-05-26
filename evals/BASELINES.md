@@ -7,7 +7,7 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
-## 0.3.0 PR3 — wisdom as first-class retrieval layer (#TBD)
+## 0.3.0 PR3 — wisdom as first-class retrieval layer (#122)
 
 **Status:** purely additive — wisdom files indexed by 0.3.0 PR2 now
 surface in `dikw client retrieve` tagged `Hit.layer == "wisdom"`,
@@ -25,9 +25,9 @@ Gitee AI; same as the 2026-05-13 baseline below.
 
 **Methodology:** the packaged `bases/elon-musk-validation` dataset
 ships zero wisdom files (`wisdom/` is empty), so an unmodified
-`dikw eval mvp --eval retrieval` run is byte-identical to the most
-recent retrieval baseline — wisdom rows that don't exist can't
-shift fusion ranks. The user-side validation is the smoke test in
+`dikw client eval --dataset elon-musk-validation` run is
+byte-identical to the most recent retrieval baseline — wisdom rows
+that don't exist can't shift fusion ranks. The user-side validation is the smoke test in
 the PR description: drop one wisdom file with `[[wikilink]]` +
 `sources:` frontmatter, ingest, run retrieve against a query that
 matches both a wiki page and the wisdom page, and confirm
