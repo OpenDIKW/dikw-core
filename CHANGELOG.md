@@ -5,7 +5,23 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## Unreleased
+## 0.3.0 — 2026-05-26
+
+The W (Wisdom) layer reshape lands: a four-PR arc (#120 → #121 → #122
+→ #123) retires the LLM-distilled candidate/review pipeline and rewires
+wisdom as a hand-written first-class document layer that participates in
+ingest, retrieve, lint, and the page read APIs alongside K-layer wiki
+pages. Cross-layer `[[wikilinks]]` resolve through a shared title index;
+`broken_wikilink` / `orphan_page` / `missing_provenance` lint now scans
+wisdom pages too; `dikw client retrieve` tags wisdom hits with
+`Hit.layer == "wisdom"`. ADR-0002 captures the rationale.
+
+Two ride-along changes graduate the repo from pre-alpha to alpha (#118)
+and close the `examples/docker/Dockerfile` DIKW_VERSION drift loop with
+post-publish auto-sync + a CI guard (#119).
+
+See the per-PR entries below for the full surface delta, manual cleanup
+recipe, and known limitations carried into 0.3.1.
 
 ### Wisdom layer refactor — PR4 of 4 (0.3.0)
 
