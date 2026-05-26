@@ -2419,6 +2419,34 @@ async def test_wisdom_document_status_roundtrips(storage: Storage) -> None:
         assert fetched.status == status, (path, fetched.status, status)
 
 
+async def test_non_wisdom_layer_status_clamped_to_null(
+    storage: Storage,
+) -> None:
+    """The ``status`` column is wisdom-only by contract. Even when a
+    caller upserts a SOURCE or WIKI document with ``status`` set, the
+    adapter must clamp it to ``NULL`` so the wisdom-only invariant is
+    enforced at the storage layer (defense in depth alongside the
+    application-side clamp in ``api._to_document`` and
+    ``persist_page``). Symmetric across sqlite + postgres.
+    """
+    from dikw_core.schemas import WisdomStatus
+
+    cases: list[tuple[str, Layer]] = [
+        ("sources/notes/x.md", Layer.SOURCE),
+        ("wiki/concepts/x.md", Layer.WIKI),
+    ]
+    for path, layer in cases:
+        doc = _make_doc(path, layer=layer)
+        doc = doc.model_copy(update={"status": WisdomStatus.FAVORITE})
+        await storage.upsert_document(doc)
+
+    for path, layer in cases:
+        fetched = await storage.get_document(f"doc::{path}")
+        assert fetched is not None, path
+        assert fetched.layer is layer
+        assert fetched.status is None, (path, fetched.status)
+
+
 async def test_documents_status_check_constraint_rejects_unknown(
     storage: Storage,
 ) -> None:

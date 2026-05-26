@@ -1,16 +1,17 @@
 # dikw-core — AI-Native Knowledge Engine (Plan)
 
-> **⚠ 0.3.0 W-layer refactor in flight (PR1 of 4) — many sections
+> **⚠ 0.3.0 W-layer refactor in flight (PR2 of 4) — some sections
 > below are stale.** This document still describes the prior W layer
-> as an LLM-distilled candidate/review pipeline (`distill` /
+> as an LLM-distilled candidate/review pipeline in places (`distill` /
 > `_candidates/` / `wisdom_items` table / `review approve|reject` /
-> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind` /
-> `WisdomStatus` etc.). All of those are removed in 0.3.0 PR1 and
-> being replaced with a hand-written first-class document layer
-> under `wisdom/<author>/<slug>.md`. The Wisdom Layer Design section
-> further down carries a current `[WIP — being replaced]` block;
-> treat **every** other distill/wisdom_items mention in this file as
-> historical until PR4 rewrites the spec end-to-end. See CHANGELOG.
+> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind`). All of
+> those were removed in 0.3.0 PR1 and are being replaced with a
+> hand-written first-class document layer under
+> `wisdom/<author>/<slug>.md`. **The "Wisdom Layer Design" section
+> and the Storage-Abstraction section have been rewritten for PR2 and
+> are current.** Treat other distill/wisdom_items mentions as
+> historical until PR4 rewrites the spec end-to-end. See CHANGELOG
+> for the full migration log.
 
 ## Context
 

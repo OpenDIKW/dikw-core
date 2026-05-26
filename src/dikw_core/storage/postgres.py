@@ -185,6 +185,17 @@ class PostgresStorage:
     # ---- D layer ---------------------------------------------------------
 
     async def upsert_document(self, doc: DocumentRecord) -> None:
+        # Defensive: status is a wisdom-only column. ``api._to_document``
+        # and ``persist_page`` both clamp at the application layer, but a
+        # future Storage Protocol caller (a tool, a migration script)
+        # could pass ``status`` on a non-wisdom doc. Clamping here makes
+        # the wisdom-only invariant a property of the adapter, not just
+        # the engine — symmetric with the sqlite adapter.
+        status_value: str | None = (
+            doc.status.value
+            if doc.layer is Layer.WISDOM and doc.status is not None
+            else None
+        )
         async with self._acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -213,7 +224,7 @@ class PostgresStorage:
                         doc.mtime,
                         doc.layer.value,
                         doc.active,
-                        doc.status.value if doc.status is not None else None,
+                        status_value,
                     ),
                 )
             await conn.commit()
