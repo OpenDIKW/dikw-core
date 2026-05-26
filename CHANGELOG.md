@@ -5,7 +5,15 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## Unreleased
+## 0.3.5 — 2026-05-27
+
+Adds a programmatic write surface for hand-authored wisdom pages. Reads
+keep going through the existing `dikw client pages get wisdom/...` and
+retrieve paths — the W layer's read shape is unchanged from 0.3.0.
+
+Engine + HTTP + CLI ship in one PR (#126) with three review rounds
+behind it (two codex passes plus one multi-angle /code-review) — the
+hardening section below enumerates the resulting safety guards.
 
 ### Added — wisdom write surface
 
