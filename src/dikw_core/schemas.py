@@ -722,8 +722,14 @@ class WisdomWriteSubmit(BaseModel):
     """
 
     slug: str
-    title: str
-    body: str
+    title: str = Field(min_length=1)
+    # ``body`` requires at least one non-whitespace character. A body of
+    # ``""`` (or only whitespace) parses to zero chunks downstream and
+    # ``replace_chunks(doc_id, [])`` would silently wipe an existing
+    # page's content on upsert without any retrieval-visible result.
+    # Reject at the Pydantic boundary so HTTP callers see a 422 instead
+    # of a "succeeded with chunks=0" page.
+    body: str = Field(min_length=1)
     author: str | None = None
     status: WisdomStatus | None = None
     tags: list[str] | None = None
@@ -749,6 +755,17 @@ class WisdomWriteSubmit(BaseModel):
         from .domains.wisdom import validate_kebab
 
         validate_kebab(v, label="author")
+        return v
+
+    @field_validator("body")
+    @classmethod
+    def _check_body_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError(
+                "body must contain at least one non-whitespace character; "
+                "an empty body would index zero chunks and wipe an existing "
+                "page's content on upsert"
+            )
         return v
 
 

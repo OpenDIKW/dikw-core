@@ -438,8 +438,12 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         body: WisdomWriteSubmit = Body(...),
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
+        # Share ``ingest_lock`` with the ingest path: a concurrent
+        # ``dikw ingest`` and a single-page wisdom write on the same
+        # base would otherwise race on storage rows and on the
+        # cross-layer title index snapshot.
         runner: TaskRunner = make_wisdom_write_runner(
-            wiki_root=rt.root, submit=body
+            wiki_root=rt.root, submit=body, lock=rt.ingest_lock
         )
         # Keep ``params`` lightweight — the full body (title + body +
         # tags + sources + extras) can be tens of KB and bloats the task

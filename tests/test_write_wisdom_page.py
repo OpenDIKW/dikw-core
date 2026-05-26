@@ -526,6 +526,37 @@ async def test_update_excludes_own_old_title_from_resolve(
 
 
 @pytest.mark.asyncio
+async def test_extras_cannot_corrupt_file_via_post_kwargs(tmp_path: Path) -> None:
+    """``extras`` is **not** unpacked into ``frontmatter.Post(**kwargs)``
+    so a key matching a Post constructor parameter (``handler``,
+    ``content``) cannot corrupt the on-disk file. With the naive
+    ``**meta`` expansion, ``extras={"handler": "evil"}`` collapses the
+    entire file to the literal string ``evil`` (frontmatter.dumps
+    treats the handler kwarg as a custom dump handler) — silently
+    destroying title, body, status, tags."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    await api.write_wisdom_page(
+        wiki,
+        slug="kwarg-attack",
+        title="Real Title",
+        body="real body content\n",
+        extras={"handler": "evil", "content": "also evil"},
+        embedder=FakeEmbeddings(),
+    )
+
+    text = (wiki / "wisdom" / "kwarg-attack.md").read_text(encoding="utf-8")
+    # File must contain the validated frontmatter + body, not the
+    # extras["handler"] / extras["content"] payload as raw content.
+    assert "Real Title" in text
+    assert "real body content" in text
+    # Neither of the two reserved Post kwargs may have replaced the body.
+    assert text.strip() != "evil"
+    assert text.strip() != "also evil"
+
+
+@pytest.mark.asyncio
 async def test_extras_cannot_override_author_frontmatter(
     tmp_path: Path,
 ) -> None:
@@ -550,3 +581,77 @@ async def test_extras_cannot_override_author_frontmatter(
         encoding="utf-8"
     )
     assert "imposter" not in text
+
+
+@pytest.mark.asyncio
+async def test_empty_body_rejected_by_schema(tmp_path: Path) -> None:
+    """An empty (or whitespace-only) body would index zero chunks and
+    silently wipe an existing page's content on upsert. Pydantic
+    rejects the submission at the validation boundary so HTTP/CLI
+    callers see 422 instead of an apparently-succeeded but
+    retrieval-invisible page."""
+    from pydantic import ValidationError
+
+    from dikw_core.schemas import WisdomWriteSubmit
+
+    for bad_body in ("", " ", "\n\n\t  "):
+        with pytest.raises(ValidationError) as exc_info:
+            WisdomWriteSubmit(slug="x", title="X", body=bad_body)
+        assert "body" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
+    """A mid-pipeline failure inside ``_persist_page`` must
+    deactivate the document row so the next ingest rebuilds it
+    end-to-end, instead of leaving a partial doc with stale
+    links/provenance. Mirrors the ingest wisdom branch recovery
+    behaviour at api.py:1433."""
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    # First write a normal page so a doc row exists.
+    await api.write_wisdom_page(
+        wiki,
+        slug="will-fail",
+        title="Will Fail",
+        body="initial body.\n",
+        embedder=FakeEmbeddings(),
+    )
+
+    # Inject an embedder that raises mid-stream — simulates a provider
+    # error after upsert_document + replace_chunks have already
+    # committed the new content.
+    class BrokenEmbedder:
+        dim = 8
+        normalize = True
+        distance = "cosine"
+        model = "broken"
+        revision = ""
+        modality = "text"
+
+        async def embed(self, texts, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("simulated embedder failure")
+
+    with pytest.raises(RuntimeError, match="simulated embedder failure"):
+        await api.write_wisdom_page(
+            wiki,
+            slug="will-fail",
+            title="Will Fail v2",
+            body="new body that will fail to embed.\n",
+            embedder=BrokenEmbedder(),  # type: ignore[arg-type]
+        )
+
+    # The document row must be deactivated so retry rebuilds it.
+    storage = await _open_storage(wiki)
+    try:
+        doc = await storage.get_document(
+            doc_id_for(Layer.WISDOM, "wisdom/will-fail.md")
+        )
+    finally:
+        await storage.close()
+    assert doc is not None
+    assert doc.active is False, (
+        "persist_page failure must deactivate the doc so the next "
+        "ingest resume scan can rebuild it"
+    )

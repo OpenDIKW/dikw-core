@@ -73,8 +73,18 @@ def make_wisdom_path(*, slug: str, author: str | None) -> str:
 # ``extras={"author": ...}`` to inject a contradicting value into the
 # frontmatter would break the invariant that path author and
 # frontmatter author agree.
+#
+# ``content`` and ``handler`` are reserved because they collide with
+# ``frontmatter.Post.__init__(content, handler=None, **metadata)``:
+# storing them in YAML frontmatter is fine in isolation, but every
+# read-back through ``frontmatter.loads`` re-constructs
+# ``Post(content, handler, **metadata)`` and raises ``TypeError`` (for
+# ``content``) or silently replaces the dump handler with a string
+# (for ``handler``, producing a file whose entire content is that
+# literal string). Refusing them at write time keeps the on-disk vault
+# round-trippable through the frontmatter library.
 _RESERVED_FRONTMATTER_KEYS = frozenset(
-    {"title", "status", "tags", "sources", "author"}
+    {"title", "status", "tags", "sources", "author", "content", "handler"}
 )
 
 
@@ -134,7 +144,17 @@ def write_wisdom_file(
             if key in _RESERVED_FRONTMATTER_KEYS:
                 continue
             meta[key] = value
-    post = frontmatter.Post(body.rstrip() + "\n", **meta)
+    # Construct the Post with body only, then assign metadata via the
+    # dict. ``frontmatter.Post`` is ``(content, handler=None, **metadata)``
+    # — using ``**meta`` to pass user-supplied keys would let
+    # ``extras={"handler": "evil"}`` silently overwrite the dump handler
+    # (verified: frontmatter.dumps then returns the raw string "evil"
+    # and the on-disk file loses title + body entirely). Assigning to
+    # ``post.metadata`` bypasses the kwarg path and treats every key as
+    # frontmatter metadata, immune to collisions with ``Post.__init__``
+    # parameter names regardless of which keys are in extras.
+    post = frontmatter.Post(body.rstrip() + "\n")
+    post.metadata.update(meta)
     abs_path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
     return abs_path
 

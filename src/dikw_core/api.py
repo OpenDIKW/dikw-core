@@ -3193,6 +3193,13 @@ async def write_wisdom_page(
                 text_version_id = await _register_text_version(storage, cfg.provider)
                 embedding_model = cfg.provider.embedding_model
 
+            # Cooperative cancellation poll: synth/lint/ingest all check
+            # the token between work units (api.py:1130 / 1353 / 1589 /
+            # 2717), so a wisdom-write task is expected to honour the same
+            # contract. Without poll sites, ``TaskManager.cancel`` only
+            # lands at the next httpx ``await`` deep inside the embedder.
+            used_reporter.cancel_token().raise_if_cancelled()
+
             # Write the file to disk first. ``persist_page`` re-parses the
             # written file so the stored hash and chunk offsets match what
             # ``read_page`` will compute — same contract as
@@ -3231,6 +3238,7 @@ async def write_wisdom_page(
             title_docs.append((title, logical_path))
             title_to_path, fuzzy_index = build_title_indexes(title_docs)
 
+            used_reporter.cancel_token().raise_if_cancelled()
             await used_reporter.progress(
                 phase="wisdom_write",
                 current=0,
@@ -3238,19 +3246,35 @@ async def write_wisdom_page(
                 detail={"path": logical_path, "step": "indexing"},
             )
 
-            unresolved, _ = await _persist_page(
-                storage=storage,
-                root=root,
-                path=logical_path,
-                layer=Layer.WISDOM,
-                title=title,
-                embedder=active_embedder,
-                embedding_model=embedding_model,
-                text_version_id=text_version_id,
-                cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-                title_to_path=title_to_path,
-                fuzzy_index=fuzzy_index,
-            )
+            # ``persist_page`` writes documents + chunks + FTS + embeddings
+            # + links + provenance in sequence. A mid-pipeline failure
+            # (embed timeout, link resolve crash, vec_search error) leaves
+            # those rows partially updated — the document row + chunks
+            # already reflect the new content while outgoing links /
+            # provenance edges still point at the old. ``deactivate_document``
+            # flips the doc to inactive so the next ``dikw ingest`` resume
+            # scan rebuilds the row end-to-end, matching the recovery
+            # behaviour of the ingest wisdom branch at api.py:1433.
+            try:
+                unresolved, _ = await _persist_page(
+                    storage=storage,
+                    root=root,
+                    path=logical_path,
+                    layer=Layer.WISDOM,
+                    title=title,
+                    embedder=active_embedder,
+                    embedding_model=embedding_model,
+                    text_version_id=text_version_id,
+                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                    title_to_path=title_to_path,
+                    fuzzy_index=fuzzy_index,
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await storage.deactivate_document(doc_id)
+                raise
+
+            used_reporter.cancel_token().raise_if_cancelled()
 
             chunks = await storage.list_chunks(doc_id)
             doc = await storage.get_document(doc_id)
@@ -3259,11 +3283,22 @@ async def write_wisdom_page(
                     f"wisdom write succeeded but document {doc_id!r} not in storage"
                 )
 
-            # ``persist_page`` consumes its embed stream inline when an
-            # embedder + version_id are supplied, so on success every chunk
-            # has its vector — embedded == len(chunks). With no_embed or
-            # without an embedder there are no embeddings produced this call.
-            embedded = len(chunks) if active_embedder is not None else 0
+            # Read back actual embedded count rather than assuming
+            # ``len(chunks)``. ``consume_embedding_stream`` can complete
+            # with partial coverage when the provider retries-and-gives-up
+            # on a per-batch failure without raising — ``embedded =
+            # len(chunks)`` would then lie to the caller about retrieval
+            # readiness. ``get_chunk_embeddings`` returns hits-only, so
+            # ``len(...)`` is the truthful count of vectors persisted for
+            # this doc at ``text_version_id``.
+            if active_embedder is not None and text_version_id is not None:
+                chunk_ids = [c.chunk_id for c in chunks if c.chunk_id is not None]
+                vecs = await storage.get_chunk_embeddings(
+                    chunk_ids, version_id=text_version_id
+                )
+                embedded = len(vecs)
+            else:
+                embedded = 0
 
             await storage.append_wiki_log(
                 WikiLogEntry(
@@ -3287,7 +3322,13 @@ async def write_wisdom_page(
                 unresolved_wikilinks=unresolved,
             )
         finally:
-            await storage.close()
+            # Match ``_with_storage``'s connect-failure path
+            # (api.py:665): a close() error must not shadow the real
+            # cause carried by the in-flight exception, otherwise the
+            # task manager records "OperationalError: connection
+            # closed" instead of "embedder timed out".
+            with contextlib.suppress(Exception):
+                await storage.close()
 
 
 def _read_source_parsed(root: Path, doc: DocumentRecord) -> ParsedDocument | None:

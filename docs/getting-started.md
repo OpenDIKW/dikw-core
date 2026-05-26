@@ -310,6 +310,16 @@ been written yet — surfaces as a non-zero
 `unresolved_wikilinks` on the write report; the next `dikw client
 ingest` reconciles those edges.
 
+> **Replace-on-omit warning.** Every write fully replaces the page's
+> frontmatter and provenance edges. Re-running `dikw client wisdom
+> write --slug x --title X --body v2` without re-passing `--tag` /
+> `--source` / `--status` strips those fields — the typed parameters
+> own the on-disk fields, and there is no silent union with the
+> existing file. To preserve them on an edit, first `dikw client
+> pages get wisdom/<author>/<slug>.md`, then re-pass the values you
+> want kept. Empty body is rejected at the schema boundary (422) so
+> an accidental `--body ""` cannot wipe an existing page's content.
+
 Upgrading from 0.2.x: delete `wisdom/_candidates/` and the
 `wisdom/{principles,lessons,patterns}.md` aggregates (or leave them —
 ingest hard-skips both), then re-run `dikw client ingest` against the
