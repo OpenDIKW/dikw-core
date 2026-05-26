@@ -11,11 +11,12 @@
 -- tables are created lazily in Python so the engine can parameterise
 -- the embedding dimension at first insert. See storage/postgres.py.
 --
--- W layer (wisdom) is being refactored in 0.3.0 to first-class
--- documents under ``wisdom/<author>/<slug>.md``. PR1 removes the
--- legacy ``wisdom_items`` / ``wisdom_evidence`` / ``wisdom_embed_meta``
--- tables; PR2 wires wisdom files into ``documents`` via
--- ``layer = 'wisdom'``.
+-- W layer (wisdom) flows through the ``documents`` table as
+-- ``layer = 'wisdom'`` (0.3.0 PR2). The wisdom-only ``status`` column
+-- carries the frontmatter ``status: draft|published|favorite|archived``
+-- enum; non-wisdom rows always store NULL (the application clamps in
+-- ``api._to_document``). The CHECK is symmetric with the SQLite side
+-- so contract tests share one shape.
 --
 -- FTS surface: ``chunks.fts`` is a plain ``tsvector NOT NULL`` indexed
 -- by GIN. The Python adapter populates it on INSERT via
@@ -47,7 +48,10 @@ CREATE TABLE IF NOT EXISTS documents (
     hash     TEXT NOT NULL,
     mtime    DOUBLE PRECISION,
     layer    TEXT NOT NULL CHECK (layer IN ('source','wiki','wisdom')),
-    active   BOOLEAN NOT NULL DEFAULT TRUE
+    active   BOOLEAN NOT NULL DEFAULT TRUE,
+    status   TEXT CHECK (
+        status IS NULL OR status IN ('draft','published','favorite','archived')
+    )
 );
 
 CREATE INDEX IF NOT EXISTS documents_layer_active ON documents(layer, active);

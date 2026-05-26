@@ -24,6 +24,7 @@ from typing import Any
 import frontmatter
 
 from ....md_inspect import extract_image_refs
+from ....schemas import WisdomStatus
 from .base import ParsedDocument
 
 # Backwards-compatible alias for existing callers.
@@ -42,6 +43,21 @@ def _first_heading(body: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+_VALID_STATUS = {s.value for s in WisdomStatus}
+
+
+def _parse_status(raw: Any) -> WisdomStatus | None:
+    """Map a frontmatter ``status`` value to the enum, or ``None``.
+
+    The raw frontmatter is preserved in ``ParsedDocument.frontmatter``
+    so ``invalid_wisdom_status`` lint can quote the bad spelling — we
+    only collapse to ``None`` here to keep ingest non-blocking.
+    """
+    if not isinstance(raw, str):
+        return None
+    return WisdomStatus(raw) if raw in _VALID_STATUS else None
+
+
 def parse_text(*, path: str, text: str, mtime: float) -> ParsedDocument:
     """Parse raw markdown text. Exposed so callers can test without filesystem I/O."""
     post = frontmatter.loads(text)
@@ -58,6 +74,7 @@ def parse_text(*, path: str, text: str, mtime: float) -> ParsedDocument:
         hash=content_hash(body),
         mtime=mtime,
         asset_refs=extract_image_refs(body),
+        status=_parse_status(fm.get("status")),
     )
 
 

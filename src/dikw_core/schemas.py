@@ -34,6 +34,38 @@ class AssetKind(StrEnum):
     IMAGE = "image"
 
 
+class WisdomStatus(StrEnum):
+    """Frontmatter status enum for wisdom-layer documents (0.3.0 PR2).
+
+    The user sets this in the YAML frontmatter of a
+    ``wisdom/<author>/<slug>.md`` file. Values mean exactly what they
+    read — ``draft`` is a working note the user is still shaping;
+    ``published`` is the canonical state and the implicit default when
+    the frontmatter key is omitted; ``favorite`` is an Obsidian-style
+    pin (no retrieval boost yet — PR2 only validates the value via
+    lint, retrieval consumption is deferred); ``archived`` marks
+    superseded thinking the user keeps for history.
+
+    The enum is wisdom-only: ``DocumentRecord.status`` is forced to
+    ``None`` when ``layer != Layer.WISDOM`` so the field never carries
+    a stray value on wiki/source rows even if a user pastes ``status:``
+    into the wrong frontmatter. The schema's CHECK constraint allows
+    NULL anywhere; the application-side clamp is what keeps the
+    semantics tight.
+
+    The name reuses the PR1-deleted ``WisdomStatus`` slot deliberately:
+    no value collides (old set: ``candidate / approved / archived`` was
+    a review-state machine; new set is a flat author-set page state),
+    and the import path stays stable for the schemas-layer DTO that
+    storage adapters round-trip through.
+    """
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    FAVORITE = "favorite"
+    ARCHIVED = "archived"
+
+
 class DocumentRecord(BaseModel):
     doc_id: str
     # ``path`` is the user's spelling (display path); ``path_key`` is
@@ -53,6 +85,11 @@ class DocumentRecord(BaseModel):
     mtime: float
     layer: Layer
     active: bool = True
+    # Wisdom-only frontmatter status (0.3.0 PR2). Always ``None`` for
+    # non-wisdom rows — the engine forces this clamp in ``api._to_document``
+    # so a stray ``status:`` in a wiki/source frontmatter never persists.
+    # See ``WisdomStatus`` for the value semantics.
+    status: WisdomStatus | None = None
 
     @model_validator(mode="before")
     @classmethod

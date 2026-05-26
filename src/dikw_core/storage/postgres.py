@@ -48,6 +48,7 @@ from ..schemas import (
     StorageCounts,
     VecHit,
     WikiLogEntry,
+    WisdomStatus,
     dump_media_meta,
     load_media_meta,
 )
@@ -184,14 +185,26 @@ class PostgresStorage:
     # ---- D layer ---------------------------------------------------------
 
     async def upsert_document(self, doc: DocumentRecord) -> None:
+        # Defensive: status is a wisdom-only column. ``api._to_document``
+        # and ``persist_page`` both clamp at the application layer, but a
+        # future Storage Protocol caller (a tool, a migration script)
+        # could pass ``status`` on a non-wisdom doc. Clamping here makes
+        # the wisdom-only invariant a property of the adapter, not just
+        # the engine — symmetric with the sqlite adapter.
+        status_value: str | None = (
+            doc.status.value
+            if doc.layer is Layer.WISDOM and doc.status is not None
+            else None
+        )
         async with self._acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
                     INSERT INTO documents(
-                        doc_id, path, path_key, title, hash, mtime, layer, active
+                        doc_id, path, path_key, title, hash, mtime, layer,
+                        active, status
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (doc_id) DO UPDATE SET
                         path = EXCLUDED.path,
                         path_key = EXCLUDED.path_key,
@@ -199,7 +212,8 @@ class PostgresStorage:
                         hash = EXCLUDED.hash,
                         mtime = EXCLUDED.mtime,
                         layer = EXCLUDED.layer,
-                        active = EXCLUDED.active
+                        active = EXCLUDED.active,
+                        status = EXCLUDED.status
                     """,
                     (
                         doc.doc_id,
@@ -210,6 +224,7 @@ class PostgresStorage:
                         doc.mtime,
                         doc.layer.value,
                         doc.active,
+                        status_value,
                     ),
                 )
             await conn.commit()
@@ -217,7 +232,7 @@ class PostgresStorage:
     async def get_document(self, doc_id: str) -> DocumentRecord | None:
         async with self._acquire() as conn, conn.cursor() as cur:
             await cur.execute(
-                "SELECT doc_id, path, path_key, title, hash, mtime, layer, active "
+                "SELECT doc_id, path, path_key, title, hash, mtime, layer, active, status "
                 "FROM documents WHERE doc_id = %s",
                 (doc_id,),
             )
@@ -232,7 +247,7 @@ class PostgresStorage:
             return []
         async with self._acquire() as conn, conn.cursor() as cur:
             await cur.execute(
-                "SELECT doc_id, path, path_key, title, hash, mtime, layer, active "
+                "SELECT doc_id, path, path_key, title, hash, mtime, layer, active, status "
                 "FROM documents WHERE doc_id = ANY(%s)",
                 (ids,),
             )
@@ -247,7 +262,7 @@ class PostgresStorage:
         since_ts: float | None = None,
     ) -> Iterable[DocumentRecord]:
         sql = (
-            "SELECT doc_id, path, path_key, title, hash, mtime, layer, active "
+            "SELECT doc_id, path, path_key, title, hash, mtime, layer, active, status "
             "FROM documents WHERE TRUE"
         )
         params: list[Any] = []
@@ -1304,7 +1319,8 @@ def _row_to_chunk(row: Any) -> ChunkRecord:
 
 def _row_to_document(row: Any) -> DocumentRecord:
     # Column order matches every SELECT in postgres.py:
-    # doc_id, path, path_key, title, hash, mtime, layer, active
+    # doc_id, path, path_key, title, hash, mtime, layer, active, status
+    status_raw = row[8] if len(row) > 8 else None
     return DocumentRecord(
         doc_id=row[0],
         path=row[1],
@@ -1314,6 +1330,7 @@ def _row_to_document(row: Any) -> DocumentRecord:
         mtime=float(row[5] or 0.0),
         layer=Layer(row[6]),
         active=bool(row[7]),
+        status=WisdomStatus(status_raw) if status_raw else None,
     )
 
 

@@ -24,7 +24,7 @@ from typing import Any, Literal, get_args
 
 import frontmatter
 
-from ...schemas import Layer, LinkType
+from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
 from .links import build_fuzzy_index, parse_links, resolve_links
@@ -61,7 +61,15 @@ LintKind = Literal[
     "duplicate_title",
     "non_atomic_page",
     "missing_provenance",
+    "invalid_wisdom_status",
 ]
+
+# 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
+# wisdom-layer pages. The markdown backend already collapses unknown
+# values to ``DocumentRecord.status = None`` so ingest never blocks;
+# this lint surfaces the divergence so the user sees the typo without
+# having to grep their wisdom tree.
+_VALID_WISDOM_STATUS_VALUES = {s.value for s in WisdomStatus}
 
 
 @dataclass(frozen=True)
@@ -359,6 +367,43 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                         detail=f"title '{title}' also used by {primary}",
                     )
                 )
+
+    # ---- W layer scan (0.3.0 PR2) ----
+    # Only ``invalid_wisdom_status`` runs against wisdom pages in PR2 —
+    # broken_wikilink / orphan_page / missing_provenance extend their
+    # coverage to wisdom in PR3, alongside the retrieve wiring. We read
+    # the frontmatter from disk (rather than ``DocumentRecord.status``)
+    # because the parser already collapsed unknown values to ``None``
+    # before they hit storage, and we need the raw spelling to quote
+    # back to the user in ``detail``.
+    wisdom_docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
+    for doc in wisdom_docs:
+        abs_path = (root / doc.path).resolve()
+        if not abs_path.is_file():
+            continue
+        try:
+            post = frontmatter.load(str(abs_path))
+        except Exception:
+            continue
+        skip_kinds = _read_lint_skip(post.metadata)
+        if skip_kinds:
+            suppressions[doc.path] = skip_kinds
+        if "invalid_wisdom_status" in skip_kinds:
+            continue
+        raw = post.metadata.get("status")
+        if raw is None:
+            continue
+        if not isinstance(raw, str) or raw not in _VALID_WISDOM_STATUS_VALUES:
+            issues.append(
+                LintIssue(
+                    kind="invalid_wisdom_status",
+                    path=doc.path,
+                    detail=(
+                        f"status: {raw!r} is not in "
+                        f"{sorted(_VALID_WISDOM_STATUS_VALUES)}"
+                    ),
+                )
+            )
 
     return LintReport(
         issues=issues,

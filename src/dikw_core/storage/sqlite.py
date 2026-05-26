@@ -42,6 +42,7 @@ from ..schemas import (
     StorageCounts,
     VecHit,
     WikiLogEntry,
+    WisdomStatus,
     dump_media_meta,
     load_media_meta,
 )
@@ -186,15 +187,28 @@ class SQLiteStorage:
     # ---- D layer ---------------------------------------------------------
 
     async def upsert_document(self, doc: DocumentRecord) -> None:
+        # Defensive: status is a wisdom-only column. ``api._to_document``
+        # and ``persist_page`` both clamp at the application layer, but a
+        # future Storage Protocol caller (a tool, a migration script)
+        # could pass ``status`` on a non-wisdom doc. Clamping here makes
+        # the wisdom-only invariant a property of the adapter, not just
+        # the engine — symmetric with the postgres adapter.
+        status_value: str | None = (
+            doc.status.value
+            if doc.layer is Layer.WISDOM and doc.status is not None
+            else None
+        )
+
         def _run() -> None:
             conn = self._require_conn()
             with conn:
                 conn.execute(
                     """
                     INSERT INTO documents(
-                        doc_id, path, path_key, title, hash, mtime, layer, active
+                        doc_id, path, path_key, title, hash, mtime, layer,
+                        active, status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(doc_id) DO UPDATE SET
                         path = excluded.path,
                         path_key = excluded.path_key,
@@ -202,7 +216,8 @@ class SQLiteStorage:
                         hash = excluded.hash,
                         mtime = excluded.mtime,
                         layer = excluded.layer,
-                        active = excluded.active
+                        active = excluded.active,
+                        status = excluded.status
                     """,
                     (
                         doc.doc_id,
@@ -213,6 +228,7 @@ class SQLiteStorage:
                         doc.mtime,
                         doc.layer.value,
                         int(doc.active),
+                        status_value,
                     ),
                 )
 
@@ -1511,6 +1527,7 @@ def _row_to_chunk(row: sqlite3.Row) -> ChunkRecord:
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRecord:
+    status_raw = row["status"]
     return DocumentRecord(
         doc_id=row["doc_id"],
         path=row["path"],
@@ -1520,6 +1537,7 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRecord:
         mtime=float(row["mtime"] or 0.0),
         layer=Layer(row["layer"]),
         active=bool(row["active"]),
+        status=WisdomStatus(status_raw) if status_raw else None,
     )
 
 

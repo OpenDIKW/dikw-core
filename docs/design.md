@@ -1,16 +1,17 @@
 # dikw-core — AI-Native Knowledge Engine (Plan)
 
-> **⚠ 0.3.0 W-layer refactor in flight (PR1 of 4) — many sections
+> **⚠ 0.3.0 W-layer refactor in flight (PR2 of 4) — some sections
 > below are stale.** This document still describes the prior W layer
-> as an LLM-distilled candidate/review pipeline (`distill` /
+> as an LLM-distilled candidate/review pipeline in places (`distill` /
 > `_candidates/` / `wisdom_items` table / `review approve|reject` /
-> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind` /
-> `WisdomStatus` etc.). All of those are removed in 0.3.0 PR1 and
-> being replaced with a hand-written first-class document layer
-> under `wisdom/<author>/<slug>.md`. The Wisdom Layer Design section
-> further down carries a current `[WIP — being replaced]` block;
-> treat **every** other distill/wisdom_items mention in this file as
-> historical until PR4 rewrites the spec end-to-end. See CHANGELOG.
+> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind`). All of
+> those were removed in 0.3.0 PR1 and are being replaced with a
+> hand-written first-class document layer under
+> `wisdom/<author>/<slug>.md`. **The "Wisdom Layer Design" section
+> and the Storage-Abstraction section have been rewritten for PR2 and
+> are current.** Treat other distill/wisdom_items mentions as
+> historical until PR4 rewrites the spec end-to-end. See CHANGELOG
+> for the full migration log.
 
 ## Context
 
@@ -395,41 +396,45 @@ Each operation is implemented in `dikw_core.api` and surfaced over HTTP by the s
 
 ## Wisdom Layer Design
 
-> **[WIP — being replaced in 0.3.0]** The 0.3.0 refactor reshapes W from
-> an LLM-distilled candidate/review pipeline into a hand-written
-> first-class document layer. PR1 (this commit) removes the legacy
-> `distill` / `list_candidates` / `approve_wisdom` / `reject_wisdom` API
-> + the `wisdom_items` / `wisdom_evidence` / `wisdom_embed_meta` tables
-> + the `_candidates/` queue + the `principles.md` / `lessons.md` /
-> `patterns.md` aggregate files. PR2 wires wisdom files into the
-> `documents` table; PR3 surfaces them on `dikw client retrieve` and
-> `dikw client lint`; PR4 finalises this section. See CHANGELOG for
-> the migration path.
+W layer is a first-class document layer alongside K. A wisdom page is a
+plain markdown file under `wisdom/<author>/<slug>.md` that a human writes
+by hand in Obsidian — there is no LLM proposal, no candidate queue, no
+review state machine. Authorship is encoded by directory
+(`wisdom/elon-musk/...` attributes the page to `elon-musk`); a wisdom
+file directly under `wisdom/<slug>.md` (no author subdirectory) is
+allowed and indexed with `author = None`.
 
-The 0.3.0 endpoint:
+Wisdom pages share the K-page contract:
 
-- Wisdom is a plain markdown file under `wisdom/<author>/<slug>.md` that
-  a human writes by hand in Obsidian. Authorship is encoded by directory
-  (`wisdom/elon-musk/...` attributes the page to `elon-musk`).
-- YAML frontmatter: optional `sources: [...]` list (same semantics as
+- **YAML frontmatter:** optional `sources: [...]` list (same semantics as
   wiki pages — populates the `provenance` table), optional
   `status: draft | published | favorite | archived` enum (omitted ≡
-  published), free-form additional keys.
-- Body: markdown with `[[wikilinks]]` that resolve across both wiki and
-  wisdom layers via title.
-- Persistence: `dikw ingest` scans `<root>/wisdom/**/*.md` after the
-  `sources:` scan, hash-idempotent, runs the same `persist_page` pipeline
-  as wiki (`documents` row + `chunks` + per-version embedding + `links`
-  + `provenance`).
-- Retrieval: another searchable layer. `dikw client retrieve` returns
-  `Hit` rows whose `layer` field is `"wisdom"` or `"wiki"` so the caller
-  can group or weight.
-- Lint (`broken_wikilink`, `missing_provenance`, `orphan_page`,
-  `invalid_wisdom_status`) automatically covers both layers.
+  published), free-form additional keys. Wiki and Source layer documents
+  may carry `status:` in YAML but the engine forces
+  `DocumentRecord.status = NULL` for them — status is wisdom-only.
+- **Body:** markdown with `[[wikilinks]]` that resolve across both wiki
+  and wisdom layers via title. Title collisions across layers fall
+  through the existing refuse-to-resolve mechanism (lint surfaces the
+  ambiguity); the user disambiguates with the path form
+  `[[wisdom/elon-musk/be-relentless|Be Relentless]]`.
+- **Persistence:** `dikw ingest` scans `<root>/wisdom/**/*.md` after the
+  `sources:` scan, hash-idempotent, runs the same `persist_page`
+  pipeline as wiki (`documents` row + `chunks` + per-version embedding +
+  `links` + `provenance`). `wisdom/_candidates/` and the legacy
+  `principles.md` / `lessons.md` / `patterns.md` aggregate files are
+  hard-coded skips so an upgrading base does not accidentally index
+  drained queue artifacts.
+
+In 0.3.0 PR2 (this commit) wisdom pages flow through ingest and into
+`documents`. PR3 will wire `dikw client retrieve` to surface them
+alongside wiki hits (`Hit.layer == "wisdom"`) and extend
+`broken_wikilink` / `missing_provenance` / `orphan_page` lint coverage
+to the wisdom layer; PR4 is the docs/CHANGELOG/ADR final pass.
 
 There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
 machine. `status` is a flat enum the human sets; the engine validates it
-via lint but does not (yet) consume it for retrieval filtering or boost.
+via the `invalid_wisdom_status` lint kind (added in PR2, non-blocking
+warning) but does not yet consume it for retrieval filtering or boost.
 
 ## Storage Abstraction
 
@@ -459,21 +464,23 @@ class Storage(Protocol):
                          layer: Layer | None = None) -> list[VecHit]: ...
     async def get_chunk(self, chunk_id: int) -> ChunkRecord | None: ...
 
-    # K layer
+    # K + W layer (both flow through documents / chunks; wisdom-only fields)
     async def upsert_link(self, link: LinkRecord) -> None: ...
     async def links_from(self, src_doc_id: str) -> list[LinkRecord]: ...
     async def links_to(self, dst_path: str) -> list[LinkRecord]: ...
     async def append_wiki_log(self, entry: WikiLogEntry) -> None: ...
-
-    # W layer
-    async def put_wisdom(self, item: WisdomItem, evidence: Sequence[WisdomEvidence]) -> None: ...
-    async def list_wisdom(self, *, status: WisdomStatus | None = None,
-                          kind: WisdomKind | None = None) -> list[WisdomItem]: ...
-    async def set_wisdom_status(self, item_id: str, status: WisdomStatus) -> None: ...
+    async def replace_provenance_from(self, src_doc_id: str,
+                                      source_paths: Sequence[str]) -> None: ...
 
     # diagnostics
     async def counts(self) -> StorageCounts: ...
 ```
+
+The W layer shares the K-layer Storage surface — both flow through the
+`documents` row + `chunks` + `links` + `provenance` quartet, separated
+only by `documents.layer` (`WIKI` vs `WISDOM`) and the wisdom-only
+`documents.status` column (CHECK-constrained to the four enum values;
+NULL for non-wisdom rows, enforced application-side at write time).
 
 Design constraints:
 - **No leaky query objects.** All inputs and outputs are plain Pydantic DTOs. No `cursor`, no `Session`, no backend-specific types crossing the boundary.
@@ -503,7 +510,7 @@ class EmbeddingProvider(Protocol):
 
 `providers/anthropic.py` wraps the official `anthropic` SDK for LLM; raises for embedding (unsupported). `providers/openai_compat.py` wraps the official `openai` SDK and takes `base_url` + `api_key` from env/config, covering OpenAI proper, Azure OpenAI, Ollama, vLLM, TEI-style embedding endpoints, and any Claude Code-style OpenAI-compat. `providers/__init__.py` resolves instances from `dikw.yml`; swapping providers is a config-only change.
 
-Prompt caching: when the provider is Anthropic, use the `cache_control` param on the system prompt and large wiki blocks in `synthesize`/`distill` — the wiki schema and the active-wisdom block are near-static per session and are the prime caching targets. (Query-time prompt caching is the agent's concern, not dikw-core's, since dikw-core does not call the LLM at retrieve time.)
+Prompt caching: when the provider is Anthropic, use the `cache_control` param on the system prompt and large wiki blocks in `synthesize` — the wiki schema is near-static per session and is the prime caching target. (Query-time prompt caching is the agent's concern, not dikw-core's, since dikw-core does not call the LLM at retrieve time.)
 
 ## Interfaces
 

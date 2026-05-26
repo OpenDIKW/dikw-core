@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ...schemas import LinkRecord, LinkType
@@ -124,6 +125,48 @@ def _normalize_for_match(s: str) -> str:
 normalize_base = _normalize_base
 normalize_for_match = _normalize_for_match
 WIKILINK_RE = _WIKILINK
+
+
+def build_title_indexes(
+    docs: Iterable[tuple[str, str]],
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Build matched ``(exact_match_index, fuzzy_index)`` from ``(title, path)`` pairs.
+
+    Two-stage resolve in ``resolve_links`` works only when exact-title
+    collisions are dropped from the exact-match dict — otherwise the
+    first-seen path silently wins and the second stage's
+    ≥2-candidate refusal never fires. This helper keeps both indexes
+    aligned so cross-layer same-title pages (e.g. ``wiki/Tesla`` +
+    ``wisdom/Tesla``) leave the wikilink broken and surface through
+    lint, per Karpathy's wrong-merge rule.
+
+    The fuzzy index is built from every ``(title, path)`` pair so a
+    colliding pair lands ≥2 entries under its normalized key,
+    triggering the same refuse-to-resolve path that ambiguous fuzzy
+    matches go through.
+    """
+    title_to_paths: dict[str, list[str]] = {}
+    for title, path in docs:
+        if not title:
+            continue
+        bucket = title_to_paths.setdefault(title, [])
+        if path not in bucket:
+            bucket.append(path)
+    exact = {
+        title: paths[0]
+        for title, paths in title_to_paths.items()
+        if len(paths) == 1
+    }
+    fuzzy: dict[str, list[str]] = {}
+    for title, paths in title_to_paths.items():
+        key = _normalize_base(title)
+        if not key:
+            continue
+        bucket = fuzzy.setdefault(key, [])
+        for p in paths:
+            if p not in bucket:
+                bucket.append(p)
+    return exact, fuzzy
 
 
 def build_fuzzy_index(title_to_path: dict[str, str]) -> dict[str, list[str]]:

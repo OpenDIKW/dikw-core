@@ -7,6 +7,94 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Wisdom layer refactor — PR2 of 4 (0.3.0)
+
+PR2 wires hand-written wisdom files into the same indexing pipeline as
+wiki pages: a wisdom page on disk is now a first-class `Layer.WISDOM`
+document with chunks, embeddings, outgoing wikilinks, and provenance
+edges from its `sources:` frontmatter. PR3 will surface them in
+`dikw client retrieve` and extend the existing
+`broken_wikilink` / `missing_provenance` / `orphan_page` lint checks
+to the wisdom layer; PR4 is the docs/CHANGELOG/ADR final pass.
+
+**Added**:
+
+- `dikw ingest` scans `<root>/wisdom/**/*.md` after the `sources:` scan
+  and runs each file through the same `persist_page` pipeline as wiki
+  pages, hash-idempotent. Skips `wisdom/_candidates/` and the legacy
+  `wisdom/{principles,lessons,patterns}.md` aggregates so an upgrading
+  base doesn't index drained queue artifacts.
+- `domains/wisdom/page.py::author_from_path` —
+  `wisdom/<author>/<slug>.md → <author>`, deterministic, no
+  frontmatter `author` field. A file directly under `wisdom/<slug>.md`
+  returns `None` (allowed but un-attributed).
+- `domains/knowledge/page_index.py::persist_page(layer=...)` — generalised
+  the K-layer indexing entrypoint to take a layer parameter.
+  `persist_wiki_page` is preserved as a thin K-layer wrapper for
+  existing synth + lint-apply call sites. The function builds its
+  wikilink title index across both `Layer.WIKI` and `Layer.WISDOM`, so
+  `[[wikilinks]]` resolve cross-layer; title collisions fall through
+  the existing refuse-to-resolve mechanism (lint surfaces the
+  ambiguity).
+- `schemas.WisdomStatus(StrEnum)` — values `{draft, published, favorite,
+  archived}`. The name reuses the PR1-deleted slot deliberately (no
+  values collide); the import path stays stable for the schemas-layer
+  DTO. `DocumentRecord.status: WisdomStatus | None` is the wisdom-only
+  column.
+- `documents.status` SQLite + Postgres column with CHECK
+  `(status IS NULL OR status IN ('draft','published','favorite','archived'))`.
+  `SCHEMA_VERSION` bumped from 4 → 5 so an upgrading base rebuilds.
+  Wiki/source rows are always written with `status = NULL` (engine
+  invariant — applied in `api._to_document` and
+  `domains/knowledge/page_index.persist_page`). The CHECK is permissive
+  by design because SQLite doesn't support a layer-keyed partial CHECK
+  and we want a symmetric shape across backends.
+- `ParsedDocument.status` parsed from frontmatter — out-of-enum
+  values collapse to `None` (ingest stays non-blocking) but the raw
+  spelling is preserved in `frontmatter["status"]` so the new
+  `invalid_wisdom_status` lint can quote it back.
+- `LintKind.invalid_wisdom_status` — scans wisdom pages, warns when
+  frontmatter `status:` is set to a value not in the enum. Lint-only,
+  ingest is never blocked. Skip-able via per-page `lint: {skip:
+  [invalid_wisdom_status]}` frontmatter.
+- `domains/knowledge/links.py::build_title_indexes` — central helper
+  that builds `(exact_match, fuzzy_index)` from `(title, path)` pairs
+  and drops exact-title collisions from the exact-match dict so
+  `resolve_links`'s ≥2-candidate refusal actually fires when a wiki
+  and wisdom page share a title. Used by `persist_page` and hoisted
+  before the `dikw ingest` wisdom loop so wisdom→wisdom links inside
+  the same ingest pass resolve on the first run.
+- `iter_source_files` now hard-skips paths under `wisdom/` since it's
+  a reserved first-class layer; a broad user config like
+  `sources: [{path: '.', pattern: '**/*.md'}]` no longer
+  double-yields wisdom files as `Layer.SOURCE`.
+
+**Known limitations**:
+
+- Image assets referenced from wisdom pages (`![alt](photo.png)`,
+  Obsidian `![[file.png]]`) are NOT yet bridged through the
+  `chunk_asset_refs` pipeline. `extract_image_refs` runs on parse but
+  `persist_page` doesn't call `materialize_asset` for wisdom — assets
+  on wisdom pages don't surface through multimodal retrieve. The
+  wiki/synth path is unaffected; wisdom-asset parity will land in a
+  follow-up PR.
+- `read_page`, `list_links`, `list_pages`, and `read_provenance` still
+  iterate `(Layer.SOURCE, Layer.WIKI)` only — wisdom documents are
+  written into storage but not yet readable via the HTTP page APIs.
+  PR3 wires them, alongside `dikw client pages --layer wisdom`.
+
+**Manual cleanup before re-ingest** (in addition to PR1 cleanup):
+
+- Reset the storage backend — the `SCHEMA_VERSION` bump (4 → 5)
+  invalidates the existing fingerprint:
+  * SQLite: `rm -rf .dikw/` and rerun `dikw client ingest`.
+  * Postgres: `DROP SCHEMA <your-dikw-schema> CASCADE; CREATE SCHEMA
+    <your-dikw-schema>;` then rerun `dikw client ingest`.
+- Move any wisdom content out of `wisdom/{principles,lessons,patterns}.md`
+  into `wisdom/<author>/<slug>.md` if not already done in PR1; the
+  aggregate files are hard-coded skips so anything left there is
+  invisible to ingest.
+
 ### BREAKING: Wisdom layer refactor — PR1 of 4 (0.3.0)
 
 W layer is being reshaped from a LLM-distilled candidate/review

@@ -2390,3 +2390,121 @@ async def test_provenance_no_fk_allows_unindexed_source_path(
     reverse = await storage.provenance_to(normalize_path("sources/ghost.md"))
     assert [r.src_doc_id for r in reverse] == [page.doc_id]
 
+
+# ---- documents.status (wisdom-only column added in 0.3.0 PR2) ---------
+
+
+async def test_wisdom_document_status_roundtrips(storage: Storage) -> None:
+    """A wisdom document with each enum status value upserts and reads back
+    with ``DocumentRecord.status`` preserved. NULL status (omitted) is the
+    canonical default and must also round-trip.
+    """
+    from dikw_core.schemas import WisdomStatus
+
+    cases: list[tuple[str, WisdomStatus | None]] = [
+        ("wisdom/elon-musk/draft.md", WisdomStatus.DRAFT),
+        ("wisdom/elon-musk/published.md", WisdomStatus.PUBLISHED),
+        ("wisdom/elon-musk/favorite.md", WisdomStatus.FAVORITE),
+        ("wisdom/elon-musk/archived.md", WisdomStatus.ARCHIVED),
+        ("wisdom/elon-musk/unspecified.md", None),
+    ]
+    for path, status in cases:
+        doc = _make_doc(path, layer=Layer.WISDOM)
+        doc = doc.model_copy(update={"status": status})
+        await storage.upsert_document(doc)
+
+    for path, status in cases:
+        fetched = await storage.get_document(f"doc::{path}")
+        assert fetched is not None, path
+        assert fetched.status == status, (path, fetched.status, status)
+
+
+async def test_non_wisdom_layer_status_clamped_to_null(
+    storage: Storage,
+) -> None:
+    """The ``status`` column is wisdom-only by contract. Even when a
+    caller upserts a SOURCE or WIKI document with ``status`` set, the
+    adapter must clamp it to ``NULL`` so the wisdom-only invariant is
+    enforced at the storage layer (defense in depth alongside the
+    application-side clamp in ``api._to_document`` and
+    ``persist_page``). Symmetric across sqlite + postgres.
+    """
+    from dikw_core.schemas import WisdomStatus
+
+    cases: list[tuple[str, Layer]] = [
+        ("sources/notes/x.md", Layer.SOURCE),
+        ("wiki/concepts/x.md", Layer.WIKI),
+    ]
+    for path, layer in cases:
+        doc = _make_doc(path, layer=layer)
+        doc = doc.model_copy(update={"status": WisdomStatus.FAVORITE})
+        await storage.upsert_document(doc)
+
+    for path, layer in cases:
+        fetched = await storage.get_document(f"doc::{path}")
+        assert fetched is not None, path
+        assert fetched.layer is layer
+        assert fetched.status is None, (path, fetched.status)
+
+
+async def test_documents_status_check_constraint_rejects_unknown(
+    storage: Storage,
+) -> None:
+    """The ``documents.status`` column must CHECK-constrain to the four
+    enum values. The Storage Protocol only takes typed ``WisdomStatus``
+    values from the engine, so a bad value can only get in via a raw SQL
+    path that bypasses the adapter — this test reaches into adapter
+    internals to force the violation and confirm the CHECK fires.
+    """
+    if isinstance(storage, SQLiteStorage):
+        conn = storage._conn
+        assert conn is not None
+        # Insert a documents row carrying a status not in the enum set —
+        # SQLite must reject via the CHECK constraint we declare in
+        # migrations/sqlite/schema.sql.
+        import sqlite3 as _sqlite3
+        with pytest.raises(_sqlite3.IntegrityError):
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO documents(
+                        doc_id, path, path_key, title, hash, mtime, layer,
+                        active, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        "doc::wisdom/elon-musk/bad-status.md",
+                        "wisdom/elon-musk/bad-status.md",
+                        normalize_path("wisdom/elon-musk/bad-status.md"),
+                        "bad-status",
+                        "hash-bad",
+                        0.0,
+                        Layer.WISDOM.value,
+                        "garbage",
+                    ),
+                )
+    else:  # PostgresStorage
+        import psycopg as _psycopg
+        async with storage._acquire() as conn, conn.cursor() as cur:
+            with pytest.raises(
+                (_psycopg.errors.CheckViolation, _psycopg.errors.InvalidTextRepresentation)
+            ):
+                await cur.execute(
+                    """
+                    INSERT INTO documents(
+                        doc_id, path, path_key, title, hash, mtime, layer,
+                        active, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
+                    """,
+                    (
+                        "doc::wisdom/elon-musk/bad-status.md",
+                        "wisdom/elon-musk/bad-status.md",
+                        normalize_path("wisdom/elon-musk/bad-status.md"),
+                        "bad-status",
+                        "hash-bad",
+                        0.0,
+                        Layer.WISDOM.value,
+                        "garbage",
+                    ),
+                )
+            await conn.rollback()

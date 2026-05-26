@@ -14,11 +14,13 @@
 -- runtime. Switching a model = new ``embed_versions`` row = new vec
 -- table; prior vectors survive in-place under their own version_id.
 --
--- W layer (wisdom) is being refactored in 0.3.0 to first-class
--- documents under ``wisdom/<author>/<slug>.md``. PR1 removes the
--- legacy ``wisdom_items`` / ``wisdom_evidence`` / ``wisdom_embed_meta``
--- tables; PR2 wires wisdom files into ``documents`` via
--- ``layer = 'wisdom'``.
+-- W layer (wisdom) flows through the ``documents`` table as
+-- ``layer = 'wisdom'`` (0.3.0 PR2). The wisdom-only ``status`` column
+-- carries the frontmatter ``status: draft|published|favorite|archived``
+-- enum; non-wisdom rows always store NULL (the application clamps in
+-- ``api._to_document``). CHECK allows NULL anywhere because SQLite
+-- doesn't support a partial CHECK keyed on ``layer``; the
+-- wisdom-only invariant lives in the engine.
 --
 -- ``meta_kv`` is redeclared here (it is also created inline ahead of
 -- this file by ``migrate()`` so the schema-version reader has a row to
@@ -45,7 +47,10 @@ CREATE TABLE IF NOT EXISTS documents (
     hash     TEXT NOT NULL,
     mtime    REAL,
     layer    TEXT NOT NULL CHECK (layer IN ('source','wiki','wisdom')),
-    active   INTEGER NOT NULL DEFAULT 1
+    active   INTEGER NOT NULL DEFAULT 1,
+    status   TEXT CHECK (
+        status IS NULL OR status IN ('draft','published','favorite','archived')
+    )
 );
 
 CREATE INDEX IF NOT EXISTS documents_layer_active
