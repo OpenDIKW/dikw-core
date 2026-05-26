@@ -242,22 +242,48 @@ need DEBUG to spot one.
 
 ## 6. Author Wisdom (the W layer)
 
-`wisdom/` is yours to fill by hand. Drop markdown files under
+`wisdom/` is yours to fill by hand — there is no LLM-authoring path
+and no candidate/review queue. Drop markdown files under
 `wisdom/<author>/<slug>.md` (e.g. `wisdom/elon-musk/first-principles.md`)
-in Obsidian — the directory name is the author. The 0.3.0 W refactor is
-in flight:
+in Obsidian; the directory name is the author. A file directly under
+`wisdom/<slug>.md` (no author subdirectory) is also indexed, with
+`author = None`.
 
-- **PR1 (this release)** removes the legacy LLM-distill + review
-  pipeline. No CLI verb writes wisdom; no HTTP endpoint serves it. You
-  can already keep markdown under `wisdom/` for editing, but the engine
-  doesn't index it yet.
-- **PR2 (next)** wires `dikw ingest` to scan `<root>/wisdom/**/*.md`
-  through the same `persist_page` pipeline as wiki, so wisdom pages
-  participate in retrieve + lint with `Layer.WISDOM`.
+Frontmatter shape — every field optional:
 
-See CHANGELOG and `docs/design.md` for the migration shape. Until PR2
-lands, hand-written wisdom is invisible to `dikw client retrieve` —
-edit freely, but don't expect retrieval hits yet.
+```yaml
+---
+title: First Principles                      # falls through to H1 or filename
+status: published                            # draft | published | favorite | archived
+sources:                                     # populates the provenance table
+  - sources/notes/musk-bio.md
+tags: [reasoning, mental-model]
+---
+```
+
+Then:
+
+```bash
+dikw client ingest                           # indexes wisdom alongside sources
+dikw client pages list --layer wisdom        # confirm the page landed
+dikw client retrieve "first principles" \
+  --format table                             # hit arrives tagged layer=wisdom
+dikw client lint                             # broken_wikilink / orphan_page /
+                                             # missing_provenance / invalid_wisdom_status
+                                             # cover both K and W
+```
+
+Wisdom pages can `[[wikilink]]` to wiki pages (and vice versa);
+cross-layer same-title collisions stay broken so `lint` surfaces the
+ambiguity — disambiguate with `[[wisdom/elon-musk/be-relentless|Be
+Relentless]]`. The wisdom-only `status` enum is validated by the
+`invalid_wisdom_status` lint kind (non-blocking warning); the engine
+does not yet consume `status` for retrieval filtering or boost.
+
+Upgrading from 0.2.x: delete `wisdom/_candidates/` and the
+`wisdom/{principles,lessons,patterns}.md` aggregates (or leave them —
+ingest hard-skips both), then re-run `dikw client ingest` against the
+new SCHEMA_VERSION. See CHANGELOG `[0.3.0]` for the full migration log.
 
 ## 7. Check retrieval quality on your corpus
 

@@ -21,19 +21,24 @@ Everything else is plumbing.
 | **K** — Knowledge    | LLM-authored wiki pages, link graph, `index.md`  | LLM, human-editable            |
 | **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
-The W layer is being refactored across 0.3.0 (this is PR2 of 4). PR1
-removed the prior LLM-distilled candidate/review pipeline. PR2 (this
-commit) wires `dikw ingest` to scan `<root>/wisdom/**/*.md` through the
-same `persist_page` pipeline as wiki pages, indexes them as
-`Layer.WISDOM` documents with chunks/embeddings/links/provenance, and
-adds the wisdom-only `documents.status` column (CHECK-constrained to
-`draft | published | favorite | archived`) validated by the new
-`invalid_wisdom_status` lint kind. PR3 surfaces wisdom hits on
-`dikw client retrieve` with `Hit.layer == "wisdom"` and extends
-`broken_wikilink` / `missing_provenance` / `orphan_page` lint coverage
-to the wisdom layer. dikw-core does not perform answer synthesis —
-`retrieve` returns ranked chunks + page refs and the agent layer runs
-its own LLM.
+The W layer was refactored across 0.3.0 (PR1-PR4). The prior
+LLM-distilled `distill` / `_candidates/` / `review` pipeline is gone;
+wisdom is now hand-written first-class documents under
+`wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same
+`persist_page` pipeline as wiki pages with chunks / embeddings /
+`[[wikilinks]]` / `provenance` edges. `Layer.WISDOM` documents carry
+a wisdom-only `documents.status` column (CHECK-constrained to
+`draft | published | favorite | archived`) validated by the
+`invalid_wisdom_status` lint kind. `dikw client retrieve` returns
+wisdom chunks tagged `Hit.layer == "wisdom"`; `read_page` /
+`list_links` / `read_provenance` accept wisdom paths and resolve
+cross-layer edges; `broken_wikilink` / `orphan_page` /
+`missing_provenance` lint scans both K + W layers, crediting
+cross-layer wikilinks in the orphan inbound counter so a wiki page
+cited only from wisdom is not falsely flagged. See
+`docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
+dikw-core does not perform answer synthesis — `retrieve` returns
+ranked chunks + page refs and the agent layer runs its own LLM.
 
 ## Module map
 
@@ -195,9 +200,8 @@ both adapters honor at write time.
 
 ## What stays out of the adapters
 
-Hybrid search fusion (RRF), chunking, link-graph parsing, wisdom scoring,
-and prompt templating all live **outside** the storage and provider
-adapters. The Storage Protocol exposes only the primitives (`fts_search`,
+Hybrid search fusion (RRF), chunking, link-graph parsing, and prompt
+templating all live **outside** the storage and provider adapters. The Storage Protocol exposes only the primitives (`fts_search`,
 `vec_search`, …); fusion happens in `info/search.py`. This is the right
 abstraction height: high enough to hide SQL dialects, low enough that
 each adapter doesn't re-implement RRF.
@@ -210,8 +214,8 @@ We take that seriously. Every navigation step (source listing, chunk
 lookup, link traversal, provenance lookup) is deterministic SQL + file
 I/O. LLM calls only enter at synth — the engine-internal authoring leg
 that writes the K layer. The W layer is hand-authored markdown the user
-writes in Obsidian; ingest/persistence indexes it (wisdom-as-documents
-lands in 0.3.0 PR2 — see CHANGELOG). Answer synthesis happens **outside**
+writes in Obsidian; ingest/persistence indexes it through the same
+`persist_page` pipeline as the K layer. Answer synthesis happens **outside**
 dikw-core, in the agent layer, with the agent's own LLM and conversation
 context.
 

@@ -7,6 +7,40 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Wisdom layer refactor — PR4 of 4 (0.3.0)
+
+PR4 is the docs / ADR final pass — closes the 0.3.0 wisdom-refactor
+arc.
+
+**Docs**:
+
+- `docs/design.md`: dropped the "0.3.0 W-layer refactor in flight"
+  banner; rewrote the Phase 3 line; replaced the old `wisdom_items` /
+  `wisdom_evidence` SQL block with the `documents.status` ALTER
+  example; refreshed the package + on-disk layout diagrams
+  (`wisdom/<author>/` instead of `wisdom/_candidates/` +
+  aggregate files); CLI surface section drops `distill` / `review`
+  and adds `pages` + cross-layer wisdom retrieve / lint behaviour.
+- `docs/architecture.md`: W-layer paragraph now describes the shipped
+  contract (was "in flight (PR2 of 4)"); module map's wisdom row
+  shows `page.py` only; "wisdom scoring" removed from the adapter
+  carve-out list.
+- `docs/getting-started.md`: rewrote section 6 "Author Wisdom" with
+  concrete frontmatter + commands (ingest / pages list / retrieve /
+  lint), cross-layer wikilink disambiguation guidance, and the 0.2.x
+  upgrade-cleanup steps.
+- `docs/eval-plan.md`: updated the "W-layer is the differentiator"
+  framing for the first-class layer reality; replaced the W-layer
+  apply-at-query trigger condition with the wisdom-retrieval-lift
+  one.
+- `CLAUDE.md`: dropped the "wisdom scoring" carve-out from the
+  Storage-Protocol bullet; updated the module map's wisdom row.
+- `docs/adr/0002-wisdom-as-first-class-documents.md`: new ADR
+  capturing why distill/review/candidate retired in favor of
+  hand-written wisdom documents.
+
+No code changes.
+
 ### Wisdom layer refactor — PR3 of 4 (0.3.0)
 
 PR3 surfaces wisdom on the read + retrieve + lint paths so a user who

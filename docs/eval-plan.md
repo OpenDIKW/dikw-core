@@ -26,8 +26,9 @@ same runner, so the CLI and the gate can never drift.
 - **What's covered.** Retrieval (I layer): chunking + RRF fusion + storage
   lookup. Catches: wrong chunk boundaries, broken vec/FTS wiring, RRF bugs,
   storage-adapter regressions.
-- **What's not.** Generation is not measured. The two engine-internal LLM
-  legs (K-layer synth, W-layer distill) get partial coverage via
+- **What's not.** Generation is not measured. The remaining engine-internal
+  LLM leg (K-layer synth — W layer is hand-written, no LLM authoring
+  path) gets partial coverage via
   `dikw client eval --eval synth` (added 2026-05-12; seven quantified metrics —
   `fact_grounding_ratio`, `atomicity_score`, `duplicate_ratio_max`,
   `wikilink_resolved_ratio`, `expected_coverage`, `language_fidelity`,
@@ -80,10 +81,12 @@ below fires. Rationale:
 2. **Deterministic > noisy.** Phase A is hermetic; RAGAS is LLM-dependent
    and adds flakiness + spend. At 10 queries, LLM-judge variance would
    drown the signal.
-3. **W-layer is the real differentiator.** Once the K/W pipeline is
-   actually wiring approved wisdom into answers, the interesting
-   generation-side metric is "does `[W#]` get cited correctly?" — which
-   a bespoke check catches more cleanly than faithfulness does.
+3. **W-layer is the real differentiator.** Wisdom is now a first-class
+   retrieval layer (0.3.0): hits arrive tagged `Hit.layer == "wisdom"`
+   so an agent can group / weight / cite them separately. The interesting
+   generation-side metric is "does the agent's answer cite the wisdom
+   pages alongside the wiki pages for the same question?" — a bespoke
+   check catches that more cleanly than generic faithfulness scores.
 
 ## Acceptance gates for K-layer and Retrieval changes
 
@@ -135,8 +138,10 @@ Adopt an LLM-as-judge framework (default: RAGAS) when **any** of:
 - The corpus grows past ~50 docs or the query set past ~30 pairs, at
   which point authoring golden answers becomes a bottleneck but judging
   N questions still costs O(N) LLM calls, not O(N²) author-hours.
-- We land the W-layer apply-at-query path and want to measure whether
-  `[W#]` citations actually match the applicable wisdom for a question.
+- We grow `evals/datasets/elon-musk-validation` (or any packaged
+  dataset) with a wisdom subdirectory + qrels and want to measure
+  retrieval lift from cross-layer wisdom hits — wisdom MRR / hit@k
+  alongside the existing wiki / source metrics.
 
 Until then: grow the Q/A set, keep Phase A green, don't spin up a
 judge harness.
