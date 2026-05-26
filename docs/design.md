@@ -1,17 +1,16 @@
 # dikw-core — AI-Native Knowledge Engine (Plan)
 
-> **⚠ 0.3.0 W-layer refactor in flight (PR2 of 4) — some sections
-> below are stale.** This document still describes the prior W layer
-> as an LLM-distilled candidate/review pipeline in places (`distill` /
-> `_candidates/` / `wisdom_items` table / `review approve|reject` /
-> `GET /v1/wisdom/applicable` / `WisdomItem` / `WisdomKind`). All of
-> those were removed in 0.3.0 PR1 and are being replaced with a
-> hand-written first-class document layer under
-> `wisdom/<author>/<slug>.md`. **The "Wisdom Layer Design" section
-> and the Storage-Abstraction section have been rewritten for PR2 and
-> are current.** Treat other distill/wisdom_items mentions as
-> historical until PR4 rewrites the spec end-to-end. See CHANGELOG
-> for the full migration log.
+> **0.3.0 wisdom refactor landed.** The W layer is no longer an
+> LLM-distilled `distill` / `_candidates/` / `wisdom_items` pipeline;
+> it is a hand-written first-class document layer under
+> `wisdom/<author>/<slug>.md` with the same `documents` / `chunks` /
+> `embeddings` / `links` / `provenance` shape as the K layer. The
+> rationale is captured in `docs/adr/0002-wisdom-as-first-class-documents.md`;
+> the migration log lives in CHANGELOG `[0.3.0]`. Any references to
+> `distill` / `wisdom_items` / `WisdomItem` / `WisdomKind` / `review
+> approve` / `GET /v1/wisdom/applicable` in this document are
+> historical only — the current contract is the "Wisdom Layer Design"
+> section below.
 
 ## Context
 
@@ -31,7 +30,7 @@ Design decisions already locked in (via clarifying Q&A):
 
 1. **DIKW as first-class layers** — each layer has its own storage, schemas, and operations. The pipeline between layers is explicit (not an implicit by-product of retrieval).
 2. **Wiki-as-artifact** — Knowledge & Wisdom layers are plain markdown on disk, versioned with git by the user, editable by humans and LLMs. The engine is a tool; the wiki is the product.
-3. **Scoping deterministic, reasoning probabilistic** (Karpathy) — navigation uses deterministic structure (index.md, link graph, FTS); LLM calls are reserved for synthesis, distillation, and answering.
+3. **Scoping deterministic, reasoning probabilistic** (Karpathy) — navigation uses deterministic structure (index.md, link graph, FTS); LLM calls are reserved for K-layer synthesis. W layer is hand-written, not LLM-authored.
 4. **Server-as-the-engine, CLI-as-the-client** — the engine is a long-lived `dikw serve` (FastAPI + NDJSON streaming) process that owns storage and provider connections; humans drive it through `dikw client *`, agents through HTTP. There is no in-process import path for end-user operations.
 5. **Local-first data, pluggable compute** — the wiki lives on the user's filesystem; the default index is a local SQLite DB; only LLM calls leave the machine (and are provider-abstracted).
 6. **Pluggable storage** — the engine talks to an abstract **Storage** interface, not to SQL directly. Two backends ship: **SQLite+sqlite-vec** (default, single-user local) and **Postgres+pgvector** (enterprise, multi-user). Swapping backends is a config change.
@@ -65,7 +64,7 @@ The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.
                                   │
                  ┌────────────────▼─────────────────────────┐
                  │  Core API (dikw_core.api)                │
-                 │  ingest · synthesize · distill · retrieve│
+                 │  ingest · synthesize · retrieve          │
                  │  · lint · status                         │
                  └────────────────┬─────────────────────────┘
           ┌───────────────────────┼────────────────────────┐
@@ -116,7 +115,7 @@ Known patterns to reuse from references (concrete sources):
 - **SQLite schema design + content-addressed storage** — `mineru-doc-explorer/src/db-schema.ts`, `mineru-doc-explorer/src/store.ts` (documents table with indexed content hash, links table, wiki_log).
 - **Smart markdown chunking (~900 tokens, 15% overlap, heading-aware)** — `mineru-doc-explorer/src/store.ts` chunking section; `qmd/src/store.ts` lines ~257–310.
 - **Wikilink parsing + forward/backward graph** — `mineru-doc-explorer/src/links.ts`, `mineru-doc-explorer/src/wiki/{log,lint,index-gen}.ts`. Port to a small `knowledge/links.py`.
-- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,retrieve}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / distill / eval) return a `task_id` whose progress is consumed via the paged JSON cursor at `GET /v1/tasks/{id}/events` (long-poll with `wait>0`); retrieve streams inline NDJSON (no task_id, short-lived); sync ops return JSON directly. **LLM synthesis is not a dikw-core verb** — agents call `retrieve` and run their own LLM on the returned chunks.
+- **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,retrieve}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / eval) return a `task_id` whose progress is consumed via the paged JSON cursor at `GET /v1/tasks/{id}/events` (long-poll with `wait>0`); retrieve streams inline NDJSON (no task_id, short-lived); sync ops return JSON directly. **LLM synthesis is not a dikw-core verb** — agents call `retrieve` and run their own LLM on the returned chunks.
 - **YAML config + schema validation** — `mineru-doc-explorer/src/config-schema.ts` (Zod) → Pydantic v2 equivalent in `dikw_core/config.py`.
 - **Strong-signal short-circuit** (skip expensive LLM expansion when FTS already gives a confident top hit) — `qmd/src/store.ts:4057–4076`.
 
@@ -166,10 +165,8 @@ dikw-core/
 │   │   │   ├── indexgen.py   # regenerate index.md from wiki/
 │   │   │   └── log.py        # append-only wiki_log + log.md renderer
 │   │   │
-│   │   └── wisdom/           # W layer (see dedicated section)
-│   │       ├── distill.py    # propose principles/lessons/patterns
-│   │       ├── review.py     # human-confirmation workflow
-│   │       └── apply.py      # rank wisdom items applicable to a question (exposed via /v1/wisdom/applicable)
+│   │   └── wisdom/           # W layer — hand-written first-class documents
+│   │       └── page.py       # author_from_path(wisdom/<author>/<slug>.md) → "<author>"
 │   │
 │   ├── providers/            # LLM + embedding abstraction
 │   │   ├── base.py           # LLMProvider, EmbeddingProvider protocols
@@ -178,8 +175,7 @@ dikw-core/
 │   │
 │   ├── prompts/              # versioned prompt templates (Jinja2-lite strings)
 │   │   ├── synthesize.md
-│   │   ├── distill.md
-│   │   └── lint.md
+│   │   └── lint.md           # K-layer LLM prompts; wisdom layer is hand-written, no prompt
 │   │
 │   ├── server/               # FastAPI app, auth, sync + task routes, NDJSON streamer
 │   ├── client/               # remote Typer CLI + httpx transport + NDJSON progress + sources importer
@@ -190,7 +186,7 @@ dikw-core/
 │   ├── test_chunk.py
 │   ├── test_search.py        # FTS + vector + RRF behavior on golden set
 │   ├── test_wiki.py
-│   ├── test_distill.py
+│   ├── test_wisdom_*.py      # W-layer ingest / read / lint / retrieve tests
 │   ├── test_providers.py     # uses recorded responses
 │   ├── test_storage_contract.py  # same contract test runs against every backend
 │   ├── server/               # HTTP-level tests against an in-memory ASGI app
@@ -211,11 +207,11 @@ my-wiki/
 │   ├── entities/
 │   ├── concepts/
 │   └── notes/
-├── wisdom/                   # W layer
-│   ├── principles.md
-│   ├── lessons.md
-│   ├── patterns.md
-│   └── _candidates/          # LLM proposals awaiting human review
+├── wisdom/                   # W layer — hand-written, directory = author
+│   ├── elon-musk/            # one folder per author
+│   │   ├── first-principles.md
+│   │   └── be-relentless.md
+│   └── default/              # files outside an author folder are also indexed (author = None)
 └── .dikw/                    # engine-managed, gitignored by default
     ├── index.sqlite          # I layer when storage.backend=sqlite
     └── cache/                # model/artifact caches (backend-agnostic)
@@ -224,7 +220,7 @@ my-wiki/
 **Obsidian vault compatibility** — `my-wiki/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
 - `[[Wikilinks]]` — the canonical link form in `wiki/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
 - **YAML front-matter** — every engine-authored page has `---`-delimited front-matter with at least `id`, `kind` (for wisdom) or `type` (for wiki), `created`, `updated`, and `tags: [...]`. Obsidian reads `tags` natively.
-- **Folder = category** — `wiki/entities/`, `wiki/concepts/`, `wiki/notes/`, `wisdom/_candidates/`. Matches Obsidian's default folder-sort behavior.
+- **Folder = category** — `wiki/entities/`, `wiki/concepts/`, `wiki/notes/`, `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior.
 - **Daily-note style log** — `wiki/log.md` keeps Karpathy's chronological format; optionally daily files under `wiki/log/YYYY/MM/YYYY-MM-DD.md` for vaults that already use Obsidian's daily-notes plugin (opt-in via `schema.log_style: daily`).
 - **Engine state stays out of the vault** — the `.dikw/` sidecar directory is gitignored and Obsidian-ignored (`.obsidian/app.json` `userIgnoreFilters` receives a `.dikw/` entry on `dikw init`).
 - **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing in Obsidian never sees engine-only constructs that would get stripped on round-trip.
@@ -318,21 +314,13 @@ CREATE TABLE wiki_log (
 );
 
 -- W
-CREATE TABLE wisdom_items (
-    item_id       TEXT PRIMARY KEY,
-    kind          TEXT CHECK (kind IN ('principle','lesson','pattern')),
-    status        TEXT CHECK (status IN ('candidate','approved','archived')) DEFAULT 'candidate',
-    path          TEXT,          -- wisdom/<file>.md anchor
-    title         TEXT,
-    body          TEXT,
-    confidence    REAL,
-    created_ts    INTEGER, approved_ts INTEGER
-);
-CREATE TABLE wisdom_evidence (
-    item_id  TEXT REFERENCES wisdom_items(item_id),
-    doc_id   TEXT REFERENCES documents(doc_id),
-    excerpt  TEXT, line INTEGER
-);
+-- Wisdom is stored as Layer.WISDOM rows in the unified ``documents``
+-- table — no dedicated wisdom_items / wisdom_evidence tables. The only
+-- wisdom-specific column is ``documents.status``:
+ALTER TABLE documents ADD COLUMN status TEXT
+    CHECK (status IS NULL OR status IN ('draft','published','favorite','archived'));
+-- ``status`` is wisdom-only by application + adapter clamp — wiki/source
+-- rows always have status = NULL even if frontmatter declares one.
 ```
 
 ### Multimedia assets (v1)
@@ -420,21 +408,34 @@ Wisdom pages share the K-page contract:
 - **Persistence:** `dikw ingest` scans `<root>/wisdom/**/*.md` after the
   `sources:` scan, hash-idempotent, runs the same `persist_page`
   pipeline as wiki (`documents` row + `chunks` + per-version embedding +
-  `links` + `provenance`). `wisdom/_candidates/` and the legacy
-  `principles.md` / `lessons.md` / `patterns.md` aggregate files are
-  hard-coded skips so an upgrading base does not accidentally index
-  drained queue artifacts.
+  `links` + `provenance`). Bases upgrading from 0.2.x: the legacy
+  `wisdom/_candidates/` directory and the `wisdom/{principles,lessons,
+  patterns}.md` aggregate files are hard-coded skips (case-insensitive)
+  so drained-queue artifacts don't index as first-class wisdom
+  documents — see CHANGELOG `[0.3.0]` for the manual-cleanup recipe.
 
-In 0.3.0 PR2 (this commit) wisdom pages flow through ingest and into
-`documents`. PR3 will wire `dikw client retrieve` to surface them
-alongside wiki hits (`Hit.layer == "wisdom"`) and extend
-`broken_wikilink` / `missing_provenance` / `orphan_page` lint coverage
-to the wisdom layer; PR4 is the docs/CHANGELOG/ADR final pass.
+As of 0.3.0 the wisdom layer is fully wired end-to-end:
+
+- **ingest** scans `wisdom/**/*.md` and writes the same
+  `documents` / `chunks` / per-version embedding / `links` /
+  `provenance` rows as wiki pages.
+- **retrieve** returns wisdom hits tagged `Hit.layer == "wisdom"`
+  alongside source + wiki hits; callers group or weight by layer in
+  their own assembly step.
+- **read** APIs (`GET /v1/base/pages/{path}`,
+  `.../links`, `.../provenance`) accept wisdom paths and resolve
+  cross-layer wikilinks + provenance edges (wisdom→wiki,
+  wiki→wisdom, wisdom→source) symmetrically.
+- **lint** (`broken_wikilink`, `orphan_page`, `missing_provenance`,
+  `duplicate_title`, `invalid_wisdom_status`) scans the unified
+  WIKI + WISDOM page set; the orphan inbound counter credits
+  cross-layer edges so a wiki page cited only from wisdom is not
+  falsely flagged.
 
 There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
 machine. `status` is a flat enum the human sets; the engine validates it
-via the `invalid_wisdom_status` lint kind (added in PR2, non-blocking
-warning) but does not yet consume it for retrieval filtering or boost.
+via the `invalid_wisdom_status` lint kind (non-blocking warning) but
+does not yet consume it for retrieval filtering or boost.
 
 ## Storage Abstraction
 
@@ -520,23 +521,21 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw serve --base <path>` — start the FastAPI + NDJSON server bound to one base
 
 **Remote CLI** (`dikw client *`, also reachable via top-level aliases):
-- `dikw client status` — counts per layer
+- `dikw client status` — counts per layer (source / wiki / wisdom)
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
 - `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
-- `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` tree, stream progress
-- `dikw client synth [--all]` — K synthesis
-- `dikw client distill` — propose W-layer candidates
-- `dikw client review {list,approve,reject}` — drive the W review state machine
-- `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); agent supplies its own LLM synthesis on the result
-- `dikw client wisdom applicable "<q>"` — _(PR-5)_ list approved wisdom items applicable to a question; until then use `GET /v1/wisdom?status=approved` over HTTP
-- `dikw client lint` — hygiene report
+- `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` AND `wisdom/` trees, stream progress
+- `dikw client synth [--all]` — K-layer synthesis (W layer is hand-written, not LLM-authored)
+- `dikw client pages {list,read,links,provenance} [--layer wiki|wisdom|source]` — read-side page APIs across all three layers
+- `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
+- `dikw client lint [propose,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W)
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
 - `dikw client tasks {list,show,follow,cancel}` — inspect the server's async task queue
 
 **HTTP surface** (the server is the canonical wire contract):
-- Sync RPC under `/v1/` — `status`, `check`, `lint`, `init`, wiki page list/read, doc search, chunk fetch, wisdom list/approve/reject.
-- Async tasks under `/v1/{ingest,synth,distill,eval}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
-- Streaming retrieve — `POST /v1/retrieve` returns NDJSON: `retrieve_started → retrieval_done → final{succeeded|failed|cancelled}`. The final event payload carries ranked chunks (with full text) plus page refs. **No LLM tokens stream from the server** — synthesis is the agent's job. Applicable-wisdom surfacing lands in PR-5 via a separate `GET /v1/wisdom/applicable?q=...` endpoint, not on the retrieve payload.
+- Sync RPC under `/v1/` — `status`, `check`, `lint`, `init`, page list/read/links/provenance (`/v1/base/pages/...`), doc search, chunk fetch.
+- Async tasks under `/v1/{ingest,synth,eval}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
+- Streaming retrieve — `POST /v1/retrieve` returns NDJSON: `retrieve_started → retrieval_done → final{succeeded|failed|cancelled}`. The final event payload carries ranked chunks (with full text + `layer`) plus page refs. **No LLM tokens stream from the server** — synthesis is the agent's job.
 - Sources import — `POST /v1/import` accepts a manifest + tar.gz (multipart upload at the transport layer), validates sha256, stages atomically, then commits per-package into `<base>/sources/` before ingest reads from disk.
 
 ## Phasing
@@ -544,7 +543,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty wiki.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
 - **Phase 2 — K (wiki):** `synthesize` prompt + worker, wiki page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `wiki/` with valid cross-links; `lint` reports 0 errors.
-- **Phase 3 — W (wisdom, the differentiator):** `distill` prompt + worker, `wisdom_items` table, `_candidates/` flow, interactive `review`, `wisdom.apply` exposed via `GET /v1/wisdom/applicable?q=...` (agent-driven application, not server-internal injection), tests covering candidate→approved transitions and the "at least N=2 evidence" invariant.
+- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same `persist_page` pipeline as wiki pages, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
   - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `postgres:16`+`pgvector` container in CI. Packaged as `dikw-core[postgres]` optional extra.
@@ -575,9 +574,9 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 3. Populate `sources/` with ~20 markdown notes (fixtures); `uv run dikw client ingest`; confirm FTS and vec rows via a diagnostic `dikw client status`.
 4. `uv run dikw client retrieve "what is DIKW?" --format json` returns at least one chunk hit with `path`, `text`, and `score`; LLM synthesis on top of these chunks is the agent's responsibility.
 5. `uv run dikw client synth`; check `wiki/index.md` and `wiki/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
-6. `uv run dikw client distill --recent` creates ≥1 candidate in `wisdom/_candidates/`; `uv run dikw client review` accepts one; the corresponding `wisdom_items.status` flips to `approved` and a rendered page exists in `wisdom/principles.md` (or kind-appropriate file).
-7. `uv run dikw client wisdom applicable "what principles apply when choosing retrieval over a wiki?" --format json` lists the approved wisdom item; the agent injects it into its own LLM prompt to produce a wisdom-grounded answer.
-8. `uv run dikw serve --base .` launches; a `GET /v1/wisdom/applicable?q=...` round-trip from any HTTP client returns the same wisdom items as step 7, and a `POST /v1/retrieve` round-trip returns chunks consumable by any HTTP agent.
+6. Hand-write a wisdom page at `wisdom/<author>/<slug>.md` with optional `sources:` frontmatter pointing at a real source path; `uv run dikw client ingest` indexes it; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages read wisdom/<author>/<slug>.md` returns its body + chunk anchors.
+7. `uv run dikw client retrieve "<query that matches the wisdom body>" --format json` returns at least one hit with `layer: wisdom`; the agent groups by layer and assembles its own wisdom-grounded answer.
+8. `uv run dikw serve --base .` launches; a `GET /v1/base/pages/wisdom/<author>/<slug>.md` round-trip from any HTTP client returns the same page as step 6, and a `POST /v1/retrieve` round-trip returns chunks (including wisdom chunks) consumable by any HTTP agent.
 9. Swap provider in `dikw.yml` from Anthropic to OpenAI-compatible (pointed at Ollama locally or OpenAI) and repeat step 4 — works unchanged.
 10. (After Phase 5, Postgres) `docker compose up postgres` (with `pgvector` image), set `storage.backend: postgres` in `dikw.yml`, rerun steps 3–8 against the Postgres adapter — every assertion holds, no engine code changes. The storage contract test suite runs green under `DIKW_TEST_POSTGRES_DSN=...` in CI.
 

@@ -69,9 +69,9 @@ src/dikw_core/
 │   ├── info/              I layer — chunk, tokenize, embed, render, RRF-fused hybrid search
 │   ├── knowledge/         K layer — wiki pages, [[wikilinks]], frontmatter `sources:` ↔ provenance edge,
 │   │                                  index.md, log.md, lint (incl. missing_provenance), lint_fix + lint_fixers/
-│   └── wisdom/            W layer — empty in 0.3.0 PR1 (legacy distill/review removed); PR2 will
-│                                    repopulate with `page.py::author_from_path` + the new
-│                                    `persist_page(layer=Layer.WISDOM, …)` dispatch
+│   └── wisdom/            W layer — hand-written documents; `page.py::author_from_path`
+│                                    (`wisdom/<author>/<slug>.md` → author); indexed by
+│                                    `dikw ingest` through `persist_page(layer=Layer.WISDOM, …)`
 ├── providers/             LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │                          (anthropic_compat, openai_compat, openai_codex, gitee_multimodal)
 ├── storage/               Storage Protocol + adapters (sqlite, postgres) + migrations/{sqlite,postgres}
@@ -90,7 +90,7 @@ src/dikw_core/
 ### Named seams — extend here, not elsewhere
 
 1. **`SourceBackend`** (`domains/data/backends/base.py`) — new formats: one subclass + `register()`. Reference impl: `domains/data/backends/markdown.py`.
-2. **`Storage` Protocol** (`storage/base.py`) — two backends ship (sqlite, postgres); engine code depends only on the Protocol. Hybrid-search fusion (RRF), chunking, link-graph parsing, and wisdom scoring live **outside** adapters — adapters expose primitives only.
+2. **`Storage` Protocol** (`storage/base.py`) — two backends ship (sqlite, postgres); engine code depends only on the Protocol. Hybrid-search fusion (RRF), chunking, and link-graph parsing live **outside** adapters — adapters expose primitives only.
 3. **`LLMProvider` / `EmbeddingProvider`** (`providers/base.py`) — Anthropic uses `cache_control` on the system prompt; openai_compat works against any base URL.
 
 ### Core invariants
