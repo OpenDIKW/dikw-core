@@ -5,6 +5,67 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Added — wisdom write surface
+
+Adds a write API + HTTP route + CLI command for hand-authored wisdom
+pages so an agent caller can create or update a single
+`wisdom/[<author>/]<slug>.md` and have it immediately indexed (chunks +
+FTS + embeddings + outgoing wikilinks + provenance) without running a
+full `ingest`. Reads keep going through the existing
+`dikw client pages get wisdom/...` surface — no new read endpoint.
+
+- **Engine**: `api.write_wisdom_page(...)` takes structured fields
+  (slug + title + body + optional author/status/tags/sources/extras),
+  validates `slug` and `author` as ASCII kebab-case, writes the file
+  through `domains.wisdom.write_wisdom_file`, and indexes it via the
+  existing `persist_page(layer=Layer.WISDOM)` pipeline. Returns
+  `WisdomWriteReport` with `created` / `chunks` / `embedded` /
+  `unresolved_wikilinks` so callers can detect upsert direction and
+  forward-reference drift in one shot.
+- **HTTP**: `POST /v1/base/wisdom` accepts `WisdomWriteSubmit` and
+  submits a `wisdom.write` task; the runner emits a `wisdom_write`
+  phase progress event so NDJSON consumers see the embedding step.
+  Non-kebab `slug` / `author` surface as 422 at the Pydantic boundary.
+- **CLI**: `dikw client wisdom write` with `--slug`, `--title`,
+  `--author`, `--body` / `--body-file`, `--status`, repeatable
+  `--tag` / `--source`, `--no-embed`, and `--wait` (default true). The
+  no-wait form prints the standard task-handle JSON.
+- **Upsert semantics**: re-writing the same `(author, slug)` overwrites
+  in place — matches `lint apply`'s wiki write behaviour. Agent
+  callers needing a no-overwrite contract should `GET /v1/base/pages/...`
+  first and compare `hash`. Replace-on-omit applies to typed metadata
+  too: omitting `--tag` / `--source` / `--status` on an edit strips
+  those fields from the file (mirrors `dikw ingest`'s file-replace
+  semantics — see "Replace-on-omit warning" in
+  `docs/getting-started.md`).
+- **Safety**:
+  - Per-`(base, logical_path)` `asyncio.Lock` serialises concurrent
+    writers within a process; the runner also holds the runtime
+    `ingest_lock` so a wisdom write and a `dikw ingest` on the same
+    base cannot interleave their storage rows or title indexes.
+  - `_persist_page` failure deactivates the document row so the next
+    `dikw ingest` resume scan rebuilds it end-to-end, matching the
+    ingest wisdom branch's recovery behaviour. The reporter
+    `cancel_token` is polled before file write, after the cross-layer
+    title index build, and after persist so wisdom writes are
+    cooperatively cancellable.
+  - `extras` is denied write access to the reserved keys
+    `title`/`status`/`tags`/`sources`/`author`/`content`/`handler` —
+    the last two collide with `frontmatter.Post`'s `__init__`
+    signature and were verified to corrupt the file (or raise
+    `TypeError` on read-back) prior to the guard.
+  - Empty / whitespace-only `body` is rejected at the Pydantic
+    boundary (422); a chunk-less wisdom page is unretrievable and
+    silently wiping an existing page's chunks via an empty-body
+    upsert would be impossible to detect downstream.
+
+`evals/BASELINES.md` is not affected — this is a pure-write surface
+that goes through the same `persist_page` indexing path as
+`api.ingest`'s wisdom branch, so K-layer + Retrieval invariants are
+unchanged. Skip the `no-baseline-needed` gate on the eval workflow.
+
 ## 0.3.0 — 2026-05-26
 
 The W (Wisdom) layer reshape lands: a four-PR arc (#120 → #121 → #122

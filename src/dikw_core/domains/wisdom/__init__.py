@@ -6,6 +6,11 @@ itself goes through ``domains.knowledge.page_index.persist_page``
 (generalised in PR2 to take a layer parameter).
 """
 
-from .page import author_from_path
+from .page import author_from_path, make_wisdom_path, validate_kebab, write_wisdom_file
 
-__all__ = ["author_from_path"]
+__all__ = [
+    "author_from_path",
+    "make_wisdom_path",
+    "validate_kebab",
+    "write_wisdom_file",
+]

@@ -280,6 +280,46 @@ Relentless]]`. The wisdom-only `status` enum is validated by the
 `invalid_wisdom_status` lint kind (non-blocking warning); the engine
 does not yet consume `status` for retrieval filtering or boost.
 
+### Write wisdom programmatically
+
+For agent-driven workflows you can write a wisdom page through the
+write API instead of dropping a markdown file by hand. The CLI form:
+
+```bash
+dikw client wisdom write \
+  --slug first-principles \
+  --author elon-musk \
+  --title "First Principles" \
+  --body "Reason from physics, not analogy." \
+  --status published \
+  --tag mental-model \
+  --source sources/notes/musk-bio.md
+```
+
+`--slug` and `--author` must be ASCII kebab-case (`au-thor`, no
+spaces / uppercase / underscores) — the path becomes part of the
+Obsidian-visible vault layout. Pass `--body-file body.md` to read the
+markdown body from a file. `--wait` is the default; `--no-wait` prints
+a task handle JSON for async tracking.
+
+Writing the same `(slug, author)` again overwrites the file and
+refreshes the row (upsert semantics, same as `lint apply`). Read it
+back with `dikw client pages get wisdom/elon-musk/first-principles.md`.
+The forward-reference corner — wisdom A linking wisdom B that hasn't
+been written yet — surfaces as a non-zero
+`unresolved_wikilinks` on the write report; the next `dikw client
+ingest` reconciles those edges.
+
+> **Replace-on-omit warning.** Every write fully replaces the page's
+> frontmatter and provenance edges. Re-running `dikw client wisdom
+> write --slug x --title X --body v2` without re-passing `--tag` /
+> `--source` / `--status` strips those fields — the typed parameters
+> own the on-disk fields, and there is no silent union with the
+> existing file. To preserve them on an edit, first `dikw client
+> pages get wisdom/<author>/<slug>.md`, then re-pass the values you
+> want kept. Empty body is rejected at the schema boundary (422) so
+> an accidental `--body ""` cannot wipe an existing page's content.
+
 Upgrading from 0.2.x: delete `wisdom/_candidates/` and the
 `wisdom/{principles,lessons,patterns}.md` aggregates (or leave them —
 ingest hard-skips both), then re-run `dikw client ingest` against the

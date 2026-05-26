@@ -29,6 +29,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from ..domains.knowledge.lint import LintKind
+from ..schemas import WisdomWriteSubmit
 from .errors import BadRequest, NotFoundError
 from .ingest_op import make_ingest_runner
 from .lint_op import make_lint_apply_runner, make_lint_propose_runner
@@ -40,6 +41,7 @@ from .tasks import (
     TaskRunner,
     TaskStatus,
 )
+from .wisdom_op import make_wisdom_write_runner
 
 # ---- op runners ---------------------------------------------------------
 
@@ -426,6 +428,34 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "proposal_task_id": body.proposal_task_id,
                 "pick": body.pick,
                 "skip": body.skip,
+            },
+        )
+        return _handle(row)
+
+    @router.post("/base/wisdom", response_model=TaskHandle)
+    async def submit_wisdom_write(
+        request: Request,
+        body: WisdomWriteSubmit = Body(...),
+    ) -> TaskHandle:
+        rt: ServerRuntime = get_runtime(request.app)
+        # Share ``ingest_lock`` with the ingest path: a concurrent
+        # ``dikw ingest`` and a single-page wisdom write on the same
+        # base would otherwise race on storage rows and on the
+        # cross-layer title index snapshot.
+        runner: TaskRunner = make_wisdom_write_runner(
+            wiki_root=rt.root, submit=body, lock=rt.ingest_lock
+        )
+        # Keep ``params`` lightweight — the full body (title + body +
+        # tags + sources + extras) can be tens of KB and bloats the task
+        # row + params_digest. Mirror lint.apply's choice to pin only
+        # identity-bearing knobs.
+        row = await rt.manager.submit(
+            op="wisdom.write",
+            runner=runner,
+            params={
+                "slug": body.slug,
+                "author": body.author,
+                "no_embed": body.no_embed,
             },
         )
         return _handle(row)
