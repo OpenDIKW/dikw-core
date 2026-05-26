@@ -722,6 +722,158 @@ def lint_apply_cmd(
     _run(_go())
 
 
+# ---- wisdom write -----------------------------------------------------
+
+
+wisdom_app = typer.Typer(
+    name="wisdom",
+    help=(
+        "W-layer write operations. Read wisdom pages with "
+        "`dikw client pages get wisdom/...`."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(wisdom_app, name="wisdom")
+
+
+@wisdom_app.command(
+    "write",
+    epilog=(
+        "Examples:\n\n"
+        "  dikw client wisdom write --slug first-principles --title 'First Principles' --body 'Reason from physics.'\n\n"
+        "  dikw client wisdom write --author elon-musk --slug never-sell --title 'Never Sell' --body-file body.md --status published --tag mental-model\n"
+    ),
+)
+def wisdom_write_cmd(
+    slug: Annotated[
+        str,
+        typer.Option(
+            "--slug",
+            help="ASCII kebab-case slug; file lands at `wisdom/[<author>/]<slug>.md`.",
+        ),
+    ],
+    title: Annotated[
+        str,
+        typer.Option("--title", help="Page title (free-form, written to frontmatter)."),
+    ],
+    author: Annotated[
+        str | None,
+        typer.Option(
+            "--author",
+            help="ASCII kebab-case author directory under `wisdom/`. Omit to write at `wisdom/<slug>.md`.",
+        ),
+    ] = None,
+    body: Annotated[
+        str | None,
+        typer.Option(
+            "--body",
+            help="Inline markdown body. Exactly one of --body / --body-file is required.",
+        ),
+    ] = None,
+    body_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--body-file",
+            help="Read markdown body from this file. Exactly one of --body / --body-file is required.",
+        ),
+    ] = None,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="Wisdom status: draft | published | favorite | archived.",
+        ),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Append a tag to frontmatter. Pass --tag repeatedly for multiple tags.",
+        ),
+    ] = None,
+    source: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source",
+            help="Append a provenance source path. Pass --source repeatedly.",
+        ),
+    ] = None,
+    no_embed: Annotated[
+        bool,
+        typer.Option(
+            "--no-embed",
+            help="Skip embedding; defer it to the next `dikw client ingest`.",
+        ),
+    ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait/--no-wait",
+            help="Default --wait: block + render the write report. --no-wait: print task handle JSON.",
+        ),
+    ] = True,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Disable progress widget."),
+    ] = False,
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Create or update a hand-authored wisdom page.
+
+    Writes ``wisdom/[<author>/]<slug>.md`` to disk, indexes the page
+    (chunks + FTS + embeddings + links + provenance), and makes it
+    immediately retrievable. Repeating the same (author, slug)
+    overwrites the existing file — upsert semantics, same as
+    ``lint apply``. The agent caller is responsible for reading the
+    existing page first if a no-overwrite contract is needed.
+    """
+    if (body is None) == (body_file is None):
+        # XOR: exactly one of --body / --body-file must be supplied.
+        # Both empty *and* both populated land here.
+        raise typer.BadParameter(
+            "exactly one of --body or --body-file is required"
+        )
+    if body_file is not None:
+        try:
+            body_text = body_file.read_text(encoding="utf-8")
+        except OSError as e:
+            raise typer.BadParameter(f"could not read --body-file: {e}") from e
+    else:
+        # body is not None here by the XOR check above.
+        assert body is not None
+        body_text = body
+
+    async def _go() -> None:
+        request_body: dict[str, Any] = {
+            "slug": slug,
+            "title": title,
+            "body": body_text,
+            "no_embed": no_embed,
+        }
+        if author is not None:
+            request_body["author"] = author
+        if status is not None:
+            request_body["status"] = status
+        if tag:
+            request_body["tags"] = list(tag)
+        if source:
+            request_body["sources"] = list(source)
+        async with Transport.from_config(_resolve(server, token)) as t:
+            handle = await t.post_json("/v1/base/wisdom", json_body=request_body)
+            task_id = str(handle["task_id"])
+            if not wait and not _serve_and_run_forces_wait():
+                _print_task_handle(task_id, str(handle.get("status") or "pending"))
+                return
+            status_val, payload = await _wait_and_render(t, task_id, plain=plain)
+        if status_val == "succeeded" and payload is not None:
+            from .progress import render_wisdom_write_report
+            render_wisdom_write_report(console, payload)
+        _exit_for_status(status_val, payload)
+
+    _run(_go())
+
+
 # ---- retrieve (NDJSON stream, retrieval-only) -------------------------
 
 

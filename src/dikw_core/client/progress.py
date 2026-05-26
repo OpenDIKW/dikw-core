@@ -477,6 +477,33 @@ def render_lint_proposals_listing(
     console.print(table)
 
 
+def render_wisdom_write_report(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Print the per-page summary of a ``wisdom.write`` task result.
+
+    The default ``--wait`` path renders this; the no-wait path falls back
+    to ``_print_task_handle`` which is shared across all task ops.
+    """
+    path = str(report.get("path") or "")
+    created = bool(report.get("created"))
+    action = "created" if created else "updated"
+    chunks = int(report.get("chunks") or 0)
+    embedded = int(report.get("embedded") or 0)
+    unresolved = int(report.get("unresolved_wikilinks") or 0)
+    color = "green" if created else "cyan"
+    console.print(
+        f"[{color}]{action}[/{color}] [bold]{path}[/bold] — "
+        f"{chunks} chunk(s), {embedded} embedded"
+    )
+    if unresolved:
+        console.print(
+            f"[yellow]warning[/yellow]: {unresolved} unresolved "
+            f"[[wikilink]](s) — run [bold]dikw client ingest[/bold] after "
+            "the linked pages are written"
+        )
+
+
 def render_lint_apply_report(
     console: Console, report: Mapping[str, Any]
 ) -> None:

@@ -5,6 +5,43 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Added — wisdom write surface
+
+Adds a write API + HTTP route + CLI command for hand-authored wisdom
+pages so an agent caller can create or update a single
+`wisdom/[<author>/]<slug>.md` and have it immediately indexed (chunks +
+FTS + embeddings + outgoing wikilinks + provenance) without running a
+full `ingest`. Reads keep going through the existing
+`dikw client pages get wisdom/...` surface — no new read endpoint.
+
+- **Engine**: `api.write_wisdom_page(...)` takes structured fields
+  (slug + title + body + optional author/status/tags/sources/extras),
+  validates `slug` and `author` as ASCII kebab-case, writes the file
+  through `domains.wisdom.write_wisdom_file`, and indexes it via the
+  existing `persist_page(layer=Layer.WISDOM)` pipeline. Returns
+  `WisdomWriteReport` with `created` / `chunks` / `embedded` /
+  `unresolved_wikilinks` so callers can detect upsert direction and
+  forward-reference drift in one shot.
+- **HTTP**: `POST /v1/base/wisdom` accepts `WisdomWriteSubmit` and
+  submits a `wisdom.write` task; the runner emits a `wisdom_write`
+  phase progress event so NDJSON consumers see the embedding step.
+  Non-kebab `slug` / `author` surface as 422 at the Pydantic boundary.
+- **CLI**: `dikw client wisdom write` with `--slug`, `--title`,
+  `--author`, `--body` / `--body-file`, `--status`, repeatable
+  `--tag` / `--source`, `--no-embed`, and `--wait` (default true). The
+  no-wait form prints the standard task-handle JSON.
+- **Upsert semantics**: re-writing the same `(author, slug)` overwrites
+  in place — matches `lint apply`'s wiki write behaviour. Agent
+  callers needing a no-overwrite contract should `GET /v1/base/pages/...`
+  first and compare `hash`.
+
+`evals/BASELINES.md` is not affected — this is a pure-write surface
+that goes through the same `persist_page` indexing path as
+`api.ingest`'s wisdom branch, so K-layer + Retrieval invariants are
+unchanged. Skip the `no-baseline-needed` gate on the eval workflow.
+
 ## 0.3.0 — 2026-05-26
 
 The W (Wisdom) layer reshape lands: a four-PR arc (#120 → #121 → #122

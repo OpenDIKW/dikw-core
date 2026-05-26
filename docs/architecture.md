@@ -35,7 +35,11 @@ wisdom chunks tagged `Hit.layer == "wisdom"`; `read_page` /
 cross-layer edges; `broken_wikilink` / `orphan_page` /
 `missing_provenance` lint scans both K + W layers, crediting
 cross-layer wikilinks in the orphan inbound counter so a wiki page
-cited only from wisdom is not falsely flagged. See
+cited only from wisdom is not falsely flagged. A separate write
+surface (`api.write_wisdom_page` / `POST /v1/base/wisdom` /
+`dikw client wisdom write`) lets agents create or update a single
+wisdom page (chunks + FTS + embeddings + links + provenance in one
+task) without a full ingest scan. See
 `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 dikw-core does not perform answer synthesis — `retrieve` returns
 ranked chunks + page refs and the agent layer runs its own LLM.

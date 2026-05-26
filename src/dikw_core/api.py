@@ -149,6 +149,8 @@ from .schemas import (
     RetrieveResult,
     StorageCounts,
     WikiLogEntry,
+    WisdomStatus,
+    WisdomWriteReport,
 )
 from .storage import Storage, build_storage
 from .storage.base import NotSupported
@@ -180,6 +182,7 @@ __all__ = [
     "ProvidersInfo",
     "RetrieveResult",
     "SynthReport",
+    "WisdomWriteReport",
     "check_providers",
     "find_config",
     "health",
@@ -196,6 +199,7 @@ __all__ = [
     "retrieve",
     "status",
     "synthesize",
+    "write_wisdom_page",
 ]
 
 
@@ -3059,6 +3063,174 @@ async def lint_apply(
             skip=skip,
             reporter=used_reporter,
             cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+        )
+    finally:
+        await storage.close()
+
+
+async def write_wisdom_page(
+    path: str | Path | None = None,
+    *,
+    slug: str,
+    title: str,
+    body: str,
+    author: str | None = None,
+    status: WisdomStatus | None = None,
+    tags: list[str] | None = None,
+    sources: list[str] | None = None,
+    extras: dict[str, object] | None = None,
+    no_embed: bool = False,
+    embedder: EmbeddingProvider | None = None,
+    reporter: ProgressReporter | None = None,
+) -> WisdomWriteReport:
+    """Create or update a wisdom page at ``wisdom/[<author>/]<slug>.md``.
+
+    Upsert semantics — re-writing the same ``(author, slug)`` overwrites
+    the existing file and refreshes its storage row, chunks, embeddings,
+    outgoing wikilinks, and provenance edges. The caller is responsible
+    for reading the current state first if a no-overwrite contract is
+    needed (read ``GET /v1/base/pages/<path>`` and decide before POST).
+
+    ``slug`` and ``author`` are validated to ASCII kebab-case; the
+    on-disk path becomes part of the wisdom vault layout, so the engine
+    refuses anything that would render awkwardly in Obsidian (spaces,
+    uppercase, underscores).
+
+    When ``no_embed`` is true (or no embedder is resolvable) the file is
+    written + chunked + linked but vectors are not produced; the next
+    ``dikw client ingest`` resolves embeddings via the
+    missing-embedding resume scan. With a real embedder the page is
+    retrievable immediately on return.
+
+    Cross-file ``[[wikilink]]`` resolution uses a freshly built
+    cross-layer title index (wiki + wisdom), so a wisdom page linking
+    an existing wiki or wisdom title resolves on this single write. A
+    forward reference to a wisdom page that hasn't been written yet
+    surfaces on ``WisdomWriteReport.unresolved_wikilinks`` and is
+    reconciled on the next ``dikw client ingest``.
+    """
+    # Lazy import — domains.knowledge.page_index imports schemas + storage
+    # primitives, and api.py imports those eagerly already; importing
+    # persist_page eagerly here would re-introduce the same circular risk
+    # the existing wisdom-branch (1320 area) avoided by deferring.
+    from .domains.knowledge.links import build_title_indexes
+    from .domains.knowledge.page_index import persist_page as _persist_page
+    from .domains.wisdom import make_wisdom_path, write_wisdom_file
+
+    # Validate first — never write a file or open storage on a malformed
+    # input. ``make_wisdom_path`` re-runs ``validate_kebab`` so a direct
+    # Python caller bypassing the Pydantic schema still gets the same
+    # invariant.
+    logical_path = make_wisdom_path(slug=slug, author=author)
+    used_reporter: ProgressReporter = reporter or NoopReporter()
+
+    cfg, root, storage = await _with_storage(path)
+    try:
+        doc_id = _doc_id_for(Layer.WISDOM, logical_path)
+        existing = await storage.get_document(doc_id)
+        created = existing is None or not existing.active
+
+        # Resolve embedder: caller-injected wins (tests pass a fake);
+        # otherwise build from cfg unless ``no_embed`` defers it. The
+        # build_embedder call is the one that touches the env API key —
+        # keep it inside the ``not no_embed`` branch so a write that
+        # explicitly opted out doesn't fail on a missing key.
+        active_embedder: EmbeddingProvider | None = None
+        text_version_id: int | None = None
+        embedding_model = ""
+        if not no_embed:
+            active_embedder = embedder
+            if active_embedder is None:
+                active_embedder = build_embedder(cfg.provider)
+            text_version_id = await _register_text_version(storage, cfg.provider)
+            embedding_model = cfg.provider.embedding_model
+
+        # Write the file to disk first. ``persist_page`` re-parses the
+        # written file so the stored hash and chunk offsets match what
+        # ``read_page`` will compute — same contract as
+        # ``_persist_wiki_page``. ``frontmatter.dumps`` is not always
+        # byte-stable on the body, so hashing ``body`` directly and
+        # chunking ``body`` would diverge from the read-back parsed body.
+        write_wisdom_file(
+            root,
+            logical_path=logical_path,
+            title=title,
+            body=body,
+            status=status,
+            tags=tags,
+            sources=sources,
+            extras=extras,
+        )
+
+        # Build the cross-layer title index that ``persist_page`` uses
+        # for ``[[wikilink]]`` resolve. Mirrors the ingest wisdom branch
+        # (around line 1330) - include the new page's own title so a
+        # self-reference resolves and so the index reflects what storage
+        # will look like immediately after this write.
+        title_docs: list[tuple[str, str]] = []
+        for layer_for_index in (Layer.WIKI, Layer.WISDOM):
+            for d in await storage.list_documents(
+                layer=layer_for_index, active=True
+            ):
+                if d.title:
+                    title_docs.append((d.title, d.path))
+        title_docs.append((title, logical_path))
+        title_to_path, fuzzy_index = build_title_indexes(title_docs)
+
+        await used_reporter.progress(
+            phase="wisdom_write",
+            current=0,
+            total=0,
+            detail={"path": logical_path, "step": "indexing"},
+        )
+
+        unresolved, _ = await _persist_page(
+            storage=storage,
+            root=root,
+            path=logical_path,
+            layer=Layer.WISDOM,
+            title=title,
+            embedder=active_embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+        )
+
+        chunks = await storage.list_chunks(doc_id)
+        doc = await storage.get_document(doc_id)
+        if doc is None:
+            raise RuntimeError(
+                f"wisdom write succeeded but document {doc_id!r} not in storage"
+            )
+
+        # ``persist_page`` consumes its embed stream inline when an
+        # embedder + version_id are supplied, so on success every chunk
+        # has its vector — embedded == len(chunks). With no_embed or
+        # without an embedder there are no embeddings produced this call.
+        embedded = len(chunks) if active_embedder is not None else 0
+
+        await storage.append_wiki_log(
+            WikiLogEntry(
+                ts=time.time(), action="wisdom_write", src=logical_path
+            )
+        )
+
+        await used_reporter.progress(
+            phase="wisdom_write",
+            current=1,
+            total=1,
+            detail={"path": logical_path, "step": "done"},
+        )
+
+        return WisdomWriteReport(
+            path=logical_path,
+            created=created,
+            hash=doc.hash,
+            chunks=len(chunks),
+            embedded=embedded,
+            unresolved_wikilinks=unresolved,
         )
     finally:
         await storage.close()

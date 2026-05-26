@@ -530,7 +530,7 @@ class WikiLogEntry(BaseModel):
     # skip done sources without misfiring on partial-failure or legal
     # zero-page responses (which never write a per-page ``synth`` row).
     action: Literal[
-        "ingest", "synth", "synth_source_done", "lint", "delete"
+        "ingest", "synth", "synth_source_done", "lint", "delete", "wisdom_write"
     ]
     src: str | None = None
     dst: str | None = None
@@ -705,3 +705,66 @@ class EmbeddingVersion(BaseModel):
     modality: Literal["text", "multimodal"]
     created_ts: float | None = None
     is_active: bool = True
+
+
+# ---- Wisdom write API (0.3.1) -------------------------------------------
+
+
+class WisdomWriteSubmit(BaseModel):
+    """Body for ``POST /v1/base/wisdom`` and the engine ``write_wisdom_page``.
+
+    ``slug`` and ``author`` are validated to ASCII kebab-case at the
+    Pydantic boundary (so HTTP callers see a 422 instead of a 500); the
+    engine API repeats the check via :func:`domains.wisdom.validate_kebab`
+    so direct Python callers get the same guarantee. ``no_embed`` lets a
+    bulk-writing caller defer embedding to the next ``dikw ingest`` pass
+    — symmetric with ``IngestSubmit.no_embed``.
+    """
+
+    slug: str
+    title: str
+    body: str
+    author: str | None = None
+    status: WisdomStatus | None = None
+    tags: list[str] | None = None
+    sources: list[str] | None = None
+    extras: dict[str, object] | None = None
+    no_embed: bool = False
+
+    @field_validator("slug")
+    @classmethod
+    def _check_slug(cls, v: str) -> str:
+        # Lazy import keeps schemas.py free of a domains.wisdom import
+        # at module load — same pattern as ``DocumentRecord._derive_path_key``.
+        from .domains.wisdom import validate_kebab
+
+        validate_kebab(v, label="slug")
+        return v
+
+    @field_validator("author")
+    @classmethod
+    def _check_author(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        from .domains.wisdom import validate_kebab
+
+        validate_kebab(v, label="author")
+        return v
+
+
+class WisdomWriteReport(BaseModel):
+    """Result of a single wisdom write.
+
+    ``created`` is ``True`` on first write to ``path`` (no prior
+    ``DocumentRecord``), ``False`` on subsequent upserts to the same
+    path. ``embedded`` is the count of chunks whose vectors landed in
+    the per-version vec table this call; ``0`` when ``no_embed=True``
+    or no embedder was resolvable.
+    """
+
+    path: str
+    created: bool
+    hash: str
+    chunks: int
+    embedded: int
+    unresolved_wikilinks: int
