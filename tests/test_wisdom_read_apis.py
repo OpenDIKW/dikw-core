@@ -141,13 +141,14 @@ async def test_read_provenance_forward_returns_wisdom_sources(
 
 
 @pytest.mark.asyncio
-async def test_read_provenance_reverse_excludes_wisdom_from_derived_pages(
+async def test_read_provenance_reverse_includes_wisdom_in_derived_pages(
     tmp_path: Path,
 ) -> None:
     """The reverse leg (``direction=in``) reports K-layer pages whose
     ``sources:`` claim this source path. Wisdom pages legitimately
-    cite sources too, so they SHOULD surface as ``DerivedPage`` rows —
-    the existing SOURCE-only gate was a wiki-only artifact."""
+    cite sources too, so they SHOULD surface as ``DerivedPage`` rows
+    alongside wiki pages — anything cited via ``sources:`` is a
+    legitimate derived page regardless of layer."""
     wiki = tmp_path / "wiki"
     init_test_wiki(wiki)
     src_dir = wiki / "sources" / "notes"

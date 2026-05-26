@@ -252,3 +252,120 @@ async def test_wiki_not_orphan_when_only_wisdom_links_in(
         i.path for i in lint_report.issues if i.kind == "orphan_page"
     ]
     assert "wiki/concepts/tesla.md" not in orphans
+
+
+@pytest.mark.asyncio
+async def test_cross_layer_title_collision_surfaces_as_duplicate_title(
+    tmp_path: Path,
+) -> None:
+    """A wiki page and a wisdom page sharing the same title must trigger
+    ``duplicate_title`` lint — verifying that PR3's switch to the
+    ``build_title_indexes`` helper drops collisions into the per-title
+    bucket the duplicate scan reads, instead of silently shadowing one
+    layer behind the other (the bug PR2 introduced and PR3 inherited
+    via the local ``{t: dup_paths[0]}`` shortcut)."""
+    from dikw_core.domains.knowledge.page_index import persist_page
+    from dikw_core.schemas import Layer
+
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+
+    (wiki / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
+    (wiki / "wiki" / "concepts" / "tesla.md").write_text(
+        "---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n", encoding="utf-8"
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/tesla.md",
+        "---\ntitle: Tesla\n---\n# Tesla\n\npersonal note.\n",
+    )
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await persist_page(
+            storage=storage,
+            root=wiki,
+            path="wiki/concepts/tesla.md",
+            layer=Layer.WIKI,
+        )
+    finally:
+        await storage.close()
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    duplicate = [
+        i for i in lint_report.issues if i.kind == "duplicate_title"
+    ]
+    assert len(duplicate) >= 1, [
+        (i.kind, i.path, i.detail) for i in lint_report.issues
+    ]
+    paths = {i.path for i in duplicate}
+    assert (
+        "wiki/concepts/tesla.md" in paths
+        or "wisdom/elon-musk/tesla.md" in paths
+    ), paths
+
+
+@pytest.mark.asyncio
+async def test_wisdom_missing_provenance_surfaces(tmp_path: Path) -> None:
+    """A wisdom page with ``sources:`` frontmatter pointing at a path
+    that has no provenance row triggers ``missing_provenance``. PR3's
+    lint expansion to wisdom must scan the K- AND W-layer
+    ``sources:`` declarations symmetrically; without this a future
+    regression to WIKI-only lint would silently skip every wisdom
+    page's provenance scan."""
+    from dikw_core.schemas import Layer
+
+    wiki = tmp_path / "wiki"
+    init_test_wiki(wiki)
+    src_dir = wiki / "sources" / "notes"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "musk-bio.md").write_text(
+        "# Bio\n\nfacts.\n", encoding="utf-8"
+    )
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/from-bio.md",
+        "---\nsources:\n  - sources/notes/musk-bio.md\n---\n# From Bio\n\nbody.\n",
+    )
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    # Manually clear the provenance row so the lint pass sees
+    # frontmatter-without-table mismatch.
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await storage.replace_provenance_from(
+            f"{Layer.WISDOM.value}:wisdom/elon-musk/from-bio.md",
+            [],
+        )
+        lint_report = await run_lint(storage, root=wiki)
+    finally:
+        await storage.close()
+
+    missing = [
+        i for i in lint_report.issues
+        if i.kind == "missing_provenance"
+        and i.path == "wisdom/elon-musk/from-bio.md"
+    ]
+    assert len(missing) == 1, [
+        (i.kind, i.path) for i in lint_report.issues
+    ]
