@@ -205,12 +205,24 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     suppressions: dict[str, set[LintKind]] = {}
     page_meta: dict[str, PageMeta] = {}
 
-    wiki_docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
+    # ``page_docs`` aggregates the K + W layers because PR3 promoted
+    # wisdom to a first-class document layer: a wikilink from a wisdom
+    # page to a wiki page (and vice versa) must surface here just like
+    # wiki↔wiki, and an orphan_page check on wiki must credit incoming
+    # backlinks from wisdom so a legitimate wisdom citation doesn't
+    # trigger destructive lint apply on the wiki page. SYNTH context
+    # builds (``api._synth_pages_from_source``) deliberately keep
+    # Layer.WIKI only — wisdom is hand-written and not LLM-authored.
+    page_docs = list(
+        await storage.list_documents(layer=Layer.WIKI, active=True)
+    ) + list(
+        await storage.list_documents(layer=Layer.WISDOM, active=True)
+    )
     title_to_paths: dict[str, list[str]] = defaultdict(list)
     inbound: Counter[str] = Counter()
     paths: list[str] = []
 
-    for doc in wiki_docs:
+    for doc in page_docs:
         title = doc.title or Path(doc.path).stem
         title_to_paths[title].append(doc.path)
         paths.append(doc.path)
@@ -225,7 +237,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     }
     fuzzy_index = build_fuzzy_index(title_to_path)
 
-    for doc in wiki_docs:
+    for doc in page_docs:
         abs_path = (root / doc.path).resolve()
         if not abs_path.is_file():
             continue
@@ -337,9 +349,13 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
             if stored.link_type is LinkType.WIKILINK:
                 inbound[stored.dst_path] += 1
 
-    # orphans — no inbound wikilinks AND not referenced from index.md/log.md
+    # orphans — no inbound wikilinks AND not referenced from index.md/log.md.
+    # Both K and W layer pages are now scanned for orphans; the
+    # exclusions are wiki-only because ``wiki/index.md`` + ``wiki/log.md``
+    # are the K-layer scaffolds synth always writes. Wisdom has no
+    # equivalent built-in scaffold — every author's choice.
     orphan_exclusions = {"wiki/index.md", "wiki/log.md"}
-    for doc in wiki_docs:
+    for doc in page_docs:
         if doc.path in orphan_exclusions:
             continue
         if "orphan_page" in suppressions.get(doc.path, set()):
