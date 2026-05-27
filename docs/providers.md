@@ -242,6 +242,18 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
 - **No prompt caching.** Repeated synth calls within the same session
   pay full input-token cost — same caveat as `openai_compat`, unlike
   `anthropic_compat`'s `cache_control: ephemeral`.
+- **SDK reducer-bug compatibility shim.** The ChatGPT codex backend
+  ships `response.output = None` in its terminal `response.completed`
+  payload, while the public OpenAI Responses API ships a list. The
+  `openai` Python SDK's high-level `responses.stream(...)` reducer dies
+  on this with `TypeError: 'NoneType' object is not iterable`. The dikw
+  provider catches this exact signature (and the matching
+  `AttributeError("attribute 'output'")` form) and falls back to the
+  locally-collected delta text — `finish_reason="error"` distinguishes
+  the recovered partial from a clean completion. If zero deltas arrived
+  before the reducer fired (auth / quota / refusal failures), the
+  provider raises `ProviderError` instead of returning an empty
+  response, so synth doesn't silently drop a source page.
 - **Reasoning fragments are dropped today.** dikw's `LLMStreamEvent`
   Protocol carries a `reasoning` event type and the codex provider emits
   it for `response.reasoning_summary_text.delta` events, but the
