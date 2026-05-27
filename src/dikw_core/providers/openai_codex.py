@@ -11,17 +11,20 @@ and the rest of the codex model family live exclusively on
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._http import build_no_keepalive_async_client
-from .base import LLMResponse, LLMStreamEvent, ToolSpec
+from .base import LLMResponse, LLMStreamEvent, ProviderError, ToolSpec
 from .codex_auth import account_id_from_jwt, resolve_access_token
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 # Cloudflare requires these headers on every chatgpt.com/backend-api/codex
 # request — without them the gateway returns 403 before the request hits
@@ -32,12 +35,58 @@ _CODEX_BASE_HEADERS: dict[str, str] = {
     "User-Agent": "codex_cli_rs/0.1 (dikw-core)",
 }
 
+# ``failed`` / ``cancelled`` deliberately map to ``"error"`` (not
+# ``"stop"``) so a hung-up or backend-rejected response is observable
+# downstream: the same sentinel is used in the SDK-reducer fallback
+# branch in ``complete_stream`` to mark partial-text recoveries.
 _FINISH_REASON_MAP: dict[str, str] = {
     "completed": "stop",
     "incomplete": "length",
-    "failed": "stop",
-    "cancelled": "stop",
+    "failed": "error",
+    "cancelled": "error",
 }
+
+# Signature of the OpenAI Python SDK's reducer failure when ChatGPT's
+# codex backend ships ``response.output = None`` in its terminal
+# ``response.completed`` event. We refuse to swallow any other
+# TypeError/AttributeError — a real None-attribute bug in our own code
+# would otherwise be silently absorbed into a fake-success done event.
+_REDUCER_BUG_TYPE_ERROR_SIGNATURE = "'NoneType' object is not iterable"
+
+
+_REDUCER_BUG_ATTR_ERROR_SIGNATURES: tuple[str, ...] = (
+    # CPython renders missing-attribute as ``"... object has no attribute
+    # 'output'"`` (single quotes); some derivative interpreters / SDK
+    # wrappers use double quotes. Both pin to the exact ``output`` field
+    # — substring-matching the bare token ``"output"`` would also catch
+    # ``output_index`` / ``output_text`` and silently swallow unrelated
+    # SDK schema failures.
+    "attribute 'output'",
+    'attribute "output"',
+)
+
+
+def _is_codex_final_response_reducer_bug(exc: BaseException) -> bool:
+    """True iff ``exc`` matches the openai SDK's reducer failure on
+    ``response.output = None`` from the chatgpt.com codex backend.
+
+    The SDK reducer iterates ``response.output`` to assemble a typed
+    final ``Response``; when ``output`` is None it raises
+    ``TypeError("'NoneType' object is not iterable")``. Older / future
+    SDK versions may surface the same root cause as an ``AttributeError``
+    referencing the ``output`` field itself while introspecting the
+    missing attribute; we accept that as the same bug — pinned to the
+    field-name boundary so ``output_index`` / ``output_text``
+    AttributeError (which would indicate a different schema problem)
+    propagate. Everything else propagates — a real bug in our code
+    must not be miscaptured as a successful completion.
+    """
+    msg = str(exc)
+    if isinstance(exc, TypeError):
+        return _REDUCER_BUG_TYPE_ERROR_SIGNATURE in msg
+    if isinstance(exc, AttributeError):
+        return any(sig in msg for sig in _REDUCER_BUG_ATTR_ERROR_SIGNATURES)
+    return False
 
 
 def _build_async_client(
@@ -222,37 +271,133 @@ class OpenAICodexLLM:
 
         async def _gen() -> AsyncIterator[LLMStreamEvent]:
             parts: list[str] = []
+            final: Any = None
+            reducer_bug_seen = False
             async with (
                 self._client() as client,
                 client.responses.stream(**kwargs) as stream,
             ):
-                async for event in stream:
-                    ev_type = getattr(event, "type", None)
-                    # Responses API marks text deltas with the literal
-                    # "response.output_text.delta" type. Reasoning summary
-                    # deltas use "response.reasoning_summary_text.delta".
-                    # Anything else (response.created, output_item.added,
-                    # response.completed, …) is intentionally dropped:
-                    # the LLMStreamEvent contract has no slot for them
-                    # and the engine only consumes token/done today.
-                    if ev_type == "response.output_text.delta":
-                        delta = getattr(event, "delta", None) or ""
-                        if delta:
-                            parts.append(delta)
-                            yield LLMStreamEvent(type="token", delta=delta)
-                    elif ev_type == "response.reasoning_summary_text.delta":
-                        delta = getattr(event, "delta", None) or ""
-                        if delta:
-                            yield LLMStreamEvent(type="reasoning", delta=delta)
-                final = await stream.get_final_response()
+                # ChatGPT's codex backend ships ``response.output = None``
+                # in its terminal ``response.completed`` payload (the
+                # public Responses API ships a list). The openai SDK's
+                # reducer assembles a typed final ``Response`` via
+                # ``for output in response.output`` and dies with
+                # ``TypeError: 'NoneType' object is not iterable``. The
+                # failure can surface either inside ``async for`` (when
+                # the reducer runs before the terminator yield) or from
+                # ``get_final_response()`` (when the reducer is deferred);
+                # we tolerate both and fall back to the locally
+                # accumulated delta text. Without this, every
+                # ``responses.stream`` call against chatgpt.com/backend-api/codex
+                # — including ``dikw client check --llm-only`` — crashes
+                # before the engine sees a single token.
+                #
+                # The catch is intentionally narrow: only TypeError /
+                # AttributeError whose message matches the SDK reducer's
+                # signature (see ``_is_codex_final_response_reducer_bug``)
+                # is treated as a known compatibility quirk. Any other
+                # TypeError / AttributeError — for instance a real
+                # ``None.something`` slip in our own code — re-raises so
+                # it does not silently surface as a fake-success done
+                # event. Network / API failures live on ``__aenter__`` and
+                # propagate naturally (they never enter this try block).
+                try:
+                    async for event in stream:
+                        ev_type = getattr(event, "type", None)
+                        # Responses API marks text deltas with the literal
+                        # "response.output_text.delta" type. Reasoning
+                        # summary deltas use
+                        # "response.reasoning_summary_text.delta". Anything
+                        # else (response.created, output_item.added,
+                        # response.completed, …) is intentionally dropped:
+                        # the LLMStreamEvent contract has no slot for them
+                        # and the engine only consumes token/done today.
+                        if ev_type == "response.output_text.delta":
+                            delta = getattr(event, "delta", None) or ""
+                            if delta:
+                                parts.append(delta)
+                                yield LLMStreamEvent(type="token", delta=delta)
+                        elif ev_type == "response.reasoning_summary_text.delta":
+                            delta = getattr(event, "delta", None) or ""
+                            if delta:
+                                yield LLMStreamEvent(type="reasoning", delta=delta)
+                except (TypeError, AttributeError) as exc:
+                    if not _is_codex_final_response_reducer_bug(exc):
+                        raise
+                    logger.warning(
+                        "OpenAI Codex stream reducer failed during event "
+                        "iteration; falling back to accumulated deltas "
+                        "(%d chars). Underlying SDK bug: %s",
+                        sum(len(p) for p in parts),
+                        exc,
+                        exc_info=True,
+                    )
+                    reducer_bug_seen = True
+                    final = None
+                else:
+                    try:
+                        final = await stream.get_final_response()
+                    except (TypeError, AttributeError) as exc:
+                        if not _is_codex_final_response_reducer_bug(exc):
+                            raise
+                        logger.warning(
+                            "OpenAI Codex stream reducer failed in "
+                            "get_final_response; falling back to "
+                            "accumulated deltas (%d chars). Underlying "
+                            "SDK bug: %s",
+                            sum(len(p) for p in parts),
+                            exc,
+                            exc_info=True,
+                        )
+                        reducer_bug_seen = True
+                        final = None
 
-            # Prefer the SDK's authoritative final text when present (it
-            # already concatenates message items the same way ``complete``
-            # does); the locally-collected ``parts`` is the fallback when
-            # the final payload is missing or empty.
-            final_text = _extract_text_from_response(final) or "".join(parts)
+            # Trust the SDK's authoritative final payload when present,
+            # even if its assembled text is empty — a model that emits a
+            # legitimate empty-turn retraction must surface as ``text=""``,
+            # not as whatever happened to stream in earlier (the previous
+            # ``or "".join(parts)`` fallthrough fabricated content the
+            # model authoritatively cleared). ``parts`` only carries the
+            # done payload on the reducer-bug branch where ``final`` is
+            # explicitly ``None``.
+            final_text = (
+                "".join(parts)
+                if final is None
+                else _extract_text_from_response(final)
+            )
+
+            # Total-loss safeguard: when the reducer bug fires before any
+            # text delta has arrived, there is no partial response to
+            # surface and ``final_text=""`` would slip through the engine
+            # silently — synth (``domains/knowledge/synthesize.py``) reads
+            # ``response.text`` only and treats empty text as
+            # "model emitted zero pages", so an auth/refusal failure on
+            # chatgpt.com/backend-api/codex would drop a wiki page from
+            # the source set on every reducer hit. Raise instead so the
+            # failure surfaces on the NDJSON progress stream and the
+            # caller can retry or skip with intent.
+            if reducer_bug_seen and not parts:
+                raise ProviderError(
+                    "OpenAI codex backend returned response.output=None "
+                    "and shipped zero text deltas; the SDK reducer "
+                    "fallback has no partial response to surface. This "
+                    "typically indicates an auth, quota, or content-"
+                    "refusal failure on chatgpt.com/backend-api/codex — "
+                    "check ``dikw auth status`` and the request payload."
+                )
+
             status = str(getattr(final, "status", "") or "")
-            finish_reason = _FINISH_REASON_MAP.get(status, "stop")
+            # Reducer-bug fallback always reports ``"error"`` so callers
+            # can distinguish a recovered partial response from a clean
+            # completion — there is no authoritative ``status`` field in
+            # that branch. Well-formed responses still go through the
+            # status map (``failed`` / ``cancelled`` now also map to
+            # ``"error"`` instead of being silently labeled ``"stop"``).
+            finish_reason = (
+                "error"
+                if reducer_bug_seen
+                else _FINISH_REASON_MAP.get(status, "stop")
+            )
             usage = _extract_usage(final)
             yield LLMStreamEvent(
                 type="done",
