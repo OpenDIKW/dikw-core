@@ -5,6 +5,62 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## 0.3.6 — 2026-05-28
+
+Bug-fix release. Restores the `openai_codex` provider against the
+ChatGPT codex backend after an SDK compatibility quirk made every
+codex call (`synth`, `dikw client check --llm-only`, …) crash before
+the engine saw a single token.
+
+The substantive change shipped via #129 — this PR is pure release
+bookkeeping so `release.yml` can fire on the v0.3.6 tag.
+
+### Fixed — openai_codex resilient to ChatGPT reducer bug
+
+`chatgpt.com/backend-api/codex` ships `response.output = None` in its
+terminal `response.completed` payload (the public Responses API ships
+a list); the openai Python SDK's high-level `responses.stream(...)`
+reducer iterates `response.output` to assemble a typed final
+`Response` and dies with `TypeError: 'NoneType' object is not iterable`,
+surfacing either from `async for event in stream` or from
+`stream.get_final_response()`.
+
+The provider now catches the exact reducer signature (and the matching
+`AttributeError("attribute 'output'")` form) and falls back to the
+locally-collected delta text. `finish_reason="error"` distinguishes
+the recovered partial from a clean completion. `failed` / `cancelled`
+status also map to `"error"` instead of being silently labeled
+`"stop"`.
+
+Three guardrails keep the narrow catch from masking unrelated bugs:
+
+- `_is_codex_final_response_reducer_bug` helper pins the signature to
+  the exact reducer-bug shape (TypeError message + AttributeError on
+  the `output` field with quote-bounded matching so `output_index` /
+  `output_text` propagate normally).
+- Stream-context-manager (`__aenter__`) failures sit outside the try
+  block — network / 401 / DNS / timeout propagate naturally.
+- Zero-delta + reducer-bug raises `ProviderError` instead of returning
+  empty text, because synth reads `response.text` only and would
+  silently treat empty as "model emitted zero pages", dropping a
+  source from the wiki on every reducer hit.
+
+The narrow-catch warning logs via `logging.getLogger(__name__)` with
+delta character count (not text) so the SDK incompatibility is
+observable without leaking user content; pinned by a `caplog` test
+against future warning-format edits leaking delta text.
+
+`docs/providers.md` §8 documents the compatibility shim. 13 new tests
+cover the reducer-bug fallback in both branches, narrow-catch
+propagation (unrelated TypeError / AttributeError, stream-enter
+failures), the zero-delta total-loss safeguard, authoritative
+empty-turn fidelity, status-to-finish_reason mapping for
+`failed` / `cancelled`, and the secret-leak guard.
+
+`evals/BASELINES.md` is not affected — this is a provider-layer fix
+that doesn't touch K-layer indexing or retrieval. Skip the
+`no-baseline-needed` gate on the eval workflow.
+
 ## 0.3.5 — 2026-05-27
 
 Adds a programmatic write surface for hand-authored wisdom pages. Reads
