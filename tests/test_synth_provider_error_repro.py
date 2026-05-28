@@ -266,6 +266,45 @@ async def test_retry_loop_honors_cancel_between_attempts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_backoff_invokes_asyncio_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero ``provider_error_retry_backoff_seconds`` must call
+    ``asyncio.sleep`` between attempts. Stub ``asyncio.sleep`` so the
+    test stays fast while still exercising the wait branch (line
+    coverage was previously gap-shaped because all other tests run
+    with ``backoff=0.0``).
+    """
+    import asyncio as _asyncio
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+
+    body, chunks = _three_groups()
+    # g2 raises once then succeeds → one retry → one sleep(backoff*1).
+    llm = FlakyLLM(response_text=_VALID_PAGE, raise_on_calls={1})
+
+    outcome = await api._synth_pages_from_source(
+        llm=llm,
+        template=_TEMPLATE,
+        cfg=_cfg(retries=2, backoff=1.5),
+        source_path="sources/multi.md",
+        source_body=body,
+        chunks=chunks,
+        cancel=CancelToken(),
+        reporter=ListReporter(),
+    )
+
+    assert outcome.parse_errors == 0
+    # Linear backoff = base * attempt; first retry → attempt=1 → 1.5s.
+    assert sleep_calls == [1.5]
+
+
+@pytest.mark.asyncio
 async def test_retries_zero_means_no_retry() -> None:
     """``provider_error_retries=0`` → first failure terminates the
     group immediately (one attempt, no retry, ``skipped`` event).
