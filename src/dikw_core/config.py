@@ -238,8 +238,9 @@ class SynthConfig(BaseModel):
     # (e.g. the openai_codex empty-response edge case in issue #134)
     # used to abort the whole synth task; now we retry the call up to
     # ``provider_error_retries`` times with linear backoff before
-    # skipping the group and continuing. ``retries=0`` reverts to the
-    # legacy fail-fast behavior (one attempt, no retry).
+    # skipping the group and continuing. ``retries=0`` means "no
+    # retries — one attempt, then skip on failure"; the synth task
+    # never re-raises a per-group ProviderError, by design.
     provider_error_retries: int = Field(default=2, ge=0)
     provider_error_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
 

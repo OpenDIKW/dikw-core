@@ -265,8 +265,10 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   `synth_source_done` is **not** written and a follow-up `dikw
   client synth` will retry the flaky group from scratch. NDJSON
   consumers see new per-group `status="retrying"` and
-  `status="skipped"` events; set `provider_error_retries: 0` in
-  `dikw.yml` for the legacy fail-fast behavior.
+  `status="skipped"` events. Setting `provider_error_retries: 0`
+  disables retries (one attempt only), but the group is still
+  *skipped* on failure rather than re-raised — by design, since the
+  fix exists precisely so that one bad group cannot abort the task.
 - **Reasoning fragments are dropped today.** dikw's `LLMStreamEvent`
   Protocol carries a `reasoning` event type and the codex provider emits
   it for `response.reasoning_summary_text.delta` events, but the

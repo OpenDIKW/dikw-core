@@ -103,8 +103,10 @@ Per-group NDJSON progress events surface the new states:
 left, carries `attempt` / `max_attempts` / `error_kind` /
 `error_msg`) and `status="skipped"` (terminal, carries
 `reason="provider_error"` / `attempts` / `error_kind` /
-`error_msg`). Set `provider_error_retries: 0` in `dikw.yml` to
-revert to the legacy fail-fast behavior.
+`error_msg`). Set `provider_error_retries: 0` for one-attempt-no-retry
+(the group is still skipped, not re-raised — by design, since the
+whole point of the fix is that a single bad group must not abort the
+task).
 
 [#134]: https://github.com/OpenDIKW/dikw-core/issues/134
 
