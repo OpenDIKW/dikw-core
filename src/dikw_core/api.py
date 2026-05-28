@@ -1533,7 +1533,7 @@ async def ingest(
             with _embedding_progress(
                 "embedding chunks", total=chunk_total
             ) as advance_chunk:
-                embedded = await consume_embedding_stream(
+                embed_result = await consume_embedding_stream(
                     embed_chunks(
                         embedder,
                         to_embed,
@@ -1541,6 +1541,9 @@ async def ingest(
                         version_id=text_version_id,
                         storage=storage,
                         batch_size=chunk_batch_size,
+                        retries=cfg.provider.embedding_error_retries,
+                        backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
+                        reporter=_reporter,
                     ),
                     storage,
                     on_batch=advance_chunk,
@@ -1548,7 +1551,7 @@ async def ingest(
                     phase="embed_chunks",
                     total=chunk_total,
                 )
-            report = _replace(report, embedded=embedded)
+            report = _replace(report, embedded=embed_result.embedded)
 
         # Backfill assets stored without a vector for the active mm
         # version — text-only ingest residue, prior mm version, or

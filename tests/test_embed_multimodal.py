@@ -40,14 +40,19 @@ def _asset(asset_id: str, *, stored_path: str, mime: str = "image/png") -> Asset
 async def _collect(gen: object) -> list:
     """Flatten an async generator of batches into a single list of rows.
 
-    Used by both the chunk-multimodal and asset embed pipelines —
-    each yields ``list[<row>]`` per provider batch so the caller can
-    persist incrementally; tests that want the full list squash via
-    this helper.
+    Used by both the chunk-multimodal and asset embed pipelines.
+    ``embed_chunks_multimodal`` now yields ``EmbedBatchResult`` (with a
+    ``rows`` attribute), while ``embed_assets`` still yields plain
+    ``list[AssetEmbeddingRow]`` (asset embeddings have no retry-skip
+    contract yet — pending the 0.5.x multimodal pipeline pass).
     """
     out: list = []
     async for batch in gen:  # type: ignore[attr-defined]
-        out.extend(batch)
+        rows = getattr(batch, "rows", None)
+        if rows is not None:
+            out.extend(rows)
+        else:
+            out.extend(batch)
     return out
 
 

@@ -22,6 +22,7 @@ import pytest
 from dikw_core.config import ProviderConfig
 from dikw_core.eval.fake_embedder import EMBED_DIM, FakeEmbeddings
 from dikw_core.providers import LLMResponse, LLMStreamEvent, ToolSpec
+from dikw_core.providers.base import ProviderError
 from dikw_core.schemas import EmbeddingVersion, MultimodalInput
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "FakeEmbeddings",
     "FakeLLM",
     "FakeMultimodalEmbedding",
+    "FlakyEmbedder",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
     "init_test_base",
@@ -390,6 +392,32 @@ class CountingEmbedder:
     def reset(self) -> None:
         self.embed_calls = 0
         self.total_texts = 0
+
+
+@dataclass
+class FlakyEmbedder:
+    """Raises ``ProviderError`` on configured call indices.
+
+    Used to exercise the per-batch retry-skip in ``embed_chunks`` and
+    ``consume_embedding_stream``. The call counter is zero-based and
+    global across all batches: ``raise_on_calls={0, 1}`` raises on the
+    first two embed calls then succeeds on the third.
+    """
+
+    inner: FakeEmbeddings = field(default_factory=FakeEmbeddings)
+    raise_on_calls: set[int] = field(default_factory=set)
+    embed_calls: int = field(default=0, init=False)
+    total_texts: int = field(default=0, init=False)
+
+    async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        idx = self.embed_calls
+        self.embed_calls += 1
+        self.total_texts += len(texts)
+        if idx in self.raise_on_calls:
+            raise ProviderError(
+                f"FlakyEmbedder simulated ProviderError on call {idx}"
+            )
+        return await self.inner.embed(texts, model=model)
 
 
 @dataclass

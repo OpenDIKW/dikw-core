@@ -20,6 +20,7 @@ from dikw_core import api
 from dikw_core.domains.data.backends.markdown import content_hash
 from dikw_core.domains.info.embed import (
     ChunkToEmbed,
+    EmbedBatchResult,
     embed_chunks,
     embed_chunks_multimodal,
 )
@@ -88,16 +89,18 @@ async def test_embed_chunks_yields_per_batch() -> None:
     assert isinstance(gen, AsyncIterator)
     assert not hasattr(gen, "__await__")
 
-    batches: list[list[EmbeddingRow]] = []
+    batches: list[EmbedBatchResult] = []
     async for batch in gen:
         batches.append(batch)
 
-    assert [len(b) for b in batches] == [2, 2, 1]
+    assert [len(b.rows) for b in batches] == [2, 2, 1]
     # Order preserved across yielded batches.
-    flat_ids = [row.chunk_id for batch in batches for row in batch]
+    flat_ids = [row.chunk_id for batch in batches for row in batch.rows]
     assert flat_ids == [1, 2, 3, 4, 5]
     # Every row stamped with the supplied version_id.
-    assert all(r.version_id == 42 for batch in batches for r in batch)
+    assert all(r.version_id == 42 for batch in batches for r in batch.rows)
+    # No skips on the happy path.
+    assert all(b.error is None for b in batches)
 
 
 async def test_embed_chunks_empty_input_yields_nothing() -> None:
@@ -134,14 +137,14 @@ async def test_embed_chunks_multimodal_yields_per_batch() -> None:
     )
     assert isinstance(gen, AsyncIterator)
 
-    batches: list[list[EmbeddingRow]] = []
+    batches: list[EmbedBatchResult] = []
     async for batch in gen:
         batches.append(batch)
 
-    assert [len(b) for b in batches] == [2, 2, 1]
-    flat_ids = [row.chunk_id for batch in batches for row in batch]
+    assert [len(b.rows) for b in batches] == [2, 2, 1]
+    flat_ids = [row.chunk_id for batch in batches for row in batch.rows]
     assert flat_ids == [1, 2, 3, 4, 5]
-    assert all(r.version_id == 7 for batch in batches for r in batch)
+    assert all(r.version_id == 7 for batch in batches for r in batch.rows)
 
 
 async def test_embed_chunks_multimodal_empty_still_pings_provider() -> None:
@@ -307,7 +310,7 @@ async def test_embed_chunks_warm_reuses_cache_zero_provider_calls(
             storage=storage,
             batch_size=2,
         ):
-            rows.extend(batch)
+            rows.extend(batch.rows)
         assert warm.embed_calls == 0, (
             f"provider was called {warm.embed_calls}x despite full cache hits"
         )
@@ -356,7 +359,7 @@ async def test_embed_chunks_partial_cache_only_embeds_misses(
             storage=storage,
             batch_size=2,
         ):
-            rows.extend(batch)
+            rows.extend(batch.rows)
         # Provider only saw the 3 cache misses. Order preserved.
         assert embedder.total_texts == 3, (
             f"provider saw {embedder.total_texts} texts; expected 3 (cache misses)"
