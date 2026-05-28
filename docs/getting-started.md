@@ -264,13 +264,23 @@ need DEBUG to spot one.
 ## 6. Author Wisdom (the W layer)
 
 `wisdom/` is yours to fill by hand — there is no LLM-authoring path
-and no candidate/review queue. Drop markdown files under
-`wisdom/<author>/<slug>.md` (e.g. `wisdom/elon-musk/first-principles.md`)
-in Obsidian; the directory name is the author. A file directly under
-`wisdom/<slug>.md` (no author subdirectory) is also indexed, with
+and no candidate/review queue. Files live under
+`wisdom/<author>/<slug>.md` (e.g. `wisdom/elon-musk/first-principles.md`);
+the directory name is the author. A file directly under
+`wisdom/<slug>.md` (no author subdirectory) is also valid, with
 `author = None`.
 
-Frontmatter shape — every field optional:
+Since 0.4.0 the engine indexes wisdom **only when the page is written
+through `dikw client wisdom write`** (CLI) or `POST /v1/wisdom/write`
+(HTTP) — `dikw client ingest` does NOT scan `<base>/wisdom/`. The
+write API takes structured input (slug + title + body + optional
+metadata) and runs the same `persist_wisdom` pipeline a manual edit
+would have triggered in 0.3.x. Hand-edits to a wisdom file on disk
+are NOT auto-reindexed — re-run `dikw client wisdom write` with the
+edited body to refresh the row. (The same limitation already applies
+to K-layer pages.)
+
+Frontmatter shape that `wisdom write` emits — every field optional:
 
 ```yaml
 ---
@@ -282,10 +292,9 @@ tags: [reasoning, mental-model]
 ---
 ```
 
-Then:
+Once a page is written:
 
 ```bash
-dikw client ingest                           # indexes wisdom alongside sources
 dikw client pages list --layer wisdom        # confirm the page landed
 dikw client retrieve "first principles" \
   --format table                             # hit arrives tagged layer=wisdom
@@ -329,7 +338,11 @@ back with `dikw client pages get wisdom/elon-musk/first-principles.md`.
 The forward-reference corner — wisdom A linking wisdom B that hasn't
 been written yet — surfaces as a non-zero
 `unresolved_wikilinks` on the write report; the next `dikw client
-ingest` reconciles those edges.
+wisdom write` for the target page builds out the title index and
+reconciles the edge on its own write. If the embedding provider was
+transiently down, `chunks_pending_embedding` will be non-zero on the
+write report; the next `dikw client ingest`'s cross-layer
+missing-embedding resume scan finishes the vector backfill.
 
 > **Replace-on-omit warning.** Every write fully replaces the page's
 > frontmatter and provenance edges. Re-running `dikw client wisdom

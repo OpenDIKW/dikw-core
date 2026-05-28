@@ -22,7 +22,7 @@ from dikw_core.domains.wisdom import write_wisdom_file
 from dikw_core.schemas import Layer, WisdomStatus
 from dikw_core.storage import Storage, build_storage
 
-from .fakes import FakeEmbeddings, init_test_base, seed_doc
+from .fakes import FakeEmbeddings, init_test_base, register_text_version, seed_doc
 
 
 async def _open_storage(wiki: Path) -> Storage:
@@ -284,8 +284,23 @@ async def test_write_no_embed_skips_embedder(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_with_embedder_counts_embedded_chunks(tmp_path: Path) -> None:
+    # Pre-register an active text version. From 0.4.0 ``write_wisdom_page``
+    # reuses the active version rather than registering-and-activating
+    # a new one (avoids flipping is_active and stranding existing
+    # source / knowledge vectors); without an active version the
+    # embedder is dropped and the chunks defer to the next ingest's
+    # resume scan.
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
+    from dikw_core.storage.sqlite import SQLiteStorage
+
+    storage = SQLiteStorage(wiki / ".dikw" / "index.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await register_text_version(storage)
+    finally:
+        await storage.close()
 
     report = await api.write_wisdom_page(
         wiki,
@@ -609,6 +624,18 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
     behaviour at api.py:1433."""
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
+    # Pre-register an active text version so write_wisdom_page actually
+    # exercises the inline-embed path (the 0.4.0 reuse-active-version
+    # contract drops the embedder when no active version exists).
+    from dikw_core.storage.sqlite import SQLiteStorage
+
+    storage = SQLiteStorage(wiki / ".dikw" / "index.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    try:
+        await register_text_version(storage)
+    finally:
+        await storage.close()
 
     # First write a normal page so a doc row exists.
     await api.write_wisdom_page(
@@ -619,9 +646,14 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
         embedder=FakeEmbeddings(),
     )
 
-    # Inject an embedder that raises mid-stream — simulates a provider
+    # Inject an embedder that passes preflight (the one-token check
+    # _preflight_embedder makes before any file mutation) but raises
+    # on the second call — simulates a content-dependent provider
     # error after upsert_document + replace_chunks have already
-    # committed the new content.
+    # committed the new content. With the 0.4.0 preflight gate, an
+    # unconditionally-failing embedder would be caught before persist
+    # touches anything and the deactivate-on-failure path would never
+    # be exercised.
     class BrokenEmbedder:
         dim = 8
         normalize = True
@@ -629,8 +661,13 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
         model = "broken"
         revision = ""
         modality = "text"
+        call_count = 0
 
         async def embed(self, texts, **kwargs):  # type: ignore[no-untyped-def]
+            self.call_count += 1
+            if self.call_count == 1:
+                # Preflight call — succeed so the test reaches persist.
+                return [[0.0] * 64 for _ in texts]
             raise RuntimeError("simulated embedder failure")
 
     with pytest.raises(RuntimeError, match="simulated embedder failure"):

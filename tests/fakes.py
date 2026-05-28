@@ -22,6 +22,7 @@ import pytest
 from dikw_core.config import ProviderConfig
 from dikw_core.eval.fake_embedder import EMBED_DIM, FakeEmbeddings
 from dikw_core.providers import LLMResponse, LLMStreamEvent, ToolSpec
+from dikw_core.providers.base import TransientProviderError
 from dikw_core.schemas import EmbeddingVersion, MultimodalInput
 
 __all__ = [
@@ -32,8 +33,10 @@ __all__ = [
     "FakeEmbeddings",
     "FakeLLM",
     "FakeMultimodalEmbedding",
+    "FlakyEmbedder",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
+    "ingest_wisdom_files",
     "init_test_base",
     "make_codex_response",
     "make_jwt",
@@ -291,15 +294,88 @@ def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBE
     cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
 
 
+async def ingest_wisdom_files(
+    wiki: Path,
+    rel_paths: list[str],
+    *,
+    embedder: Any | None = None,
+) -> None:
+    """Drive one or more on-disk wisdom files through ``persist_wisdom``.
+
+    Replaces the 0.3.x ``api.ingest`` W-layer scan loop, which 0.4.0
+    removed: wisdom is now indexed exclusively via ``write_wisdom_page``
+    (typed input) or, for tests that need to author arbitrary file
+    contents (e.g. invalid frontmatter), via this helper.
+
+    The helper builds the same cross-layer title index that the public
+    write path uses, so ``[[wikilink]]`` resolution behaves the same.
+    Embeddings are inline-only when ``embedder`` is provided (mirrors
+    ``no_embed=False``).
+    """
+    from dikw_core.api import _register_text_version
+    from dikw_core.config import load_config
+    from dikw_core.domains.knowledge.links import build_title_indexes
+    from dikw_core.domains.wisdom import persist_wisdom
+    from dikw_core.schemas import Layer
+    from dikw_core.storage import build_storage
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        text_version_id: int | None = None
+        embedding_model = ""
+        if embedder is not None:
+            text_version_id = await _register_text_version(storage, cfg.provider)
+            embedding_model = cfg.provider.embedding_model
+
+        for rel in rel_paths:
+            title_docs: list[tuple[str, str]] = []
+            for layer_for_index in (Layer.KNOWLEDGE, Layer.WISDOM):
+                for d in await storage.list_documents(
+                    layer=layer_for_index, active=True
+                ):
+                    if d.path == rel:
+                        continue
+                    if d.title:
+                        title_docs.append((d.title, d.path))
+            title_to_path, fuzzy_index = build_title_indexes(title_docs)
+            await persist_wisdom(
+                storage=storage,
+                root=wiki,
+                path=rel,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                text_version_id=text_version_id,
+                cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                title_to_path=title_to_path,
+                fuzzy_index=fuzzy_index,
+            )
+    finally:
+        await storage.close()
+
+
 async def register_text_version(
     storage: Any,
     *,
     dim: int = EMBED_DIM,
-    provider: str = "test",
-    model: str = "fake",
+    provider: str = "openai_compat@api.openai.com",
+    model: str = "text-embedding-3-small",
     revision: str = "",
 ) -> int:
     """Register a text ``embed_versions`` row in ``storage`` and return its id.
+
+    Defaults to the cfg-derived identity (``openai_compat`` +
+    ``text-embedding-3-small``) so tests that combine ``init_test_base``
+    with this helper end up with an active version whose identity
+    matches the cfg the base is initialised with. Otherwise the 0.4.0
+    drift-detection in ``_resolve_active_text_version_for_inline_embed``
+    treats the mismatch as "user edited dikw.yml between full ingests"
+    and defers inline embed, breaking write_wisdom_page / lint_apply
+    tests that expect inline embeddings to land.
 
     Cross-test helper; production code resolves the version from
     ``ProviderConfig`` via ``api.ingest`` / ``api.query``. Tests that
@@ -390,6 +466,38 @@ class CountingEmbedder:
     def reset(self) -> None:
         self.embed_calls = 0
         self.total_texts = 0
+
+
+@dataclass
+class FlakyEmbedder:
+    """Raises ``TransientProviderError`` on configured call indices.
+
+    Used to exercise the per-batch retry-skip in ``embed_chunks`` and
+    ``consume_embedding_stream``. The call counter is zero-based and
+    global across all batches: ``raise_on_calls={0, 1}`` raises on the
+    first two embed calls then succeeds on the third.
+
+    Raises the **transient** subclass because the retry-skip handler
+    only catches transient failures from 0.4.0 onward — bare
+    ``ProviderError`` propagates so permanent misconfig (missing key,
+    401, invalid model id) fails fast instead of being silently
+    swallowed.
+    """
+
+    inner: FakeEmbeddings = field(default_factory=FakeEmbeddings)
+    raise_on_calls: set[int] = field(default_factory=set)
+    embed_calls: int = field(default=0, init=False)
+    total_texts: int = field(default=0, init=False)
+
+    async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        idx = self.embed_calls
+        self.embed_calls += 1
+        self.total_texts += len(texts)
+        if idx in self.raise_on_calls:
+            raise TransientProviderError(
+                f"FlakyEmbedder simulated TransientProviderError on call {idx}"
+            )
+        return await self.inner.embed(texts, model=model)
 
 
 @dataclass

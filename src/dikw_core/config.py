@@ -81,6 +81,19 @@ class ProviderConfig(BaseModel):
     # establishes a fresh connection on the next attempt.
     llm_timeout_seconds: float = 120.0
     embedding_timeout_seconds: float = 60.0
+    # Per-batch ``ProviderError`` resilience. ``embedding_max_retries``
+    # above is the SDK's own retry budget for transient HTTP failures;
+    # the two fields below are a higher-level guard for what happens
+    # when the SDK gives up. A batch that fails after exhausted SDK
+    # retries is retried ``embedding_error_retries`` more times with
+    # linear backoff (``embedding_error_retry_backoff_seconds`` * attempt)
+    # and then SKIPPED — its chunks remain in storage without vectors
+    # and get reconciled by the next ingest's missing-embedding resume
+    # scan. A single bad batch can no longer abort a whole persist or
+    # ingest run. ``embedding_error_retries=0`` means one attempt then
+    # skip (no retries before the skip).
+    embedding_error_retries: int = Field(default=2, ge=0)
+    embedding_error_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
 
     @model_validator(mode="after")
     def _require_codex_base_url(self) -> ProviderConfig:

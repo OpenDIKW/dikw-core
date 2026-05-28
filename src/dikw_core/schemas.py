@@ -727,6 +727,60 @@ class EmbeddingVersion(BaseModel):
 # ---- Wisdom write API (0.3.1) -------------------------------------------
 
 
+class SourcePersistResult(BaseModel):
+    """Outcome of ``persist_source`` for one D-layer source file.
+
+    The D-layer persist path differs from K/W: embedding is deferred
+    to the ingest-wide bulk pass at the end of the scan loop (so the
+    embedder batches across all source files for throughput), and
+    asset materialize for image refs is the caller's responsibility
+    (it crosses storage AND filesystem). This result carries the
+    (chunk_id, text) pairs the caller feeds into its shared
+    ``to_embed`` queue.
+    """
+
+    chunk_ids: list[int]
+    chunk_texts: list[str]
+    chunks_count: int
+
+
+class KnowledgePersistResult(BaseModel):
+    """Outcome of ``persist_knowledge`` for one K-layer page.
+
+    Returned by the K-layer persist function so callers (synth, lint
+    apply) can fold embed counts into their reports without re-
+    inspecting storage. ``chunks_pending_embedding`` is non-zero when
+    ``persist_knowledge`` was called without an embedder, or when one
+    or more embed batches exhausted their ``TransientProviderError``
+    retry budget and were skipped (permanent ``ProviderError``
+    propagates instead, since misconfig must fail fast); those chunks
+    remain in storage without vectors and get reconciled by the next
+    ingest's ``list_chunks_missing_embedding`` resume scan.
+    """
+
+    chunk_ids: list[int]
+    chunks_embedded: int
+    chunks_pending_embedding: int
+    unresolved_wikilinks: int
+    resolved_title: str
+
+
+class WisdomPersistResult(BaseModel):
+    """Outcome of ``persist_wisdom`` for one W-layer page.
+
+    Same shape as :class:`KnowledgePersistResult`; the W-layer specific
+    fields (status from frontmatter, embedder/no_embed handshake) are
+    handled at the caller (``write_wisdom_page``) which translates them
+    into the embedder param this result reflects.
+    """
+
+    chunk_ids: list[int]
+    chunks_embedded: int
+    chunks_pending_embedding: int
+    unresolved_wikilinks: int
+    resolved_title: str
+
+
 class WisdomWriteSubmit(BaseModel):
     """Body for ``POST /v1/base/wisdom`` and the engine ``write_wisdom_page``.
 
@@ -794,6 +848,15 @@ class WisdomWriteReport(BaseModel):
     path. ``embedded`` is the count of chunks whose vectors landed in
     the per-version vec table this call; ``0`` when ``no_embed=True``
     or no embedder was resolvable.
+
+    ``chunks_pending_embedding`` is the count of chunks whose vectors
+    are NOT yet in storage but will be reconciled by the next
+    ``dikw client ingest`` resume scan. Non-zero values surface
+    cleanly (a) when ``no_embed=True``, (b) when the embedder
+    transient-fails enough batches to exhaust the retry budget,
+    or (c) when the inline-embed path defers because no active text
+    version exists yet OR ``cfg.provider`` drifted from the active
+    version's identity. Symmetric with :class:`ApplyReport`.
     """
 
     path: str
@@ -801,4 +864,5 @@ class WisdomWriteReport(BaseModel):
     hash: str
     chunks: int
     embedded: int
+    chunks_pending_embedding: int = 0
     unresolved_wikilinks: int

@@ -186,7 +186,7 @@ dikw-core/
 │   ├── test_chunk.py
 │   ├── test_search.py        # FTS + vector + RRF behavior on golden set
 │   ├── test_page.py
-│   ├── test_wisdom_*.py      # W-layer ingest / read / lint / retrieve tests
+│   ├── test_wisdom_*.py      # W-layer write / read / lint / retrieve tests
 │   ├── test_providers.py     # uses recorded responses
 │   ├── test_storage_contract.py  # same contract test runs against every backend
 │   ├── server/               # HTTP-level tests against an in-memory ASGI app
@@ -405,20 +405,24 @@ Wisdom pages share the K-page contract:
   through the existing refuse-to-resolve mechanism (lint surfaces the
   ambiguity); the user disambiguates with the path form
   `[[wisdom/elon-musk/be-relentless|Be Relentless]]`.
-- **Persistence:** `dikw ingest` scans `<root>/wisdom/**/*.md` after the
-  `sources:` scan, hash-idempotent, runs the same `persist_page`
-  pipeline as wiki (`documents` row + `chunks` + per-version embedding +
-  `links` + `provenance`). Bases upgrading from 0.2.x: the legacy
-  `wisdom/_candidates/` directory and the `wisdom/{principles,lessons,
-  patterns}.md` aggregate files are hard-coded skips (case-insensitive)
-  so drained-queue artifacts don't index as first-class wisdom
-  documents — see CHANGELOG `[0.3.0]` for the manual-cleanup recipe.
+- **Persistence:** since 0.4.0, wisdom is indexed exclusively through
+  `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP
+  `POST /v1/wisdom/write`). The write surface runs the `persist_wisdom`
+  pipeline (`documents` row + `chunks` + per-version embedding +
+  `links` + `provenance`) — symmetric with `persist_knowledge` for
+  the K layer. `dikw client ingest` no longer scans `<base>/wisdom/`;
+  hand-edits to wisdom files on disk are not auto-reindexed. Bases
+  upgrading from 0.3.x that still have `wisdom/_candidates/` or
+  `wisdom/{principles,lessons,patterns}.md` aggregate files are
+  harmless — the engine simply ignores them since the ingest scan is
+  gone.
 
-As of 0.3.0 the wisdom layer is fully wired end-to-end:
+As of 0.4.0 the wisdom layer is fully wired end-to-end:
 
-- **ingest** scans `wisdom/**/*.md` and writes the same
-  `documents` / `chunks` / per-version embedding / `links` /
-  `provenance` rows as knowledge pages.
+- **write** (`api.write_wisdom_page` / `dikw client wisdom write` /
+  `POST /v1/wisdom/write`) is the sole engine entry that writes a
+  wisdom row: chunks + FTS + embeddings + links + provenance in one
+  call.
 - **retrieve** returns wisdom hits tagged `Hit.layer == "wisdom"`
   alongside source + knowledge hits; callers group or weight by layer in
   their own assembly step.
@@ -524,7 +528,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw client status` — counts per layer (source / knowledge / wisdom)
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
 - `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
-- `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` AND `wisdom/` trees, stream progress
+- `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` tree only; W layer is indexed by `dikw client wisdom write`; the end-of-ingest cross-layer resume scan reconciles any D/K/W chunks left without vectors by earlier writes
 - `dikw client synth [--all]` — K-layer synthesis (W layer is hand-written, not LLM-authored)
 - `dikw client pages {list,get,links,provenance} [--layer knowledge|wisdom|source]` — read-side page APIs across all three layers
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
@@ -543,7 +547,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty base.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
 - **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
-- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same `persist_page` pipeline as knowledge pages, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
+- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/wisdom/write`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
   - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `postgres:16`+`pgvector` container in CI. Packaged as `dikw-core[postgres]` optional extra.
@@ -574,7 +578,7 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 3. Populate `sources/` with ~20 markdown notes (fixtures); `uv run dikw client ingest`; confirm FTS and vec rows via a diagnostic `dikw client status`.
 4. `uv run dikw client retrieve "what is DIKW?" --format json` returns at least one chunk hit with `path`, `text`, and `score`; LLM synthesis on top of these chunks is the agent's responsibility.
 5. `uv run dikw client synth`; check `knowledge/index.md` and `knowledge/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
-6. Hand-write a wisdom page at `wisdom/<author>/<slug>.md` with optional `sources:` frontmatter pointing at a real source path; `uv run dikw client ingest` indexes it; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages get wisdom/<author>/<slug>.md` returns its body + chunk anchors.
+6. Write a wisdom page via `uv run dikw client wisdom write --slug <s> --author <a> --title "<t>" --body "<b>" --source <real-source-path>`; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages get wisdom/<a>/<s>.md` returns its body + chunk anchors.
 7. `uv run dikw client retrieve "<query that matches the wisdom body>" --format json` returns at least one hit with `layer: wisdom`; the agent groups by layer and assembles its own wisdom-grounded answer.
 8. `uv run dikw serve --base .` launches; a `GET /v1/base/pages/wisdom/<author>/<slug>.md` round-trip from any HTTP client returns the same page as step 6, and a `POST /v1/retrieve` round-trip returns chunks (including wisdom chunks) consumable by any HTTP agent.
 9. Swap provider in `dikw.yml` from Anthropic to OpenAI-compatible (pointed at Ollama locally or OpenAI) and repeat step 4 — works unchanged.

@@ -29,11 +29,11 @@ _Avoid_: source (which is the file on disk before it has been indexed)
 Two distinct, deliberately separated relationships connect pages. Conflating them pollutes graph-leg retrieval.
 
 **wikilink** (a.k.a. **link**):
-A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src_doc_id → dst_path`, with `link_type`, `anchor`, `line`). Forms the K↔K graph that feeds graph-leg retrieval and orphan/broken-link lint. Reconciled from the body on every `persist_knowledge_page` via `replace_links_from`.
+A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src_doc_id → dst_path`, with `link_type`, `anchor`, `line`). Forms the K↔K (and K↔W / W↔W) graph that feeds graph-leg retrieval and orphan/broken-link lint. Reconciled from the body on every `persist_knowledge` / `persist_wisdom` via `replace_links_from`.
 _Avoid_: reference, citation (overloaded), provenance (the other edge).
 
 **provenance**:
-The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the knowledge tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_knowledge_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
+The page→source attribution recorded in a K/W-page's `sources:` **frontmatter** — "this page was authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the knowledge tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_knowledge` / `persist_wisdom` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
 _Avoid_: reference, link, citation; "sources" alone (that's the frontmatter key, not the relationship).
 
 ### Pipeline verbs

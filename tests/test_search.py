@@ -355,7 +355,7 @@ async def test_hybrid_search_returns_hits(tmp_path) -> None:
     async for batch in embed_chunks(
         embedder, to_embed, model="fake", version_id=version_id
     ):
-        await storage.upsert_embeddings(batch)
+        await storage.upsert_embeddings(batch.rows)
 
     searcher = HybridSearcher(
         storage, embedder, embedding_model="fake", text_version_id=version_id
@@ -420,7 +420,7 @@ async def _populate_fixture_corpus(storage):
     async for batch in embed_chunks(
         embedder, to_embed, model="fake", version_id=version_id
     ):
-        await storage.upsert_embeddings(batch)
+        await storage.upsert_embeddings(batch.rows)
     return embedder, version_id
 
 
@@ -608,7 +608,7 @@ async def _populate_multi_chunk_corpus(storage: SQLiteStorage) -> FakeEmbeddings
     async for batch in embed_chunks(
         embedder, to_embed, model="fake", version_id=version_id
     ):
-        await storage.upsert_embeddings(batch)
+        await storage.upsert_embeddings(batch.rows)
     return embedder, version_id
 
 

@@ -7,6 +7,132 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### ⚠️ Breaking
+
+- **`dikw client ingest` no longer scans `<base>/wisdom/`.** Wisdom
+  pages are indexed exclusively when written via `dikw client wisdom
+  write` (CLI) or `POST /v1/wisdom/write` (HTTP). Hand-edits to wisdom
+  files in Obsidian are no longer auto-reindexed — the same
+  limitation already applied to knowledge pages (a future `dikw
+  client reindex <path>` will close this gap symmetrically). The old
+  scan loop and its legacy aggregate-file skip-list have been
+  removed; obsolete tests have been dropped, and the `ingest_wisdom_files`
+  helper in `tests/fakes.py` lets test authors seed wisdom rows via
+  the per-file `persist_wisdom` path.
+
+### Added
+
+- **Per-batch embed retry-skip.** `consume_embedding_stream` now
+  catches `ProviderError` per batch and retries up to
+  `cfg.provider.embedding_error_retries` (default 2) with
+  `embedding_error_retry_backoff_seconds` (default 2.0s) linear
+  backoff before skipping the batch and moving on. Skipped chunks
+  remain in storage without vectors and the next ingest's
+  missing-embedding resume scan reconciles them — synth /
+  `lint apply` / `wisdom write` / ingest's bulk pass are all
+  durable through transient embedding-provider failures now.
+- **`lint apply` inline-embeds when an embedder is configured.**
+  Setting `DIKW_EMBEDDING_API_KEY` makes `dikw client lint apply`
+  re-embed every rebuilt page in the same pass so the fix is
+  retrievable on return. Without the key, behaviour is unchanged:
+  every chunk falls into `chunks_pending_embedding` and the next
+  ingest's resume scan picks them up. `ApplyReport` gains
+  `chunks_embedded` and `chunks_pending_embedding`; the CLI summary
+  prints both.
+
+### Changed
+
+- **Refactor: `persist_page` split into three layer-specific
+  functions.** `persist_source` (D, `domains/data/persist.py`),
+  `persist_knowledge` (K, `domains/knowledge/page_index.py`), and
+  `persist_wisdom` (W, `domains/wisdom/persist.py`) each own their
+  layer's full upsert + chunk + FTS + (optional inline embed) +
+  links + provenance pipeline. The legacy `persist_page` and
+  `persist_knowledge_page` symbols remain as deprecated aliases
+  returning the old `tuple[int, str]` shape; they will be removed
+  in a follow-up.
+- `api.ingest` is now D-layer-only plus the cross-layer
+  missing-embedding resume scan that reconciles deferred chunks
+  from D / K / W.
+
+### Fixed
+
+- **Synth's per-group retry-skip now catches only
+  `TransientProviderError`** — symmetric with the 0.4.0 embed-batch
+  retry change. Without this, a permanent LLM `ProviderError` (typo
+  in `cfg.provider.llm_model`, missing key, invalid model id) was
+  silently retried-then-skipped, producing "synth succeeded with
+  0 pages" runs instead of failing fast. The `openai_codex`
+  reducer-bug path (issue #134 / #135) now raises
+  `TransientProviderError` so synth's narrowed retry still catches
+  it.
+- **`embed_assets` gained per-batch retry-skip** — symmetric with
+  `embed_chunks` / `embed_chunks_multimodal`. Without it, a single
+  5xx / timeout mid-pass aborted the whole asset embedding run; the
+  retry-then-skip path now persists prior batches and the resume
+  scan reconciles missing asset vectors on the next ingest. Both
+  retries pass `cfg.provider.embedding_error_retries` and backoff.
+- **`lint apply` now builds and threads `fuzzy_index` through
+  `persist_knowledge` and Phase 2 referrer reconciliation** —
+  without it, fuzzy-resolvable wikilinks like `[[Neural Networks]] →
+  Neural Network` silently broke inside lint apply and the next
+  lint propose flagged them as `broken_wikilink`, causing churn.
+- **`WisdomWriteReport` gained `chunks_pending_embedding`** — fully
+  symmetric with `ApplyReport`. Non-zero values surface when
+  `no_embed=True`, when the inline-embed path defers (no active
+  text version yet or `cfg.provider` drift), or when transient
+  embed failures exhaust the retry budget. CLI render prints
+  "N pending — next dikw client ingest reconciles them" mirroring
+  the lint apply message.
+- **`lint apply` / `wisdom write` no longer flip the active text
+  embed version, defer inline embed on cfg drift, and preflight the
+  embedder before mutating files.** Both paths now reuse the active
+  version returned by `storage.get_active_embed_version("text")`
+  instead of registering-and-activating a new identity from
+  `cfg.provider`. Activating here would have stranded every other
+  vector in the now-inactive table and gutted dense retrieval until
+  the next full ingest. **Full-identity drift detection**: when the
+  active version's `(provider, model, revision, dim, normalize,
+  distance)` differs from `cfg.provider` (the user edited
+  `dikw.yml` between full ingests), inline embed is deferred —
+  otherwise the cfg-built embedder would produce different-dim or
+  different-space vectors that get stored under the old version's
+  table (silent corruption, or a hard StorageError mid-persist
+  after files were already mutated). **Preflight**: each call also
+  performs a one-token embed call before mutating any files, so a
+  permanent provider error (bad API key, 401, invalid model id)
+  surfaces while state is still clean instead of after Phase 0 has
+  rewritten / deleted files. When no active version exists yet
+  (fresh base), inline embed is deferred to the next ingest's
+  resume scan, which goes through the full register-and-activate
+  path. Mirrors `synthesize`'s long-standing reuse pattern.
+- **Embedding provider errors classified as transient vs. permanent.**
+  `OpenAICompatEmbeddings.embed` and `GiteeMultimodalEmbedding.embed`
+  now classify exceptions into `TransientProviderError` (retryable:
+  timeouts, rate limits, 5xx, 408/429, connect drops, parse failures)
+  vs. plain `ProviderError` (permanent: 401, 403, 404, invalid model
+  id, missing API key). The per-batch retry-skip in
+  `consume_embedding_stream` retries only `TransientProviderError`;
+  permanent errors propagate so misconfig fails fast instead of being
+  silently retried-then-skipped (a single missing/wrong API key would
+  otherwise have produced "success, 0 vectors" runs).
+- **Synth forwards `cfg.provider.embedding_error_retries` to
+  `persist_knowledge`.** The K-layer inline embed inside synthesize
+  was silently using `retries=0` regardless of the configured
+  retry budget; ingest, lint apply, and wisdom write already
+  forwarded it.
+
+### Known limitations
+
+- **W→W forward-ref wikilinks**: a wisdom page `A` written before
+  its `[[B]]` target wisdom page exists keeps the link unresolved
+  in storage until `A` is re-written via `dikw client wisdom write`.
+  Symmetric to the long-standing K→K limitation — synth doesn't
+  re-resolve K-page links when a later page introduces the target
+  either. A future `dikw client reindex <path>` will close both
+  gaps; until then, re-writing the referring page is the
+  user-facing workaround.
+
 ## 0.4.0 — BREAKING term rename: K layer "wiki" → "knowledge"
 
 ⚠️ **Breaking change for every existing base.** The K-layer

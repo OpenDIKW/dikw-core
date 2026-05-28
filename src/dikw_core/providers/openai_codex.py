@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._http import build_no_keepalive_async_client
-from .base import LLMResponse, LLMStreamEvent, ProviderError, ToolSpec
+from .base import (
+    LLMResponse,
+    LLMStreamEvent,
+    ToolSpec,
+    TransientProviderError,
+)
 from .codex_auth import account_id_from_jwt, resolve_access_token
 
 if TYPE_CHECKING:
@@ -377,7 +382,13 @@ class OpenAICodexLLM:
             # failure surfaces on the NDJSON progress stream and the
             # caller can retry or skip with intent.
             if reducer_bug_seen and not parts:
-                raise ProviderError(
+                # TransientProviderError so synth's per-group retry-skip
+                # (api.py group LLM retry loop) re-tries this — the
+                # reducer bug is empirically transient (auth flap,
+                # quota throttle, content-refusal that resolves on a
+                # second attempt). Issue #134/#135 fix expected synth
+                # to catch and retry this case.
+                raise TransientProviderError(
                     "OpenAI codex backend returned response.output=None "
                     "and shipped zero text deltas; the SDK reducer "
                     "fallback has no partial response to surface. This "

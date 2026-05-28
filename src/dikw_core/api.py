@@ -68,8 +68,8 @@ from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
 from .domains.data.path_norm import doc_id_for as _doc_id_for
 from .domains.data.path_norm import normalize_path
+from .domains.data.persist import persist_source
 from .domains.data.sources import iter_source_files
-from .domains.info.chunk import chunk_markdown
 from .domains.info.embed import (
     ChunkToEmbed,
     consume_embedding_stream,
@@ -113,7 +113,7 @@ from .providers import (
     EmbeddingProvider,
     LLMProvider,
     MultimodalEmbeddingProvider,
-    ProviderError,
+    TransientProviderError,
     build_embedder,
     build_llm,
     build_multimodal_embedder,
@@ -121,7 +121,6 @@ from .providers import (
 from .schemas import (
     ASSET_URL_TEMPLATE,
     AssetRecord,
-    ChunkAssetRef,
     ChunkRecord,
     DerivedPage,
     DocumentRecord,
@@ -243,57 +242,6 @@ KNOWLEDGE_INIT_FILES: dict[str, str] = {
 }
 
 
-# Aggregate files the legacy 0.2.x wisdom workflow wrote next to
-# ``wisdom/_candidates/``. Upgrading bases may still carry them, and
-# they are drained queue artifacts — not first-class wisdom documents.
-# Hardcoded skip so an upgrading base doesn't accidentally index them.
-_WISDOM_LEGACY_AGGREGATE_FILES = frozenset(
-    {"principles.md", "lessons.md", "patterns.md"}
-)
-
-
-def _iter_wisdom_files(root: Path) -> Iterator[tuple[Path, str]]:
-    """Yield ``(abs_path, logical_path)`` for every wisdom markdown file.
-
-    Skips:
-
-    * Anything outside ``<root>/wisdom/`` (the directory is the contract).
-    * The legacy 0.2.x ``wisdom/_candidates/`` queue subdirectory.
-    * The legacy ``wisdom/{principles,lessons,patterns}.md`` aggregates
-      (drained on the upgrade, but a user may not have deleted them yet).
-    * Hidden / dotfiles and ``.gitkeep`` (not markdown content).
-
-    ``logical_path`` uses forward-slash separators so it stays portable
-    across platforms — same convention ``iter_source_files`` follows.
-    """
-    wisdom_root = root / "wisdom"
-    if not wisdom_root.is_dir():
-        return
-    for abs_path in sorted(wisdom_root.rglob("*.md")):
-        if not abs_path.is_file():
-            continue
-        try:
-            rel = abs_path.relative_to(root)
-        except ValueError:
-            continue
-        rel_parts = rel.parts
-        # rel_parts[0] is always "wisdom" because rglob is rooted there.
-        if len(rel_parts) >= 2 and rel_parts[1] == "_candidates":
-            continue
-        # Case-insensitive compare so NTFS / APFS / HFS+ users with a
-        # capitalized ``Principles.md`` on disk still skip the legacy
-        # aggregate (the skip-set is lowercase).
-        if (
-            len(rel_parts) == 2
-            and rel_parts[1].casefold() in _WISDOM_LEGACY_AGGREGATE_FILES
-        ):
-            continue
-        if any(p.startswith(".") for p in rel_parts):
-            continue
-        logical_path = "/".join(rel_parts)
-        yield abs_path, logical_path
-
-
 # One stderr Console for all embedding progress bars. Constructing one
 # per ingest pass would re-probe terminal capability + color system on
 # every call; rich's recommended pattern is a single shared instance.
@@ -354,7 +302,16 @@ def _qualified_provider(protocol: str, base_url: str) -> str:
 async def _register_text_version(
     storage: Storage, cfg_provider: ProviderConfig
 ) -> int:
-    """Register the text ``embed_versions`` row from the provider config."""
+    """Register-and-activate the text ``embed_versions`` row from cfg.
+
+    Activates the configured identity. Only safe to call from ``ingest``,
+    which re-embeds the full corpus and so can flip the active version
+    safely. Lint apply / wisdom write must use
+    :func:`_resolve_active_text_version_for_inline_embed` instead — they
+    only re-embed the pages they touch, so flipping active would strand
+    every other vector in the now-inactive table and gut dense retrieval
+    until the next full ingest (codex review finding, 0.4.0).
+    """
     return await storage.upsert_embed_version(
         EmbeddingVersion(
             # Encode the endpoint host into ``provider`` so two
@@ -372,6 +329,87 @@ async def _register_text_version(
             modality="text",
         )
     )
+
+
+async def _resolve_active_text_version_for_inline_embed(
+    storage: Storage, cfg_provider: ProviderConfig | None = None
+) -> tuple[int, str] | None:
+    """Return ``(version_id, model)`` of the active text embed version, or None.
+
+    Callers that re-embed only the pages they touch (lint apply, wisdom
+    write) must NOT register-and-activate a new version on their own —
+    flipping active here would strand every other vector in the
+    now-inactive table and gut dense retrieval until ``dikw client
+    ingest`` re-embeds the full corpus. Mirrors the pattern used by
+    ``synthesize`` (api.py:2484-2497).
+
+    Returns ``None`` when:
+
+    1. No active text version exists yet (fresh base, no ingest run), or
+    2. ``cfg_provider`` is supplied and its embedding identity has
+       drifted from the active version's identity. The caller built
+       its embedder from cfg, so its vectors would land under the
+       wrong version table — defer to the next ingest's resume scan
+       (which goes through the full register-and-activate path)
+       instead of silently mixing vector spaces.
+
+    Drift detection compares the **full** version identity:
+    ``(provider, model, revision, dim, normalize, distance)``.
+    ``(provider, model)`` defines which vec table; ``revision`` /
+    ``dim`` / ``normalize`` / ``distance`` define the vector space.
+    A dim mismatch would raise StorageError at upsert_embeddings time
+    AFTER files were already mutated (lint apply Phase 0); a
+    revision bump or normalize/distance flip would silently mix
+    semantically-different vectors. Codex review finding, 0.4.0.
+    """
+    try:
+        active_text = await storage.get_active_embed_version(modality="text")
+    except NotSupported:
+        return None
+    if active_text is None or active_text.version_id is None:
+        return None
+    if cfg_provider is not None:
+        cfg_provider_key = _qualified_provider(
+            cfg_provider.embedding, cfg_provider.embedding_base_url
+        )
+        if (
+            active_text.provider != cfg_provider_key
+            or active_text.model != cfg_provider.embedding_model
+            or active_text.revision != cfg_provider.embedding_revision
+            or active_text.dim != cfg_provider.embedding_dim
+            or active_text.normalize != cfg_provider.embedding_normalize
+            or active_text.distance != cfg_provider.embedding_distance
+        ):
+            return None
+    return active_text.version_id, active_text.model
+
+
+async def _preflight_embedder(
+    embedder: EmbeddingProvider, model: str
+) -> None:
+    """One-token embed call to surface permanent provider failures upfront.
+
+    Lint apply / wisdom write mutate the filesystem before
+    ``persist_knowledge`` / ``persist_wisdom`` reach the embed call.
+    A permanent ``ProviderError`` (bad API key, 401, invalid model id)
+    raised mid-persist aborts with partial state: documents row
+    upserted, chunks replaced, but links / provenance not reconciled
+    and no ApplyReport returned to the caller.
+
+    Preflight makes the embed call BEFORE any filesystem mutation so
+    misconfig surfaces while state is still clean. Permanent errors
+    propagate as-is to the caller; transient errors are tolerated
+    (the actual embed has its own retry-skip budget — they may still
+    succeed). One round-trip cost per apply / wisdom write.
+
+    Codex review finding, 0.4.0.
+    """
+    try:
+        await embedder.embed(["preflight"], model=model)
+    except TransientProviderError:
+        # The real embed call will retry; preflight only blocks on
+        # permanent failures.
+        return
 
 
 # ---- public result models ------------------------------------------------
@@ -1235,12 +1273,12 @@ async def ingest(
                 continue
 
             try:
-                await storage.upsert_document(_to_document(parsed, doc_id=doc_id))
-
                 # Materialize image references before chunking so asset_ids
                 # are available when chunk_asset_refs land. Decoupled from
                 # mm_cfg so eval rigs see the chunk ↔ asset bridge even
-                # without multimodal embedding configured.
+                # without multimodal embedding configured. ``persist_source``
+                # itself doesn't touch the filesystem — it consumes the
+                # already-resolved ``ref_assets`` dict.
                 ref_assets: dict[int, AssetRecord] = {}
                 if parsed.asset_refs:
                     by_original_path: dict[str, AssetRecord] = {}
@@ -1269,60 +1307,31 @@ async def ingest(
                     except NotSupported:
                         ref_assets = {}
 
-                atomic_spans = [(r.start, r.end) for r in parsed.asset_refs]
-                chunks = chunk_markdown(
-                    parsed.body,
-                    atomic_spans=atomic_spans,
+                persist_result = await persist_source(
+                    storage=storage,
+                    parsed=parsed,
+                    doc=_to_document(parsed, doc_id=doc_id),
+                    ref_assets=ref_assets,
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                 )
-                chunk_records = [
-                    ChunkRecord(
-                        doc_id=doc_id, seq=c.seq, start=c.start, end=c.end, text=c.text
-                    )
-                    for c in chunks
-                ]
-                chunk_ids = await storage.replace_chunks(doc_id, chunk_records)
-
-                # Project body-relative ref offsets into chunk-relative offsets
-                # and persist the chunk ↔ asset bridge rows.
-                for chunk_record, chunk_id in zip(chunk_records, chunk_ids, strict=True):
-                    chunk_refs: list[ChunkAssetRef] = []
-                    ord_counter = 0
-                    for ref_idx, ref in enumerate(parsed.asset_refs):
-                        if not (
-                            chunk_record.start <= ref.start
-                            and ref.end <= chunk_record.end
-                        ):
-                            continue
-                        asset = ref_assets.get(ref_idx)
-                        if asset is None:
-                            continue  # unresolved (remote URL, missing file) — already logged
-                        chunk_refs.append(
-                            ChunkAssetRef(
-                                chunk_id=chunk_id,
-                                asset_id=asset.asset_id,
-                                ord=ord_counter,
-                                alt=ref.alt,
-                                start_in_chunk=ref.start - chunk_record.start,
-                                end_in_chunk=ref.end - chunk_record.start,
-                            )
-                        )
-                        ord_counter += 1
-                    if chunk_refs:
-                        await storage.replace_chunk_asset_refs(chunk_id, chunk_refs)
 
                 # Queue chunks for embedding only when a text embedder + version
                 # is wired up. Chunk vectors live exclusively in the text
                 # channel (vec_chunks_v<text_id>); the multimodal channel
-                # owns assets, not chunks.
+                # owns assets, not chunks. ``persist_source`` defers embed
+                # to this end-of-scan bulk pass for throughput across files.
                 if (
                     embedder is not None
                     and text_version_id is not None
-                    and chunk_records
+                    and persist_result.chunks_count
                 ):
                     to_embed.extend(
-                        ChunkToEmbed(chunk_id=cid, text=r.text)
-                        for cid, r in zip(chunk_ids, chunk_records, strict=True)
+                        ChunkToEmbed(chunk_id=cid, text=text)
+                        for cid, text in zip(
+                            persist_result.chunk_ids,
+                            persist_result.chunk_texts,
+                            strict=True,
+                        )
                     )
 
                 await storage.append_knowledge_log(
@@ -1353,7 +1362,7 @@ async def ingest(
                 scanned=scanned,
                 added=report.added if existing is not None else report.added + 1,
                 updated=report.updated + 1 if existing is not None else report.updated,
-                chunks=report.chunks + len(chunk_records),
+                chunks=report.chunks + persist_result.chunks_count,
             )
             await _reporter.progress(
                 phase="scan",
@@ -1362,146 +1371,15 @@ async def ingest(
                 detail={"path": logical_path},
             )
 
-        # ---- W layer scan (0.3.0 PR2) ----
-        # Wisdom files under ``<root>/wisdom/<author>/**/*.md`` flow
-        # through the same ``persist_page`` pipeline as knowledge pages —
-        # ``documents`` row + chunks + outgoing wikilinks + provenance
-        # — and queue their chunks onto the shared ``to_embed`` list so
-        # the bulk embed pass below covers both layers in one batch.
-        # See ``docs/design.md`` "Wisdom Layer Design" for the contract.
-        from .domains.knowledge.links import build_title_indexes
-        from .domains.knowledge.page_index import persist_page as _persist_page
-
-        # Hoist the cross-layer title index ONCE before the loop so
-        # (a) ``persist_page`` doesn't issue 2N ``list_documents``
-        # round-trips on a wisdom-heavy base, and (b) wisdom pages
-        # added earlier in the same ingest are visible to wisdom pages
-        # added later — without pre-seeding, a forward ``[[wisdom B]]``
-        # from page A stays unresolved until a second ingest.
-        wisdom_title_docs: list[tuple[str, str]] = []
-        for _layer in (Layer.KNOWLEDGE, Layer.WISDOM):
-            for _d in await storage.list_documents(layer=_layer, active=True):
-                if _d.title:
-                    wisdom_title_docs.append((_d.title, _d.path))
-        for _abs_path, _logical_path in _iter_wisdom_files(root):
-            try:
-                _parsed_title_only = parse_any(_abs_path, rel_path=_logical_path)
-            except Exception:
-                continue
-            if _parsed_title_only.title:
-                wisdom_title_docs.append(
-                    (_parsed_title_only.title, _logical_path)
-                )
-        wisdom_title_to_path, wisdom_fuzzy_index = build_title_indexes(
-            wisdom_title_docs
-        )
-
-        for abs_path, logical_path in _iter_wisdom_files(root):
-            _reporter.cancel_token().raise_if_cancelled()
-            try:
-                parsed = parse_any(abs_path, rel_path=logical_path)
-            except (OSError, UnicodeError) as e:
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="read_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-            except Exception as e:
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="parse_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-
-            doc_id = _doc_id_for(Layer.WISDOM, logical_path)
-            existing = await storage.get_document(doc_id)
-            scanned = report.scanned + 1
-            # Hash-idempotent short-circuit, same shape as the source
-            # loop above. Wisdom pages do not currently carry asset
-            # refs (no chunk_asset_refs pipeline on wisdom), so we
-            # don't need the ``not parsed.asset_refs`` guard the
-            # source branch keeps.
-            #
-            # Status comparison is wisdom-specific: ``content_hash``
-            # hashes body bytes only, so editing ONLY the ``status:``
-            # frontmatter (draft → published) leaves the hash unchanged.
-            # Without this check the new ``documents.status`` column
-            # silently desyncs from the file the user authored — frontmatter
-            # is meant to be the source of truth (Obsidian-native vault).
-            if (
-                existing is not None
-                and existing.active
-                and existing.hash == parsed.hash
-                and existing.status == parsed.status
-            ):
-                report = _replace(
-                    report,
-                    scanned=scanned,
-                    unchanged=report.unchanged + 1,
-                )
-                continue
-
-            try:
-                # persist_page does upsert_document + replace_chunks +
-                # replace_links_from + replace_provenance_from.
-                # ``embedder=None`` keeps embedding out of the per-file
-                # critical path; the bulk pass below picks up the
-                # chunks via the shared ``to_embed`` queue.
-                await _persist_page(
-                    storage=storage,
-                    root=root,
-                    path=logical_path,
-                    layer=Layer.WISDOM,
-                    embedder=None,
-                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-                    title_to_path=wisdom_title_to_path,
-                    fuzzy_index=wisdom_fuzzy_index,
-                )
-                new_chunks = await storage.list_chunks(doc_id)
-                if (
-                    embedder is not None
-                    and text_version_id is not None
-                    and new_chunks
-                ):
-                    to_embed.extend(
-                        ChunkToEmbed(chunk_id=c.chunk_id, text=c.text)
-                        for c in new_chunks
-                        if c.chunk_id is not None
-                    )
-                await storage.append_knowledge_log(
-                    KnowledgeLogEntry(ts=time.time(), action="ingest", src=logical_path)
-                )
-            except Exception as e:
-                with contextlib.suppress(Exception):
-                    await storage.deactivate_document(doc_id)
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="storage_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-
-            report = _replace(
-                report,
-                scanned=scanned,
-                added=report.added if existing is not None else report.added + 1,
-                updated=report.updated + 1 if existing is not None else report.updated,
-                chunks=report.chunks + len(new_chunks),
-            )
-            await _reporter.progress(
-                phase="scan",
-                current=scanned,
-                total=0,
-                detail={"path": logical_path},
-            )
+        # W-layer scan was removed in 0.4.0 (#BREAKING). Wisdom pages
+        # are indexed exclusively by ``write_wisdom_page`` (the public
+        # ``dikw client wisdom write`` / ``POST /v1/wisdom/write`` entry
+        # point). A user editing a wisdom file in obsidian no longer
+        # gets it auto-reindexed by ``dikw client ingest``; the
+        # ``list_chunks_missing_embedding`` resume scan below still
+        # covers W-layer chunks that landed without vectors (e.g.,
+        # ``wisdom write --no-embed`` or a flaky embed batch that hit
+        # the retry-skip path in commit 1).
 
         # Resume scan: pick up chunks that landed in storage during a
         # prior crashed run but never got their embedding written. The
@@ -1533,7 +1411,7 @@ async def ingest(
             with _embedding_progress(
                 "embedding chunks", total=chunk_total
             ) as advance_chunk:
-                embedded = await consume_embedding_stream(
+                embed_result = await consume_embedding_stream(
                     embed_chunks(
                         embedder,
                         to_embed,
@@ -1541,6 +1419,9 @@ async def ingest(
                         version_id=text_version_id,
                         storage=storage,
                         batch_size=chunk_batch_size,
+                        retries=cfg.provider.embedding_error_retries,
+                        backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
+                        reporter=_reporter,
                     ),
                     storage,
                     on_batch=advance_chunk,
@@ -1548,7 +1429,7 @@ async def ingest(
                     phase="embed_chunks",
                     total=chunk_total,
                 )
-            report = _replace(report, embedded=embedded)
+            report = _replace(report, embedded=embed_result.embedded)
 
         # Backfill assets stored without a vector for the active mm
         # version — text-only ingest residue, prior mm version, or
@@ -1622,6 +1503,8 @@ async def ingest(
                     model=mm_cfg.model,
                     version_id=mm_version_id,
                     batch_size=mm_cfg.batch,
+                    retries=cfg.provider.embedding_error_retries,
+                    backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
                 ):
                     if batch_rows:
                         await storage.upsert_asset_embeddings(batch_rows)
@@ -2918,6 +2801,10 @@ async def synthesize(
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                     title_to_path=title_to_path,
                     fuzzy_index=fuzzy_index,
+                    embedding_error_retries=cfg.provider.embedding_error_retries,
+                    embedding_error_retry_backoff_seconds=(
+                        cfg.provider.embedding_error_retry_backoff_seconds
+                    ),
                 )
                 if page_unresolved:
                     report = _sr_replace(
@@ -3098,8 +2985,15 @@ async def lint_apply(
     pick: list[int] | None = None,
     skip: list[int] | None = None,
     reporter: ProgressReporter | None = None,
+    embedder: EmbeddingProvider | None = None,
 ) -> ApplyReport:
     """Mutate ``knowledge/`` per a previously-produced proposal report.
+
+    When ``DIKW_EMBEDDING_API_KEY`` is configured (or the caller passes
+    ``embedder``), Phase 1 re-embeds every rebuilt page inline so the
+    fix is retrievable on return. Without the key, embedding defers to
+    the next ``dikw client ingest``'s missing-embedding resume scan —
+    the same fallback the W-layer ``no_embed`` write path uses.
 
     ``pick`` / ``skip`` filter the proposal list by index. Both may be
     set; pick is applied first, then skip removes from that subset.
@@ -3107,6 +3001,45 @@ async def lint_apply(
     cfg, root, storage = await _with_storage(path)
     try:
         used_reporter: ProgressReporter = reporter or NoopReporter()
+
+        # Inline-embed when the user has an embedding key on hand. The
+        # OpenAICompatEmbeddings provider only reads the key at embed
+        # time, so a missing key wouldn't fail ``build_embedder`` — we
+        # check the env up-front to keep apply heuristic-only when the
+        # user hasn't configured embeddings yet.
+        #
+        # Reuse the active text embed version rather than registering a
+        # new one from cfg: lint apply only re-embeds the pages it
+        # changes, so flipping ``embed_versions.is_active`` here would
+        # strand every other vector in the now-inactive table and gut
+        # dense retrieval until ``dikw client ingest`` re-embeds the
+        # full corpus. Synth uses the same pattern (api.py:2484-2497).
+        active_embedder: EmbeddingProvider | None = embedder
+        text_version_id: int | None = None
+        embedding_model = ""
+        if active_embedder is None and os.environ.get("DIKW_EMBEDDING_API_KEY"):
+            active_embedder = build_embedder(cfg.provider)
+        if active_embedder is not None:
+            resolved = await _resolve_active_text_version_for_inline_embed(
+                storage, cfg.provider
+            )
+            if resolved is not None:
+                text_version_id, embedding_model = resolved
+                # Preflight the embedder BEFORE Phase 0 mutates any
+                # files — a permanent ProviderError (bad API key, 401,
+                # invalid model id) raised mid-persist would otherwise
+                # abort with files rewritten / deleted but storage
+                # partially updated and no ApplyReport returned (codex
+                # review finding, 0.4.0).
+                await _preflight_embedder(active_embedder, embedding_model)
+            else:
+                # No active text version yet (fresh base, no ingest run)
+                # or cfg drifted from active identity. Defer the
+                # embedding to the next ingest's resume scan instead of
+                # registering a new active version here or storing
+                # vectors under the wrong version table.
+                active_embedder = None
+
         return await run_lint_apply(
             proposal_report=proposal_report,
             storage=storage,
@@ -3115,6 +3048,13 @@ async def lint_apply(
             skip=skip,
             reporter=used_reporter,
             cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+            embedder=active_embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            embedding_error_retries=cfg.provider.embedding_error_retries,
+            embedding_error_retry_backoff_seconds=(
+                cfg.provider.embedding_error_retry_backoff_seconds
+            ),
         )
     finally:
         await storage.close()
@@ -3200,10 +3140,11 @@ async def write_wisdom_page(
     """
     # Lazy import — domains.knowledge.page_index imports schemas + storage
     # primitives, and api.py imports those eagerly already; importing
-    # persist_page eagerly here would re-introduce the same circular risk
-    # the existing wisdom-branch (1320 area) avoided by deferring.
+    # the persist functions eagerly here would re-introduce the same
+    # circular risk the existing wisdom-branch (1320 area) avoided by
+    # deferring. ``persist_wisdom`` is imported lazily at its single
+    # use site below.
     from .domains.knowledge.links import build_title_indexes
-    from .domains.knowledge.page_index import persist_page as _persist_page
     from .domains.wisdom import make_wisdom_path, write_wisdom_file
 
     # Validate first — never write a file or open storage on a malformed
@@ -3235,6 +3176,14 @@ async def write_wisdom_page(
             # build_embedder call is the one that touches the env API key —
             # keep it inside the ``not no_embed`` branch so a write that
             # explicitly opted out doesn't fail on a missing key.
+            #
+            # Reuse the active text embed version rather than registering
+            # a new one from cfg: wisdom write only embeds the page being
+            # written, so flipping ``embed_versions.is_active`` here
+            # would strand every other vector in the now-inactive table
+            # and gut dense retrieval until ``dikw client ingest`` re-
+            # embeds the full corpus. Mirrors synth's pattern
+            # (api.py:2484-2497) and lint apply's pattern above.
             active_embedder: EmbeddingProvider | None = None
             text_version_id: int | None = None
             embedding_model = ""
@@ -3242,8 +3191,23 @@ async def write_wisdom_page(
                 active_embedder = embedder
                 if active_embedder is None:
                     active_embedder = build_embedder(cfg.provider)
-                text_version_id = await _register_text_version(storage, cfg.provider)
-                embedding_model = cfg.provider.embedding_model
+                resolved = await _resolve_active_text_version_for_inline_embed(
+                    storage, cfg.provider
+                )
+                if resolved is not None:
+                    text_version_id, embedding_model = resolved
+                    # Preflight before the file write so a permanent
+                    # ProviderError surfaces while state is still clean.
+                    # Mirrors the lint apply preflight (codex review
+                    # finding, 0.4.0).
+                    await _preflight_embedder(active_embedder, embedding_model)
+                else:
+                    # Either no active text version yet OR cfg has drifted
+                    # from the active identity — defer embedding to the
+                    # next ingest's resume scan instead of activating a
+                    # fresh version here or storing vectors under the
+                    # wrong version table.
+                    active_embedder = None
 
             # Cooperative cancellation poll: synth/lint/ingest all check
             # the token between work units (api.py:1130 / 1353 / 1589 /
@@ -3269,13 +3233,13 @@ async def write_wisdom_page(
                 extras=extras,
             )
 
-            # Build the cross-layer title index that ``persist_page`` uses
+            # Build the cross-layer title index that ``persist_wisdom`` uses
             # for ``[[wikilink]]`` resolve. Mirrors the ingest wisdom branch
             # (around line 1330) - include the new page's own NEW title so
             # a self-reference resolves, but EXCLUDE the stored row for
             # ``logical_path`` itself: on an update that changes the page's
             # title, the storage row still holds the old title until
-            # ``_persist_page`` rewrites it, and pulling that into the index
+            # ``persist_wisdom`` rewrites it, and pulling that into the index
             # would let ``[[Old Title]]`` in the new body resolve to this
             # same page via the stale title.
             title_docs: list[tuple[str, str]] = []
@@ -3298,21 +3262,21 @@ async def write_wisdom_page(
                 detail={"path": logical_path, "step": "indexing"},
             )
 
-            # ``persist_page`` writes documents + chunks + FTS + embeddings
+            # ``persist_wisdom`` writes documents + chunks + FTS + embeddings
             # + links + provenance in sequence. A mid-pipeline failure
             # (embed timeout, link resolve crash, vec_search error) leaves
             # those rows partially updated — the document row + chunks
             # already reflect the new content while outgoing links /
             # provenance edges still point at the old. ``deactivate_document``
             # flips the doc to inactive so the next ``dikw ingest`` resume
-            # scan rebuilds the row end-to-end, matching the recovery
-            # behaviour of the ingest wisdom branch at api.py:1433.
+            # scan rebuilds the row end-to-end.
+            from .domains.wisdom.persist import persist_wisdom
+
             try:
-                unresolved, _ = await _persist_page(
+                persist_result = await persist_wisdom(
                     storage=storage,
                     root=root,
                     path=logical_path,
-                    layer=Layer.WISDOM,
                     title=title,
                     embedder=active_embedder,
                     embedding_model=embedding_model,
@@ -3320,8 +3284,17 @@ async def write_wisdom_page(
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                     title_to_path=title_to_path,
                     fuzzy_index=fuzzy_index,
+                    retries=cfg.provider.embedding_error_retries,
+                    backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
                 )
-            except Exception:
+                unresolved = persist_result.unresolved_wikilinks
+            except (Exception, asyncio.CancelledError):
+                # ``asyncio.CancelledError`` inherits from ``BaseException``
+                # so a bare ``except Exception`` misses it. Cancellation
+                # mid-``persist_wisdom`` can leave the doc row + chunks
+                # rewritten but links / provenance stale; deactivating
+                # ensures the next ingest's resume scan rebuilds the row
+                # end-to-end. (CodeRabbit finding, 0.4.0).
                 with contextlib.suppress(Exception):
                     await storage.deactivate_document(doc_id)
                 raise
@@ -3365,12 +3338,18 @@ async def write_wisdom_page(
                 detail={"path": logical_path, "step": "done"},
             )
 
+            # ``chunks_pending_embedding`` mirrors ApplyReport — non-zero
+            # when no_embed=True, when the inline-embed path deferred
+            # (no active text version yet, or cfg drifted), or when
+            # transient embed failures exhausted the retry budget.
+            chunks_pending_embedding = len(chunks) - embedded
             return WisdomWriteReport(
                 path=logical_path,
                 created=created,
                 hash=doc.hash,
                 chunks=len(chunks),
                 embedded=embedded,
+                chunks_pending_embedding=chunks_pending_embedding,
                 unresolved_wikilinks=unresolved,
             )
         finally:
@@ -3412,6 +3391,8 @@ async def _persist_knowledge_page(
     cjk_tokenizer: CjkTokenizer = "none",
     title_to_path: dict[str, str] | None = None,
     fuzzy_index: dict[str, list[str]] | None = None,
+    embedding_error_retries: int = 0,
+    embedding_error_retry_backoff_seconds: float = 0.0,
 ) -> int:
     """Index ``page`` into the K layer: document, chunks, embeddings, links.
 
@@ -3431,8 +3412,8 @@ async def _persist_knowledge_page(
     :mod:`dikw_core.domains.knowledge.page_index` so lint-apply can
     reuse the same indexing path without depending on api.py internals.
     """
-    from .domains.knowledge.page_index import persist_knowledge_page
-    unresolved, _ = await persist_knowledge_page(
+    from .domains.knowledge.page_index import persist_knowledge
+    result = await persist_knowledge(
         storage=storage,
         root=root,
         path=page.path,
@@ -3443,7 +3424,10 @@ async def _persist_knowledge_page(
         cjk_tokenizer=cjk_tokenizer,
         title_to_path=title_to_path,
         fuzzy_index=fuzzy_index,
+        retries=embedding_error_retries,
+        backoff_seconds=embedding_error_retry_backoff_seconds,
     )
+    unresolved = result.unresolved_wikilinks
     return unresolved
 
 
@@ -3771,14 +3755,21 @@ async def _synth_pages_from_source(
                     temperature=0.3,
                 )
                 break
-            except ProviderError as pe:
+            except TransientProviderError as pe:
+                # Symmetric with the embed-batch retry-skip semantics:
+                # only TransientProviderError is retried-then-skipped.
+                # Bare ProviderError (auth fail, invalid model id,
+                # missing API key) propagates so synth fails fast
+                # instead of silently retry-skipping every group and
+                # reporting "succeeded with 0 pages" (code-review
+                # finding, 0.4.0).
                 if attempt < max_attempts:
                     backoff_s = (
                         cfg.synth.provider_error_retry_backoff_seconds
                         * attempt
                     )
                     logger.warning(
-                        "  group %d/%d ProviderError on attempt %d/%d: "
+                        "  group %d/%d TransientProviderError on attempt %d/%d: "
                         "%s — retrying in %.1fs",
                         group_pos,
                         total_groups,
@@ -3814,7 +3805,7 @@ async def _synth_pages_from_source(
                         f"error (skipped after {attempt} attempt(s)): {pe}"
                     )
                     logger.warning(
-                        "  group %d/%d ProviderError on attempt %d/%d "
+                        "  group %d/%d TransientProviderError on attempt %d/%d "
                         "(final), skipping group: %s",
                         group_pos,
                         total_groups,

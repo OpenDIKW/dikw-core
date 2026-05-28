@@ -1,11 +1,10 @@
-"""HTTP/CLI page-API coverage for the 0.3.0 PR3 wisdom layer.
+"""HTTP/CLI page-API coverage for the W-layer document pipeline.
 
-PR2 wrote wisdom files into ``documents`` but ``read_page``,
-``list_links``, and ``read_provenance`` still iterated
-``(Layer.SOURCE, Layer.KNOWLEDGE)``. PR3 extends them to ``Layer.WISDOM`` so
-a user who ingested ``wisdom/elon-musk/*.md`` can actually fetch what
-they wrote — and so wikilinks pointing at wisdom pages from other
-layers resolve at read time, not just persist time.
+``read_page``, ``list_links``, and ``read_provenance`` must surface
+``Layer.WISDOM`` rows alongside K-layer rows — a user who authored
+``wisdom/<author>/*.md`` via the W-layer write entry must be able to
+fetch what they wrote, and wikilinks pointing at wisdom pages from
+other layers must resolve at read time.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from dikw_core import api
 from dikw_core.api import PageNotFound
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_base, seed_doc
+from .fakes import FakeEmbeddings, ingest_wisdom_files, init_test_base, seed_doc
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -36,7 +35,11 @@ async def test_read_page_returns_wisdom_layer(tmp_path: Path) -> None:
         "wisdom/elon-musk/first-principles.md",
         "---\ntitle: First Principles\n---\n# First Principles\n\nbody.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki,
+        ["wisdom/elon-musk/first-principles.md"],
+        embedder=FakeEmbeddings(),
+    )
 
     page = await api.read_page(wiki, "wisdom/elon-musk/first-principles.md")
     assert page.path == "wisdom/elon-musk/first-principles.md"
@@ -75,7 +78,9 @@ async def test_list_links_returns_outgoing_from_wisdom_to_wiki(
         "wisdom/elon-musk/note.md",
         "# Note\n\nSee [[Tesla]] for context.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/note.md"], embedder=FakeEmbeddings()
+    )
 
     links = await api.list_links(
         wiki, "wisdom/elon-musk/note.md", direction="out"
@@ -105,7 +110,9 @@ async def test_list_links_incoming_to_knowledge_credits_wisdom_backlinks(
         "wisdom/elon-musk/note.md",
         "# Note\n\nSee [[Tesla]].\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/note.md"], embedder=FakeEmbeddings()
+    )
 
     links = await api.list_links(wiki, "knowledge/concepts/tesla.md", direction="in")
     in_paths = [e.src_path for e in links.incoming]
@@ -117,9 +124,7 @@ async def test_read_provenance_forward_returns_wisdom_sources(
     tmp_path: Path,
 ) -> None:
     """A wisdom page with ``sources:`` frontmatter must expose its
-    forward provenance (``derived_from``) via the read API. Without
-    extending the layer probe, the call 404s even though
-    ``persist_page`` wrote the provenance row."""
+    forward provenance (``derived_from``) via the read API."""
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
     src_dir = wiki / "sources" / "notes"
@@ -130,7 +135,9 @@ async def test_read_provenance_forward_returns_wisdom_sources(
         "wisdom/elon-musk/from-bio.md",
         "---\nsources:\n  - sources/notes/musk-bio.md\n---\n# From Bio\n\nbody.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/from-bio.md"], embedder=FakeEmbeddings()
+    )
 
     prov = await api.read_provenance(
         wiki, "wisdom/elon-musk/from-bio.md", direction="out"
@@ -159,7 +166,12 @@ async def test_read_provenance_reverse_includes_wisdom_in_derived_pages(
         "wisdom/elon-musk/from-bio.md",
         "---\nsources:\n  - sources/notes/musk-bio.md\n---\n# From Bio\n\nbody.\n",
     )
+    # Source layer is indexed by ``api.ingest``; the reverse provenance
+    # leg reads from the source path so the D-layer doc must exist.
     await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/from-bio.md"], embedder=FakeEmbeddings()
+    )
 
     prov = await api.read_provenance(
         wiki, "sources/notes/musk-bio.md", direction="in"

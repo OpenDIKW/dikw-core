@@ -1,14 +1,15 @@
-"""End-to-end tests for the 0.3.0 PR2 wisdom-as-documents pipeline.
+"""End-to-end tests for the W-layer document pipeline.
 
-`dikw ingest` now scans ``<root>/wisdom/<author>/**/*.md`` after the
-``sources:`` scan and runs each file through the same ``persist_page``
-pipeline as knowledge pages: a ``documents`` row at ``layer = WISDOM``,
-chunks, embeddings, outgoing ``[[wikilinks]]``, and ``provenance``
-edges from ``sources:`` frontmatter. The wisdom-only
-``DocumentRecord.status`` column carries the page's frontmatter
-``status: draft|published|favorite|archived`` enum value; knowledge/source
-rows force ``status = None`` at the application layer regardless of
-frontmatter.
+0.4.0 reshape: ``dikw client ingest`` no longer scans
+``<base>/wisdom/`` (BREAKING). Wisdom is indexed exclusively when a
+file is dropped on disk and driven through ``persist_wisdom`` — in
+production via ``api.write_wisdom_page`` (typed input); in these
+tests via the ``ingest_wisdom_files`` helper, which mirrors what the
+old W-layer ingest loop did for a list of on-disk files. The
+wisdom-only ``DocumentRecord.status`` column carries the page's
+frontmatter ``status: draft|published|favorite|archived`` enum
+value; knowledge/source rows force ``status = None`` at the
+application layer regardless of frontmatter.
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ from dikw_core.domains.data.sources import iter_source_files
 from dikw_core.schemas import Layer, WisdomStatus
 from dikw_core.storage import Storage, build_storage
 
-from .fakes import FakeEmbeddings, init_test_base, seed_doc
+from .fakes import (
+    FakeEmbeddings,
+    ingest_wisdom_files,
+    init_test_base,
+    seed_doc,
+)
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -52,7 +58,11 @@ async def test_wisdom_page_persists_as_document(tmp_path: Path) -> None:
         "wisdom/elon-musk/first-principles.md",
         "---\ntitle: First Principles\n---\n# First Principles\n\nReason from physics, not analogy.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki,
+        ["wisdom/elon-musk/first-principles.md"],
+        embedder=FakeEmbeddings(),
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -66,19 +76,6 @@ async def test_wisdom_page_persists_as_document(tmp_path: Path) -> None:
     assert doc.path == "wisdom/elon-musk/first-principles.md"
     assert doc.title == "First Principles"
     assert doc.status is None  # frontmatter omitted ≡ published, stored as NULL
-
-
-@pytest.mark.asyncio
-async def test_wisdom_ingest_idempotent_on_unchanged_hash(tmp_path: Path) -> None:
-    wiki = tmp_path / "knowledge"
-    init_test_base(wiki)
-    _drop_wisdom(wiki, "wisdom/elon-musk/x.md", "# X\n\nbody.\n")
-
-    r1 = await api.ingest(wiki, embedder=FakeEmbeddings())
-    r2 = await api.ingest(wiki, embedder=FakeEmbeddings())
-    # First pass added the wisdom page; second pass classifies it as unchanged.
-    assert r1.scanned >= 1
-    assert r2.unchanged >= 1
 
 
 @pytest.mark.asyncio
@@ -101,7 +98,11 @@ async def test_wisdom_status_frontmatter_persists(
         f"wisdom/elon-musk/{status_value}.md",
         f"---\nstatus: {status_value}\n---\n# {status_value}\n\nbody.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki,
+        [f"wisdom/elon-musk/{status_value}.md"],
+        embedder=FakeEmbeddings(),
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -119,7 +120,9 @@ async def test_wisdom_no_status_frontmatter_persists_as_null(tmp_path: Path) -> 
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
     _drop_wisdom(wiki, "wisdom/elon-musk/no-status.md", "# Plain\n\nbody.\n")
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/no-status.md"], embedder=FakeEmbeddings()
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -134,7 +137,7 @@ async def test_wisdom_no_status_frontmatter_persists_as_null(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_wisdom_unknown_status_treated_as_null(tmp_path: Path) -> None:
-    """A status value outside the enum must NOT block ingest. The
+    """A status value outside the enum must NOT block ``persist_wisdom``. The
     parser hands ``None`` to the document layer and the
     ``invalid_wisdom_status`` lint kind surfaces the warning later.
     """
@@ -145,7 +148,9 @@ async def test_wisdom_unknown_status_treated_as_null(tmp_path: Path) -> None:
         "wisdom/elon-musk/weird.md",
         "---\nstatus: weird_value\n---\n# Weird\n\nbody.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())  # must not raise
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/weird.md"], embedder=FakeEmbeddings()
+    )  # must not raise
 
     storage = await _open_storage(wiki)
     try:
@@ -187,16 +192,24 @@ async def test_knowledge_page_status_frontmatter_forced_to_null(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_ingest_no_wisdom_directory_is_noop(tmp_path: Path) -> None:
-    """A base without a ``wisdom/`` tree must ingest cleanly — the
-    fresh ``init_test_base`` scaffold leaves wisdom/ empty (or absent)
-    and that path is the most common case for a brand-new base.
+async def test_ingest_does_not_scan_wisdom_directory(tmp_path: Path) -> None:
+    """0.4.0 contract: a wisdom file dropped on disk is NOT indexed by
+    ``dikw client ingest``. The wisdom row is created exclusively via
+    ``write_wisdom_page`` / ``ingest_wisdom_files``. This is the
+    BREAKING behavior change from 0.3.x — recorded as positive
+    coverage so a future regression that re-introduces the W-layer
+    scan branch fails this test.
     """
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
-    # Even with a wisdom directory that contains only a .gitkeep, no
-    # wisdom documents should land — gitkeep isn't markdown.
-    report = await api.ingest(wiki, embedder=FakeEmbeddings())
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/hand-written.md",
+        "# Hand written\n\nuser put this here without write_wisdom_page.\n",
+    )
+
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
     storage = await _open_storage(wiki)
     try:
         wisdom_docs = list(
@@ -205,56 +218,6 @@ async def test_ingest_no_wisdom_directory_is_noop(tmp_path: Path) -> None:
     finally:
         await storage.close()
     assert wisdom_docs == []
-    assert report.errors == ()
-
-
-@pytest.mark.asyncio
-async def test_wisdom_candidates_subdir_is_skipped(tmp_path: Path) -> None:
-    """Bases upgrading from 0.2.x may still carry a ``wisdom/_candidates/``
-    directory. The ingest scanner must skip it so drained queue
-    artifacts don't show up as freshly indexed wisdom documents.
-    """
-    wiki = tmp_path / "knowledge"
-    init_test_base(wiki)
-    _drop_wisdom(
-        wiki,
-        "wisdom/_candidates/old-candidate.md",
-        "# old candidate\n\nbody.\n",
-    )
-    _drop_wisdom(wiki, "wisdom/elon-musk/real.md", "# real wisdom\n\nbody.\n")
-    await api.ingest(wiki, embedder=FakeEmbeddings())
-
-    storage = await _open_storage(wiki)
-    try:
-        docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
-    finally:
-        await storage.close()
-    paths = sorted(d.path for d in docs)
-    assert paths == ["wisdom/elon-musk/real.md"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "filename", ["principles.md", "lessons.md", "patterns.md"]
-)
-async def test_wisdom_aggregate_files_are_skipped(
-    tmp_path: Path, filename: str
-) -> None:
-    """The legacy 0.2.x aggregate files at ``wisdom/{principles,lessons,
-    patterns}.md`` are hardcoded skips, so an upgrading base that hasn't
-    deleted them yet doesn't accidentally index drained aggregations as
-    first-class wisdom documents."""
-    wiki = tmp_path / "knowledge"
-    init_test_base(wiki)
-    _drop_wisdom(wiki, f"wisdom/{filename}", f"# aggregate {filename}\n\nbody.\n")
-    await api.ingest(wiki, embedder=FakeEmbeddings())
-
-    storage = await _open_storage(wiki)
-    try:
-        docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
-    finally:
-        await storage.close()
-    assert docs == []
 
 
 @pytest.mark.asyncio
@@ -262,11 +225,6 @@ async def test_wisdom_wikilink_resolves_to_knowledge_page(tmp_path: Path) -> Non
     """A ``[[wikilink]]`` in a wisdom page must resolve to an existing
     knowledge page via the shared cross-layer title index — wisdom pages
     cite knowledge pages just like knowledge pages cite knowledge pages.
-
-    Knowledge pages don't enter through ``api.ingest`` (they're synth-written),
-    so the test seeds the K-layer ``documents`` row + file directly via
-    ``seed_doc``, then runs wisdom ingest and asserts the link resolves
-    against the seeded title.
     """
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
@@ -283,7 +241,9 @@ async def test_wisdom_wikilink_resolves_to_knowledge_page(tmp_path: Path) -> Non
         "# Never Sell\n\nSee [[Tesla]] for context.\n",
     )
 
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/never-sell.md"], embedder=FakeEmbeddings()
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -296,86 +256,35 @@ async def test_wisdom_wikilink_resolves_to_knowledge_page(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_wisdom_status_frontmatter_only_edit_propagates(tmp_path: Path) -> None:
-    """Editing ONLY the ``status:`` frontmatter (body unchanged) must
-    still update ``documents.status`` on the next ingest. PR2's body-only
-    content hash short-circuits when ``existing.hash == parsed.hash``;
-    without an additional status check, a user flipping ``draft`` →
-    ``published`` in Obsidian sees zero effect on storage and the new
-    column silently desyncs from the file the user authored.
-    """
-    wiki = tmp_path / "knowledge"
-    init_test_base(wiki)
-    rel = "wisdom/elon-musk/edit-me.md"
-    _drop_wisdom(wiki, rel, "---\nstatus: draft\n---\n# Edit Me\n\nstable body.\n")
-    await api.ingest(wiki, embedder=FakeEmbeddings())
-
-    # Flip ONLY status; body bytes (including the heading + paragraph)
-    # are byte-identical to the first pass.
-    _drop_wisdom(
-        wiki, rel, "---\nstatus: published\n---\n# Edit Me\n\nstable body.\n"
-    )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
-
-    storage = await _open_storage(wiki)
-    try:
-        doc = await storage.get_document(doc_id_for(Layer.WISDOM, rel))
-    finally:
-        await storage.close()
-    assert doc is not None
-    assert doc.status == WisdomStatus.PUBLISHED
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "filename",
-    ["Principles.md", "LESSONS.MD", "Patterns.Md"],
-)
-async def test_wisdom_legacy_aggregate_skip_is_case_insensitive(
-    tmp_path: Path, filename: str
-) -> None:
-    """On NTFS / APFS / HFS+ the legacy aggregate ``Principles.md`` may
-    exist with capitalized spelling. The skip-set must match
-    case-insensitively or the legacy file leaks in as a first-class
-    wisdom document on upgrading bases.
-    """
-    wiki = tmp_path / "knowledge"
-    init_test_base(wiki)
-    _drop_wisdom(wiki, f"wisdom/{filename}", "# aggregate\n\nbody.\n")
-    await api.ingest(wiki, embedder=FakeEmbeddings())
-
-    storage = await _open_storage(wiki)
-    try:
-        docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
-    finally:
-        await storage.close()
-    assert docs == []
-
-
-@pytest.mark.asyncio
-async def test_wisdom_to_wisdom_link_resolves_within_same_ingest(
+async def test_wisdom_to_wisdom_link_resolves_after_target_indexed(
     tmp_path: Path,
 ) -> None:
-    """Two new wisdom pages in the SAME ingest: page A links to page B
-    by title. Without a hoisted, batch-aware title index, the wisdom
-    loop resolves each file against whatever is already in storage —
-    so a forward reference stays unresolved until a second ingest.
-    PR2 must pre-seed so all wisdom titles in the batch are
-    addressable from each other on the first pass.
+    """A wisdom page links to another wisdom page by title. With the
+    0.4.0 per-file write contract, the caller indexes B first, then A —
+    A's ``[[B Page]]`` resolves on its own write because B is already
+    in storage. ``ingest_wisdom_files`` drives the writes sequentially
+    so this contract holds.
     """
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
-    _drop_wisdom(
-        wiki,
-        "wisdom/elon-musk/a-page.md",
-        "---\ntitle: A Page\n---\n# A Page\n\nSee [[B Page]].\n",
-    )
     _drop_wisdom(
         wiki,
         "wisdom/elon-musk/b-page.md",
         "---\ntitle: B Page\n---\n# B Page\n\nthe second page.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    _drop_wisdom(
+        wiki,
+        "wisdom/elon-musk/a-page.md",
+        "---\ntitle: A Page\n---\n# A Page\n\nSee [[B Page]].\n",
+    )
+    await ingest_wisdom_files(
+        wiki,
+        [
+            "wisdom/elon-musk/b-page.md",
+            "wisdom/elon-musk/a-page.md",
+        ],
+        embedder=FakeEmbeddings(),
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -408,19 +317,25 @@ async def test_knowledge_wisdom_title_collision_refuses_exact_resolve(
         body="---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n",
         title="Tesla",
     )
-    # User authors a wisdom page also titled "Tesla".
+    # User authors a wisdom page also titled "Tesla", then references it.
     _drop_wisdom(
         wiki,
         "wisdom/elon-musk/tesla.md",
         "---\ntitle: Tesla\n---\n# Tesla\n\npersonal note.\n",
     )
-    # A third wisdom page references the ambiguous title.
     _drop_wisdom(
         wiki,
         "wisdom/elon-musk/musings.md",
         "# Musings\n\nSee [[Tesla]] for context.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki,
+        [
+            "wisdom/elon-musk/tesla.md",
+            "wisdom/elon-musk/musings.md",
+        ],
+        embedder=FakeEmbeddings(),
+    )
 
     storage = await _open_storage(wiki)
     try:
@@ -439,7 +354,7 @@ async def test_knowledge_wisdom_title_collision_refuses_exact_resolve(
 
 def test_iter_source_files_excludes_wisdom_prefix(tmp_path: Path) -> None:
     """``iter_source_files`` is the D-layer scan entry. ``wisdom/`` is a
-    reserved first-class layer (own ingest branch), so even a broad
+    reserved first-class layer (own write entry), so even a broad
     user config like ``sources: [{path: '.', pattern: '**/*.md'}]``
     must not double-yield wisdom files as source rows — that would
     produce a duplicate ``source:`` doc-id, double chunks, and double
@@ -480,7 +395,9 @@ async def test_wisdom_sources_become_provenance(tmp_path: Path) -> None:
         "wisdom/elon-musk/from-bio.md",
         "---\nsources:\n  - sources/notes/musk-bio.md\n---\n# From Bio\n\nbody.\n",
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/from-bio.md"], embedder=FakeEmbeddings()
+    )
 
     storage = await _open_storage(wiki)
     try:

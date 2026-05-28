@@ -14,6 +14,7 @@ from .base import (
     MultimodalEmbeddingProvider,
     ProviderError,
     ToolSpec,
+    TransientProviderError,
 )
 from .gitee_multimodal import GiteeMultimodalEmbedding
 from .openai_codex import OpenAICodexLLM
@@ -106,6 +107,7 @@ __all__ = [
     "MultimodalEmbeddingProvider",
     "ProviderError",
     "ToolSpec",
+    "TransientProviderError",
     "build_embedder",
     "build_llm",
     "build_multimodal_embedder",

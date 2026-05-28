@@ -1237,7 +1237,7 @@ async def test_apply_uses_configured_cjk_tokenizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """run_lint_apply must thread its cjk_tokenizer kwarg through to
-    persist_knowledge_page so K-layer chunks land split with the same
+    persist_knowledge so K-layer chunks land split with the same
     tokenizer ingest uses. Otherwise a base configured for ``jieba``
     silently downgrades lint-apply chunks to whitespace splitting,
     diverging from doc.hash and breaking embedding backfill."""
@@ -1245,13 +1245,13 @@ async def test_apply_uses_configured_cjk_tokenizer(
 
     captured: list[dict[str, Any]] = []
     from dikw_core.domains.knowledge import lint_fix as lint_fix_module
-    real_persist = lint_fix_module.persist_knowledge_page
+    real_persist = lint_fix_module.persist_knowledge
 
-    async def _spy(**kwargs: Any) -> tuple[int, str]:
+    async def _spy(**kwargs: Any) -> Any:
         captured.append(kwargs)
         return await real_persist(**kwargs)
 
-    monkeypatch.setattr(lint_fix_module, "persist_knowledge_page", _spy)
+    monkeypatch.setattr(lint_fix_module, "persist_knowledge", _spy)
 
     proposal = FixProposal(
         proposal_id="p-cjk",

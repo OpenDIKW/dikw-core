@@ -21,13 +21,15 @@ providers' per-request input caps.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...progress import ProgressReporter
 from ...providers import EmbeddingProvider, MultimodalEmbeddingProvider
+from ...providers.base import TransientProviderError
 from ...schemas import (
     AssetEmbeddingRow,
     AssetRecord,
@@ -40,6 +42,35 @@ from ...storage.base import NotSupported, Storage
 from ..data.backends.markdown import content_hash
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EmbedBatchResult:
+    """Outcome of one embed batch.
+
+    On success ``rows`` carries the embeddings and ``error`` is None.
+    On skip (after exhausted retries) ``rows`` is empty,
+    ``skipped_chunk_ids`` lists the chunks that were not embedded, and
+    ``error`` is the final failure message.
+
+    Skipped chunks remain in storage without vectors and get picked up
+    by the next ingest's ``list_chunks_missing_embedding`` resume scan.
+    """
+
+    rows: list[EmbeddingRow]
+    skipped_chunk_ids: list[int] = field(default_factory=list)
+    error: str | None = None
+    attempts: int = 1
+
+
+@dataclass(frozen=True)
+class EmbedConsumeResult:
+    """Aggregate outcome of ``consume_embedding_stream``."""
+
+    embedded: int = 0
+    batches_skipped: int = 0
+    chunks_skipped: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 async def _safe_cache_lookup(
@@ -81,20 +112,34 @@ async def embed_chunks(
     version_id: int,
     storage: Storage | None = None,
     batch_size: int = 64,
-) -> AsyncIterator[list[EmbeddingRow]]:
+    retries: int = 0,
+    backoff_seconds: float = 0.0,
+    reporter: ProgressReporter | None = None,
+) -> AsyncIterator[EmbedBatchResult]:
     """Embed ``chunks`` in fixed-size batches with optional content-hash cache.
 
-    Streams one ``list[EmbeddingRow]`` per provider call so the caller
-    can persist each batch immediately. Per-batch failure cost is bounded:
-    prior batches are already on disk when the next API call raises.
+    Streams one ``EmbedBatchResult`` per batch so the caller can persist
+    each batch immediately. Per-batch failure cost is bounded: prior
+    batches are already on disk when the next API call raises.
+
+    Per-batch retry-skip: on ``TransientProviderError`` (5xx / timeout /
+    rate-limit / connection drop) the batch is retried up to ``retries``
+    more times with linear backoff (``backoff_seconds`` * attempt).
+    After exhausted retries the batch yields an ``EmbedBatchResult``
+    with ``error`` set and empty ``rows`` — the chunks remain in
+    storage without vectors and get reconciled by the next ingest's
+    missing-embedding resume scan. Bare ``ProviderError`` (permanent
+    misconfig: missing API key, 401, invalid model id) is NOT
+    retried-then-skipped — it propagates so the call fails fast
+    instead of silently emitting zero vectors. ``retries=0`` (the
+    default) means a single attempt then skip on transient failure.
 
     When ``storage`` is supplied, each batch first looks up
     ``sha256(chunk.text)`` in ``storage.embed_cache`` and routes hits
     around the provider. Misses are sent to the provider; their vectors
     are written to the cache after success. ``storage=None`` skips the
-    cache entirely (no-op fast path for callers that don't have a wiki
-    handy). Adapters that raise ``NotSupported`` (e.g. fresh knowledge base with
-    no embed cache yet) silently degrade to no-cache.
+    cache entirely. Adapters that raise ``NotSupported`` silently
+    degrade to no-cache.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -115,13 +160,18 @@ async def embed_chunks(
             start,
             start + len(batch) - 1,
         )
-        yield await _embed_one_batch(
+        yield await _run_batch_with_retry(
             batch,
             model=model,
             version_id=version_id,
             storage=storage,
             embed_misses=_call,
             error_template="embedding provider returned {got} vectors for {want} texts",
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+            reporter=reporter,
+            batch_idx=batch_idx,
+            total_batches=total_batches,
         )
 
 
@@ -133,15 +183,16 @@ async def embed_chunks_multimodal(
     version_id: int,
     storage: Storage | None = None,
     batch_size: int = 16,
-) -> AsyncIterator[list[EmbeddingRow]]:
+    retries: int = 0,
+    backoff_seconds: float = 0.0,
+    reporter: ProgressReporter | None = None,
+) -> AsyncIterator[EmbedBatchResult]:
     """Embed text chunks via the multimodal provider (text-only inputs).
 
-    Streams one ``list[EmbeddingRow]`` per batch — same contract shape
-    as ``embed_chunks``, including the optional content-hash cache.
-    Uses the same ``EmbeddingRow`` output so chunk vectors can land in
-    the same ``chunks_vec`` table — switching a corpus to a multimodal
-    model in v1 is a config change at the factory level; the storage
-    shape doesn't move.
+    Same per-batch retry-skip contract as ``embed_chunks`` — see that
+    function's docstring for full semantics. Uses the same
+    ``EmbeddingRow`` output so chunk vectors can land in the same
+    ``vec_chunks_v<version_id>`` table.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -157,16 +208,124 @@ async def embed_chunks_multimodal(
             [MultimodalInput(text=c.text) for c in misses], model=model
         )
 
-    for start in range(0, len(chunks), batch_size):
+    total_batches = (len(chunks) + batch_size - 1) // batch_size
+    for batch_idx, start in enumerate(range(0, len(chunks), batch_size)):
         batch = chunks[start : start + batch_size]
-        yield await _embed_one_batch(
+        yield await _run_batch_with_retry(
             batch,
             model=model,
             version_id=version_id,
             storage=storage,
             embed_misses=_call,
             error_template="multimodal provider returned {got} vectors for {want} chunk inputs",
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+            reporter=reporter,
+            batch_idx=batch_idx,
+            total_batches=total_batches,
         )
+
+
+async def _run_batch_with_retry(
+    batch: Sequence[ChunkToEmbed],
+    *,
+    model: str,
+    version_id: int,
+    storage: Storage | None,
+    embed_misses: Callable[[list[ChunkToEmbed]], Awaitable[list[list[float]]]],
+    error_template: str,
+    retries: int,
+    backoff_seconds: float,
+    reporter: ProgressReporter | None,
+    batch_idx: int,
+    total_batches: int,
+) -> EmbedBatchResult:
+    """Call ``_embed_one_batch`` with bounded ``TransientProviderError`` retry-skip.
+
+    On final failure returns a skip ``EmbedBatchResult`` whose
+    ``rows`` is empty and ``error`` describes the failure. The caller
+    (``consume_embedding_stream``) leaves the chunks in storage without
+    vectors so the next ingest's missing-embedding resume scan picks
+    them up. ``retries=0`` means a single attempt then skip.
+
+    Only :class:`TransientProviderError` is retried-then-skipped.
+    Bare :class:`ProviderError` (permanent: auth failure, missing
+    key, invalid model id) propagates so the embed call fails fast
+    instead of silently emitting zero vectors.
+    """
+    max_attempts = retries + 1
+    last_error: TransientProviderError | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            rows = await _embed_one_batch(
+                batch,
+                model=model,
+                version_id=version_id,
+                storage=storage,
+                embed_misses=embed_misses,
+                error_template=error_template,
+            )
+            return EmbedBatchResult(rows=rows, attempts=attempt)
+        except TransientProviderError as pe:
+            last_error = pe
+            if attempt < max_attempts:
+                logger.warning(
+                    "embed batch %d/%d failed (attempt %d/%d): %s; retrying",
+                    batch_idx + 1,
+                    total_batches,
+                    attempt,
+                    max_attempts,
+                    pe,
+                )
+                if reporter is not None:
+                    await reporter.progress(
+                        phase="embed_batch",
+                        current=batch_idx,
+                        total=total_batches,
+                        detail={
+                            "status": "retrying",
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "batch_idx": batch_idx,
+                            "error_kind": type(pe).__name__,
+                            "error_msg": str(pe)[:200],
+                        },
+                    )
+                if backoff_seconds > 0:
+                    await asyncio.sleep(backoff_seconds * attempt)
+                if reporter is not None:
+                    reporter.cancel_token().raise_if_cancelled()
+            else:
+                logger.warning(
+                    "embed batch %d/%d skipped after %d attempt(s): %s",
+                    batch_idx + 1,
+                    total_batches,
+                    attempt,
+                    pe,
+                )
+                if reporter is not None:
+                    await reporter.progress(
+                        phase="embed_batch",
+                        current=batch_idx + 1,
+                        total=total_batches,
+                        detail={
+                            "status": "skipped",
+                            "attempts": attempt,
+                            "batch_idx": batch_idx,
+                            "error_kind": type(pe).__name__,
+                            "error_msg": str(pe)[:200],
+                        },
+                    )
+    # Unreachable when last_error is set (loop above always returns or
+    # falls through with last_error populated), but mypy needs a clear
+    # post-loop value.
+    error_msg = str(last_error) if last_error is not None else "unknown"
+    return EmbedBatchResult(
+        rows=[],
+        skipped_chunk_ids=[c.chunk_id for c in batch],
+        error=error_msg,
+        attempts=max_attempts,
+    )
 
 
 async def _embed_one_batch(
@@ -248,6 +407,8 @@ async def embed_assets(
     model: str,
     version_id: int,
     batch_size: int = 16,
+    retries: int = 0,
+    backoff_seconds: float = 0.0,
 ) -> AsyncIterator[list[AssetEmbeddingRow]]:
     """Embed asset binaries via the multimodal provider, streaming
     one ``list[AssetEmbeddingRow]`` per provider call.
@@ -300,7 +461,43 @@ async def embed_assets(
             continue
 
         inputs = [MultimodalInput(images=[img]) for _, img in batch_pairs]
-        vectors = await provider.embed(inputs, model=model)
+        # Per-batch retry-skip on TransientProviderError so a single
+        # 5xx / timeout / connect drop mid-pass doesn't abort the whole
+        # asset embedding run (every prior batch was already persisted).
+        # ``retries=0`` = single attempt then skip; the skipped batch
+        # yields an empty list so the caller can advance progress and
+        # the resume scan reconciles missing asset vectors on the next
+        # ingest. Code-review finding, 0.4.0.
+        max_attempts = retries + 1
+        vectors: list[list[float]] | None = None
+        last_error: TransientProviderError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                vectors = await provider.embed(inputs, model=model)
+                break
+            except TransientProviderError as pe:
+                last_error = pe
+                if attempt < max_attempts:
+                    logger.warning(
+                        "asset batch failed (attempt %d/%d): %s; retrying",
+                        attempt,
+                        max_attempts,
+                        pe,
+                    )
+                    if backoff_seconds > 0:
+                        await asyncio.sleep(backoff_seconds * attempt)
+                else:
+                    logger.warning(
+                        "asset batch skipped after %d attempt(s): %s",
+                        attempt,
+                        pe,
+                    )
+        if vectors is None:
+            # Exhausted retries — yield empty list so caller bookkeeping
+            # stays aligned and the resume scan reconciles next pass.
+            del last_error
+            yield []
+            continue
         if len(vectors) != len(batch_pairs):
             raise RuntimeError(
                 f"multimodal provider returned {len(vectors)} vectors for "
@@ -315,29 +512,44 @@ async def embed_assets(
 
 
 async def consume_embedding_stream(
-    stream: AsyncIterator[list[EmbeddingRow]],
+    stream: AsyncIterator[EmbedBatchResult],
     storage: Storage,
     *,
     on_batch: Callable[[], None] | None = None,
     reporter: ProgressReporter | None = None,
     phase: str = "embed",
     total: int = 0,
-) -> int:
-    """Drain an embed_chunks-style stream, upserting each batch as it
-    arrives. Per-batch upsert is the durability guarantee: a mid-flight
-    provider failure leaves prior batches on disk instead of throwing
-    away the entire run's API spend.
+) -> EmbedConsumeResult:
+    """Drain an embed_chunks-style stream, upserting each batch as it arrives.
+
+    Per-batch upsert is the durability guarantee: a mid-flight provider
+    failure leaves prior batches on disk instead of throwing away the
+    entire run's API spend. Skipped batches (where ``embed_chunks``
+    exhausted retries and yielded ``EmbedBatchResult(rows=[],
+    error=…)``) leave their chunks in storage without vectors — the
+    next ingest's missing-embedding resume scan picks them up.
 
     ``on_batch`` keeps the in-process rich progress bar's CLI callback
     surface; ``reporter`` is the new structured channel a server task
     listens on. Both fire per batch so a single ingest call can drive a
     local TTY *and* a remote NDJSON subscriber simultaneously.
+
+    Returns ``EmbedConsumeResult`` so callers can surface skip counts
+    in their report (``ApplyReport.chunks_pending_embedding`` etc.).
     """
     embedded = 0
     batches_done = 0
-    async for batch in stream:
-        await storage.upsert_embeddings(batch)
-        embedded += len(batch)
+    batches_skipped = 0
+    chunks_skipped = 0
+    errors: list[str] = []
+    async for result in stream:
+        if result.rows:
+            await storage.upsert_embeddings(result.rows)
+            embedded += len(result.rows)
+        if result.error is not None:
+            batches_skipped += 1
+            chunks_skipped += len(result.skipped_chunk_ids)
+            errors.append(result.error)
         batches_done += 1
         if on_batch is not None:
             on_batch()
@@ -346,4 +558,9 @@ async def consume_embedding_stream(
                 phase=phase, current=batches_done, total=total
             )
             reporter.cancel_token().raise_if_cancelled()
-    return embedded
+    return EmbedConsumeResult(
+        embedded=embedded,
+        batches_skipped=batches_skipped,
+        chunks_skipped=chunks_skipped,
+        errors=errors,
+    )

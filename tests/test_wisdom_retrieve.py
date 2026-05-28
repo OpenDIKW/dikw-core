@@ -1,12 +1,12 @@
-"""Retrieve-leg coverage for the 0.3.0 PR3 wisdom layer.
+"""Retrieve-leg coverage for the W-layer.
 
-PR3 lets ``dikw client retrieve`` surface wisdom chunks alongside
-source + wiki chunks. The underlying ``HybridSearcher`` already
+``dikw client retrieve`` must surface wisdom chunks alongside source
++ knowledge chunks. The underlying ``HybridSearcher`` already
 defaults ``layer=None`` (no per-leg filter), so wisdom hits arrive
-naturally once PR2 wired chunks + embeddings into storage. PR3 owns
-the test coverage that locks the contract — ``Hit.layer == "wisdom"``
-must come back tagged correctly so callers can group / weight by
-provenance layer.
+naturally once chunks + embeddings are wired into storage. These
+tests lock the contract — ``Hit.layer == Layer.WISDOM`` must come
+back tagged correctly so callers can group / weight by provenance
+layer.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from dikw_core import api
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_base
+from .fakes import FakeEmbeddings, ingest_wisdom_files, init_test_base
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -29,9 +29,10 @@ def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
 
 @pytest.mark.asyncio
 async def test_retrieve_returns_wisdom_hits(tmp_path: Path) -> None:
-    """A wisdom page indexed by PR2 must surface from retrieve. The
-    FakeEmbeddings vector-leg deterministically ranks by token
-    overlap, so a query that targets the wisdom page's body finds it.
+    """A wisdom page indexed via ``persist_wisdom`` must surface from
+    retrieve. The FakeEmbeddings vector-leg deterministically ranks by
+    token overlap, so a query that targets the wisdom page's body finds
+    it.
     """
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
@@ -44,7 +45,11 @@ async def test_retrieve_returns_wisdom_hits(tmp_path: Path) -> None:
             "to fundamental truths and build up from there.\n"
         ),
     )
-    await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki,
+        ["wisdom/elon-musk/first-principles.md"],
+        embedder=FakeEmbeddings(),
+    )
 
     result = await api.retrieve(
         "first principles reasoning",
@@ -79,7 +84,11 @@ async def test_retrieve_hit_layer_correctly_tagged(tmp_path: Path) -> None:
         "wisdom/elon-musk/note.md",
         "# Note\n\nRocket engineering insights about reusability.\n",
     )
+    # D-layer indexed by api.ingest; W-layer indexed by ingest_wisdom_files.
     await api.ingest(wiki, embedder=FakeEmbeddings())
+    await ingest_wisdom_files(
+        wiki, ["wisdom/elon-musk/note.md"], embedder=FakeEmbeddings()
+    )
 
     result = await api.retrieve(
         "rocket engineering",

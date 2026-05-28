@@ -21,28 +21,31 @@ Everything else is plumbing.
 | **K** — Knowledge    | LLM-authored knowledge pages, link graph, `index.md`  | LLM, human-editable            |
 | **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
-The W layer was refactored across 0.3.0 (PR1-PR4). The prior
-LLM-distilled `distill` / `_candidates/` / `review` pipeline is gone;
-wisdom is now hand-written first-class documents under
-`wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same
-`persist_page` pipeline as knowledge pages with chunks / embeddings /
-`[[wikilinks]]` / `provenance` edges. `Layer.WISDOM` documents carry
-a wisdom-only `documents.status` column (CHECK-constrained to
-`draft | published | favorite | archived`) validated by the
-`invalid_wisdom_status` lint kind. `dikw client retrieve` returns
-wisdom chunks tagged `Hit.layer == "wisdom"`; `read_page` /
-`list_links` / `read_provenance` accept wisdom paths and resolve
-cross-layer edges; `broken_wikilink` / `orphan_page` /
-`missing_provenance` lint scans both K + W layers, crediting
-cross-layer wikilinks in the orphan inbound counter so a knowledge page
-cited only from wisdom is not falsely flagged. A separate write
-surface (`api.write_wisdom_page` / `POST /v1/base/wisdom` /
-`dikw client wisdom write`) lets agents create or update a single
-wisdom page (chunks + FTS + embeddings + links + provenance in one
-task) without a full ingest scan. See
-`docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
-dikw-core does not perform answer synthesis — `retrieve` returns
-ranked chunks + page refs and the agent layer runs its own LLM.
+The W layer is hand-written first-class documents under
+`wisdom/<author>/<slug>.md`. Since 0.4.0, wisdom is indexed
+**exclusively through the dedicated write surface**
+(`api.write_wisdom_page` / `POST /v1/wisdom/write` /
+`dikw client wisdom write`) — `dikw client ingest` no longer scans
+`<base>/wisdom/`. The write surface runs the same
+`persist_wisdom` pipeline as the previous ingest loop did (chunks
+/ embeddings / `[[wikilinks]]` / `provenance` edges), so the on-disk
+schema and storage row shape are unchanged.
+`Layer.WISDOM` documents carry a wisdom-only `documents.status`
+column (CHECK-constrained to `draft | published | favorite |
+archived`) validated by the `invalid_wisdom_status` lint kind.
+`dikw client retrieve` returns wisdom chunks tagged
+`Hit.layer == "wisdom"`; `read_page` / `list_links` /
+`read_provenance` accept wisdom paths and resolve cross-layer
+edges; `broken_wikilink` / `orphan_page` / `missing_provenance`
+lint scans both K + W layers, crediting cross-layer wikilinks in
+the orphan inbound counter so a knowledge page cited only from
+wisdom is not falsely flagged. Hand-edits to wisdom files in
+Obsidian are NOT auto-reindexed — re-run `dikw client wisdom
+write` with the edited body. See
+`docs/adr/0002-wisdom-as-first-class-documents.md` for the
+rationale. dikw-core does not perform answer synthesis —
+`retrieve` returns ranked chunks + page refs and the agent layer
+runs its own LLM.
 
 ## Module map
 
@@ -68,9 +71,11 @@ src/dikw_core/
 │   │   ├── tokenize.py      CJK-aware preprocessing + token counting
 │   │   ├── embed.py         batched embedding worker
 │   │   └── search.py        RRF-fused FTS + vector hybrid
+│   ├── data/
+│   │   └── persist.py       persist_source — D-layer write entry (doc + chunk + FTS + chunk_asset_refs)
 │   ├── knowledge/
 │   │   ├── page.py          KnowledgePage I/O (Obsidian-compatible front-matter)
-│   │   ├── page_index.py    persist_page(layer=...) — K + W layer indexing entrypoint reused by synth, ingest, lint apply
+│   │   ├── page_index.py    persist_knowledge — K-layer write entry (synth + lint apply); also defines the private _persist_layered_page shared with W
 │   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
 │   │   ├── indexgen.py      regenerate knowledge/index.md
@@ -79,7 +84,8 @@ src/dikw_core/
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
 │   └── wisdom/
-│       └── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
+│       ├── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
+│       └── persist.py       persist_wisdom — W-layer write entry (sole engine caller: api.write_wisdom_page)
 ├── providers/
 │   ├── base.py              LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │   ├── anthropic_compat.py  anthropic SDK, system-prompt cache_control; retargets via llm_base_url
@@ -105,6 +111,57 @@ src/dikw_core/
                            (HTTP-bound commands live exclusively under `dikw client <verb>` — there
                            are no top-level short aliases)
 ```
+
+## Chunk → FTS → embed pipeline per layer
+
+Each DIKW layer has exactly one programmatic write entry that owns
+its full `upsert_document` + `chunk_markdown` + `replace_chunks`
+(FTS side-effect, same transaction) + optional inline embed +
+`replace_links_from` + `replace_provenance_from` pipeline. Public
+callers fan into these entries; no other engine code mutates K / W
+documents and their derived rows.
+
+| Layer | Write entry | Trigger surface | Embed timing |
+|---|---|---|---|
+| **D** (source) | `persist_source` (`domains/data/persist.py`) | `api.ingest` (one call per scanned source file) | **Deferred** — `api.ingest` accumulates chunks across files and runs one bulk embed at end-of-scan for throughput |
+| **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize_for_source` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when `DIKW_EMBEDDING_API_KEY` is set, otherwise defers |
+| **W** (wisdom) | `persist_wisdom` (`domains/wisdom/persist.py`) | `api.write_wisdom_page` (CLI `dikw client wisdom write` / HTTP `POST /v1/wisdom/write`) | **Inline** unless the caller passes `no_embed=True` |
+
+**Cross-layer resume scan.** At the end of every `dikw client ingest`,
+the engine runs `storage.list_chunks_missing_embedding(version_id)`
+and embeds any chunks whose vector is absent — across D / K / W
+layers, irrespective of which path created them. This is the
+**eventual-consistency contract** of the embedding leg: every chunk
+eventually has a vector once an embedder is reachable. It backstops
+three legitimate "no vector yet" paths: ingest crash recovery
+(D-layer chunks written before the bulk embed ran), lint apply
+without `DIKW_EMBEDDING_API_KEY` (K-layer chunks deferred), and
+`write_wisdom_page --no-embed` (W-layer chunks deferred).
+
+**Per-batch retry-skip.** Inside every persist path the embed leg
+runs through `consume_embedding_stream`, which catches `ProviderError`
+per batch, retries up to `cfg.provider.embedding_error_retries`
+(default 2) with `embedding_error_retry_backoff_seconds` (default
+2.0s) linear backoff before skipping the batch and continuing.
+Skipped chunks remain in storage without vectors and the next
+ingest's resume scan picks them up. The persist function's return
+shape surfaces `chunks_embedded` and `chunks_pending_embedding` so
+the caller can warn the user (CLI `lint apply` prints both).
+
+**FTS is always synchronous.** `replace_chunks` writes the FTS index
+inside the same storage transaction as the `chunks` rows — there is
+no "FTS deferred" code path. SQLite uses the `documents_fts` virtual
+table (rowid aligns with `chunks.chunk_id`); Postgres populates
+`chunks.fts tsvector` via the Python adapter at INSERT. CJK
+preprocessing (jieba) happens before the SQL call on both adapters.
+
+**Known limitation.** Hand-edits to K or W files in Obsidian have
+**no reindex entry**: the engine doesn't watch the filesystem, and
+`ingest` only scans `<base>/sources/`. To refresh storage after a
+hand-edit, re-write the page through the layer's write entry
+(`dikw client wisdom write` for W; for K the user re-runs `synth` or
+`lint apply` against the file). A future `dikw client reindex <path>`
+will close this gap.
 
 ## Seams on purpose
 
@@ -218,10 +275,12 @@ We take that seriously. Every navigation step (source listing, chunk
 lookup, link traversal, provenance lookup) is deterministic SQL + file
 I/O. LLM calls only enter at synth — the engine-internal authoring leg
 that writes the K layer. The W layer is hand-authored markdown the user
-writes in Obsidian; ingest/persistence indexes it through the same
-`persist_page` pipeline as the K layer. Answer synthesis happens **outside**
-dikw-core, in the agent layer, with the agent's own LLM and conversation
-context.
+writes through `dikw client wisdom write` (or its HTTP / Python
+equivalents); the write surface drives the same `persist_wisdom`
+pipeline that the K layer uses via `persist_knowledge`, so chunks /
+embeddings / `[[wikilinks]]` / `provenance` edges land symmetrically.
+Answer synthesis happens **outside** dikw-core, in the agent layer,
+with the agent's own LLM and conversation context.
 
 ### Wikilink resolve, as a concrete example
 
