@@ -127,6 +127,27 @@ def dikw_base(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_embedding_key(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clear ``DIKW_EMBEDDING_API_KEY`` for every test by default.
+
+    0.4.0 added env-key-gated inline embed to ``api.lint_apply`` (and
+    similar entry points may follow): when the key is set in the env,
+    those entries auto-build a real ``OpenAICompatEmbeddings`` provider
+    and attempt to call the configured base URL. Tests that exercise
+    those code paths must opt into embedding explicitly by passing a
+    ``FakeEmbeddings`` instance. Without this fixture, the developer's
+    ``.env`` would silently turn unit tests into network calls.
+
+    Live-API smoke tests opt out via ``@pytest.mark.requires_embedding_key``.
+    """
+    if request.node.get_closest_marker("requires_embedding_key"):
+        return
+    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_codex_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Path:

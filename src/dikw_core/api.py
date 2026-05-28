@@ -2889,8 +2889,15 @@ async def lint_apply(
     pick: list[int] | None = None,
     skip: list[int] | None = None,
     reporter: ProgressReporter | None = None,
+    embedder: EmbeddingProvider | None = None,
 ) -> ApplyReport:
     """Mutate ``knowledge/`` per a previously-produced proposal report.
+
+    When ``DIKW_EMBEDDING_API_KEY`` is configured (or the caller passes
+    ``embedder``), Phase 1 re-embeds every rebuilt page inline so the
+    fix is retrievable on return. Without the key, embedding defers to
+    the next ``dikw client ingest``'s missing-embedding resume scan —
+    the same fallback the W-layer ``no_embed`` write path uses.
 
     ``pick`` / ``skip`` filter the proposal list by index. Both may be
     set; pick is applied first, then skip removes from that subset.
@@ -2898,6 +2905,21 @@ async def lint_apply(
     cfg, root, storage = await _with_storage(path)
     try:
         used_reporter: ProgressReporter = reporter or NoopReporter()
+
+        # Inline-embed when the user has an embedding key on hand. The
+        # OpenAICompatEmbeddings provider only reads the key at embed
+        # time, so a missing key wouldn't fail ``build_embedder`` — we
+        # check the env up-front to keep apply heuristic-only when the
+        # user hasn't configured embeddings yet.
+        active_embedder: EmbeddingProvider | None = embedder
+        text_version_id: int | None = None
+        embedding_model = ""
+        if active_embedder is None and os.environ.get("DIKW_EMBEDDING_API_KEY"):
+            active_embedder = build_embedder(cfg.provider)
+        if active_embedder is not None:
+            text_version_id = await _register_text_version(storage, cfg.provider)
+            embedding_model = cfg.provider.embedding_model
+
         return await run_lint_apply(
             proposal_report=proposal_report,
             storage=storage,
@@ -2906,6 +2928,13 @@ async def lint_apply(
             skip=skip,
             reporter=used_reporter,
             cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+            embedder=active_embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            embedding_error_retries=cfg.provider.embedding_error_retries,
+            embedding_error_retry_backoff_seconds=(
+                cfg.provider.embedding_error_retry_backoff_seconds
+            ),
         )
     finally:
         await storage.close()

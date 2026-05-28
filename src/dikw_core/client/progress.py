@@ -511,10 +511,23 @@ def render_lint_apply_report(
     applied = report.get("applied") or []
     skipped = report.get("skipped") or []
     paths = report.get("knowledge_paths_changed") or []
+    embedded = int(report.get("chunks_embedded") or 0)
+    pending = int(report.get("chunks_pending_embedding") or 0)
     console.print(
         f"[green]applied[/green] {len(applied)} op(s); "
         f"[yellow]skipped[/yellow] {len(skipped)}"
     )
+    if embedded or pending:
+        # Make the embed status explicit so the user knows whether to
+        # follow up with ``dikw client ingest`` for the resume scan.
+        if pending:
+            console.print(
+                f"[cyan]embed[/cyan]: {embedded} chunk(s) embedded inline, "
+                f"[yellow]{pending} pending[/yellow] — "
+                "next [bold]dikw client ingest[/bold] reconciles them"
+            )
+        else:
+            console.print(f"[cyan]embed[/cyan]: {embedded} chunk(s) embedded inline")
     if paths:
         console.print(f"[dim]paths changed:[/dim] {', '.join(paths)}")
     if skipped:

@@ -49,17 +49,22 @@ def _missing_env() -> list[str]:
     return [name for name in REQUIRED_ENV if not os.environ.get(name)]
 
 
-pytestmark = pytest.mark.skipif(
-    bool(_missing_env()),
-    reason=(
-        "live MiniMax+Gitee smoke test — set "
-        + " and ".join(REQUIRED_ENV)
-        + " (missing: "
-        + ", ".join(_missing_env() or ["(none)"])
-        + "); see tests/fixtures/live-minimax-gitee.dikw.yml for the "
-        "committed provider config."
+pytestmark = [
+    pytest.mark.skipif(
+        bool(_missing_env()),
+        reason=(
+            "live MiniMax+Gitee smoke test — set "
+            + " and ".join(REQUIRED_ENV)
+            + " (missing: "
+            + ", ".join(_missing_env() or ["(none)"])
+            + "); see tests/fixtures/live-minimax-gitee.dikw.yml for the "
+            "committed provider config."
+        ),
     ),
-)
+    # Keep the live embedding key visible — the autouse fixture in
+    # conftest.py otherwise deletes it before the test body runs.
+    pytest.mark.requires_embedding_key,
+]
 
 
 @pytest.fixture()

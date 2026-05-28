@@ -47,7 +47,7 @@ from ..info.tokenize import CjkTokenizer
 from .links import parse_links, resolve_links
 from .lint import LintKind
 from .page import KnowledgePage, build_page, path_slug_title, write_page
-from .page_index import persist_knowledge_page
+from .page_index import persist_knowledge
 from .synthesize import (
     SynthesisError,
     SynthesisPartialError,
@@ -147,6 +147,16 @@ class ApplyReport(BaseModel):
     applied: list[FixOperation] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     knowledge_paths_changed: list[str] = Field(default_factory=list)
+    # Chunks embedded inline as part of this apply pass (0.4.0+). When
+    # the caller wires an ``embedder`` + ``text_version_id``, Phase 1
+    # re-chunks every changed page through ``persist_knowledge`` with
+    # the embedder attached — vectors land in the per-version vec
+    # table immediately so the fixed page is retrievable on return.
+    # Without an embedder, ``chunks_embedded == 0`` and the count
+    # surfaces under ``chunks_pending_embedding`` instead, signalling
+    # the resume scan picks up the deferred work on the next ingest.
+    chunks_embedded: int = 0
+    chunks_pending_embedding: int = 0
     # The source ``lint.propose`` task id that produced the proposals
     # we just applied. Server runners stamp this in so the proposals
     # listing in the CLI can show which proposal tasks have been
@@ -498,15 +508,24 @@ async def run_lint_apply(
     skip: list[int] | None = None,
     reporter: Any,  # ProgressReporter
     cjk_tokenizer: CjkTokenizer = "none",
+    embedder: EmbeddingProvider | None = None,
+    embedding_model: str = "",
+    text_version_id: int | None = None,
+    embedding_error_retries: int = 0,
+    embedding_error_retry_backoff_seconds: float = 0.0,
 ) -> ApplyReport:
     """Mutate ``knowledge/`` per a previously-produced :class:`FixProposalReport`.
 
-    PR1 scope: write/unlink files + reconcile outgoing wikilinks for
-    updated/created pages + ``deactivate_document`` for deletes. We
-    intentionally do not re-chunk / re-embed — that's a follow-up
-    ``dikw client ingest``'s job (it'll see ``doc.hash`` mismatch and
-    re-index). Keeping apply provider-free means a heuristic-only
-    proposal can land without an embedder configured.
+    File writes + outgoing-wikilink reconciliation always run. When the
+    caller wires ``embedder`` + ``text_version_id`` (0.4.0+), Phase 1
+    also embeds the rebuilt chunks inline so the fixed page is
+    retrievable on return. A failed embed batch (e.g. transient
+    ProviderError) does NOT abort the apply — the per-batch retry-skip
+    inside ``persist_knowledge`` leaves those chunks pending, surfaced
+    via ``ApplyReport.chunks_pending_embedding``, and the next
+    ``dikw client ingest``'s missing-embedding resume scan reconciles
+    them. Without an embedder, all rebuilt chunks land in
+    ``chunks_pending_embedding`` and the resume scan does the work.
 
     ``pick`` / ``skip`` filter the proposal list by index. Both may be
     set; pick is applied first, then skip removes from that subset.
@@ -663,22 +682,30 @@ async def run_lint_apply(
             title_to_path[op_title] = op.path
 
     # Phase 1: persist each still-extant changed page into storage:
-    # upsert document + replace_chunks + reconcile outgoing links.
-    # ``embedder=None`` keeps apply provider-free — the next ``dikw
-    # ingest`` will detect ``doc.hash`` drift and re-embed.
+    # upsert document + replace_chunks + reconcile outgoing links + (if
+    # an embedder is configured) embed rebuilt chunks inline. The
+    # caller decides whether to wire the embedder; without one,
+    # ``persist_knowledge`` leaves chunks pending and the next ``dikw
+    # ingest``'s missing-embedding resume scan picks them up.
+    chunks_embedded_total = 0
+    chunks_pending_total = 0
     for path in sorted(paths_changed):
         if not (base_root / path).resolve().is_file():
             continue
-        await persist_knowledge_page(
+        result = await persist_knowledge(
             storage=storage,
             root=base_root,
             path=path,
-            embedder=None,
-            embedding_model="",
-            text_version_id=None,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
             cjk_tokenizer=cjk_tokenizer,
             title_to_path=title_to_path,
+            retries=embedding_error_retries,
+            backoff_seconds=embedding_error_retry_backoff_seconds,
         )
+        chunks_embedded_total += result.chunks_embedded
+        chunks_pending_total += result.chunks_pending_embedding
 
     # Phase 2: re-reconcile referrers — every proposal's ``issue.path``
     # whose body references a page this batch may have just created.
@@ -712,6 +739,8 @@ async def run_lint_apply(
         applied=applied,
         skipped=skipped,
         knowledge_paths_changed=sorted(paths_changed | deleted_paths),
+        chunks_embedded=chunks_embedded_total,
+        chunks_pending_embedding=chunks_pending_total,
     )
 
 
