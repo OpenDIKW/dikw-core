@@ -1,29 +1,43 @@
-"""Persist a K or W layer page into storage.
+"""Persist a K- or W-layer page into storage.
 
-Single source of truth for page indexing. Three callers today:
+Three public functions own the per-layer write paths:
 
-* ``api._persist_knowledge_page`` (synth path) — passes ``embedder`` and
-  ``text_version_id`` so chunk embeddings land in the per-version
-  ``vec_chunks_v<id>`` table. Always ``layer=Layer.KNOWLEDGE``.
-* ``run_lint_apply`` (lint-fix path) — passes ``embedder=None`` to keep
-  apply provider-free; the next ``dikw client ingest`` reconciles
-  embeddings via ``doc.hash`` drift. Always ``layer=Layer.KNOWLEDGE``.
-* ``api.ingest`` wisdom branch (0.3.0 PR2) — passes
-  ``layer=Layer.WISDOM`` and queues embeddings onto the shared
-  ``to_embed`` list rather than embedding inline, so wisdom and
-  source/wiki chunks all flow through one ``embed_chunks`` batch.
+* :func:`persist_knowledge` — K-layer page (synth output or lint-apply
+  fix). Always ``layer=Layer.KNOWLEDGE``, ``status`` clamped to None.
+* :func:`persist_wisdom` — W-layer page (hand-written via
+  ``write_wisdom_page``). ``status`` flows through from frontmatter.
+  Lives in ``domains/wisdom/persist.py`` so the W layer owns its own
+  entry point; it delegates to the shared layered impl below.
+* (D-layer ``persist_source`` lives in ``domains/data/persist.py`` —
+  it owns asset materialise + chunk_asset_refs which K/W don't have.)
+
+The private :func:`_persist_layered_page` implements the K/W shared
+pipeline: upsert_document + chunk + FTS + (inline-or-deferred embed)
++ replace_links_from + replace_provenance_from. ``persist_knowledge``
+and ``persist_wisdom`` are thin typed wrappers around it, differing
+only in (a) the ``Layer`` they pass through and (b) whether they
+preserve the frontmatter ``status`` (W only).
+
+Embed timing: when ``embedder`` and ``text_version_id`` are both
+supplied, chunks are inline-embedded and counted in
+``chunks_embedded``. When either is None (lint apply without an
+embedder configured, ``wisdom write --no-embed``, …), chunks are
+written + FTS-indexed but NOT embedded; ``chunks_pending_embedding``
+captures the count. Those chunks are reconciled by the next ingest's
+cross-layer ``list_chunks_missing_embedding`` resume scan — this is
+independent of ``doc.hash`` drift.
 
 The caller MUST have written ``page`` to disk before calling — we
 re-parse the file via the backend registry so the stored hash and
 chunk offsets match what ``read_page`` will compute on read.
-``frontmatter.dumps`` + ``frontmatter.loads`` is not byte-stable on the
-body portion, so hashing ``page.body`` directly diverges from the
+``frontmatter.dumps`` + ``frontmatter.loads`` is not byte-stable on
+the body portion, so hashing ``page.body`` directly diverges from the
 read-back parsed body.
 
-Title index for wikilink resolve is cross-layer: ``[[wikilinks]]`` in a
-wisdom page resolve against the union of WIKI + WISDOM titles, and
-vice versa. Title collisions across layers fall through the existing
-refuse-to-resolve mechanism in ``links.resolve_links``.
+Title index for wikilink resolve is cross-layer: ``[[wikilinks]]`` in
+a wisdom page resolve against the union of KNOWLEDGE + WISDOM titles,
+and vice versa. Title collisions across layers fall through the
+existing refuse-to-resolve mechanism in ``links.resolve_links``.
 """
 
 from __future__ import annotations
@@ -31,7 +45,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...providers.base import EmbeddingProvider
-from ...schemas import ChunkRecord, DocumentRecord, Layer, WisdomStatus
+from ...schemas import (
+    ChunkRecord,
+    DocumentRecord,
+    KnowledgePersistResult,
+    Layer,
+    WisdomStatus,
+)
 from ...storage.base import Storage
 from ..data.backends import parse_any
 from ..data.path_norm import doc_id_for
@@ -47,37 +67,41 @@ def wiki_doc_id(path: str) -> str:
     return doc_id_for(Layer.KNOWLEDGE, path)
 
 
-async def persist_page(
+async def _persist_layered_page(
     *,
     storage: Storage,
     root: Path,
     path: str,
-    layer: Layer = Layer.KNOWLEDGE,
-    title: str | None = None,
-    embedder: EmbeddingProvider | None = None,
-    embedding_model: str = "",
-    text_version_id: int | None = None,
-    cjk_tokenizer: CjkTokenizer = "none",
-    title_to_path: dict[str, str] | None = None,
-    fuzzy_index: dict[str, list[str]] | None = None,
-) -> tuple[int, str]:
-    """Index a page already on disk into the K or W layer.
+    layer: Layer,
+    title: str | None,
+    embedder: EmbeddingProvider | None,
+    embedding_model: str,
+    text_version_id: int | None,
+    cjk_tokenizer: CjkTokenizer,
+    title_to_path: dict[str, str] | None,
+    fuzzy_index: dict[str, list[str]] | None,
+    retries: int,
+    backoff_seconds: float,
+) -> KnowledgePersistResult:
+    """Shared K/W persist implementation.
 
-    See module docstring for the cross-caller contract. ``layer``
-    controls (a) the doc-id prefix and (b) the cross-layer wikilink
-    index built when ``title_to_path`` is not supplied.
-
-    Returns ``(unresolved_count, resolved_title)`` so callers can fold
-    the unresolved count into reports and update an incremental
-    ``title_to_path`` without re-reading the file's frontmatter.
+    Private — call :func:`persist_knowledge` or :func:`persist_wisdom`
+    instead. Returns ``KnowledgePersistResult``; the W-layer caller
+    re-wraps it as ``WisdomPersistResult`` (identical fields today).
     """
+    if layer not in (Layer.KNOWLEDGE, Layer.WISDOM):
+        raise ValueError(
+            f"_persist_layered_page is for K/W layers only; got {layer!r}. "
+            "Use persist_source for D layer."
+        )
+
     doc_id = doc_id_for(layer, path)
     abs_path = (root / path).resolve()
     parsed = parse_any(abs_path, rel_path=path)
     resolved_title = title if title is not None else parsed.title
 
     # status is wisdom-only; the engine clamps elsewhere too (api._to_document),
-    # but persist_page is its own write-path so the same invariant applies.
+    # but persist_*_page is its own write path so the same invariant applies.
     status: WisdomStatus | None = parsed.status if layer is Layer.WISDOM else None
 
     await storage.upsert_document(
@@ -100,21 +124,35 @@ async def persist_page(
     ]
     chunk_ids = await storage.replace_chunks(doc_id, records)
 
+    chunks_embedded = 0
+    chunks_pending_embedding = 0
     if embedder is not None and records and text_version_id is not None:
         to_embed = [
             ChunkToEmbed(chunk_id=cid, text=r.text)
             for cid, r in zip(chunk_ids, records, strict=True)
         ]
-        await consume_embedding_stream(
+        embed_result = await consume_embedding_stream(
             embed_chunks(
                 embedder,
                 to_embed,
                 model=embedding_model,
                 version_id=text_version_id,
                 storage=storage,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
             ),
             storage,
         )
+        chunks_embedded = embed_result.embedded
+        chunks_pending_embedding = embed_result.chunks_skipped
+    elif records:
+        # No embedder configured — every chunk is "pending" until the
+        # next ingest's resume scan picks them up. ``chunks_embedded``
+        # stays zero. This keeps the caller's
+        # ApplyReport/WisdomWriteReport accounting symmetric: the sum
+        # ``embedded + pending`` always equals chunk count when the
+        # caller wanted vectors.
+        chunks_pending_embedding = len(records)
 
     if title_to_path is None:
         # Cross-layer title index: a wisdom page may link to a wiki
@@ -151,22 +189,142 @@ async def persist_page(
 
     # Reconcile provenance edges (K/W-page → D-source attribution) from
     # the page's ``sources:`` frontmatter — frontmatter is the source of
-    # truth (the wiki/wisdom tree is a user-editable Obsidian vault),
+    # truth (the knowledge/wisdom tree is a user-editable Obsidian vault),
     # so re-running this on every persist self-heals when the user
     # hand-edits the list. Mirrors the wikilink reconcile above;
     # deliberately kept off the wikilink graph (separate ``provenance``
     # table — see docs/adr/0001-provenance-as-separate-edge.md) so
     # graph-leg retrieval and orphan/broken-link lint stay clean.
-    #
-    # ``frontmatter_str_list`` enforces the same malformed-shape guard
-    # as ``run_lint`` and ``MissingProvenanceFixer`` — a YAML scalar
-    # (``sources: foo.md``) collapses to ``[]`` rather than iterating
-    # character-by-character into the provenance table.
     await storage.replace_provenance_from(
         doc_id, frontmatter_str_list(parsed.frontmatter, "sources")
     )
 
-    return len(unresolved), resolved_title
+    return KnowledgePersistResult(
+        chunk_ids=chunk_ids,
+        chunks_embedded=chunks_embedded,
+        chunks_pending_embedding=chunks_pending_embedding,
+        unresolved_wikilinks=len(unresolved),
+        resolved_title=resolved_title,
+    )
+
+
+async def persist_knowledge(
+    *,
+    storage: Storage,
+    root: Path,
+    path: str,
+    title: str | None = None,
+    embedder: EmbeddingProvider | None = None,
+    embedding_model: str = "",
+    text_version_id: int | None = None,
+    cjk_tokenizer: CjkTokenizer = "none",
+    title_to_path: dict[str, str] | None = None,
+    fuzzy_index: dict[str, list[str]] | None = None,
+    retries: int = 0,
+    backoff_seconds: float = 0.0,
+) -> KnowledgePersistResult:
+    """Index a K-layer page (synth output or lint-apply fix) into storage.
+
+    Owns: ``upsert_document`` (``status=None``, hard-clamped) + chunk
+    + FTS + (inline embed when ``embedder`` and ``text_version_id`` are
+    both supplied; otherwise defers to the next ingest's resume scan)
+    + ``replace_links_from`` (wikilinks) + ``replace_provenance_from``
+    (``sources:`` frontmatter).
+
+    Two callers today:
+
+    * ``api._persist_knowledge_page`` (synth path) — passes
+      ``embedder`` and ``text_version_id`` so chunk embeddings land in
+      the per-version ``vec_chunks_v<id>`` table inline.
+    * ``lint_fix.run_lint_apply`` (lint-fix path) — historically
+      passed ``embedder=None`` to keep apply provider-free; from 0.4.0
+      passes the configured embedder when available so K pages are
+      retrieval-ready on apply.
+
+    See module docstring for the cross-layer wikilink resolve contract.
+    """
+    return await _persist_layered_page(
+        storage=storage,
+        root=root,
+        path=path,
+        layer=Layer.KNOWLEDGE,
+        title=title,
+        embedder=embedder,
+        embedding_model=embedding_model,
+        text_version_id=text_version_id,
+        cjk_tokenizer=cjk_tokenizer,
+        title_to_path=title_to_path,
+        fuzzy_index=fuzzy_index,
+        retries=retries,
+        backoff_seconds=backoff_seconds,
+    )
+
+
+# ---- deprecated aliases (kept for one release; remove in 0.4.x) ----------
+#
+# Existing callers reach ``persist_page`` (the layer-parametric form) or
+# ``persist_knowledge_page`` (the K-only wrapper). Both forward to the
+# typed ``persist_knowledge`` above (or the wisdom counterpart) and
+# project the legacy ``tuple[int, str]`` return for source compatibility.
+# New code should call ``persist_knowledge`` / ``persist_wisdom`` /
+# ``persist_source`` directly.
+
+
+async def persist_page(
+    *,
+    storage: Storage,
+    root: Path,
+    path: str,
+    layer: Layer = Layer.KNOWLEDGE,
+    title: str | None = None,
+    embedder: EmbeddingProvider | None = None,
+    embedding_model: str = "",
+    text_version_id: int | None = None,
+    cjk_tokenizer: CjkTokenizer = "none",
+    title_to_path: dict[str, str] | None = None,
+    fuzzy_index: dict[str, list[str]] | None = None,
+) -> tuple[int, str]:
+    """Deprecated — call ``persist_knowledge`` or ``persist_wisdom`` directly.
+
+    Kept for 0.4.0 source compatibility; the legacy return shape
+    ``(unresolved_wikilinks_count, resolved_title)`` is preserved.
+    """
+    if layer is Layer.KNOWLEDGE:
+        result = await persist_knowledge(
+            storage=storage,
+            root=root,
+            path=path,
+            title=title,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            cjk_tokenizer=cjk_tokenizer,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+        )
+    elif layer is Layer.WISDOM:
+        # Lazy import to avoid a cross-domain circular at module load.
+        from ..wisdom.persist import persist_wisdom
+
+        wisdom_result = await persist_wisdom(
+            storage=storage,
+            root=root,
+            path=path,
+            title=title,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            cjk_tokenizer=cjk_tokenizer,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+        )
+        return wisdom_result.unresolved_wikilinks, wisdom_result.resolved_title
+    else:
+        raise ValueError(
+            f"persist_page does not handle {layer!r}; "
+            "use persist_source for D layer."
+        )
+    return result.unresolved_wikilinks, result.resolved_title
 
 
 async def persist_knowledge_page(
@@ -182,17 +340,15 @@ async def persist_knowledge_page(
     title_to_path: dict[str, str] | None = None,
     fuzzy_index: dict[str, list[str]] | None = None,
 ) -> tuple[int, str]:
-    """Backwards-compatible K-layer wrapper around ``persist_page``.
+    """Deprecated — call ``persist_knowledge`` directly.
 
-    Existing synth + lint-apply call sites land here unchanged; PR2
-    generalised the underlying implementation to take a ``layer``
-    parameter without churning every caller.
+    Kept for 0.4.0 source compatibility; the legacy return shape
+    ``(unresolved_wikilinks_count, resolved_title)`` is preserved.
     """
-    return await persist_page(
+    result = await persist_knowledge(
         storage=storage,
         root=root,
         path=path,
-        layer=Layer.KNOWLEDGE,
         title=title,
         embedder=embedder,
         embedding_model=embedding_model,
@@ -201,3 +357,4 @@ async def persist_knowledge_page(
         title_to_path=title_to_path,
         fuzzy_index=fuzzy_index,
     )
+    return result.unresolved_wikilinks, result.resolved_title

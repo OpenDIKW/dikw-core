@@ -727,6 +727,41 @@ class EmbeddingVersion(BaseModel):
 # ---- Wisdom write API (0.3.1) -------------------------------------------
 
 
+class KnowledgePersistResult(BaseModel):
+    """Outcome of ``persist_knowledge`` for one K-layer page.
+
+    Returned by the K-layer persist function so callers (synth, lint
+    apply) can fold embed counts into their reports without re-
+    inspecting storage. ``chunks_pending_embedding`` is non-zero when
+    ``persist_knowledge`` was called without an embedder (or when the
+    embedder hit a ``ProviderError`` skip mid-stream); those chunks
+    remain in storage without vectors and get reconciled by the next
+    ingest's ``list_chunks_missing_embedding`` resume scan.
+    """
+
+    chunk_ids: list[int]
+    chunks_embedded: int
+    chunks_pending_embedding: int
+    unresolved_wikilinks: int
+    resolved_title: str
+
+
+class WisdomPersistResult(BaseModel):
+    """Outcome of ``persist_wisdom`` for one W-layer page.
+
+    Same shape as :class:`KnowledgePersistResult`; the W-layer specific
+    fields (status from frontmatter, embedder/no_embed handshake) are
+    handled at the caller (``write_wisdom_page``) which translates them
+    into the embedder param this result reflects.
+    """
+
+    chunk_ids: list[int]
+    chunks_embedded: int
+    chunks_pending_embedding: int
+    unresolved_wikilinks: int
+    resolved_title: str
+
+
 class WisdomWriteSubmit(BaseModel):
     """Body for ``POST /v1/base/wisdom`` and the engine ``write_wisdom_page``.
 

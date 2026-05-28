@@ -3203,10 +3203,11 @@ async def write_wisdom_page(
     """
     # Lazy import — domains.knowledge.page_index imports schemas + storage
     # primitives, and api.py imports those eagerly already; importing
-    # persist_page eagerly here would re-introduce the same circular risk
-    # the existing wisdom-branch (1320 area) avoided by deferring.
+    # the persist functions eagerly here would re-introduce the same
+    # circular risk the existing wisdom-branch (1320 area) avoided by
+    # deferring. ``persist_wisdom`` is imported lazily at its single
+    # use site below.
     from .domains.knowledge.links import build_title_indexes
-    from .domains.knowledge.page_index import persist_page as _persist_page
     from .domains.wisdom import make_wisdom_path, write_wisdom_file
 
     # Validate first — never write a file or open storage on a malformed
@@ -3272,13 +3273,13 @@ async def write_wisdom_page(
                 extras=extras,
             )
 
-            # Build the cross-layer title index that ``persist_page`` uses
+            # Build the cross-layer title index that ``persist_wisdom`` uses
             # for ``[[wikilink]]`` resolve. Mirrors the ingest wisdom branch
             # (around line 1330) - include the new page's own NEW title so
             # a self-reference resolves, but EXCLUDE the stored row for
             # ``logical_path`` itself: on an update that changes the page's
             # title, the storage row still holds the old title until
-            # ``_persist_page`` rewrites it, and pulling that into the index
+            # ``persist_wisdom`` rewrites it, and pulling that into the index
             # would let ``[[Old Title]]`` in the new body resolve to this
             # same page via the stale title.
             title_docs: list[tuple[str, str]] = []
@@ -3301,21 +3302,21 @@ async def write_wisdom_page(
                 detail={"path": logical_path, "step": "indexing"},
             )
 
-            # ``persist_page`` writes documents + chunks + FTS + embeddings
+            # ``persist_wisdom`` writes documents + chunks + FTS + embeddings
             # + links + provenance in sequence. A mid-pipeline failure
             # (embed timeout, link resolve crash, vec_search error) leaves
             # those rows partially updated — the document row + chunks
             # already reflect the new content while outgoing links /
             # provenance edges still point at the old. ``deactivate_document``
             # flips the doc to inactive so the next ``dikw ingest`` resume
-            # scan rebuilds the row end-to-end, matching the recovery
-            # behaviour of the ingest wisdom branch at api.py:1433.
+            # scan rebuilds the row end-to-end.
+            from .domains.wisdom.persist import persist_wisdom
+
             try:
-                unresolved, _ = await _persist_page(
+                persist_result = await persist_wisdom(
                     storage=storage,
                     root=root,
                     path=logical_path,
-                    layer=Layer.WISDOM,
                     title=title,
                     embedder=active_embedder,
                     embedding_model=embedding_model,
@@ -3323,7 +3324,10 @@ async def write_wisdom_page(
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                     title_to_path=title_to_path,
                     fuzzy_index=fuzzy_index,
+                    retries=cfg.provider.embedding_error_retries,
+                    backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
                 )
+                unresolved = persist_result.unresolved_wikilinks
             except Exception:
                 with contextlib.suppress(Exception):
                     await storage.deactivate_document(doc_id)
@@ -3434,8 +3438,8 @@ async def _persist_knowledge_page(
     :mod:`dikw_core.domains.knowledge.page_index` so lint-apply can
     reuse the same indexing path without depending on api.py internals.
     """
-    from .domains.knowledge.page_index import persist_knowledge_page
-    unresolved, _ = await persist_knowledge_page(
+    from .domains.knowledge.page_index import persist_knowledge
+    result = await persist_knowledge(
         storage=storage,
         root=root,
         path=page.path,
@@ -3447,6 +3451,7 @@ async def _persist_knowledge_page(
         title_to_path=title_to_path,
         fuzzy_index=fuzzy_index,
     )
+    unresolved = result.unresolved_wikilinks
     return unresolved
 
 
