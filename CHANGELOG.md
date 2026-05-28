@@ -5,7 +5,7 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## Unreleased
+## 0.4.0 — chunk→FTS→embed pipeline governance + ingest scope narrowing
 
 ### ⚠️ Breaking
 
