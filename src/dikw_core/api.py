@@ -302,7 +302,16 @@ def _qualified_provider(protocol: str, base_url: str) -> str:
 async def _register_text_version(
     storage: Storage, cfg_provider: ProviderConfig
 ) -> int:
-    """Register the text ``embed_versions`` row from the provider config."""
+    """Register-and-activate the text ``embed_versions`` row from cfg.
+
+    Activates the configured identity. Only safe to call from ``ingest``,
+    which re-embeds the full corpus and so can flip the active version
+    safely. Lint apply / wisdom write must use
+    :func:`_resolve_active_text_version_for_inline_embed` instead — they
+    only re-embed the pages they touch, so flipping active would strand
+    every other vector in the now-inactive table and gut dense retrieval
+    until the next full ingest (codex review finding, 0.4.0).
+    """
     return await storage.upsert_embed_version(
         EmbeddingVersion(
             # Encode the endpoint host into ``provider`` so two
@@ -320,6 +329,31 @@ async def _register_text_version(
             modality="text",
         )
     )
+
+
+async def _resolve_active_text_version_for_inline_embed(
+    storage: Storage,
+) -> tuple[int, str] | None:
+    """Return ``(version_id, model)`` of the active text embed version, or None.
+
+    Callers that re-embed only the pages they touch (lint apply, wisdom
+    write) must NOT register-and-activate a new version on their own —
+    flipping active here would strand every other vector in the
+    now-inactive table and gut dense retrieval until ``dikw client
+    ingest`` re-embeds the full corpus. Mirrors the pattern used by
+    ``synthesize`` (api.py:2484-2497).
+
+    Returns ``None`` when no active text version exists yet (fresh base
+    that hasn't been ingested). The caller then drops the embedder and
+    defers the embedding to the next ingest's resume scan.
+    """
+    try:
+        active_text = await storage.get_active_embed_version(modality="text")
+    except NotSupported:
+        return None
+    if active_text is None or active_text.version_id is None:
+        return None
+    return active_text.version_id, active_text.model
 
 
 # ---- public result models ------------------------------------------------
@@ -2709,6 +2743,10 @@ async def synthesize(
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                     title_to_path=title_to_path,
                     fuzzy_index=fuzzy_index,
+                    embedding_error_retries=cfg.provider.embedding_error_retries,
+                    embedding_error_retry_backoff_seconds=(
+                        cfg.provider.embedding_error_retry_backoff_seconds
+                    ),
                 )
                 if page_unresolved:
                     report = _sr_replace(
@@ -2911,14 +2949,27 @@ async def lint_apply(
         # time, so a missing key wouldn't fail ``build_embedder`` — we
         # check the env up-front to keep apply heuristic-only when the
         # user hasn't configured embeddings yet.
+        #
+        # Reuse the active text embed version rather than registering a
+        # new one from cfg: lint apply only re-embeds the pages it
+        # changes, so flipping ``embed_versions.is_active`` here would
+        # strand every other vector in the now-inactive table and gut
+        # dense retrieval until ``dikw client ingest`` re-embeds the
+        # full corpus. Synth uses the same pattern (api.py:2484-2497).
         active_embedder: EmbeddingProvider | None = embedder
         text_version_id: int | None = None
         embedding_model = ""
         if active_embedder is None and os.environ.get("DIKW_EMBEDDING_API_KEY"):
             active_embedder = build_embedder(cfg.provider)
         if active_embedder is not None:
-            text_version_id = await _register_text_version(storage, cfg.provider)
-            embedding_model = cfg.provider.embedding_model
+            resolved = await _resolve_active_text_version_for_inline_embed(storage)
+            if resolved is not None:
+                text_version_id, embedding_model = resolved
+            else:
+                # No active text version yet (fresh base, no ingest run).
+                # Defer the embedding to the next ingest's resume scan
+                # instead of registering a new active version here.
+                active_embedder = None
 
         return await run_lint_apply(
             proposal_report=proposal_report,
@@ -3056,6 +3107,14 @@ async def write_wisdom_page(
             # build_embedder call is the one that touches the env API key —
             # keep it inside the ``not no_embed`` branch so a write that
             # explicitly opted out doesn't fail on a missing key.
+            #
+            # Reuse the active text embed version rather than registering
+            # a new one from cfg: wisdom write only embeds the page being
+            # written, so flipping ``embed_versions.is_active`` here
+            # would strand every other vector in the now-inactive table
+            # and gut dense retrieval until ``dikw client ingest`` re-
+            # embeds the full corpus. Mirrors synth's pattern
+            # (api.py:2484-2497) and lint apply's pattern above.
             active_embedder: EmbeddingProvider | None = None
             text_version_id: int | None = None
             embedding_model = ""
@@ -3063,8 +3122,16 @@ async def write_wisdom_page(
                 active_embedder = embedder
                 if active_embedder is None:
                     active_embedder = build_embedder(cfg.provider)
-                text_version_id = await _register_text_version(storage, cfg.provider)
-                embedding_model = cfg.provider.embedding_model
+                resolved = await _resolve_active_text_version_for_inline_embed(
+                    storage
+                )
+                if resolved is not None:
+                    text_version_id, embedding_model = resolved
+                else:
+                    # No active text version yet — defer embedding to the
+                    # next ingest's resume scan instead of activating a
+                    # fresh version here.
+                    active_embedder = None
 
             # Cooperative cancellation poll: synth/lint/ingest all check
             # the token between work units (api.py:1130 / 1353 / 1589 /
@@ -3236,6 +3303,8 @@ async def _persist_knowledge_page(
     cjk_tokenizer: CjkTokenizer = "none",
     title_to_path: dict[str, str] | None = None,
     fuzzy_index: dict[str, list[str]] | None = None,
+    embedding_error_retries: int = 0,
+    embedding_error_retry_backoff_seconds: float = 0.0,
 ) -> int:
     """Index ``page`` into the K layer: document, chunks, embeddings, links.
 
@@ -3267,6 +3336,8 @@ async def _persist_knowledge_page(
         cjk_tokenizer=cjk_tokenizer,
         title_to_path=title_to_path,
         fuzzy_index=fuzzy_index,
+        retries=embedding_error_retries,
+        backoff_seconds=embedding_error_retry_backoff_seconds,
     )
     unresolved = result.unresolved_wikilinks
     return unresolved

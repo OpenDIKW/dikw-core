@@ -32,7 +32,13 @@ from dikw_core.domains.knowledge.lint_fix import (
 from dikw_core.schemas import DocumentRecord, Layer
 from dikw_core.storage.sqlite import SQLiteStorage
 
-from .fakes import FakeEmbeddings, FlakyEmbedder, init_test_base, register_text_version
+from .fakes import (
+    EMBED_DIM,
+    FakeEmbeddings,
+    FlakyEmbedder,
+    init_test_base,
+    register_text_version,
+)
 
 
 @dataclass
@@ -253,3 +259,185 @@ async def test_lint_apply_survives_provider_error_via_retry_skip(
         assert report.chunks_pending_embedding > 0
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_api_lint_apply_reuses_active_text_version_does_not_activate_new(
+    tmp_path: Path,
+) -> None:
+    """``api.lint_apply`` must NOT flip ``embed_versions.is_active`` to a
+    cfg-derived identity. Apply only re-embeds the pages it touches, so
+    activating a fresh version would strand every other vector in the
+    now-inactive table and gut dense retrieval until the next full
+    ingest (codex review finding, 0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.schemas import EmbeddingVersion
+
+    base_root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        # Pre-register an active text version whose identity differs
+        # from what cfg.provider would yield. ``upsert_embed_version``
+        # marks this as the sole active row for modality="text".
+        pre_existing_vid = await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="legacy@existing",
+                model="legacy-model",
+                revision="",
+                dim=EMBED_DIM,
+                normalize=True,
+                distance="cosine",
+                modality="text",
+            )
+        )
+
+        await _seed_page(
+            storage=storage,
+            base_root=base_root,
+            path="knowledge/concepts/source.md",
+            title="Source",
+            body="# Source\n\nSee [[foo  bar]] for context.\n",
+        )
+        abs_src = base_root / "knowledge/concepts/source.md"
+        expected_hash = file_sha256(abs_src)
+    finally:
+        await storage.close()
+
+    proposal_report = FixProposalReport(
+        proposals=[_update_proposal(
+            path="knowledge/concepts/source.md",
+            new_body="# Source\n\nSee [[Foo Bar]] for context.\n",
+            expected_hash=expected_hash,
+        )]
+    )
+
+    # Pass the embedder explicitly so api.lint_apply doesn't need a
+    # real API key. The cfg.provider identity in the test base differs
+    # from the pre-registered active version — without the fix this
+    # would flip is_active.
+    await api.lint_apply(
+        base_root,
+        proposal_report=proposal_report,
+        reporter=_NullReporter(),
+        embedder=FakeEmbeddings(),
+    )
+
+    # The active version is still the legacy one — apply did NOT
+    # register-and-activate a new version derived from cfg.provider.
+    storage = SQLiteStorage(base_root / ".dikw" / "index.sqlite")
+    await storage.connect()
+    try:
+        active = await storage.get_active_embed_version(modality="text")
+        assert active is not None
+        assert active.version_id == pre_existing_vid
+        assert active.model == "legacy-model"
+        assert active.provider == "legacy@existing"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_api_write_wisdom_page_reuses_active_text_version_does_not_activate_new(
+    tmp_path: Path,
+) -> None:
+    """``api.write_wisdom_page`` must reuse the active text version,
+    not register-and-activate a fresh one from cfg. Symmetric to the
+    lint apply rule (codex review finding, 0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.schemas import EmbeddingVersion
+
+    base_root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        pre_existing_vid = await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="legacy@existing",
+                model="legacy-model",
+                revision="",
+                dim=EMBED_DIM,
+                normalize=True,
+                distance="cosine",
+                modality="text",
+            )
+        )
+    finally:
+        await storage.close()
+
+    await api.write_wisdom_page(
+        base_root,
+        slug="reuse-active",
+        title="Reuse Active",
+        body="Test body for reuse contract.",
+        author="alice",
+        reporter=_NullReporter(),
+        embedder=FakeEmbeddings(),
+    )
+
+    storage = SQLiteStorage(base_root / ".dikw" / "index.sqlite")
+    await storage.connect()
+    try:
+        active = await storage.get_active_embed_version(modality="text")
+        assert active is not None
+        assert active.version_id == pre_existing_vid
+        assert active.model == "legacy-model"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_synth_persist_helper_forwards_embedding_retry_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_persist_knowledge_page`` (the synth helper) must forward the
+    configured embed retry budget to ``persist_knowledge``. Without
+    this, synth would silently use ``retries=0`` even when the user
+    raised ``cfg.provider.embedding_error_retries`` to absorb transient
+    embedding failures (codex review finding, 0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.domains.knowledge.page import build_page, write_page
+
+    init_test_base(tmp_path)
+    page = build_page(
+        title="Retry Test",
+        body="# Retry Test\n\nBody paragraph.\n",
+        tags=[],
+        sources=["sources/whatever.md"],
+    )
+    write_page(tmp_path, page)
+
+    captured: dict[str, Any] = {}
+
+    async def _spy_persist_knowledge(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        from dikw_core.schemas import KnowledgePersistResult
+        return KnowledgePersistResult(
+            chunk_ids=[],
+            chunks_embedded=0,
+            chunks_pending_embedding=0,
+            unresolved_wikilinks=0,
+            resolved_title="Retry Test",
+        )
+
+    import dikw_core.domains.knowledge.page_index as page_index_module
+    monkeypatch.setattr(page_index_module, "persist_knowledge", _spy_persist_knowledge)
+
+    cfg, _root, storage = await api._with_storage(tmp_path)
+    try:
+        await api._persist_knowledge_page(
+            storage=storage,
+            root=tmp_path,
+            page=page,
+            embedder=None,
+            embedding_model="fake",
+            text_version_id=None,
+            cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+            embedding_error_retries=5,
+            embedding_error_retry_backoff_seconds=2.5,
+        )
+    finally:
+        await storage.close()
+
+    assert captured.get("retries") == 5
+    assert captured.get("backoff_seconds") == 2.5

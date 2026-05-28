@@ -113,11 +113,34 @@ class GiteeMultimodalEmbedding:
                 "model": model,
                 "input": [_serialize_input(i) for i in batch],
             }
-            resp = await client.post(f"{self._base_url}/embeddings", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            # OpenAI-compat response: {"data": [{"index": int, "embedding": [...]}]}
-            rows = sorted(data["data"], key=lambda r: r.get("index", 0))
+            # Wrap httpx + JSON parsing exceptions as ``ProviderError`` so
+            # the embed-batch retry-skip in
+            # ``info.embed._run_batch_with_retry`` treats transient
+            # vendor failures (5xx, timeouts, connection resets, malformed
+            # JSON) the same way it treats local provider errors. Without
+            # this wrap, ``raise_for_status`` raises
+            # ``httpx.HTTPStatusError`` and ``resp.json()`` raises
+            # ``json.JSONDecodeError``; neither is a ``ProviderError`` so
+            # a single transient failure aborts the whole ingest /
+            # wisdom-write call (codex review finding, 0.4.0).
+            try:
+                resp = await client.post(
+                    f"{self._base_url}/embeddings", json=payload
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                # OpenAI-compat response: {"data": [{"index": int, "embedding": [...]}]}
+                rows = sorted(data["data"], key=lambda r: r.get("index", 0))
+            except httpx.HTTPError as exc:
+                raise ProviderError(
+                    f"Gitee multimodal embedding call failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ProviderError(
+                    f"Gitee multimodal response parse failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             if len(rows) != len(batch):
                 raise ProviderError(
                     f"Gitee AI returned {len(rows)} vectors for "

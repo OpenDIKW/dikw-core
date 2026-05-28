@@ -237,5 +237,22 @@ class OpenAICompatEmbeddings:
         kwargs: dict[str, Any] = {"model": model, "input": texts}
         if self._default_dimensions is not None:
             kwargs["dimensions"] = self._default_dimensions
-        resp = await client.embeddings.create(**kwargs)
+        # Wrap OpenAI SDK exceptions as ``ProviderError`` so the embed-
+        # batch retry-skip in ``info.embed._run_batch_with_retry`` treats
+        # transient API failures (timeouts, rate limits, 5xx) the same
+        # way it treats local provider errors. Without this wrap, the
+        # SDK raises ``openai.OpenAIError`` subclasses that the retry
+        # handler doesn't catch — a single 503 then aborts the whole
+        # ingest / lint-apply / wisdom-write call (codex review
+        # finding, 0.4.0). ``openai`` is reached lazily at call time
+        # — same lazy import the ``_client`` helper uses, so envs
+        # without the SDK still load this module.
+        from openai import OpenAIError
+        try:
+            resp = await client.embeddings.create(**kwargs)
+        except OpenAIError as exc:
+            raise ProviderError(
+                f"OpenAI-compat embedding call failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         return [list(r.embedding) for r in resp.data]
