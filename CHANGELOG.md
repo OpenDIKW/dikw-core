@@ -7,6 +7,54 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### ⚠️ Breaking
+
+- **`dikw client ingest` no longer scans `<base>/wisdom/`.** Wisdom
+  pages are indexed exclusively when written via `dikw client wisdom
+  write` (CLI) or `POST /v1/wisdom/write` (HTTP). Hand-edits to wisdom
+  files in Obsidian are no longer auto-reindexed — the same
+  limitation already applied to knowledge pages (a future `dikw
+  client reindex <path>` will close this gap symmetrically). The old
+  scan loop and its legacy aggregate-file skip-list have been
+  removed; obsolete tests have been dropped, and the `ingest_wisdom_files`
+  helper in `tests/fakes.py` lets test authors seed wisdom rows via
+  the per-file `persist_wisdom` path.
+
+### Added
+
+- **Per-batch embed retry-skip.** `consume_embedding_stream` now
+  catches `ProviderError` per batch and retries up to
+  `cfg.provider.embedding_error_retries` (default 2) with
+  `embedding_error_retry_backoff_seconds` (default 2.0s) linear
+  backoff before skipping the batch and moving on. Skipped chunks
+  remain in storage without vectors and the next ingest's
+  missing-embedding resume scan reconciles them — synth /
+  `lint apply` / `wisdom write` / ingest's bulk pass are all
+  durable through transient embedding-provider failures now.
+- **`lint apply` inline-embeds when an embedder is configured.**
+  Setting `DIKW_EMBEDDING_API_KEY` makes `dikw client lint apply`
+  re-embed every rebuilt page in the same pass so the fix is
+  retrievable on return. Without the key, behaviour is unchanged:
+  every chunk falls into `chunks_pending_embedding` and the next
+  ingest's resume scan picks them up. `ApplyReport` gains
+  `chunks_embedded` and `chunks_pending_embedding`; the CLI summary
+  prints both.
+
+### Changed
+
+- **Refactor: `persist_page` split into three layer-specific
+  functions.** `persist_source` (D, `domains/data/persist.py`),
+  `persist_knowledge` (K, `domains/knowledge/page_index.py`), and
+  `persist_wisdom` (W, `domains/wisdom/persist.py`) each own their
+  layer's full upsert + chunk + FTS + (optional inline embed) +
+  links + provenance pipeline. The legacy `persist_page` and
+  `persist_knowledge_page` symbols remain as deprecated aliases
+  returning the old `tuple[int, str]` shape; they will be removed
+  in a follow-up.
+- `api.ingest` is now D-layer-only plus the cross-layer
+  missing-embedding resume scan that reconciles deferred chunks
+  from D / K / W.
+
 ## 0.4.0 — BREAKING term rename: K layer "wiki" → "knowledge"
 
 ⚠️ **Breaking change for every existing base.** The K-layer
