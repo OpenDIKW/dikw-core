@@ -750,8 +750,10 @@ class KnowledgePersistResult(BaseModel):
     Returned by the K-layer persist function so callers (synth, lint
     apply) can fold embed counts into their reports without re-
     inspecting storage. ``chunks_pending_embedding`` is non-zero when
-    ``persist_knowledge`` was called without an embedder (or when the
-    embedder hit a ``ProviderError`` skip mid-stream); those chunks
+    ``persist_knowledge`` was called without an embedder, or when one
+    or more embed batches exhausted their ``TransientProviderError``
+    retry budget and were skipped (permanent ``ProviderError``
+    propagates instead, since misconfig must fail fast); those chunks
     remain in storage without vectors and get reconciled by the next
     ingest's ``list_chunks_missing_embedding`` resume scan.
     """

@@ -3288,7 +3288,13 @@ async def write_wisdom_page(
                     backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
                 )
                 unresolved = persist_result.unresolved_wikilinks
-            except Exception:
+            except (Exception, asyncio.CancelledError):
+                # ``asyncio.CancelledError`` inherits from ``BaseException``
+                # so a bare ``except Exception`` misses it. Cancellation
+                # mid-``persist_wisdom`` can leave the doc row + chunks
+                # rewritten but links / provenance stale; deactivating
+                # ensures the next ingest's resume scan rebuilds the row
+                # end-to-end. (CodeRabbit finding, 0.4.0).
                 with contextlib.suppress(Exception):
                     await storage.deactivate_document(doc_id)
                 raise
