@@ -1,7 +1,7 @@
 # Orphan page governance
 
-`dikw client lint` reports an `orphan_page` when a K-layer wiki page has
-zero inbound `[[wikilinks]]` from other pages. A wiki accumulates
+`dikw client lint` reports an `orphan_page` when a K-layer knowledge page has
+zero inbound `[[wikilinks]]` from other pages. A knowledge base accumulates
 orphans naturally as synth fans out: an ingested source mentions a
 person, place, or sub-concept once, synth emits a page for it, but no
 other page links back. Left alone, orphans pollute the link graph
@@ -25,8 +25,8 @@ Triggered when the orphan's body (after frontmatter strip) is **under
   `placeholder` / `draft` marker, or
 - the orphan has no `sources` and no `tags` in its frontmatter.
 
-Apply moves the file to `<base>/trash/wiki/<original-rel-path>` and
-purges its storage rows. **Recovery**: drag the file back into `wiki/`
+Apply moves the file to `<base>/trash/knowledge/<original-rel-path>` and
+purges its storage rows. **Recovery**: drag the file back into `knowledge/`
 and rerun `dikw client ingest`. A `trashed: { at, reason, proposal_id }`
 block is injected into the frontmatter on the way to trash for audit;
 strip it by hand on the way back.
@@ -36,9 +36,9 @@ Example proposal:
 ```jsonc
 {
   "issue_kind": "orphan_page",
-  "issue_path": "wiki/notes/half-written.md",
+  "issue_path": "knowledge/notes/half-written.md",
   "operations": [
-    { "kind": "delete_page", "path": "wiki/notes/half-written.md" }
+    { "kind": "delete_page", "path": "knowledge/notes/half-written.md" }
   ],
   "rationale": "delete stub — body is 14 bytes (TODO/FIXME/WIP marker); soft-delete to trash",
   "source": "heuristic"
@@ -57,9 +57,9 @@ proposal:
 ```jsonc
 {
   "operations": [
-    { "kind": "update_page", "path": "wiki/concepts/parent.md",
+    { "kind": "update_page", "path": "knowledge/concepts/parent.md",
       "new_body": "<merged body>", "new_frontmatter": "<unioned sources+tags>" },
-    { "kind": "delete_page", "path": "wiki/concepts/orphan.md" }
+    { "kind": "delete_page", "path": "knowledge/concepts/orphan.md" }
   ],
   "source": "llm"
 }
@@ -129,7 +129,7 @@ Calibrated against real synth output. All weights live in
 | shared full tag               | +1.0   | e.g. both have `topic/engine`         |
 | shared tag domain (namespace) | +0.5   | both have `topic/...`, different leaf |
 | title-token Jaccard           | ×2.0   | normalized via `links.normalize_base` |
-| embedding cosine similarity   | ×3.0   | max over orphan-chunk × wiki-chunk    |
+| embedding cosine similarity   | ×3.0   | max over orphan-chunk × knowledge-chunk    |
 
 `LINK_THRESHOLD = 3.0`, `MERGE_THRESHOLD = 6.0`. Tighten by editing
 the module-level constants; baseline numbers in `evals/BASELINES.md`.

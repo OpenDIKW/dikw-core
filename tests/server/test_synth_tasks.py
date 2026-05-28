@@ -59,32 +59,32 @@ class _ScriptedSynthLLM:
 @pytest.mark.asyncio
 async def test_synth_task_emits_per_source_progress_and_final_report(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Seed three source markdown files + ingest them so synth has
     # documents to process.
-    dest = wiki_root / "sources" / "notes"
+    dest = base_root / "sources" / "notes"
     dest.mkdir(parents=True, exist_ok=True)
     for src in FIXTURES.glob("*.md"):
         shutil.copy2(src, dest / src.name)
-    await api_module.ingest(wiki_root, embedder=FakeEmbeddings())
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
 
     script = {
         "sources/notes/karpathy-wiki.md": (
-            '<page path="wiki/concepts/karpathy.md" type="concept">\n'
+            '<page path="knowledge/concepts/karpathy.md" type="concept">\n'
             "---\ntags: [karpathy]\n---\n\n"
             "# Karpathy\n\nDeterministic scoping matters.\n"
             "</page>"
         ),
         "sources/notes/dikw.md": (
-            '<page path="wiki/concepts/dikw.md" type="concept">\n'
+            '<page path="knowledge/concepts/dikw.md" type="concept">\n'
             "---\ntags: [dikw]\n---\n\n"
             "# DIKW\n\nFour layers stacked.\n"
             "</page>"
         ),
         "sources/notes/retrieval.md": (
-            '<page path="wiki/concepts/retrieval.md" type="concept">\n'
+            '<page path="knowledge/concepts/retrieval.md" type="concept">\n'
             "---\ntags: [retrieval]\n---\n\n"
             "# Retrieval\n\nRRF fuses BM25 with dense.\n"
             "</page>"

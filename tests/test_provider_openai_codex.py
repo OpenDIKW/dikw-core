@@ -36,7 +36,7 @@ from .fakes import (
 from .fakes import make_jwt as _make_jwt
 
 # All tests in this module monkeypatch ``resolve_access_token`` so the
-# wiki_base argument never round-trips to the file system. A single
+# base_root argument never round-trips to the file system. A single
 # dummy Path keeps construction noise out of every test body.
 _DUMMY_BASE = Path("dummy-wiki")
 
@@ -85,7 +85,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 async def test_complete_passes_explicit_base_url(captured: dict[str, Any]) -> None:
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert captured["init_kwargs"]["base_url"] == DEFAULT_CODEX_BASE_URL
 
@@ -94,7 +94,7 @@ async def test_complete_passes_access_token_as_api_key(
     captured: dict[str, Any],
 ) -> None:
     captured["access_token"] = "my-secret-token"
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert captured["init_kwargs"]["api_key"] == "my-secret-token"
 
@@ -102,7 +102,7 @@ async def test_complete_passes_access_token_as_api_key(
 async def test_complete_passes_codex_cloudflare_headers(
     captured: dict[str, Any],
 ) -> None:
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert headers["originator"] == "codex_cli_rs"
@@ -114,7 +114,7 @@ async def test_complete_includes_account_id_when_token_is_jwt(
 ) -> None:
     token = _make_jwt({"chatgpt_account_id": "acc-42", "exp": 9_999_999_999})
     captured["access_token"] = token
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert headers["ChatGPT-Account-ID"] == "acc-42"
@@ -124,7 +124,7 @@ async def test_complete_omits_account_id_for_non_jwt_token(
     captured: dict[str, Any],
 ) -> None:
     captured["access_token"] = "plain-not-jwt"
-    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE)
+    provider = OpenAICodexLLM(base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE)
     await provider.complete(system="s", user="u", model="gpt-5.5")
     headers = captured["init_kwargs"]["default_headers"]
     assert "ChatGPT-Account-ID" not in headers
@@ -142,7 +142,7 @@ async def test_complete_calls_responses_stream_with_responses_api_shape(
     underneath is ``responses.stream`` — the codex backend rejects the
     non-streaming variant with ``Stream must be set to true``."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await provider.complete(
         system="be helpful",
@@ -169,7 +169,7 @@ async def test_complete_does_not_pass_messages_kwarg(
 ) -> None:
     """Regression: Responses API uses `instructions` + `input`, NOT `messages`."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert "messages" not in captured["stream_kwargs"]
@@ -185,7 +185,7 @@ async def test_complete_does_not_pass_max_output_tokens_kwarg(
     ``assert_codex_request_kwargs_clean`` makes every test in this
     module a passive regression for the same invariant."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await provider.complete(
         system="s", user="u", model="gpt-5.5", max_tokens=512
@@ -201,7 +201,7 @@ async def test_complete_does_not_pass_temperature_kwarg(
     The provider accepts the kwarg for protocol parity but drops it
     from the wire payload."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await provider.complete(
         system="s", user="u", model="gpt-5.5", temperature=0.7
@@ -218,7 +218,7 @@ async def test_complete_uses_streaming_responses_endpoint_only(
     invocation, so this test passes only if the streaming path was
     taken."""
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await provider.complete(system="s", user="u", model="gpt-5.5")
     assert captured["stream_kwargs"] is not None
@@ -234,7 +234,7 @@ async def test_complete_returns_text_from_output_messages(
 ) -> None:
     captured["next_response"] = make_codex_response(text="hello world")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert isinstance(resp, LLMResponse)
@@ -258,7 +258,7 @@ async def test_complete_concatenates_multiple_output_text_parts(
         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.text == "hello world"
@@ -280,7 +280,7 @@ async def test_complete_skips_non_message_output_items(
         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.text == "answer"
@@ -291,7 +291,7 @@ async def test_complete_maps_status_completed_to_stop(
 ) -> None:
     captured["next_response"] = make_codex_response(status="completed")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "stop"
@@ -302,7 +302,7 @@ async def test_complete_maps_status_incomplete_to_length(
 ) -> None:
     captured["next_response"] = make_codex_response(status="incomplete")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "length"
@@ -317,7 +317,7 @@ async def test_complete_maps_status_failed_to_error(
     silently labeled both ``"stop"``, hiding hung-up calls."""
     captured["next_response"] = make_codex_response(status="failed")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "error"
@@ -329,7 +329,7 @@ async def test_complete_maps_status_cancelled_to_error(
     """Mirror of ``failed`` mapping for explicit cancellation."""
     captured["next_response"] = make_codex_response(status="cancelled")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.finish_reason == "error"
@@ -340,7 +340,7 @@ async def test_complete_extracts_usage_input_output_tokens(
 ) -> None:
     captured["next_response"] = make_codex_response(input_tokens=42, output_tokens=99)
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.usage == {"input_tokens": 42, "output_tokens": 99}
@@ -360,7 +360,7 @@ async def test_complete_handles_response_without_usage(
         usage=None,
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
     assert resp.usage == {}
@@ -423,7 +423,7 @@ async def test_complete_stream_yields_token_for_output_text_delta(
     ]
     stream_captured["final"] = make_codex_response(text="hello")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     tokens = [e for e in events if e.type == "token"]
@@ -441,7 +441,7 @@ async def test_complete_stream_yields_reasoning_for_summary_delta(
     ]
     stream_captured["final"] = make_codex_response(text="answer")
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     reasoning = [e for e in events if e.type == "reasoning"]
@@ -461,7 +461,7 @@ async def test_complete_stream_yields_done_with_assembled_text(
         text="hello", status="completed", input_tokens=3, output_tokens=4
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     assert events[-1].type == "done"
@@ -477,7 +477,7 @@ async def test_complete_stream_emits_exactly_one_done_event(
         SimpleNamespace(type="response.output_text.delta", delta="x"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     done_events = [e for e in events if e.type == "done"]
@@ -494,7 +494,7 @@ async def test_complete_stream_skips_unknown_event_types(
         SimpleNamespace(type="response.completed"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     # Two events emitted: token + done. Unknown types are silently dropped.
@@ -510,7 +510,7 @@ async def test_complete_stream_skips_empty_deltas(
         SimpleNamespace(type="response.output_text.delta", delta="real"),
     ]
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     tokens = [e for e in events if e.type == "token"]
@@ -521,7 +521,7 @@ async def test_complete_stream_passes_responses_api_shape(
     stream_captured: dict[str, Any],
 ) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await _drain(
         provider, system="be helpful", user="hello", model="gpt-5.5", max_tokens=128
@@ -543,7 +543,7 @@ async def test_complete_stream_injects_codex_headers(
     stream_captured: dict[str, Any],
 ) -> None:
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     await _drain(provider, system="s", user="u", model="gpt-5.5")
     headers = stream_captured["init_kwargs"]["default_headers"]
@@ -682,7 +682,7 @@ async def test_complete_stream_falls_back_when_get_final_response_raises(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnFinal(events)
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     out = await _drain(provider, system="s", user="u", model="gpt-5.5")
 
@@ -710,7 +710,7 @@ async def test_complete_stream_falls_back_when_event_iteration_raises(
     )
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     out = await _drain(provider, system="s", user="u", model="gpt-5.5")
 
@@ -734,7 +734,7 @@ async def test_complete_collapses_stream_failure_into_llm_response(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnFinal(events)
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     resp = await provider.complete(system="s", user="u", model="gpt-5.5")
 
@@ -876,7 +876,7 @@ async def test_complete_stream_propagates_unrelated_type_error(
     )
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(TypeError, match="totally unrelated bug"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -892,7 +892,7 @@ async def test_complete_stream_propagates_stream_enter_failure(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnEnter()
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(RuntimeError, match="stream open failed"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -905,7 +905,7 @@ async def test_complete_propagates_stream_enter_failure(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnEnter()
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(RuntimeError, match="stream open failed"):
         await provider.complete(system="s", user="u", model="gpt-5.5")
@@ -925,7 +925,7 @@ async def test_complete_stream_propagates_unrelated_attribute_error(
     ] = lambda _kw: _StreamRaisesUnrelatedAttributeError(events)
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(AttributeError, match="output_index"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -945,7 +945,7 @@ async def test_complete_stream_propagates_unrelated_get_final_type_error(
     )
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(TypeError, match="totally unrelated final-response bug"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -964,7 +964,7 @@ async def test_complete_stream_propagates_unrelated_get_final_attribute_error(
     )
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(AttributeError, match="output_text"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -984,7 +984,7 @@ async def test_reducer_bug_with_zero_deltas_raises_provider_error(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnFinal(events=[])
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(ProviderError, match="zero text deltas"):
         await _drain(provider, system="s", user="u", model="gpt-5.5")
@@ -999,7 +999,7 @@ async def test_complete_zero_delta_reducer_bug_raises_provider_error(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnFinal(events=[])
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with pytest.raises(ProviderError, match="zero text deltas"):
         await provider.complete(system="s", user="u", model="gpt-5.5")
@@ -1028,7 +1028,7 @@ async def test_authoritative_empty_final_does_not_fall_back_to_parts(
         usage=SimpleNamespace(input_tokens=1, output_tokens=0),
     )
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     events = await _drain(provider, system="s", user="u", model="gpt-5.5")
     done = [e for e in events if e.type == "done"]
@@ -1053,7 +1053,7 @@ async def test_reducer_bug_fallback_warning_excludes_delta_text(
     failing_stream["stream_factory"] = lambda _kw: _StreamRaisesOnFinal(events)
 
     provider = OpenAICodexLLM(
-        base_url=DEFAULT_CODEX_BASE_URL, wiki_base=_DUMMY_BASE
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
     with caplog.at_level(
         logging.WARNING, logger="dikw_core.providers.openai_codex"

@@ -46,13 +46,13 @@ from ..data.hashing import hash_bytes, hash_file
 from ..info.tokenize import CjkTokenizer
 from .links import parse_links, resolve_links
 from .lint import LintKind
-from .page_index import persist_wiki_page
+from .page import KnowledgePage, build_page, path_slug_title, write_page
+from .page_index import persist_knowledge_page
 from .synthesize import (
     SynthesisError,
     SynthesisPartialError,
     synthesize_pages_from_text,
 )
-from .wiki import WikiPage, build_page, path_slug_title, write_page
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class FixProposalReport(BaseModel):
 class ApplyReport(BaseModel):
     applied: list[FixOperation] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
-    wiki_paths_changed: list[str] = Field(default_factory=list)
+    knowledge_paths_changed: list[str] = Field(default_factory=list)
     # The source ``lint.propose`` task id that produced the proposals
     # we just applied. Server runners stamp this in so the proposals
     # listing in the CLI can show which proposal tasks have been
@@ -156,7 +156,7 @@ class ApplyReport(BaseModel):
 
 
 @dataclass(frozen=True)
-class WikiPageMeta:
+class KnowledgePageMeta:
     """Lightweight wiki-page descriptor handed to fixers.
 
     ``path`` + ``title`` is enough for the fuzzy-link matcher. The
@@ -164,7 +164,7 @@ class WikiPageMeta:
     candidate-parent comparison can run without a frontmatter re-read
     per orphan; both come from the frontmatter the lint pass already
     parsed (see ``LintReport.page_meta``). Heavy fixers that need the
-    body re-read it from ``ctx.wiki_root / path`` on demand.
+    body re-read it from ``ctx.base_root / path`` on demand.
     """
 
     path: str
@@ -196,8 +196,8 @@ class FixerContext:
     storage: Storage | None
     llm: LLMProvider | None
     embedding: EmbeddingProvider | None
-    wiki_root: Path
-    all_pages: list[WikiPageMeta]
+    base_root: Path
+    all_pages: list[KnowledgePageMeta]
     enable_llm: bool = False
     cfg: DikwConfig | None = None
     path_to_doc_id: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -224,7 +224,7 @@ def extract_broken_target(detail: str) -> str | None:
     """Pull the ``[[<target>]]`` substring out of a lint ``detail`` string.
 
     The lint scanner formats every ``broken_wikilink`` issue as
-    ``"[[<target>]] has no matching wiki page"``; we re-extract the
+    ``"[[<target>]] has no matching knowledge page"``; we re-extract the
     target rather than re-parse the body so a fixer can act on the
     issue without reloading the source file.
     """
@@ -239,8 +239,8 @@ file_sha256 = hash_file
 bytes_sha256 = hash_bytes
 
 
-def page_to_op_frontmatter(page: WikiPage) -> dict[str, Any]:
-    """Flatten a :class:`WikiPage` into the dict ``FixOperation`` expects.
+def page_to_op_frontmatter(page: KnowledgePage) -> dict[str, Any]:
+    """Flatten a :class:`KnowledgePage` into the dict ``FixOperation`` expects.
 
     The inverse of :func:`_build_page_from_op` — both fixer-side
     (forward) and apply-side (read-back) live in this module so the
@@ -274,7 +274,7 @@ async def safe_synthesize_pages(
     temperature: float = 0.3,
     log_label: str,
     strict: bool = False,
-) -> list[WikiPage] | None:
+) -> list[KnowledgePage] | None:
     """LLM call + parse, with the soft-failure contract every fixer needs.
 
     Returns the parsed pages on success or ``None`` to signal "fixer
@@ -439,7 +439,7 @@ def _op_title(op: FixOperation) -> str:
     forgets to write ``new_frontmatter["title"]`` (or writes a
     non-string YAML scalar) still gets a stable path-slug derived
     title, so phase 0's ``title_to_path`` seed and
-    ``_build_page_from_op``'s WikiPage construction agree.
+    ``_build_page_from_op``'s KnowledgePage construction agree.
     """
     fm = op.new_frontmatter or {}
     raw = fm.get("title")
@@ -448,8 +448,8 @@ def _op_title(op: FixOperation) -> str:
     return path_slug_title(op.path)
 
 
-def _build_page_from_op(op: FixOperation) -> WikiPage:
-    """Materialise a :class:`WikiPage` from an op's frontmatter + body.
+def _build_page_from_op(op: FixOperation) -> KnowledgePage:
+    """Materialise a :class:`KnowledgePage` from an op's frontmatter + body.
 
     Defaults (stable ``id`` from :func:`wiki.make_page_id`, ISO-now
     timestamps) come from :func:`wiki.build_page` so create / update
@@ -493,7 +493,7 @@ async def run_lint_apply(
     *,
     proposal_report: FixProposalReport,
     storage: Storage,
-    wiki_root: Path,
+    base_root: Path,
     pick: list[int] | None = None,
     skip: list[int] | None = None,
     reporter: Any,  # ProgressReporter
@@ -514,7 +514,7 @@ async def run_lint_apply(
     proposals = _filter_proposals(proposal_report.proposals, pick=pick, skip=skip)
 
     # Pre-load K-layer doc rows for path→doc_id and title→path resolution.
-    docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
+    docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=True))
     path_to_doc_id: dict[str, str] = {d.path: d.doc_id for d in docs}
     title_to_path: dict[str, str] = {}
     for d in docs:
@@ -549,7 +549,7 @@ async def run_lint_apply(
     for idx, proposal in enumerate(proposals):
         preflight_reason = _preflight_proposal(
             proposal=proposal,
-            wiki_root=wiki_root,
+            base_root=base_root,
             already_touched=touched_paths,
         )
         if preflight_reason is not None:
@@ -615,7 +615,7 @@ async def run_lint_apply(
             skip_reason = await _apply_one_op(
                 op=op,
                 storage=storage,
-                wiki_root=wiki_root,
+                base_root=base_root,
                 proposal_id=proposal.proposal_id,
                 issue_kind=proposal.issue_kind,
                 path_to_doc_id=path_to_doc_id,
@@ -626,8 +626,8 @@ async def run_lint_apply(
                     touched_paths.add(op.path)
                     deleted_paths.add(op.path)
                 elif op.kind == "reconcile_provenance":
-                    # No file change → no Phase 1 ``persist_wiki_page``
-                    # re-chunk needed, no ``wiki_paths_changed`` entry,
+                    # No file change → no Phase 1 ``persist_knowledge_page``
+                    # re-chunk needed, no ``knowledge_paths_changed`` entry,
                     # and crucially no ``touched_paths`` entry either:
                     # the conflict gate at line 601 exists to stop a
                     # later op clobbering an earlier op's file write,
@@ -667,11 +667,11 @@ async def run_lint_apply(
     # ``embedder=None`` keeps apply provider-free — the next ``dikw
     # ingest`` will detect ``doc.hash`` drift and re-embed.
     for path in sorted(paths_changed):
-        if not (wiki_root / path).resolve().is_file():
+        if not (base_root / path).resolve().is_file():
             continue
-        await persist_wiki_page(
+        await persist_knowledge_page(
             storage=storage,
-            root=wiki_root,
+            root=base_root,
             path=path,
             embedder=None,
             embedding_model="",
@@ -695,7 +695,7 @@ async def run_lint_apply(
         proposal.issue_path for proposal in proposals
     } - paths_changed - deleted_paths
     for path in sorted(referrer_paths):
-        abs_path = (wiki_root / path).resolve()
+        abs_path = (base_root / path).resolve()
         if not abs_path.is_file():
             continue
         doc_id = path_to_doc_id.get(path)
@@ -711,7 +711,7 @@ async def run_lint_apply(
     return ApplyReport(
         applied=applied,
         skipped=skipped,
-        wiki_paths_changed=sorted(paths_changed | deleted_paths),
+        knowledge_paths_changed=sorted(paths_changed | deleted_paths),
     )
 
 
@@ -778,7 +778,7 @@ def _preflight_hash_gate(
 def _preflight_proposal(
     *,
     proposal: FixProposal,
-    wiki_root: Path,
+    base_root: Path,
     already_touched: set[str],
 ) -> str | None:
     """Validate every op of a proposal against current disk state.
@@ -795,7 +795,7 @@ def _preflight_proposal(
     is captured via ``already_touched`` — any path mutated by a prior
     proposal in the same apply pass causes immediate failure here.
     """
-    wiki_dir = (wiki_root / "wiki").resolve()
+    knowledge_dir = (base_root / "knowledge").resolve()
     sim_created: set[str] = set()
     sim_deleted: set[str] = set()
 
@@ -804,15 +804,15 @@ def _preflight_proposal(
             return False
         if op_path in sim_created:
             return True
-        abs_path = (wiki_root / op_path).resolve()
+        abs_path = (base_root / op_path).resolve()
         return abs_path.is_file()
 
     for op in proposal.operations:
-        abs_path = (wiki_root / op.path).resolve()
+        abs_path = (base_root / op.path).resolve()
         try:
-            abs_path.relative_to(wiki_dir)
+            abs_path.relative_to(knowledge_dir)
         except ValueError:
-            return f"op {op.kind} path is outside wiki/ tree: {op.path!r}"
+            return f"op {op.kind} path is outside knowledge/ tree: {op.path!r}"
 
         if op.path in already_touched:
             return (
@@ -865,14 +865,14 @@ async def _apply_one_op(
     *,
     op: FixOperation,
     storage: Storage,
-    wiki_root: Path,
+    base_root: Path,
     proposal_id: str,
     issue_kind: LintKind,
     path_to_doc_id: dict[str, str],
 ) -> dict[str, Any] | None:
     """Execute one op. Returns ``None`` on success, or a skip-record dict
     that the caller appends to :attr:`ApplyReport.skipped` on failure."""
-    abs_path = (wiki_root / op.path).resolve()
+    abs_path = (base_root / op.path).resolve()
 
     # Sandbox: confine ops to ``<base>/wiki/``, not the whole base.
     # ``apply``'s contract is wiki-layer mutation only — a malformed
@@ -880,13 +880,13 @@ async def _apply_one_op(
     # ``wiki/../dikw.yml`` would resolve inside the base root and
     # would pass a wider check, but those targets are outside the
     # K-layer tree we're authorised to mutate.
-    wiki_dir = (wiki_root / "wiki").resolve()
+    knowledge_dir = (base_root / "knowledge").resolve()
     try:
-        abs_path.relative_to(wiki_dir)
+        abs_path.relative_to(knowledge_dir)
     except ValueError:
         return _skip(
             proposal_id, op,
-            f"refusing to operate outside wiki/ tree: {op.path!r}",
+            f"refusing to operate outside knowledge/ tree: {op.path!r}",
         )
 
     if op.kind in ("update_page", "delete_page", "reconcile_provenance"):
@@ -919,14 +919,14 @@ async def _apply_one_op(
             return _skip(proposal_id, op, "file already exists at create_page path")
         try:
             page = _build_page_from_op(op)
-            write_page(wiki_root, page)
+            write_page(base_root, page)
         except (OSError, ValueError) as e:
             return _skip(proposal_id, op, f"write_page failed: {e}")
         return None
 
     if op.kind == "delete_page":
         # Soft-delete: storage purge first, then move the file to
-        # ``<base>/trash/wiki/<rel>``. If the trash move fails after the
+        # ``<base>/trash/knowledge/<rel>``. If the trash move fails after the
         # storage row is gone, the next ``dikw client ingest`` re-creates the
         # doc row from the file still sitting at the original path
         # (ingest is idempotent on hash). The reverse order would leave
@@ -937,7 +937,7 @@ async def _apply_one_op(
             await storage.delete_document(doc_id)
         try:
             _move_to_trash(
-                wiki_root=wiki_root, src_abs=abs_path, rel_path=op.path,
+                base_root=base_root, src_abs=abs_path, rel_path=op.path,
                 reason=issue_kind, proposal_id=proposal_id,
             )
         except OSError as e:
@@ -946,9 +946,9 @@ async def _apply_one_op(
 
     if op.kind == "reconcile_provenance":
         # Sync storage to frontmatter snapshot. Frontmatter is the
-        # source of truth (the wiki tree is a user-editable Obsidian
+        # source of truth (the knowledge tree is a user-editable Obsidian
         # vault); this op only re-runs the same reconcile that
-        # ``persist_wiki_page`` does on every synth / lint-apply, but
+        # ``persist_knowledge_page`` does on every synth / lint-apply, but
         # without needing an embedder or re-chunking. Concurrent edit
         # check up front (above) catches the case where the user
         # edited ``sources:`` between scan and apply.
@@ -972,18 +972,18 @@ async def _apply_one_op(
 
 def _move_to_trash(
     *,
-    wiki_root: Path,
+    base_root: Path,
     src_abs: Path,
     rel_path: str,
     reason: str,
     proposal_id: str,
 ) -> Path:
-    """Move ``src_abs`` to ``<wiki_root>/trash/<rel_path>`` and stamp a
+    """Move ``src_abs`` to ``<base_root>/trash/<rel_path>`` and stamp a
     ``trashed:`` frontmatter block on the file before the move.
 
     ``rel_path`` is the wiki-relative path of the page (e.g.
     ``"wiki/concepts/dead.md"``); the file ends up at
-    ``<wiki_root>/trash/wiki/concepts/dead.md`` so the original directory
+    ``<base_root>/trash/knowledge/concepts/dead.md`` so the original directory
     layout under ``wiki/`` is preserved verbatim inside ``trash/``,
     making "rescue this page back into the wiki" a plain ``mv`` for the
     user. Collisions get a millisecond-precision timestamp suffix so a
@@ -998,7 +998,7 @@ def _move_to_trash(
 
     Returns the destination path; raises ``OSError`` on filesystem failure.
     """
-    dest = wiki_root / "trash" / rel_path
+    dest = base_root / "trash" / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         # Same wiki path trashed twice in the same wall-clock second

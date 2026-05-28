@@ -1,6 +1,6 @@
 """Fixer for ``orphan_page`` issues.
 
-An orphan page has no inbound K-layer wikilinks. The fixer triages
+An orphan page has no inbound K-layer knowledgelinks. The fixer triages
 each orphan into one of four reviewable strategies, picked in order
 from most conservative to most invasive:
 
@@ -40,7 +40,7 @@ from ..lint_fix import (
     FixerContext,
     FixOperation,
     FixProposal,
-    WikiPageMeta,
+    KnowledgePageMeta,
     bytes_sha256,
     safe_synthesize_pages,
 )
@@ -74,7 +74,7 @@ MERGE_THRESHOLD = 6.0
 _MERGE_MAX_TOKENS = 4096
 
 _MERGE_SYSTEM = (
-    "You merge a K-layer wiki orphan into an existing parent page for "
+    "You merge a K-layer knowledge orphan into an existing parent page for "
     "dikw-core. Emit exactly one <page> block targeting the parent's "
     "existing path; preserve every meaningful fact from both inputs. "
     "Never invent biographical or factual claims."
@@ -129,7 +129,7 @@ def _tag_domains(tags: tuple[str, ...]) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class _ScoredCandidate:
-    page: WikiPageMeta
+    page: KnowledgePageMeta
     score: float
     reason: str  # human-readable breakdown of why this score
 
@@ -144,14 +144,14 @@ class _OrphanSignals:
     operations; this struct hoists them.
     """
 
-    page: WikiPageMeta
+    page: KnowledgePageMeta
     sources: frozenset[str]
     tags: frozenset[str]
     tag_domains: frozenset[str]
     title_tokens: frozenset[str]
 
 
-def _orphan_signals(orphan: WikiPageMeta) -> _OrphanSignals:
+def _orphan_signals(orphan: KnowledgePageMeta) -> _OrphanSignals:
     return _OrphanSignals(
         page=orphan,
         sources=frozenset(orphan.sources),
@@ -163,7 +163,7 @@ def _orphan_signals(orphan: WikiPageMeta) -> _OrphanSignals:
 
 def _score_candidate(
     orphan: _OrphanSignals,
-    candidate: WikiPageMeta,
+    candidate: KnowledgePageMeta,
     *,
     embed_similarity: float = 0.0,
 ) -> _ScoredCandidate:
@@ -216,7 +216,7 @@ def _score_candidate(
 
 
 async def _embedding_similarity_by_path(
-    *, ctx: FixerContext, orphan_meta: WikiPageMeta,
+    *, ctx: FixerContext, orphan_meta: KnowledgePageMeta,
 ) -> dict[str, float]:
     """Per-candidate max cosine similarity from the orphan's chunk
     embeddings, keyed by candidate path. Returns ``{}`` if storage is
@@ -267,7 +267,7 @@ async def _embedding_similarity_by_path(
     # the connection pool overlap them. SQLite serialises on its
     # connection regardless, so no harm there.
     #
-    # ``layer=Layer.WIKI`` is critical: without it, a base with many
+    # ``layer=Layer.KNOWLEDGE`` is critical: without it, a base with many
     # SOURCE/WISDOM chunks routinely fills the limit with non-wiki hits,
     # and those get discarded later (absent from path_to_doc_id) so a
     # genuinely-similar wiki parent never enters the candidate pool.
@@ -275,7 +275,7 @@ async def _embedding_similarity_by_path(
         results = await asyncio.gather(
             *(
                 storage.vec_search(
-                    emb, limit=_EMBED_VEC_LIMIT, layer=Layer.WIKI,
+                    emb, limit=_EMBED_VEC_LIMIT, layer=Layer.KNOWLEDGE,
                 )
                 for emb in embeddings.values()
             )
@@ -376,7 +376,7 @@ class OrphanPageFixer:
         )
 
 
-def _title_is_ambiguous(orphan: WikiPageMeta, ctx: FixerContext) -> bool:
+def _title_is_ambiguous(orphan: KnowledgePageMeta, ctx: FixerContext) -> bool:
     """``True`` when ≥ 2 K-pages share the orphan's title.
 
     A backlink ``[[Title]]`` written by the link or merge strategy
@@ -389,7 +389,7 @@ def _title_is_ambiguous(orphan: WikiPageMeta, ctx: FixerContext) -> bool:
 
 def _rank_candidates(
     *,
-    orphan_meta: WikiPageMeta,
+    orphan_meta: KnowledgePageMeta,
     ctx: FixerContext,
     embedding_sim: dict[str, float],
 ) -> list[_ScoredCandidate]:
@@ -414,7 +414,7 @@ def _rank_candidates(
 
 
 def _propose_delete_stub(
-    *, issue: Any, ctx: FixerContext, orphan_meta: WikiPageMeta,
+    *, issue: Any, ctx: FixerContext, orphan_meta: KnowledgePageMeta,
 ) -> FixProposal | None:
     """Soft-delete an orphan that is clearly a throwaway stub.
 
@@ -433,7 +433,7 @@ def _propose_delete_stub(
          user never bothered to attribute or categorise it; a real
          page would have at least one
     """
-    abs_path = (ctx.wiki_root / issue.path).resolve()
+    abs_path = (ctx.base_root / issue.path).resolve()
     if not abs_path.is_file():
         return None
     file_bytes = abs_path.read_bytes()
@@ -487,7 +487,7 @@ def _build_link_proposal(
     *,
     issue: Any,
     ctx: FixerContext,
-    orphan_meta: WikiPageMeta,
+    orphan_meta: KnowledgePageMeta,
     best: _ScoredCandidate,
 ) -> FixProposal | None:
     """Emit an ``update_page`` op that appends ``[[<orphan-title>]]`` to
@@ -495,7 +495,7 @@ def _build_link_proposal(
     the orphan has no title (the backlink wouldn't resolve), or the
     backlink is already present.
     """
-    parent_abs = (ctx.wiki_root / best.page.path).resolve()
+    parent_abs = (ctx.base_root / best.page.path).resolve()
     if not parent_abs.is_file():
         return None
     file_bytes = parent_abs.read_bytes()
@@ -515,7 +515,7 @@ def _build_link_proposal(
     # ``[[Title#Anchor]]``), the ``links`` table is out of sync
     # (typically: user hand-edited the body without re-ingest, or a
     # prior fix didn't re-trigger ``replace_links_from``). Emit a
-    # no-content update so apply → ``persist_wiki_page`` →
+    # no-content update so apply → ``persist_knowledge_page`` →
     # ``replace_links_from`` reconciles storage. A substring
     # ``"[[Title]]" in body`` check would miss aliased / anchored
     # variants and double-append the backlink.
@@ -565,7 +565,7 @@ async def _propose_merge_into_existing(
     *,
     issue: Any,
     ctx: FixerContext,
-    orphan_meta: WikiPageMeta,
+    orphan_meta: KnowledgePageMeta,
     best: _ScoredCandidate,
 ) -> FixProposal | None:
     """LLM-driven 2-op proposal: rewrite the parent body absorbing the
@@ -583,8 +583,8 @@ async def _propose_merge_into_existing(
         return None
 
     parent_path = best.page.path
-    parent_abs = (ctx.wiki_root / parent_path).resolve()
-    orphan_abs = (ctx.wiki_root / orphan_meta.path).resolve()
+    parent_abs = (ctx.base_root / parent_path).resolve()
+    orphan_abs = (ctx.base_root / orphan_meta.path).resolve()
     if not parent_abs.is_file() or not orphan_abs.is_file():
         return None
 
@@ -770,7 +770,7 @@ def _propose_mark_as_leaf(
     concurrent-edit guard at apply time uses the bytes the fixer
     actually observed.
     """
-    abs_path = (ctx.wiki_root / issue.path).resolve()
+    abs_path = (ctx.base_root / issue.path).resolve()
     if not abs_path.is_file():
         return None
     file_bytes = abs_path.read_bytes()

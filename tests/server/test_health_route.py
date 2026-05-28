@@ -20,7 +20,7 @@ from dikw_core import api as api_module
 @pytest.mark.asyncio
 async def test_health_returns_well_formed_report(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     resp = await server_client.get("/v1/health")
     assert resp.status_code == 200
@@ -28,13 +28,13 @@ async def test_health_returns_well_formed_report(
 
     assert body["status"] == "ok"
     assert body["version"] == __version__
-    assert Path(body["base_root"]) == wiki_root.resolve()
+    assert Path(body["base_root"]) == base_root.resolve()
     assert body["storage_engine"] in ("sqlite", "postgres")
 
     # Layer counts present + integer-typed; a freshly init'd wiki has
     # zero documents in every layer.
     counts = body["layer_counts"]
-    for key in ("sources", "wiki_pages", "wisdom_items", "chunks"):
+    for key in ("sources", "knowledge_pages", "wisdom_items", "chunks"):
         assert key in counts and isinstance(counts[key], int)
     assert counts["sources"] == 0
     assert counts["chunks"] == 0
@@ -131,7 +131,7 @@ async def test_health_never_leaks_secrets(
 @pytest.mark.asyncio
 async def test_health_storage_engine_omits_dsn_and_path(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """``storage_engine`` is the *type* (``sqlite``/``postgres``) only.
     DSN, SQLite path, schema name — none of those belong on /v1/health.
@@ -152,9 +152,9 @@ async def test_health_storage_engine_omits_dsn_and_path(
     assert ".dikw/" not in raw
     assert ".dikw\\" not in raw  # Windows path separator
     assert "index.sqlite" not in raw
-    # base_root is exposed by design; everything else under wiki_root must
-    # not appear (so the .sqlite path under wiki_root/.dikw/ is excluded).
-    sqlite_path = wiki_root / ".dikw" / "index.sqlite"
+    # base_root is exposed by design; everything else under base_root must
+    # not appear (so the .sqlite path under base_root/.dikw/ is excluded).
+    sqlite_path = base_root / ".dikw" / "index.sqlite"
     assert str(sqlite_path) not in raw
 
 

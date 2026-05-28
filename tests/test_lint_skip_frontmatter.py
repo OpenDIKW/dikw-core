@@ -19,15 +19,15 @@ import pytest
 from dikw_core import api
 from dikw_core.domains.data.path_norm import doc_id_for
 from dikw_core.domains.knowledge.lint import run_lint
-from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.domains.knowledge.page import build_page, write_page
 from dikw_core.schemas import DocumentRecord, Layer
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 
 async def _seed_page(
     *,
-    wiki_root: Path,
+    base_root: Path,
     title: str,
     body: str,
     extras: dict | None = None,
@@ -40,17 +40,17 @@ async def _seed_page(
         sources=[],
         extras=extras or {},
     )
-    write_page(wiki_root, page)
-    _cfg, _root, storage = await api._with_storage(wiki_root)
+    write_page(base_root, page)
+    _cfg, _root, storage = await api._with_storage(base_root)
     try:
         await storage.upsert_document(
             DocumentRecord(
-                doc_id=doc_id_for(Layer.WIKI, page.path),
+                doc_id=doc_id_for(Layer.KNOWLEDGE, page.path),
                 path=page.path,
                 title=page.title,
                 hash=f"hash-{page.path}",
                 mtime=0.0,
-                layer=Layer.WIKI,
+                layer=Layer.KNOWLEDGE,
                 active=True,
             )
         )
@@ -59,8 +59,8 @@ async def _seed_page(
     return page.path
 
 
-async def _run_lint(wiki_root: Path):
-    _cfg, root, storage = await api._with_storage(wiki_root)
+async def _run_lint(base_root: Path):
+    _cfg, root, storage = await api._with_storage(base_root)
     try:
         return await run_lint(storage, root=root)
     finally:
@@ -69,8 +69,8 @@ async def _run_lint(wiki_root: Path):
 
 @pytest.fixture()
 def empty_wiki(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     return wiki
 
 
@@ -80,7 +80,7 @@ async def test_orphan_page_suppressed_by_frontmatter(empty_wiki: Path) -> None:
     the orphan_page issue list. The acknowledged_leaves bucket records
     the path so it stays visible in audit / `dikw client lint --format json`."""
     path = await _seed_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Intentional Leaf",
         body="# Intentional Leaf\n\nValid terminal note.\n",
         extras={"lint": {"skip": ["orphan_page"], "reason": "valid leaf note"}},
@@ -101,7 +101,7 @@ async def test_other_rules_still_apply_when_only_orphan_skipped(
     with both no inbound links AND a broken wikilink should still
     report the broken_wikilink issue, just not the orphan one."""
     path = await _seed_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Leaf With Broken Link",
         body="# Leaf With Broken Link\n\nSee [[Missing Target]].\n",
         extras={"lint": {"skip": ["orphan_page"]}},
@@ -118,7 +118,7 @@ async def test_malformed_lint_frontmatter_is_ignored(empty_wiki: Path) -> None:
     (no rule suppression, no crash). The frontmatter is user-editable,
     so robustness matters more than strict validation."""
     path = await _seed_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Bad Lint Block",
         body="# Bad Lint Block\n\nValid body.\n",
         # Various bad shapes: list at top instead of dict; skip as
@@ -142,7 +142,7 @@ async def test_acknowledged_leaves_empty_when_no_suppression(
     acknowledged_leaves list — the bucket exists by default but stays
     empty unless a page opts in."""
     await _seed_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Plain Page",
         body="# Plain Page\n\nbody.\n",
     )

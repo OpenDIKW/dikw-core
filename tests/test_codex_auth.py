@@ -298,7 +298,7 @@ def test_save_codex_tokens_preserves_other_provider_entries(
 
 
 def test_save_codex_tokens_creates_dikw_dir(tmp_path: Path) -> None:
-    target = tmp_path / "nested" / "wiki"
+    target = tmp_path / "nested" / "knowledge"
     save_codex_tokens(target, {"access_token": "at-3", "refresh_token": "rt-3"})
     assert dikw_auth_path(target).is_file()
     assert dikw_auth_dir(target).is_dir()

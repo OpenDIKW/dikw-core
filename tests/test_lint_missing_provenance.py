@@ -29,15 +29,15 @@ from dikw_core import api
 from dikw_core.domains.data.path_norm import doc_id_for, normalize_path
 from dikw_core.domains.knowledge.lint import run_lint
 from dikw_core.domains.knowledge.lint_fix import FixProposalReport
-from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.domains.knowledge.page import build_page, write_page
 from dikw_core.schemas import DocumentRecord, Layer
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 
 async def _seed_wiki_page(
     *,
-    wiki_root: Path,
+    base_root: Path,
     title: str,
     sources: list[str],
     extras_lint: dict | None = None,
@@ -52,10 +52,10 @@ async def _seed_wiki_page(
         sources=sources,
         extras={"lint": extras_lint} if extras_lint else {},
     )
-    write_page(wiki_root, page)
-    doc_id = doc_id_for(Layer.WIKI, page.path)
+    write_page(base_root, page)
+    doc_id = doc_id_for(Layer.KNOWLEDGE, page.path)
 
-    _cfg, _root, storage = await api._with_storage(wiki_root)
+    _cfg, _root, storage = await api._with_storage(base_root)
     try:
         await storage.upsert_document(
             DocumentRecord(
@@ -64,7 +64,7 @@ async def _seed_wiki_page(
                 title=page.title,
                 hash=f"hash-{page.path}",
                 mtime=0.0,
-                layer=Layer.WIKI,
+                layer=Layer.KNOWLEDGE,
                 active=True,
             )
         )
@@ -73,8 +73,8 @@ async def _seed_wiki_page(
     return page.path, doc_id
 
 
-async def _run_lint(wiki_root: Path):
-    _cfg, root, storage = await api._with_storage(wiki_root)
+async def _run_lint(base_root: Path):
+    _cfg, root, storage = await api._with_storage(base_root)
     try:
         return await run_lint(storage, root=root)
     finally:
@@ -83,8 +83,8 @@ async def _run_lint(wiki_root: Path):
 
 @pytest.fixture()
 def empty_wiki(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     return wiki
 
 
@@ -99,7 +99,7 @@ async def test_run_lint_emits_missing_provenance_when_table_empty(
     empty (typical legacy-base state) → one ``missing_provenance``
     issue surfaces."""
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md", "sources/b.md"],
     )
@@ -119,7 +119,7 @@ async def test_run_lint_emits_missing_provenance_when_rows_stale(
     ``existing_keys != expected_keys`` check catches it as one issue;
     the fix is the same as the "table empty" sub-case."""
     path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/new.md"],
     )
@@ -143,7 +143,7 @@ async def test_run_lint_no_issue_when_keys_match(empty_wiki: Path) -> None:
     "fixed" state so a regression that always emits the issue would
     fail."""
     _path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -169,7 +169,7 @@ async def test_run_lint_no_issue_when_no_sources_and_table_empty(
     test.
     """
     await _seed_wiki_page(
-        wiki_root=empty_wiki, title="Page", sources=[]
+        base_root=empty_wiki, title="Page", sources=[]
     )
     report = await _run_lint(empty_wiki)
     assert not any(i.kind == "missing_provenance" for i in report.issues)
@@ -188,7 +188,7 @@ async def test_run_lint_emits_missing_provenance_when_sources_cleared_but_rows_s
     sources the frontmatter no longer claims.
     """
     path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki, title="Page", sources=[]
+        base_root=empty_wiki, title="Page", sources=[]
     )
     _cfg, _root, storage = await api._with_storage(empty_wiki)
     try:
@@ -211,7 +211,7 @@ async def test_apply_clears_stale_rows_when_frontmatter_emptied(
     [])`` actually fires (table becomes empty) and the next lint pass
     has no ``missing_provenance`` issue."""
     _path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki, title="Page", sources=[]
+        base_root=empty_wiki, title="Page", sources=[]
     )
     _cfg, _root, storage = await api._with_storage(empty_wiki)
     try:
@@ -258,7 +258,7 @@ async def test_run_lint_emits_missing_provenance_when_raw_spelling_drifts(
     """
     sources_lower = ["sources/foo.md"]
     path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki, title="Page", sources=sources_lower
+        base_root=empty_wiki, title="Page", sources=sources_lower
     )
     # Plant the row with a different RAW spelling but the same
     # normalized key — simulates "user edited the casing in
@@ -306,7 +306,7 @@ async def test_run_lint_skip_frontmatter_suppresses_missing_provenance(
     suppression mechanism — get_args(LintKind) already validates the
     new kind so no extra plumbing."""
     await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
         extras_lint={"skip": ["missing_provenance"]},
@@ -326,7 +326,7 @@ async def test_missing_provenance_propose_emits_reconcile_op(
     issue, carrying the frontmatter ``sources:`` snapshot + an
     ``expected_hash`` stamp for concurrent-edit safety."""
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md", "sources/b.md"],
     )
@@ -352,7 +352,7 @@ async def test_apply_reconcile_provenance_writes_storage_rows(
     """``lint apply`` calls ``replace_provenance_from`` with the
     snapshot. After apply the table matches frontmatter exactly."""
     path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md", "sources/b.md"],
     )
@@ -379,18 +379,18 @@ async def test_apply_reconcile_provenance_writes_storage_rows(
         }
     finally:
         await storage.close()
-    # The fix path doesn't touch the file → wiki_paths_changed is empty.
-    assert path not in apply_report.wiki_paths_changed
+    # The fix path doesn't touch the file → knowledge_paths_changed is empty.
+    assert path not in apply_report.knowledge_paths_changed
 
 
 @pytest.mark.asyncio
-async def test_apply_reconcile_provenance_does_not_modify_wiki_file(
+async def test_apply_reconcile_provenance_does_not_modify_knowledge_file(
     empty_wiki: Path,
 ) -> None:
     """The reconcile op is the "narrowest possible write" — storage only.
     Wiki file bytes must be byte-identical before and after apply."""
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -414,7 +414,7 @@ async def test_apply_then_relint_clears_missing_provenance_issue(
     the self-disabling property — once the table matches frontmatter,
     the comparison passes and no issue surfaces."""
     await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -440,7 +440,7 @@ async def test_apply_skips_when_file_edited_between_propose_and_apply(
     / ``delete_page``. The next lint pass will re-propose against the
     fresh state."""
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -469,20 +469,20 @@ async def test_fixer_treats_scalar_sources_as_no_op(
     empty_wiki: Path,
 ) -> None:
     """``MissingProvenanceFixer`` reads the on-disk frontmatter directly,
-    so it needs the same ``isinstance(list)`` guard as ``persist_wiki_page``
+    so it needs the same ``isinstance(list)`` guard as ``persist_knowledge_page``
     and ``run_lint``. A scalar ``sources: foo.md`` (user hand-edit) must
     NOT iterate per-character into the op's ``source_paths``; the apply
     would then write 14 garbage rows over the stale ones we were trying
     to clear, plus the apply could raise on truthy-non-iterable values.
 
-    Symmetric with the ``persist_wiki_page`` test in
-    ``test_persist_wiki_page.py`` — the fixer is the second place that
+    Symmetric with the ``persist_knowledge_page`` test in
+    ``test_persist_knowledge_page.py`` — the fixer is the second place that
     parses frontmatter for this field; both must agree on the
     "malformed shape -> zero sources" contract.
     """
     # Write the page directly so we can produce a scalar frontmatter
     # value (build_page always wraps in list()).
-    page_path = "wiki/scalar.md"
+    page_path = "knowledge/scalar.md"
     abs_path = empty_wiki / page_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(
@@ -498,13 +498,13 @@ async def test_fixer_treats_scalar_sources_as_no_op(
     # Register the doc + plant stale rows so the lint pass surfaces the
     # issue (otherwise the scalar-empty + table-empty case would just be
     # clean and the fixer would never fire).
-    doc_id = doc_id_for(Layer.WIKI, page_path)
+    doc_id = doc_id_for(Layer.KNOWLEDGE, page_path)
     _cfg, _root, storage = await api._with_storage(empty_wiki)
     try:
         await storage.upsert_document(
             DocumentRecord(
                 doc_id=doc_id, path=page_path, title="Scalar",
-                hash="hash-scalar", mtime=0.0, layer=Layer.WIKI, active=True,
+                hash="hash-scalar", mtime=0.0, layer=Layer.KNOWLEDGE, active=True,
             )
         )
         await storage.replace_provenance_from(doc_id, ["sources/stale.md"])
@@ -549,7 +549,7 @@ async def test_apply_reconcile_op_does_not_block_sibling_op_on_same_path(
     )
 
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -631,12 +631,12 @@ async def test_fixer_returns_none_when_target_file_vanished(
 
     issue = LintIssue(
         kind="missing_provenance",
-        path="wiki/ghost.md",  # never written to disk
+        path="knowledge/ghost.md",  # never written to disk
         detail="phantom",
     )
     ctx = FixerContext(
         storage=None, llm=None, embedding=None,
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         all_pages=[], enable_llm=False,
     )
 
@@ -668,7 +668,7 @@ async def test_apply_skips_reconcile_op_with_missing_source_paths(
     )
 
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -721,7 +721,7 @@ async def test_apply_skips_reconcile_op_when_doc_id_unknown(
     # exists-check + hash-check pass) but is NOT registered as a
     # DocumentRecord. Manually write the file rather than seeding
     # via ``_seed_wiki_page`` (which also upserts the doc).
-    phantom_path = "wiki/phantom.md"
+    phantom_path = "knowledge/phantom.md"
     file_path = empty_wiki / phantom_path
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(
@@ -766,7 +766,7 @@ async def test_preflight_skips_when_target_file_vanishes_before_apply(
     after the refactor. Reconcile is the cheapest case to exercise this
     branch from."""
     path, _doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )
@@ -801,7 +801,7 @@ async def test_apply_rechecks_hash_after_preflight_for_reconcile_provenance(
     preflight catches the cheap mass case, apply closes the race.
     """
     path, doc_id = await _seed_wiki_page(
-        wiki_root=empty_wiki,
+        base_root=empty_wiki,
         title="Page",
         sources=["sources/a.md"],
     )

@@ -25,7 +25,7 @@ from typing import Literal
 
 from ..domains.knowledge.links import WIKILINK_RE, normalize_for_match
 from ..domains.knowledge.lint import _FENCED_CODE, check_atomicity
-from ..domains.knowledge.wiki import WikiPage
+from ..domains.knowledge.page import KnowledgePage
 from ..providers.base import EmbeddingProvider
 from ..schemas import ChunkRecord
 
@@ -118,7 +118,7 @@ def mean_recall_at_k(
 # K-layer (synth) quality metrics
 # ===========================================================================
 
-# ATX-style headings; setext is rare in LLM-generated wiki pages.
+# ATX-style headings; setext is rare in LLM-generated knowledge pages.
 _HEADING_LINE = re.compile(r"^\s{0,3}#+\s+.*$", flags=re.MULTILINE)
 # Zero-width sentence boundary after ``.`` / ``。`` (CJK rarely has a space
 # after the full stop) plus blank-line splits for paragraph-style claims.
@@ -250,7 +250,7 @@ def wikilink_resolved_ratio(*, total: int, unresolved: int) -> float:
     return (total - unresolved) / total
 
 
-def atomicity_score(pages: Sequence[WikiPage]) -> float:
+def atomicity_score(pages: Sequence[KnowledgePage]) -> float:
     """``1 - non_atomic / total``. Empty input returns 1.0 (no failures)."""
     if not pages:
         return 1.0
@@ -261,7 +261,7 @@ def atomicity_score(pages: Sequence[WikiPage]) -> float:
 
 
 def language_fidelity(
-    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    pages_with_sources: Sequence[tuple[KnowledgePage, str]],
 ) -> float:
     """Fraction of pages whose dominant language matches their source's.
 
@@ -308,7 +308,7 @@ class GroundingClaim:
 
 async def compute_grounding_cosines(
     *,
-    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    pages_with_sources: Sequence[tuple[KnowledgePage, str]],
     chunks_by_source: Mapping[str, Sequence[ChunkRecord]],
     embedder: EmbeddingProvider,
     embedding_model: str,
@@ -384,7 +384,7 @@ async def compute_grounding_cosines(
 def reduce_grounding_ratio(
     claims: Sequence[GroundingClaim],
     *,
-    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    pages_with_sources: Sequence[tuple[KnowledgePage, str]],
     tau: float,
 ) -> float:
     """Apply tau to per-claim cosines → per-page ratios → mean across pages.
@@ -412,7 +412,7 @@ def reduce_grounding_ratio(
 
 async def fact_grounding_ratio(
     *,
-    pages_with_sources: Sequence[tuple[WikiPage, str]],
+    pages_with_sources: Sequence[tuple[KnowledgePage, str]],
     chunks_by_source: Mapping[str, Sequence[ChunkRecord]],
     embedder: EmbeddingProvider,
     embedding_model: str,
@@ -473,7 +473,7 @@ async def _embed_batched(
 
 async def duplicate_ratio_max(
     *,
-    pages: Sequence[WikiPage],
+    pages: Sequence[KnowledgePage],
     embedder: EmbeddingProvider,
     embedding_model: str,
     tau: float,

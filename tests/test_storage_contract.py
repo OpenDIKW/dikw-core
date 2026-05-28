@@ -27,10 +27,10 @@ from dikw_core.schemas import (
     EmbeddingRow,
     EmbeddingVersion,
     ImageMediaMeta,
+    KnowledgeLogEntry,
     Layer,
     LinkRecord,
     LinkType,
-    WikiLogEntry,
 )
 from dikw_core.storage._schema import SCHEMA_VERSION, SCHEMA_VERSION_KEY
 from dikw_core.storage.base import NotSupported, Storage
@@ -934,7 +934,7 @@ async def test_vec_search_layer_filter(storage: Storage) -> None:
     ``layer=WIKI`` only the wiki chunk surfaces.
     """
     src_doc = _make_doc("sources/src.md", layer=Layer.SOURCE)
-    wiki_doc = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    wiki_doc = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
     for d in (src_doc, wiki_doc):
         await storage.upsert_document(d)
     src_ids = await storage.replace_chunks(
@@ -967,7 +967,7 @@ async def test_vec_search_layer_filter(storage: Storage) -> None:
     # the over-fetch would have pulled the source chunk into the KNN
     # candidate set.
     wiki_hits = await storage.vec_search(
-        [1.0, 0.0, 0.0, 0.0], limit=10, layer=Layer.WIKI
+        [1.0, 0.0, 0.0, 0.0], limit=10, layer=Layer.KNOWLEDGE
     )
     assert [h.chunk_id for h in wiki_hits] == [wiki_ids[0]]
     # Symmetric check.
@@ -1026,12 +1026,12 @@ async def test_delete_document_purges_all_rows(storage: Storage) -> None:
     """``delete_document`` is the hard counterpart to ``deactivate_document``:
     the row plus every dependent (chunks, embeddings, links) must be
     gone from storage. Used by the lint-apply trash path so a soft-
-    deleted file in ``<base>/trash/wiki/`` doesn't leave residual rows
+    deleted file in ``<base>/trash/knowledge/`` doesn't leave residual rows
     behind that ``counts()`` would still tally and that the next
     ``run_lint`` would see as ghost docs.
     """
-    keep_doc = _make_doc("wiki/keep.md", layer=Layer.WIKI)
-    drop_doc = _make_doc("wiki/drop.md", layer=Layer.WIKI)
+    keep_doc = _make_doc("knowledge/keep.md", layer=Layer.KNOWLEDGE)
+    drop_doc = _make_doc("knowledge/drop.md", layer=Layer.KNOWLEDGE)
     for d in (keep_doc, drop_doc):
         await storage.upsert_document(d)
 
@@ -1048,7 +1048,7 @@ async def test_delete_document_purges_all_rows(storage: Storage) -> None:
     await storage.upsert_link(
         LinkRecord(
             src_doc_id=drop_doc.doc_id,
-            dst_path="wiki/keep.md",
+            dst_path="knowledge/keep.md",
             link_type=LinkType.WIKILINK,
             anchor=None,
             line=1,
@@ -1078,7 +1078,7 @@ async def test_delete_document_purges_all_rows(storage: Storage) -> None:
 
     # Doc row gone — both active=True listing and "any state" listing.
     assert await storage.get_document(drop_doc.doc_id) is None
-    all_docs = list(await storage.list_documents(layer=Layer.WIKI, active=None))
+    all_docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=None))
     assert all(d.doc_id != drop_doc.doc_id for d in all_docs)
 
     # Chunks gone (cascade or explicit), and the keeper's chunks survive.
@@ -1192,14 +1192,14 @@ async def test_get_chunk_embeddings_empty_input_no_roundtrip(
 
 
 async def test_link_graph(storage: Storage) -> None:
-    src_doc = _make_doc("wiki/a.md", layer=Layer.WIKI)
-    dst_doc = _make_doc("wiki/b.md", layer=Layer.WIKI)
+    src_doc = _make_doc("knowledge/a.md", layer=Layer.KNOWLEDGE)
+    dst_doc = _make_doc("knowledge/b.md", layer=Layer.KNOWLEDGE)
     for d in (src_doc, dst_doc):
         await storage.upsert_document(d)
 
     link = LinkRecord(
         src_doc_id=src_doc.doc_id,
-        dst_path="wiki/b.md",
+        dst_path="knowledge/b.md",
         link_type=LinkType.WIKILINK,
         anchor=None,
         line=3,
@@ -1207,9 +1207,9 @@ async def test_link_graph(storage: Storage) -> None:
     await storage.upsert_link(link)
 
     out = await storage.links_from(src_doc.doc_id)
-    inb = await storage.links_to("wiki/b.md")
+    inb = await storage.links_to("knowledge/b.md")
     assert len(out) == 1 and len(inb) == 1
-    assert out[0].dst_path == "wiki/b.md"
+    assert out[0].dst_path == "knowledge/b.md"
 
 
 async def test_replace_links_from_atomically_swaps_outgoing_set(
@@ -1218,19 +1218,19 @@ async def test_replace_links_from_atomically_swaps_outgoing_set(
     """``replace_links_from(src, links)`` atomically deletes all prior
     edges from ``src`` and inserts the new set in one transaction.
     Pass ``[]`` to wipe entirely; pass a fresh source's first set to
-    no-op the leading delete. Used by ``_persist_wiki_page`` so
+    no-op the leading delete. Used by ``_persist_knowledge_page`` so
     removing a ``[[wikilink]]`` from the body actually drops the
     edge — without this the link table accumulates ghost edges as
-    wiki pages are edited, polluting graph-leg retrieval and
+    knowledge pages are edited, polluting graph-leg retrieval and
     orphan/broken-link lint."""
-    src_a = _make_doc("wiki/a.md", layer=Layer.WIKI)
-    src_other = _make_doc("wiki/other.md", layer=Layer.WIKI)
+    src_a = _make_doc("knowledge/a.md", layer=Layer.KNOWLEDGE)
+    src_other = _make_doc("knowledge/other.md", layer=Layer.KNOWLEDGE)
     for d in (
         src_a,
         src_other,
-        _make_doc("wiki/b.md", layer=Layer.WIKI),
-        _make_doc("wiki/c.md", layer=Layer.WIKI),
-        _make_doc("wiki/d.md", layer=Layer.WIKI),
+        _make_doc("knowledge/b.md", layer=Layer.KNOWLEDGE),
+        _make_doc("knowledge/c.md", layer=Layer.KNOWLEDGE),
+        _make_doc("knowledge/d.md", layer=Layer.KNOWLEDGE),
     ):
         await storage.upsert_document(d)
 
@@ -1246,21 +1246,21 @@ async def test_replace_links_from_atomically_swaps_outgoing_set(
     # Fresh src — leading DELETE no-ops, the inserts land.
     await storage.replace_links_from(
         src_a.doc_id,
-        [_link(src_a.doc_id, "wiki/b.md", 1), _link(src_a.doc_id, "wiki/c.md", 2)],
+        [_link(src_a.doc_id, "knowledge/b.md", 1), _link(src_a.doc_id, "knowledge/c.md", 2)],
     )
-    await storage.upsert_link(_link(src_other.doc_id, "wiki/b.md", 1))
+    await storage.upsert_link(_link(src_other.doc_id, "knowledge/b.md", 1))
     initial_a = await storage.links_from(src_a.doc_id)
-    assert {link.dst_path for link in initial_a} == {"wiki/b.md", "wiki/c.md"}
+    assert {link.dst_path for link in initial_a} == {"knowledge/b.md", "knowledge/c.md"}
 
     # Swap src_a's set entirely: drop b/c, install d.
     await storage.replace_links_from(
-        src_a.doc_id, [_link(src_a.doc_id, "wiki/d.md", 1)]
+        src_a.doc_id, [_link(src_a.doc_id, "knowledge/d.md", 1)]
     )
     a_out = await storage.links_from(src_a.doc_id)
-    assert {link.dst_path for link in a_out} == {"wiki/d.md"}
+    assert {link.dst_path for link in a_out} == {"knowledge/d.md"}
     # links_to scoped by dst_path: src_a no longer points at b;
     # src_other's edge to b survives the unrelated replace call.
-    inbound_b = await storage.links_to("wiki/b.md")
+    inbound_b = await storage.links_to("knowledge/b.md")
     assert {link.src_doc_id for link in inbound_b} == {src_other.doc_id}
 
     # Empty list wipes the source's outgoing edges — the explicit
@@ -1271,7 +1271,7 @@ async def test_replace_links_from_atomically_swaps_outgoing_set(
     assert len(await storage.links_from(src_other.doc_id)) == 1
 
     # Idempotent: replacing an already-empty source with an empty
-    # set is a no-op, not an error — _persist_wiki_page invokes
+    # set is a no-op, not an error — _persist_knowledge_page invokes
     # this unconditionally on every persist including the first.
     await storage.replace_links_from(src_a.doc_id, [])
     assert await storage.links_from(src_a.doc_id) == []
@@ -1281,10 +1281,10 @@ async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
     """Wikilink-graph leg of HybridSearcher: from a seed chunk in
     ``page_a``, get to the chunks of ``page_b`` and ``page_c`` via
     the wikilinks ``page_a -> page_b`` and ``page_a -> page_c``."""
-    page_a = _make_doc("wiki/a.md", layer=Layer.WIKI)
-    page_b = _make_doc("wiki/b.md", layer=Layer.WIKI)
-    page_c = _make_doc("wiki/c.md", layer=Layer.WIKI)
-    unlinked = _make_doc("wiki/d.md", layer=Layer.WIKI)
+    page_a = _make_doc("knowledge/a.md", layer=Layer.KNOWLEDGE)
+    page_b = _make_doc("knowledge/b.md", layer=Layer.KNOWLEDGE)
+    page_c = _make_doc("knowledge/c.md", layer=Layer.KNOWLEDGE)
+    unlinked = _make_doc("knowledge/d.md", layer=Layer.KNOWLEDGE)
     for d in (page_a, page_b, page_c, unlinked):
         await storage.upsert_document(d)
 
@@ -1314,7 +1314,7 @@ async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
         ],
     )
 
-    for dst in ("wiki/b.md", "wiki/c.md"):
+    for dst in ("knowledge/b.md", "knowledge/c.md"):
         await storage.upsert_link(
             LinkRecord(
                 src_doc_id=page_a.doc_id,
@@ -1328,7 +1328,7 @@ async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
     await storage.upsert_link(
         LinkRecord(
             src_doc_id=page_a.doc_id,
-            dst_path="wiki/d.md",
+            dst_path="knowledge/d.md",
             link_type=LinkType.MARKDOWN,
             anchor=None,
             line=2,
@@ -1342,7 +1342,7 @@ async def test_neighbor_chunks_via_links_one_hop(storage: Storage) -> None:
 
     assert neighbor_ids == set(b_chunks) | set(c_chunks)
     assert seed_id not in neighbor_ids
-    # ``neighbor_ids`` is exact above — markdown-link-only ``wiki/d.md``
+    # ``neighbor_ids`` is exact above — markdown-link-only ``knowledge/d.md``
     # is implicitly excluded — but lock the doc_id projection too.
     for n in neighbors:
         assert n.edge_count >= 1
@@ -1356,7 +1356,7 @@ async def test_neighbor_chunks_via_links_edge_count_ranking(
     a neighbor reached from many seeds outranks one reached from few.
     """
     pages = {
-        name: _make_doc(f"wiki/{name}.md", layer=Layer.WIKI)
+        name: _make_doc(f"knowledge/{name}.md", layer=Layer.KNOWLEDGE)
         for name in ("p1", "p2", "p3", "popular", "lonely")
     }
     for d in pages.values():
@@ -1389,7 +1389,7 @@ async def test_neighbor_chunks_via_links_edge_count_ranking(
         await storage.upsert_link(
             LinkRecord(
                 src_doc_id=pages[src].doc_id,
-                dst_path="wiki/popular.md",
+                dst_path="knowledge/popular.md",
                 link_type=LinkType.WIKILINK,
                 anchor=None,
                 line=1,
@@ -1398,7 +1398,7 @@ async def test_neighbor_chunks_via_links_edge_count_ranking(
     await storage.upsert_link(
         LinkRecord(
             src_doc_id=pages["p1"].doc_id,
-            dst_path="wiki/lonely.md",
+            dst_path="knowledge/lonely.md",
             link_type=LinkType.WIKILINK,
             anchor=None,
             line=2,
@@ -1418,8 +1418,8 @@ async def test_neighbor_chunks_via_links_layer_filter(storage: Storage) -> None:
     """``layer`` filters the *neighbor* docs — useful when the caller
     wants the graph leg constrained to WIKI pages.
     """
-    src_page = _make_doc("wiki/src.md", layer=Layer.WIKI)
-    wiki_target = _make_doc("wiki/target.md", layer=Layer.WIKI)
+    src_page = _make_doc("knowledge/src.md", layer=Layer.KNOWLEDGE)
+    wiki_target = _make_doc("knowledge/target.md", layer=Layer.KNOWLEDGE)
     source_target = _make_doc("sources/target.md", layer=Layer.SOURCE)
     for d in (src_page, wiki_target, source_target):
         await storage.upsert_document(d)
@@ -1441,7 +1441,7 @@ async def test_neighbor_chunks_via_links_layer_filter(storage: Storage) -> None:
         )],
     ))[0]
 
-    for dst in ("wiki/target.md", "sources/target.md"):
+    for dst in ("knowledge/target.md", "sources/target.md"):
         await storage.upsert_link(
             LinkRecord(
                 src_doc_id=src_page.doc_id,
@@ -1453,7 +1453,7 @@ async def test_neighbor_chunks_via_links_layer_filter(storage: Storage) -> None:
         )
 
     wiki_only = await storage.neighbor_chunks_via_links(
-        [src_chunk], layer=Layer.WIKI
+        [src_chunk], layer=Layer.KNOWLEDGE
     )
     assert {n.chunk_id for n in wiki_only} == {wiki_chunk}
     assert source_chunk not in {n.chunk_id for n in wiki_only}
@@ -1463,17 +1463,17 @@ async def test_neighbor_chunks_via_links_empty_seeds(storage: Storage) -> None:
     assert await storage.neighbor_chunks_via_links([]) == []
 
 
-async def test_wiki_log_append(storage: Storage) -> None:
+async def test_knowledge_log_append(storage: Storage) -> None:
     ts = time.time()
-    await storage.append_wiki_log(
-        WikiLogEntry(ts=ts, action="ingest", src="sources/a.md", dst=None, note="hello")
+    await storage.append_knowledge_log(
+        KnowledgeLogEntry(ts=ts, action="ingest", src="sources/a.md", dst=None, note="hello")
     )
     counts = await storage.counts()
-    assert counts.last_wiki_log_ts is not None
-    assert counts.last_wiki_log_ts == pytest.approx(ts, abs=1.0)
+    assert counts.last_knowledge_log_ts is not None
+    assert counts.last_knowledge_log_ts == pytest.approx(ts, abs=1.0)
 
 
-async def test_wiki_log_same_ts_tiebreak(storage: Storage) -> None:
+async def test_knowledge_log_same_ts_tiebreak(storage: Storage) -> None:
     """Events appended within the same float-second must come back in
     insertion order; ts collisions are real (one ingest run can append
     multiple entries inside a single second).
@@ -1481,11 +1481,11 @@ async def test_wiki_log_same_ts_tiebreak(storage: Storage) -> None:
     ts = time.time()
     notes = [f"event-{i}" for i in range(5)]
     for note in notes:
-        await storage.append_wiki_log(
-            WikiLogEntry(ts=ts, action="ingest", src="sources/a.md", note=note)
+        await storage.append_knowledge_log(
+            KnowledgeLogEntry(ts=ts, action="ingest", src="sources/a.md", note=note)
         )
 
-    rows = await storage.list_wiki_log(since_ts=ts)
+    rows = await storage.list_knowledge_log(since_ts=ts)
     same_ts = [r for r in rows if r.ts == ts]
     assert [r.note for r in same_ts] == notes
     # storage layer must assign a non-None monotonic id per row
@@ -2180,8 +2180,8 @@ async def test_replace_provenance_from_empty_then_populate(
     (matches the fresh-page contract documented on ``replace_links_from``).
     Calling ``provenance_from`` on the unrelated K-page returns ``[]`` —
     the per-src DELETE must not touch other pages' rows."""
-    page_a = _make_doc("wiki/page-a.md", layer=Layer.WIKI)
-    page_b = _make_doc("wiki/page-b.md", layer=Layer.WIKI)
+    page_a = _make_doc("knowledge/page-a.md", layer=Layer.KNOWLEDGE)
+    page_b = _make_doc("knowledge/page-b.md", layer=Layer.KNOWLEDGE)
     for d in (page_a, page_b):
         await storage.upsert_document(d)
 
@@ -2207,7 +2207,7 @@ async def test_replace_provenance_from_deletes_then_inserts(
     the prior rows and inserts the new ones — mirrors
     ``replace_links_from``'s atomic delete-then-insert contract. The
     reverse-lookup index must reflect the new state immediately."""
-    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    page = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
     await storage.upsert_document(page)
 
     await storage.replace_provenance_from(
@@ -2244,7 +2244,7 @@ async def test_replace_provenance_from_dedup_by_normalized_key(
     The PK is ``(src_doc_id, source_path_key)`` so the second insert
     must not raise — adapters dedupe deterministically. First occurrence
     in input order wins on raw spelling."""
-    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    page = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
     await storage.upsert_document(page)
 
     await storage.replace_provenance_from(
@@ -2269,7 +2269,7 @@ async def test_provenance_from_returns_deterministic_order(
     """Forward iteration order is ``source_path_key ASC`` — locked by
     contract so HTTP responses don't shuffle between adapters or between
     calls. Insertion order is intentionally NOT preserved."""
-    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    page = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
     await storage.upsert_document(page)
 
     # Insert out-of-order; storage must hand them back sorted by key.
@@ -2288,9 +2288,9 @@ async def test_provenance_to_returns_all_referencing_pages(
     """Reverse lookup ``provenance_to(source_path_key)`` returns every
     K-page that claims this source. Ordering is ``src_doc_id ASC`` so the
     response is stable across adapters. Excludes unrelated source keys."""
-    page_a = _make_doc("wiki/page-a.md", layer=Layer.WIKI)
-    page_b = _make_doc("wiki/page-b.md", layer=Layer.WIKI)
-    page_c = _make_doc("wiki/page-c.md", layer=Layer.WIKI)
+    page_a = _make_doc("knowledge/page-a.md", layer=Layer.KNOWLEDGE)
+    page_b = _make_doc("knowledge/page-b.md", layer=Layer.KNOWLEDGE)
+    page_c = _make_doc("knowledge/page-c.md", layer=Layer.KNOWLEDGE)
     for d in (page_a, page_b, page_c):
         await storage.upsert_document(d)
 
@@ -2309,7 +2309,7 @@ async def test_provenance_to_returns_all_referencing_pages(
     # ``src_doc_id ASC`` ordering; sorting both sides would mask a
     # regression where the adapter returns rows in insertion / random
     # order. page_a.doc_id and page_b.doc_id are constructed as
-    # ``wiki:wiki/a.md`` / ``wiki:wiki/b.md``, so the lexicographic
+    # ``knowledge:knowledge/a.md`` / ``knowledge:knowledge/b.md``, so the lexicographic
     # ASC order is deterministic.
     assert [r.src_doc_id for r in shared] == [page_a.doc_id, page_b.doc_id]
     only_c = await storage.provenance_to(normalize_path("sources/only-c.md"))
@@ -2328,8 +2328,8 @@ async def test_delete_document_cascades_provenance(storage: Storage) -> None:
     still hold the row pointing at the now-missing path — same shape
     as ``links_to`` after a wikilink target is deleted; that drift is
     deliberately surfaced via the ``resolved=False`` flag at query time."""
-    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
-    other_page = _make_doc("wiki/other.md", layer=Layer.WIKI)
+    page = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
+    other_page = _make_doc("knowledge/other.md", layer=Layer.KNOWLEDGE)
     src = _make_doc("sources/src.md", layer=Layer.SOURCE)
     for d in (page, other_page, src):
         await storage.upsert_document(d)
@@ -2378,7 +2378,7 @@ async def test_provenance_no_fk_allows_unindexed_source_path(
     ``ingest`` on the new file, or reference a planned source that
     doesn't exist yet. Storage must accept the row; resolution status
     is a query-time concern (see ``api.read_provenance``)."""
-    page = _make_doc("wiki/page.md", layer=Layer.WIKI)
+    page = _make_doc("knowledge/page.md", layer=Layer.KNOWLEDGE)
     await storage.upsert_document(page)
     # Note: deliberately do NOT upsert a document for "sources/ghost.md".
 
@@ -2433,7 +2433,7 @@ async def test_non_wisdom_layer_status_clamped_to_null(
 
     cases: list[tuple[str, Layer]] = [
         ("sources/notes/x.md", Layer.SOURCE),
-        ("wiki/concepts/x.md", Layer.WIKI),
+        ("knowledge/concepts/x.md", Layer.KNOWLEDGE),
     ]
     for path, layer in cases:
         doc = _make_doc(path, layer=layer)

@@ -187,16 +187,16 @@ class OpenAICodexLLM:
         self,
         *,
         base_url: str,
-        wiki_base: Path,
+        base_root: Path,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
-        # ``wiki_base`` is the wiki root that owns the OAuth token store
-        # at ``<wiki_base>/.dikw/auth.json``. Multiple wikis on the same
+        # ``base_root`` is the wiki root that owns the OAuth token store
+        # at ``<base_root>/.dikw/auth.json``. Multiple wikis on the same
         # machine each carry their own credentials so a refresh in one
         # doesn't invalidate the other.
         self._base_url = base_url
-        self._wiki_base = wiki_base
+        self._base_root = base_root
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
 
@@ -204,7 +204,7 @@ class OpenAICodexLLM:
     async def _client(self) -> AsyncIterator[AsyncOpenAI]:
         """Resolve a fresh access_token, build a per-request AsyncOpenAI,
         guarantee close() runs even if the body raises."""
-        token = await resolve_access_token(self._wiki_base)
+        token = await resolve_access_token(self._base_root)
         client = _build_async_client(
             base_url=self._base_url,
             access_token=token,
@@ -372,7 +372,7 @@ class OpenAICodexLLM:
             # silently — synth (``domains/knowledge/synthesize.py``) reads
             # ``response.text`` only and treats empty text as
             # "model emitted zero pages", so an auth/refusal failure on
-            # chatgpt.com/backend-api/codex would drop a wiki page from
+            # chatgpt.com/backend-api/codex would drop a knowledge page from
             # the source set on every reducer hit. Raise instead so the
             # failure surfaces on the NDJSON progress stream and the
             # caller can retry or skip with intent.

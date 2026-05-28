@@ -2,12 +2,12 @@
 
 Single source of truth for page indexing. Three callers today:
 
-* ``api._persist_wiki_page`` (synth path) — passes ``embedder`` and
+* ``api._persist_knowledge_page`` (synth path) — passes ``embedder`` and
   ``text_version_id`` so chunk embeddings land in the per-version
-  ``vec_chunks_v<id>`` table. Always ``layer=Layer.WIKI``.
+  ``vec_chunks_v<id>`` table. Always ``layer=Layer.KNOWLEDGE``.
 * ``run_lint_apply`` (lint-fix path) — passes ``embedder=None`` to keep
   apply provider-free; the next ``dikw client ingest`` reconciles
-  embeddings via ``doc.hash`` drift. Always ``layer=Layer.WIKI``.
+  embeddings via ``doc.hash`` drift. Always ``layer=Layer.KNOWLEDGE``.
 * ``api.ingest`` wisdom branch (0.3.0 PR2) — passes
   ``layer=Layer.WISDOM`` and queues embeddings onto the shared
   ``to_embed`` list rather than embedding inline, so wisdom and
@@ -39,12 +39,12 @@ from ..info.chunk import chunk_markdown
 from ..info.embed import ChunkToEmbed, consume_embedding_stream, embed_chunks
 from ..info.tokenize import CjkTokenizer
 from .links import build_title_indexes, parse_links, resolve_links
-from .wiki import frontmatter_str_list
+from .page import frontmatter_str_list
 
 
 def wiki_doc_id(path: str) -> str:
-    """Backwards-compatible alias for ``doc_id_for(Layer.WIKI, path)``."""
-    return doc_id_for(Layer.WIKI, path)
+    """Backwards-compatible alias for ``doc_id_for(Layer.KNOWLEDGE, path)``."""
+    return doc_id_for(Layer.KNOWLEDGE, path)
 
 
 async def persist_page(
@@ -52,7 +52,7 @@ async def persist_page(
     storage: Storage,
     root: Path,
     path: str,
-    layer: Layer = Layer.WIKI,
+    layer: Layer = Layer.KNOWLEDGE,
     title: str | None = None,
     embedder: EmbeddingProvider | None = None,
     embedding_model: str = "",
@@ -125,7 +125,7 @@ async def persist_page(
         # actually fires when a wiki and wisdom page share a title,
         # rather than the first-seen layer silently winning.
         docs_iter: list[tuple[str, str]] = []
-        for layer_for_index in (Layer.WIKI, Layer.WISDOM):
+        for layer_for_index in (Layer.KNOWLEDGE, Layer.WISDOM):
             for d in await storage.list_documents(
                 layer=layer_for_index, active=True
             ):
@@ -169,7 +169,7 @@ async def persist_page(
     return len(unresolved), resolved_title
 
 
-async def persist_wiki_page(
+async def persist_knowledge_page(
     *,
     storage: Storage,
     root: Path,
@@ -192,7 +192,7 @@ async def persist_wiki_page(
         storage=storage,
         root=root,
         path=path,
-        layer=Layer.WIKI,
+        layer=Layer.KNOWLEDGE,
         title=title,
         embedder=embedder,
         embedding_model=embedding_model,

@@ -12,7 +12,7 @@ revisited when the triggers at the bottom fire.
 
 Eval is a first-class CLI subcommand — `dikw client eval` — driven by the
 runner at `src/dikw_core/eval/runner.py`. It ingests a dataset's corpus
-into a temp wiki with deterministic `FakeEmbeddings`, runs the queries
+into a temp base with deterministic `FakeEmbeddings`, runs the queries
 through `HybridSearcher`, and compares aggregate `hit@3`, `hit@10`, and
 `MRR` against the dataset's own thresholds.
 
@@ -85,19 +85,19 @@ below fires. Rationale:
    retrieval layer (0.3.0): hits arrive tagged `Hit.layer == "wisdom"`
    so an agent can group / weight / cite them separately. The interesting
    generation-side metric is "does the agent's answer cite the wisdom
-   pages alongside the wiki pages for the same question?" — a bespoke
+   pages alongside the knowledge pages for the same question?" — a bespoke
    check catches that more cleanly than generic faithfulness scores.
 
 ## Acceptance gates for K-layer and Retrieval changes
 
 Independent of "do we have evals?" — once a change touches K-layer
-synth/lint/wiki schema or retrieval config, **the PR description must
+synth/lint/knowledge schema or retrieval config, **the PR description must
 cite an `evals/BASELINES.md` entry** that demonstrates either signal
 or non-destructiveness. Two gates:
 
 1. **K-layer changes** (`src/dikw_core/domains/knowledge/`,
    `src/dikw_core/prompts/synthesize.md`,
-   wiki page schema in `schemas.py`): run a real-data baseline against
+   knowledge page schema in `schemas.py`): run a real-data baseline against
    `~/Project/opendikw/dikw-data/datasets/markdown-books/elon-musk.md`
    (1500-line subset is the working size — the full text exposes a
    codex SSE keepalive timeout bug, see 2026-05-08 entry). Use the
@@ -141,7 +141,7 @@ Adopt an LLM-as-judge framework (default: RAGAS) when **any** of:
 - We grow `evals/datasets/elon-musk-validation` (or any packaged
   dataset) with a wisdom subdirectory + qrels and want to measure
   retrieval lift from cross-layer wisdom hits — wisdom MRR / hit@k
-  alongside the existing wiki / source metrics.
+  alongside the existing knowledge base / source metrics.
 
 Until then: grow the Q/A set, keep Phase A green, don't spin up a
 judge harness.

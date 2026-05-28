@@ -1,6 +1,6 @@
 """``dikw auth *`` — local commands for the dikw OAuth credential store.
 
-Tokens live at ``<wiki>/.dikw/auth.json``. Each wiki owns its own copy so
+Tokens live at ``<base>/.dikw/auth.json``. Each base owns its own copy so
 the codex CLI's rotating refresh_token in ``~/.codex/auth.json`` doesn't
 collide with dikw's. Today only ``openai-codex`` is supported; the schema
 under ``providers`` is multi-provider so adding anthropic-OAuth later is
@@ -42,19 +42,19 @@ from .providers.codex_auth import (
 
 app = typer.Typer(
     name="auth",
-    help="Manage OAuth credentials for LLM providers (token store: <wiki>/.dikw/auth.json).",
+    help="Manage OAuth credentials for LLM providers (token store: <base>/.dikw/auth.json).",
     no_args_is_help=True,
     add_completion=False,
 )
 console = Console()
 
 
-def _resolve_wiki_root(wiki: Path) -> Path:
-    """Resolve ``--wiki`` to an absolute path. Mirrors ``dikw serve`` —
+def _resolve_base_root(base: Path) -> Path:
+    """Resolve ``--base`` to an absolute path. Mirrors ``dikw serve`` —
     we don't require ``dikw.yml`` to exist so a brand-new user can run
     ``dikw auth login`` before ``dikw init`` if they prefer; the .dikw/
     directory just gets created on first save."""
-    return wiki.resolve()
+    return base.resolve()
 
 
 def _ensure_supported(provider: str) -> None:
@@ -127,11 +127,11 @@ def login_cmd(
     provider: Annotated[
         str, typer.Argument(help="Provider name. Today only `openai-codex` is supported.")
     ],
-    wiki: Annotated[
+    base: Annotated[
         Path,
         typer.Option(
-            "--wiki", "-w",
-            help="Wiki root that owns the token store. Defaults to current directory.",
+            "--base", "-b",
+            help="Base root that owns the token store. Defaults to current directory.",
         ),
     ] = Path("."),
     no_browser: Annotated[
@@ -144,7 +144,7 @@ def login_cmd(
 ) -> None:
     """Authenticate via OpenAI's device-code OAuth flow."""
     _ensure_supported(provider)
-    wiki_root = _resolve_wiki_root(wiki)
+    base_root = _resolve_base_root(base)
 
     def _on_challenge(challenge: DeviceCodeChallenge) -> None:
         console.print()
@@ -163,7 +163,7 @@ def login_cmd(
                 webbrowser.open(challenge.verification_uri, new=2)
 
     try:
-        result = device_code_login(wiki_root, on_challenge=_on_challenge)
+        result = device_code_login(base_root, on_challenge=_on_challenge)
     except KeyboardInterrupt:
         console.print("\n[yellow]login cancelled[/yellow]")
         raise typer.Exit(code=130) from None
@@ -190,11 +190,11 @@ def import_cmd(
         str,
         typer.Argument(help="Provider name. Today only `openai-codex` is supported."),
     ] = "openai-codex",
-    wiki: Annotated[
+    base: Annotated[
         Path,
         typer.Option(
-            "--wiki", "-w",
-            help="Wiki root that owns the token store. Defaults to current directory.",
+            "--base", "-b",
+            help="Base root that owns the token store. Defaults to current directory.",
         ),
     ] = Path("."),
     force: Annotated[
@@ -210,9 +210,9 @@ def import_cmd(
 ) -> None:
     """Copy tokens from codex CLI's ``~/.codex/auth.json`` into the dikw store."""
     _ensure_supported(provider)
-    wiki_root = _resolve_wiki_root(wiki)
+    base_root = _resolve_base_root(base)
     try:
-        result = import_from_codex_cli(wiki_root, force=force)
+        result = import_from_codex_cli(base_root, force=force)
     except CodexAuthError as e:
         console.print(f"[red]error:[/red] {e}")
         raise typer.Exit(code=1) from e
@@ -246,18 +246,18 @@ def status_cmd(
         str,
         typer.Argument(help="Provider name."),
     ] = "openai-codex",
-    wiki: Annotated[
+    base: Annotated[
         Path,
         typer.Option(
-            "--wiki", "-w",
-            help="Wiki root that owns the token store. Defaults to current directory.",
+            "--base", "-b",
+            help="Base root that owns the token store. Defaults to current directory.",
         ),
     ] = Path("."),
 ) -> None:
     """Show the dikw auth store entry for a provider."""
     _ensure_supported(provider)
-    wiki_root = _resolve_wiki_root(wiki)
-    status = auth_status(wiki_root, provider=provider)
+    base_root = _resolve_base_root(base)
+    status = auth_status(base_root, provider=provider)
     console.print(f"store: [cyan]{status.path}[/cyan]")
     if not status.exists:
         console.print(
@@ -277,18 +277,18 @@ def status_cmd(
 
 @app.command("list")
 def list_cmd(
-    wiki: Annotated[
+    base: Annotated[
         Path,
         typer.Option(
-            "--wiki", "-w",
-            help="Wiki root that owns the token store. Defaults to current directory.",
+            "--base", "-b",
+            help="Base root that owns the token store. Defaults to current directory.",
         ),
     ] = Path("."),
 ) -> None:
     """List providers with credentials in the dikw auth store."""
-    wiki_root = _resolve_wiki_root(wiki)
-    path = dikw_auth_path(wiki_root)
-    providers = list_providers(wiki_root)
+    base_root = _resolve_base_root(base)
+    path = dikw_auth_path(base_root)
+    providers = list_providers(base_root)
     if not providers:
         console.print(f"store: [cyan]{path}[/cyan]")
         console.print("[yellow]no providers configured.[/yellow]")
@@ -300,7 +300,7 @@ def list_cmd(
     table.add_column("expires in")
     table.add_column("account")
     for name in providers:
-        status = auth_status(wiki_root, provider=name)
+        status = auth_status(base_root, provider=name)
         if status.expires_in_seconds is None:
             state = "[yellow]unknown[/yellow]"
         elif status.expiring_soon:
@@ -327,11 +327,11 @@ def logout_cmd(
         str,
         typer.Argument(help="Provider name."),
     ],
-    wiki: Annotated[
+    base: Annotated[
         Path,
         typer.Option(
-            "--wiki", "-w",
-            help="Wiki root that owns the token store. Defaults to current directory.",
+            "--base", "-b",
+            help="Base root that owns the token store. Defaults to current directory.",
         ),
     ] = Path("."),
     yes: Annotated[
@@ -341,16 +341,16 @@ def logout_cmd(
 ) -> None:
     """Remove a provider's tokens from the dikw auth store."""
     _ensure_supported(provider)
-    wiki_root = _resolve_wiki_root(wiki)
+    base_root = _resolve_base_root(base)
     if not yes:
         confirm = typer.confirm(
-            f"Remove tokens for {provider!r} from {dikw_auth_path(wiki_root)}?",
+            f"Remove tokens for {provider!r} from {dikw_auth_path(base_root)}?",
             default=False,
         )
         if not confirm:
             console.print("[yellow]aborted[/yellow]")
             raise typer.Exit(code=1)
-    removed = logout_provider(wiki_root, provider=provider)
+    removed = logout_provider(base_root, provider=provider)
     if removed:
         console.print(f"[green]removed[/green] {provider!r} from the dikw auth store")
     else:

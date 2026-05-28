@@ -17,7 +17,7 @@ class Layer(StrEnum):
     """Which DIKW layer a record belongs to."""
 
     SOURCE = "source"
-    WIKI = "wiki"
+    KNOWLEDGE = "knowledge"
     WISDOM = "wisdom"
 
 
@@ -48,7 +48,7 @@ class WisdomStatus(StrEnum):
 
     The enum is wisdom-only: ``DocumentRecord.status`` is forced to
     ``None`` when ``layer != Layer.WISDOM`` so the field never carries
-    a stray value on wiki/source rows even if a user pastes ``status:``
+    a stray value on knowledge/source rows even if a user pastes ``status:``
     into the wrong frontmatter. The schema's CHECK constraint allows
     NULL anywhere; the application-side clamp is what keeps the
     semantics tight.
@@ -87,7 +87,7 @@ class DocumentRecord(BaseModel):
     active: bool = True
     # Wisdom-only frontmatter status (0.3.0 PR2). Always ``None`` for
     # non-wisdom rows — the engine forces this clamp in ``api._to_document``
-    # so a stray ``status:`` in a wiki/source frontmatter never persists.
+    # so a stray ``status:`` in a knowledge/source frontmatter never persists.
     # See ``WisdomStatus`` for the value semantics.
     status: WisdomStatus | None = None
 
@@ -281,7 +281,7 @@ class PageReadResult(BaseModel):
     cleanly. YAML scalars that decode to a non-JSON-safe Python type
     (most plausibly ``bytes`` from ``!!binary``) will surface as a
     response-encoding error rather than be silently lossy-coerced —
-    by design, the wiki tree is the product and we don't mutate values
+    by design, the knowledge tree is the product and we don't mutate values
     the user wrote.
     """
 
@@ -320,7 +320,7 @@ class ProvenanceEdge(BaseModel):
     case-drift / Unicode-form-drift on Windows or macOS still matches.
     """
 
-    src_doc_id: str  # K-page doc_id (always ``layer:wiki``)
+    src_doc_id: str  # K-page doc_id (always ``layer:knowledge``)
     source_path: str  # frontmatter ``sources:`` entry, raw spelling
     source_path_key: str  # ``normalize_path(source_path)``, reverse-lookup key
 
@@ -415,9 +415,9 @@ class PageProvenanceResult(BaseModel):
 
     Splits the page-source attribution graph at a page boundary:
     ``derived_from`` is meaningful when the path is a K-page
-    (``Layer.WIKI``); ``derived_pages`` is meaningful when the path is a
+    (``Layer.KNOWLEDGE``); ``derived_pages`` is meaningful when the path is a
     D-source (``Layer.SOURCE``). For a path that resolves to
-    ``Layer.WIKI``, ``derived_pages`` is always empty; vice versa for
+    ``Layer.KNOWLEDGE``, ``derived_pages`` is always empty; vice versa for
     ``Layer.SOURCE``. We do not filter — agents can ask
     ``direction=both`` against any path; the empty list IS the answer.
     ``direction=in|out|both`` on the request filters which lists are
@@ -533,11 +533,11 @@ class ChunkNeighborRecord(BaseModel):
     edge_count: int
 
 
-class WikiLogEntry(BaseModel):
+class KnowledgeLogEntry(BaseModel):
     # ``id`` is None on construction; the storage layer assigns it on
     # insert via SQLite AUTOINCREMENT / Postgres BIGSERIAL. Acts as a
     # monotonic tiebreaker when two events land in the same float-second
-    # ``ts`` — ``list_wiki_log`` orders by ``(ts, id)`` so retrieval
+    # ``ts`` — ``list_knowledge_log`` orders by ``(ts, id)`` so retrieval
     # order matches insert order even within a sub-second burst.
     id: int | None = None
     ts: float
@@ -561,7 +561,7 @@ class StorageCounts(BaseModel):
     chunks: int = 0
     embeddings: int = 0
     links: int = 0
-    last_wiki_log_ts: float | None = None
+    last_knowledge_log_ts: float | None = None
     assets: int = 0
     asset_embeddings: int = 0
 

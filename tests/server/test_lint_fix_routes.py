@@ -22,7 +22,7 @@ from dikw_core.schemas import DocumentRecord, Layer
 def _wiki_doc_id(path: str) -> str:
     from dikw_core.domains.data.path_norm import normalize_path
 
-    return f"wiki:{normalize_path(path)}"
+    return f"knowledge:{normalize_path(path)}"
 
 
 async def _wait_terminal(
@@ -39,10 +39,10 @@ async def _wait_terminal(
     raise AssertionError(f"task {task_id} never terminated")
 
 
-async def _seed_broken_link_pages(wiki_root: Path) -> None:
+async def _seed_broken_link_pages(base_root: Path) -> None:
     """Drop two pages on disk + register them via the engine API
     (independent of HTTP, so propose has work to do when called)."""
-    target = wiki_root / "wiki/concepts/foo-bar.md"
+    target = base_root / "knowledge/concepts/foo-bar.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "---\nid: K-foobar\ntype: concept\ntitle: Foo Bar\n"
@@ -51,7 +51,7 @@ async def _seed_broken_link_pages(wiki_root: Path) -> None:
         "# Foo Bar\n\nbody\n",
         encoding="utf-8",
     )
-    src = wiki_root / "wiki/concepts/source.md"
+    src = base_root / "knowledge/concepts/source.md"
     src.write_text(
         "---\nid: K-source\ntype: concept\ntitle: Source\n"
         "created: 2026-05-09T00:00:00+00:00\n"
@@ -59,17 +59,17 @@ async def _seed_broken_link_pages(wiki_root: Path) -> None:
         "# Source\n\nSee [[fooo bar]] for context.\n",
         encoding="utf-8",
     )
-    _cfg, _root, storage = await api_module._with_storage(wiki_root)
+    _cfg, _root, storage = await api_module._with_storage(base_root)
     try:
         for path, title in [
-            ("wiki/concepts/foo-bar.md", "Foo Bar"),
-            ("wiki/concepts/source.md", "Source"),
+            ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+            ("knowledge/concepts/source.md", "Source"),
         ]:
             await storage.upsert_document(
                 DocumentRecord(
                     doc_id=_wiki_doc_id(path), path=path, title=title,
                     hash=f"hash-{path}", mtime=0.0,
-                    layer=Layer.WIKI, active=True,
+                    layer=Layer.KNOWLEDGE, active=True,
                 )
             )
     finally:
@@ -78,9 +78,9 @@ async def _seed_broken_link_pages(wiki_root: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_lint_propose_then_apply_full_flow(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
-    await _seed_broken_link_pages(wiki_root)
+    await _seed_broken_link_pages(base_root)
 
     # 1. submit propose.
     resp = await server_client.post(
@@ -122,7 +122,7 @@ async def test_lint_propose_then_apply_full_flow(
     applied = apply_res["result"]["applied"]
     assert len(applied) == 1
     # 4. on disk: the source page now references the resolved target.
-    rewritten = (wiki_root / "wiki/concepts/source.md").read_text(
+    rewritten = (base_root / "knowledge/concepts/source.md").read_text(
         encoding="utf-8"
     )
     assert "[[Foo Bar]]" in rewritten
@@ -131,9 +131,9 @@ async def test_lint_propose_then_apply_full_flow(
 
 @pytest.mark.asyncio
 async def test_lint_apply_unknown_propose_id_fails_with_clear_cause(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
-    _ = wiki_root  # runtime lifespan needs the fixture in scope
+    _ = base_root  # runtime lifespan needs the fixture in scope
     resp = await server_client.post(
         "/v1/lint/apply",
         json={"proposal_task_id": "no-such-task"},
@@ -153,13 +153,13 @@ async def test_lint_apply_unknown_propose_id_fails_with_clear_cause(
 
 @pytest.mark.asyncio
 async def test_lint_apply_rejects_non_propose_task_id(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     """If the caller passes a SUCCEEDED task from a different op (e.g.
     ``echo``), apply must reject with a ``proposal_wrong_op`` error
     rather than silently treating an unrelated result dict as an empty
     ``FixProposalReport``."""
-    _ = wiki_root
+    _ = base_root
     echo = await server_client.post("/v1/echo", json={"count": 1})
     assert echo.status_code == 200, echo.text
     echo_id = echo.json()["task_id"]
@@ -179,9 +179,9 @@ async def test_lint_apply_rejects_non_propose_task_id(
 
 @pytest.mark.asyncio
 async def test_lint_propose_rejects_invalid_limit(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
-    _ = wiki_root
+    _ = base_root
     resp = await server_client.post(
         "/v1/lint/propose",
         json={"limit": 0},

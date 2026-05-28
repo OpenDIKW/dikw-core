@@ -8,13 +8,13 @@ import pytest
 from dikw_core import api
 from dikw_core.providers import LLMResponse
 
-from .fakes import FakeEmbeddings, FakeLLM, init_test_wiki
+from .fakes import FakeEmbeddings, FakeLLM, init_test_base
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
 _SCRIPT = {
     "sources/notes/dikw.md": (
-        "<page path=\"wiki/concepts/dikw-pyramid.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/dikw-pyramid.md\" type=\"concept\">\n"
         "---\ntags: [dikw, pyramid]\n---\n\n"
         "# DIKW pyramid\n\n"
         "The DIKW pyramid organises raw data into four layers. "
@@ -22,7 +22,7 @@ _SCRIPT = {
         "</page>"
     ),
     "sources/notes/karpathy-wiki.md": (
-        "<page path=\"wiki/concepts/karpathy-llm-wiki.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/karpathy-llm-wiki.md\" type=\"concept\">\n"
         "---\ntags: [pattern, llm]\n---\n\n"
         "# Karpathy LLM Wiki\n\n"
         "Karpathy's pattern defines a wiki built from source documents. "
@@ -30,7 +30,7 @@ _SCRIPT = {
         "</page>"
     ),
     "sources/notes/retrieval.md": (
-        "<page path=\"wiki/concepts/hybrid-retrieval.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/hybrid-retrieval.md\" type=\"concept\">\n"
         "---\ntags: [search]\n---\n\n"
         "# Hybrid retrieval\n\n"
         "BM25 + dense vectors fused with RRF. Useful background for the "
@@ -66,8 +66,8 @@ class ScriptedLLM:
 
 @pytest.fixture()
 def wiki_with_fixtures(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     dest = wiki / "sources" / "notes"
     dest.mkdir(parents=True, exist_ok=True)
     for src in FIXTURES.glob("*.md"):
@@ -76,7 +76,7 @@ def wiki_with_fixtures(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_synth_creates_linked_wiki_pages_and_clean_lint(
+async def test_synth_creates_linked_knowledge_pages_and_clean_lint(
     wiki_with_fixtures: Path,
 ) -> None:
     embedder = FakeEmbeddings()
@@ -93,13 +93,13 @@ async def test_synth_creates_linked_wiki_pages_and_clean_lint(
     assert report.errors == 0
 
     # on-disk artefacts
-    assert (wiki_with_fixtures / "wiki" / "concepts" / "dikw-pyramid.md").is_file()
-    assert (wiki_with_fixtures / "wiki" / "concepts" / "karpathy-llm-wiki.md").is_file()
-    assert (wiki_with_fixtures / "wiki" / "concepts" / "hybrid-retrieval.md").is_file()
-    index_text = (wiki_with_fixtures / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert (wiki_with_fixtures / "knowledge" / "concepts" / "dikw-pyramid.md").is_file()
+    assert (wiki_with_fixtures / "knowledge" / "concepts" / "karpathy-llm-wiki.md").is_file()
+    assert (wiki_with_fixtures / "knowledge" / "concepts" / "hybrid-retrieval.md").is_file()
+    index_text = (wiki_with_fixtures / "knowledge" / "index.md").read_text(encoding="utf-8")
     assert "DIKW pyramid" in index_text
     assert "Karpathy LLM Wiki" in index_text
-    log_text = (wiki_with_fixtures / "wiki" / "log.md").read_text(encoding="utf-8")
+    log_text = (wiki_with_fixtures / "knowledge" / "log.md").read_text(encoding="utf-8")
     assert "synth" in log_text
 
     # Lint expectations:
@@ -126,7 +126,7 @@ async def test_synth_is_idempotent_without_force_all(wiki_with_fixtures: Path) -
     assert second.created == 0
     assert second.skipped == 3
     # Second pass shouldn't even invoke the LLM since every source was
-    # marked synth-done in wiki_log.
+    # marked synth-done in knowledge_log.
     assert second.groups_processed == 0
 
 
@@ -135,7 +135,7 @@ async def test_synth_empty_response_is_legal_zero_pages(
     wiki_with_fixtures: Path,
 ) -> None:
     """Stage A's prompt explicitly allows an empty response — "this section
-    has nothing worth a wiki page". The pipeline must accept it cleanly,
+    has nothing worth a knowledge page". The pipeline must accept it cleanly,
     without counting an error."""
     embedder = FakeEmbeddings()
     await api.ingest(wiki_with_fixtures, embedder=embedder)
@@ -157,7 +157,7 @@ async def test_synth_counts_parse_failure_as_error(
     await api.ingest(wiki_with_fixtures, embedder=embedder)
 
     bad_block = (
-        '<page path="wiki/notes/x.md" type="note">\n'
+        '<page path="knowledge/notes/x.md" type="note">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here, parser will reject\n"
         "</page>"
@@ -238,7 +238,7 @@ class GroupAwareLLM:
         idx = self.calls
         self.calls += 1
         text = (
-            f'<page path="wiki/concepts/group-{idx}.md" type="concept">\n'
+            f'<page path="knowledge/concepts/group-{idx}.md" type="concept">\n'
             f"---\ntags: [synthetic]\n---\n\n"
             f"# Group {idx} concept\n\n"
             f"Synthetic page emitted by the GroupAwareLLM on call {idx}.\n"
@@ -261,7 +261,7 @@ async def test_synth_retries_source_with_failed_groups(
     # First pass: every source returns a malformed <page> block → all
     # three groups raise SynthesisError → no source_done marker written.
     bad_block = (
-        '<page path="wiki/notes/x.md" type="note">\n'
+        '<page path="knowledge/notes/x.md" type="note">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here\n"
         "</page>"
@@ -290,7 +290,7 @@ async def test_synth_skips_zero_page_source_on_second_run(
     embedder = FakeEmbeddings()
     await api.ingest(wiki_with_fixtures, embedder=embedder)
 
-    empty_llm = FakeLLM(response_text="this section has nothing worth a wiki page")
+    empty_llm = FakeLLM(response_text="this section has nothing worth a knowledge page")
     first = await api.synthesize(wiki_with_fixtures, llm=empty_llm, embedder=embedder)
     assert first.errors == 0
     assert first.created == 0
@@ -307,12 +307,12 @@ async def test_synth_skips_zero_page_source_on_second_run(
 async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
     """``SchemaConfig.page_types`` propagates through prompt + parser +
     folder selection; an LLM emitting ``type="topic"`` lands under
-    ``wiki/topics/`` when the schema declares ``topic`` as allowed.
+    ``knowledge/topics/`` when the schema declares ``topic`` as allowed.
     """
     from dikw_core.config import dump_config_yaml, load_config
 
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     cfg_path = wiki / "dikw.yml"
     cfg = load_config(cfg_path)
     cfg.schema_.page_types = ["entity", "concept", "note", "topic"]
@@ -329,7 +329,7 @@ async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
     await api.ingest(wiki, embedder=embedder)
 
     topic_response = (
-        '<page path="wiki/topics/spacex.md" type="topic">\n'
+        '<page path="knowledge/topics/spacex.md" type="topic">\n'
         "---\ntags: [aerospace]\n---\n\n"
         "# SpaceX topic\n\n"
         "Aggregator page for [[Elon Musk]] and related rocket projects.\n"
@@ -339,8 +339,8 @@ async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
     report = await api.synthesize(wiki, llm=llm, embedder=embedder)
 
     assert report.created == 1
-    topic_path = wiki / "wiki" / "topics" / "spacex.md"
-    assert topic_path.is_file(), "custom page type 'topic' should land in wiki/topics/"
+    topic_path = wiki / "knowledge" / "topics" / "spacex.md"
+    assert topic_path.is_file(), "custom page type 'topic' should land in knowledge/topics/"
     body = topic_path.read_text(encoding="utf-8")
     assert "type: topic" in body
 
@@ -355,7 +355,7 @@ async def test_synth_backfills_legacy_per_page_rows_on_first_post_upgrade_run(
     runs must NOT backfill again, so post-fan-out partial-failure rows
     are still respected as needing retry.
     """
-    from dikw_core.schemas import WikiLogEntry
+    from dikw_core.schemas import KnowledgeLogEntry
 
     embedder = FakeEmbeddings()
     await api.ingest(wiki_with_fixtures, embedder=embedder)
@@ -365,12 +365,12 @@ async def test_synth_backfills_legacy_per_page_rows_on_first_post_upgrade_run(
     _cfg, _root, storage = await api._with_storage(wiki_with_fixtures)
     try:
         for src_path, dst_path in [
-            ("sources/notes/dikw.md", "wiki/concepts/dikw-pyramid.md"),
-            ("sources/notes/karpathy-wiki.md", "wiki/concepts/karpathy-llm-wiki.md"),
-            ("sources/notes/retrieval.md", "wiki/concepts/hybrid-retrieval.md"),
+            ("sources/notes/dikw.md", "knowledge/concepts/dikw-pyramid.md"),
+            ("sources/notes/karpathy-wiki.md", "knowledge/concepts/karpathy-llm-wiki.md"),
+            ("sources/notes/retrieval.md", "knowledge/concepts/hybrid-retrieval.md"),
         ]:
-            await storage.append_wiki_log(
-                WikiLogEntry(ts=1.0, action="synth", src=src_path, dst=dst_path)
+            await storage.append_knowledge_log(
+                KnowledgeLogEntry(ts=1.0, action="synth", src=src_path, dst=dst_path)
             )
     finally:
         await storage.close()
@@ -414,7 +414,7 @@ async def test_synth_does_not_backfill_when_sentinel_already_exists(
     are post-fan-out partial failures that must be retried.
     """
     from dikw_core.api import _LEGACY_BACKFILL_SENTINEL
-    from dikw_core.schemas import WikiLogEntry
+    from dikw_core.schemas import KnowledgeLogEntry
 
     embedder = FakeEmbeddings()
     await api.ingest(wiki_with_fixtures, embedder=embedder)
@@ -424,8 +424,8 @@ async def test_synth_does_not_backfill_when_sentinel_already_exists(
         # Sentinel: this base has been through the fan-out pipeline
         # already. Any per-page rows present must be treated as
         # partial-failure leftovers, not legacy data.
-        await storage.append_wiki_log(
-            WikiLogEntry(
+        await storage.append_knowledge_log(
+            KnowledgeLogEntry(
                 ts=1.0,
                 action="synth_source_done",
                 src=_LEGACY_BACKFILL_SENTINEL,
@@ -434,12 +434,12 @@ async def test_synth_does_not_backfill_when_sentinel_already_exists(
         # Three sources have per-page rows but no per-source done marker.
         # Without backfill (sentinel blocks it), they should be retried.
         for src_path, dst_path in [
-            ("sources/notes/dikw.md", "wiki/concepts/dikw.md"),
-            ("sources/notes/karpathy-wiki.md", "wiki/concepts/karpathy.md"),
-            ("sources/notes/retrieval.md", "wiki/concepts/retrieval.md"),
+            ("sources/notes/dikw.md", "knowledge/concepts/dikw.md"),
+            ("sources/notes/karpathy-wiki.md", "knowledge/concepts/karpathy.md"),
+            ("sources/notes/retrieval.md", "knowledge/concepts/retrieval.md"),
         ]:
-            await storage.append_wiki_log(
-                WikiLogEntry(ts=2.0, action="synth", src=src_path, dst=dst_path)
+            await storage.append_knowledge_log(
+                KnowledgeLogEntry(ts=2.0, action="synth", src=src_path, dst=dst_path)
             )
     finally:
         await storage.close()
@@ -461,8 +461,8 @@ async def test_synth_writes_sentinel_even_when_no_legacy_rows(tmp_path: Path) ->
     """
     from dikw_core.api import _LEGACY_BACKFILL_SENTINEL
 
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     sources_dir = wiki / "sources" / "notes"
     sources_dir.mkdir(parents=True, exist_ok=True)
     (sources_dir / "x.md").write_text("# X\n\nbody\n", encoding="utf-8")
@@ -475,7 +475,7 @@ async def test_synth_writes_sentinel_even_when_no_legacy_rows(tmp_path: Path) ->
 
     _cfg, _root, storage = await api._with_storage(wiki)
     try:
-        entries = await storage.list_wiki_log()
+        entries = await storage.list_knowledge_log()
     finally:
         await storage.close()
     sentinel_rows = [
@@ -518,7 +518,7 @@ async def test_synth_rejects_source_with_changed_body_after_ingest(
     # synth will retry it (after the user re-runs `dikw client ingest`).
     _cfg, _root, storage = await api._with_storage(wiki_with_fixtures)
     try:
-        entries = await storage.list_wiki_log()
+        entries = await storage.list_knowledge_log()
     finally:
         await storage.close()
     done_for_dikw = [
@@ -532,8 +532,8 @@ async def test_synth_rejects_source_with_changed_body_after_ingest(
 
 @pytest.mark.asyncio
 async def test_long_source_fans_out_across_groups(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     sources_dir = wiki / "sources" / "notes"
     sources_dir.mkdir(parents=True, exist_ok=True)
     long_path = sources_dir / "long.md"
@@ -555,9 +555,9 @@ async def test_long_source_fans_out_across_groups(tmp_path: Path) -> None:
     assert report.created >= 2
     assert llm.calls == report.groups_processed
 
-    # All produced wiki pages must point back to the same source — the
+    # All produced knowledge pages must point back to the same source — the
     # fan-out invariant: 1 source → N pages, all sourced from it.
-    concepts_dir = wiki / "wiki" / "concepts"
+    concepts_dir = wiki / "knowledge" / "concepts"
     produced = list(concepts_dir.glob("group-*.md"))
     assert len(produced) >= 2
     for p in produced:

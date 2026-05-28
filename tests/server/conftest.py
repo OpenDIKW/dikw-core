@@ -36,23 +36,23 @@ from dikw_core.server.auth import AuthConfig
 from dikw_core.server.runtime import ServerRuntime, build_runtime, teardown_runtime
 from dikw_core.server.tasks import SqliteTaskStore, TaskManager
 
-from ..fakes import FakeEmbeddings, init_test_wiki
+from ..fakes import FakeEmbeddings, init_test_base
 
 FIXTURES_NOTES = Path(__file__).parent.parent / "fixtures" / "notes"
 
 
 @pytest.fixture()
-def wiki_root(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="server-test wiki")
+def base_root(tmp_path: Path) -> Path:
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="server-test wiki")
     return wiki
 
 
 @pytest.fixture()
-async def runtime(wiki_root: Path) -> AsyncIterator[ServerRuntime]:
+async def runtime(base_root: Path) -> AsyncIterator[ServerRuntime]:
     """Live runtime backed by a fresh tmp wiki, no auth."""
     auth = AuthConfig(host="127.0.0.1", token=None)
-    rt = await build_runtime(root=wiki_root, auth=auth)
+    rt = await build_runtime(root=base_root, auth=auth)
     try:
         yield rt
     finally:
@@ -89,13 +89,13 @@ async def server_client(
 
 @pytest.fixture()
 async def server_client_with_token(
-    wiki_root: Path,
+    base_root: Path,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, str]]:
     """Token-required variant. The host stays loopback (127.0.0.1) but a
     token is set, which still triggers token-required mode per
     ``AuthConfig.required``."""
     auth = AuthConfig(host="127.0.0.1", token="s3cret")
-    rt = await build_runtime(root=wiki_root, auth=auth)
+    rt = await build_runtime(root=base_root, auth=auth)
     app = _build_test_app(rt)
     transport = httpx.ASGITransport(app=app)
     try:
@@ -111,19 +111,19 @@ async def server_client_with_token(
 @pytest.fixture()
 async def ingested_wiki(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> Path:
     """Wiki with the standard ``tests/fixtures/notes`` corpus ingested
     via ``api.ingest`` + ``FakeEmbeddings``. Used by query / retrieve /
     health route tests that need both documents and embeddings.
     """
-    dest = wiki_root / "sources" / "notes"
+    dest = base_root / "sources" / "notes"
     dest.mkdir(parents=True, exist_ok=True)
     for src in FIXTURES_NOTES.glob("*.md"):
         shutil.copy2(src, dest / src.name)
-    await api_module.ingest(wiki_root, embedder=FakeEmbeddings())
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
     _ = server_client  # ensure runtime lifespan is up before we ingest
-    return wiki_root
+    return base_root
 
 
 @pytest.fixture()

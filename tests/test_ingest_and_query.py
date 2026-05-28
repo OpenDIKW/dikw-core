@@ -7,15 +7,15 @@ import pytest
 
 from dikw_core import api
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_base
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
 
 @pytest.fixture()
 def wiki_with_fixtures(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="ingest-query test wiki")
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="ingest-query test wiki")
     dest = wiki / "sources" / "notes"
     dest.mkdir(parents=True, exist_ok=True)
     for src in FIXTURES.glob("*.md"):

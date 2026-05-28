@@ -1,6 +1,6 @@
 """Append-only wiki activity log.
 
-The authoritative store is ``storage.wiki_log`` (rows). ``wiki/log.md`` is a
+The authoritative store is ``storage.knowledge_log`` (rows). ``wiki/log.md`` is a
 materialised view of that table rendered in Karpathy-friendly markdown with
 one bullet per event:
 
@@ -18,21 +18,21 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ...schemas import WikiLogEntry
+from ...schemas import KnowledgeLogEntry
 
-LOG_PATH = "wiki/log.md"
+LOG_PATH = "knowledge/log.md"
 
 _HEADER = (
     "---\n"
     "type: log\n"
     "updated: {updated}\n"
     "---\n\n"
-    "# Wiki Log\n\n"
+    "# Knowledge Log\n\n"
     "> Auto-generated from the engine's activity log.\n"
 )
 
 
-def format_entry(entry: WikiLogEntry) -> str:
+def format_entry(entry: KnowledgeLogEntry) -> str:
     ts = datetime.fromtimestamp(entry.ts, tz=UTC).strftime("%Y-%m-%d %H:%M")
     head = f"## [{ts}] {entry.action}"
     if entry.src and entry.dst:
@@ -50,7 +50,7 @@ def format_entry(entry: WikiLogEntry) -> str:
 
 
 def render_log(
-    root: Path, entries: Sequence[WikiLogEntry], *, updated: str
+    root: Path, entries: Sequence[KnowledgeLogEntry], *, updated: str
 ) -> Path:
     abs_log = root / LOG_PATH
     abs_log.parent.mkdir(parents=True, exist_ok=True)

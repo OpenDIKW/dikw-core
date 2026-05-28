@@ -28,12 +28,12 @@ from ..schemas import (
     EmbeddingRow,
     EmbeddingVersion,
     FTSHit,
+    KnowledgeLogEntry,
     Layer,
     LinkRecord,
     ProvenanceEdge,
     StorageCounts,
     VecHit,
-    WikiLogEntry,
 )
 
 
@@ -93,7 +93,7 @@ class Storage(Protocol):
         flips ``active = False``.
 
         Used by the lint-apply trash path: the on-disk page moves to
-        ``<base>/trash/wiki/<rel>`` (recoverable by hand) while storage
+        ``<base>/trash/knowledge/<rel>`` (recoverable by hand) while storage
         purges all rows so ``run_lint`` can't see ghost docs and
         ``counts()`` no longer tallies the dead row. Idempotent —
         deleting an unknown ``doc_id`` is a no-op (matches
@@ -245,7 +245,7 @@ class Storage(Protocol):
         edges entirely; pass a fresh source's first link set to no-op
         the leading delete.
 
-        Used by ``_persist_wiki_page`` to reconcile a wiki page's
+        Used by ``_persist_knowledge_page`` to reconcile a knowledge page's
         outgoing edges on every re-persist — removing a ``[[wikilink]]``
         from the body actually drops it from storage rather than
         leaving a ghost record that pollutes graph-leg retrieval and
@@ -272,7 +272,7 @@ class Storage(Protocol):
         wipe the page's provenance edges entirely; pass a fresh page's
         first set to no-op the leading delete.
 
-        Used by ``persist_wiki_page`` to reconcile a K-page's
+        Used by ``persist_knowledge_page`` to reconcile a K-page's
         provenance edges from its frontmatter ``sources:`` list on every
         re-persist, so removing a source from frontmatter actually
         drops the edge rather than leaving a ghost row. Mirrors
@@ -318,10 +318,10 @@ class Storage(Protocol):
         caller keep fan-out inside e.g. WIKI pages only.
         """
         ...
-    async def append_wiki_log(self, entry: WikiLogEntry) -> None: ...
-    async def list_wiki_log(
+    async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None: ...
+    async def list_knowledge_log(
         self, *, since_ts: float | None = None, limit: int | None = None
-    ) -> list[WikiLogEntry]:
+    ) -> list[KnowledgeLogEntry]:
         """Return wiki-log entries in chronological order."""
         ...
 

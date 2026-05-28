@@ -102,13 +102,13 @@ The `run --rm` call mounts `./base` into a one-shot container, executes
 ```
 base/
 ├── dikw.yml
-├── wiki/
+├── knowledge/
 ├── wisdom/
 ├── sources/
 └── .dikw/
 ```
 
-Now wire Postgres into the wiki storage layer by editing
+Now wire Postgres into the base storage layer by editing
 `base/dikw.yml`:
 
 ```yaml
@@ -119,7 +119,7 @@ storage:
 
 (Substitute the password you put in `.env`. The hostname `postgres`
 matches the compose service name — Docker networking resolves it.)
-Both the wiki DSN above and `DIKW_SERVER_TASKS_DSN` in `docker-compose.yml`
+Both the base DSN above and `DIKW_SERVER_TASKS_DSN` in `docker-compose.yml`
 use libpq's keyword conninfo form (`host=… password=… dbname=…`) rather
 than `postgresql://` URLs, so generated strong passwords containing
 `/ # ? % @ :` work without URL-encoding.
@@ -140,7 +140,7 @@ The compose stack reveals an asymmetry that's intentional:
 | Storage layer | Configured via | Why |
 | --- | --- | --- |
 | Wiki documents / chunks / embeddings | `storage.dsn` in `dikw.yml` | Wiki backend is per-base and tied to the on-disk format declared in `dikw.yml`. Cross-base coordination is impossible. |
-| Server task store | `DIKW_SERVER_TASKS_DSN` env var | Task store is server-scoped (not per-base), and in production it's the operator's choice whether to share an instance with the wiki DB. Env var keeps it out of the on-disk format. |
+| Server task store | `DIKW_SERVER_TASKS_DSN` env var | Task store is server-scoped (not per-base), and in production it's the operator's choice whether to share an instance with the base DB. Env var keeps it out of the on-disk format. |
 
 In the example compose, both point at the same Postgres instance (the
 task store creates its own table; no cross-talk). In production you may

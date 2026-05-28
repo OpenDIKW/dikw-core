@@ -9,15 +9,15 @@
 
 - `missing_provenance` detection compares `{normalized_key: raw_path}` dicts, not key sets — catches raw-spelling drift (e.g. `Sources/Foo.md` → `sources/foo.md`) in addition to the four key-level sub-cases (zero / partial / stale / cleared).
 - `reconcile_provenance` op does **not** enter `touched_paths` in the apply loop — it doesn't change the file, so sibling `update_page` / `delete_page` ops on the same page are not falsely flagged as "superseded".
-- Reverse provenance leg in `api.read_provenance` is gated on `match.layer == Layer.SOURCE` — keeps the documented "WIKI paths have empty reverse provenance" contract honest even when a malformed K-page lists another `wiki/...` path in `sources:`.
+- Reverse provenance leg in `api.read_provenance` is gated on `match.layer == Layer.SOURCE` — keeps the documented "WIKI paths have empty reverse provenance" contract honest even when a malformed K-page lists another `knowledge/...` path in `sources:`.
 - `expected_hash` is re-checked inside `_apply_one_op` for `reconcile_provenance` (not just in preflight) — closes the TOCTOU race between preflight and apply.
-- The shared `frontmatter_str_list` helper (in `wiki.py`) guards every list-of-strings frontmatter read against malformed scalars / dicts / nulls — used by `persist_wiki_page`, `run_lint`, and `MissingProvenanceFixer`.
+- The shared `frontmatter_str_list` helper (in `page.py`) guards every list-of-strings frontmatter read against malformed scalars / dicts / nulls — used by `persist_knowledge_page`, `run_lint`, and `MissingProvenanceFixer`.
 
 ---
 
 ## 1. Goal
 
-Make the K-page → D-source attribution that currently lives only in `<base>/wiki/**/*.md` frontmatter (`sources:` list) into a queryable edge, so an agent can ask "which K-pages were synth-authored from this source?" over HTTP.
+Make the K-page → D-source attribution that currently lives only in `<base>/knowledge/**/*.md` frontmatter (`sources:` list) into a queryable edge, so an agent can ask "which K-pages were synth-authored from this source?" over HTTP.
 
 Forward direction (`page → its sources`) is exposed as a bonus, closing a pre-existing gap where `GET /v1/base/pages/{path}` strips frontmatter entirely.
 
@@ -25,7 +25,7 @@ Forward direction (`page → its sources`) is exposed as a bonus, closing a pre-
 
 - **Retrieval / RRF impact** — provenance is a navigation edge only. It does not feed `info/search.py`, does not change rank ordering, does not warrant an eval baseline (decision #6).
 - **Chunk-level provenance** — the `sources:` frontmatter is page-level; we do not synthesize per-chunk attribution.
-- **User-edit drift on wiki pages** — the pre-existing gap that `dikw client ingest` does not rescan `wiki/` (and so does not detect user hand-edits to wiki body or frontmatter) is **not** addressed here. The same drift exists today for the `links` table. Out of scope; tracked as a follow-up.
+- **User-edit drift on knowledge pages** — the pre-existing gap that `dikw client ingest` does not rescan `knowledge/` (and so does not detect user hand-edits to wiki body or frontmatter) is **not** addressed here. The same drift exists today for the `links` table. Out of scope; tracked as a follow-up.
 - **Wikilink-to-source reverse query** — already works today via `GET /v1/base/pages/{source_path}/links?direction=in` (`list_links` probes `Layer.SOURCE`). No change needed.
 
 ## 3. Design decisions (summary)
@@ -38,10 +38,10 @@ Forward direction (`page → its sources`) is exposed as a bonus, closing a pre-
 | 4 | HTTP: `GET /v1/base/pages/{path}/provenance?direction=in\|out\|both` — mirrors `/links`. | §10 |
 | 5 | Forward direction returns all frontmatter entries with `resolved`/dangling flag (does NOT silently drop unresolved). | §9 |
 | 6 | Navigation-only scope. Does not feed retrieval, does not enter existing lint counts. No eval baseline required. | §2 |
-| 7 | Reconcile inside `persist_wiki_page` next to `replace_links_from`. Frontmatter is source of truth, self-heals on every persist. | §8 |
+| 7 | Reconcile inside `persist_knowledge_page` next to `replace_links_from`. Frontmatter is source of truth, self-heals on every persist. | §8 |
 | 8 | `delete_document` deletes provenance rows for the doc. Mirrors links cleanup. | §6 |
 | 9 | CLI: `dikw client pages provenance <path> [--direction in|out|both]`, JSON default. Mirrors `pages links`. | §11 |
-| 10 | Backfill for pre-existing wiki pages: new `LintKind = "missing_provenance"` + deterministic `MissingProvenanceFixer`. Walks the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` + `dikw client lint apply <task_id>`). | §12 |
+| 10 | Backfill for pre-existing knowledge pages: new `LintKind = "missing_provenance"` + deterministic `MissingProvenanceFixer`. Walks the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` + `dikw client lint apply <task_id>`). | §12 |
 
 ---
 
@@ -51,7 +51,7 @@ Follow the [`feedback_tdd_discipline`](../../CONTEXT.md) rule: K-layer / Storage
 
 1. **§5 data model + §6 Storage Protocol** — add Protocol methods (stubbed), extend `tests/test_storage_contract.py` (failing). Local pgvector run per `feedback_run_pg_locally`.
 2. **§7 sqlite + postgres adapter impls + migrations** — implement Storage methods + migrations until contract suite passes on both.
-3. **§8 persist_wiki_page reconcile + delete_document cleanup** — extend `tests/test_storage_contract.py` for delete cascade; add `tests/test_persist_wiki_page.py` (or extend existing) for reconcile.
+3. **§8 persist_knowledge_page reconcile + delete_document cleanup** — extend `tests/test_storage_contract.py` for delete cascade; add `tests/test_persist_knowledge_page.py` (or extend existing) for reconcile.
 4. **§9 engine api.read_provenance** — `tests/test_api_provenance.py` against fakes, then impl.
 5. **§10 HTTP route + schemas** — `tests/test_routes_pages.py` add provenance cases; impl route.
 6. **§11 CLI** — `tests/test_cli_pages.py` add provenance case; impl.
@@ -121,9 +121,9 @@ class PageProvenanceResult(BaseModel):
     """Final payload for `GET /v1/base/pages/{path}/provenance`.
 
     Splits the page-source attribution graph at a page boundary:
-    `derived_from` is meaningful when the path is a K-page (Layer.WIKI), `derived_pages` is
+    `derived_from` is meaningful when the path is a K-page (Layer.KNOWLEDGE), `derived_pages` is
     meaningful when the path is a D-source (Layer.SOURCE). For a path that resolves to
-    Layer.WIKI, `derived_pages` is always empty; vice versa for Layer.SOURCE. We do not
+    Layer.KNOWLEDGE, `derived_pages` is always empty; vice versa for Layer.SOURCE. We do not
     filter — agents can ask `direction=both` against any path; the empty list IS the answer.
     `direction=in|out|both` on the request filters which lists are populated.
     """
@@ -202,13 +202,13 @@ If the repo uses incremental migration files (verify), add `migrations/sqlite/0X
 
 ---
 
-## 8. `persist_wiki_page` reconcile
+## 8. `persist_knowledge_page` reconcile
 
-In `src/dikw_core/domains/knowledge/page_index.py`, inside `persist_wiki_page`, immediately after the existing `replace_links_from` block:
+In `src/dikw_core/domains/knowledge/page_index.py`, inside `persist_knowledge_page`, immediately after the existing `replace_links_from` block:
 
 ```python
 # Reconcile provenance edges atomically from frontmatter — frontmatter is
-# the source of truth (the wiki tree is a user-editable Obsidian vault),
+# the source of truth (the knowledge tree is a user-editable Obsidian vault),
 # so re-running this on every persist self-heals when the user edits
 # `sources:` directly. Mirrors the wikilink reconcile above; deliberately
 # kept off the wikilink graph (separate `provenance` table, see ADR-0001)
@@ -239,7 +239,7 @@ async def read_provenance(
 ) -> PageProvenanceResult:
     """Return the page's provenance neighbourhood: forward sources + reverse derived pages.
 
-    Path safety mirrors `read_page` / `list_links`: probe Layer.SOURCE then Layer.WIKI,
+    Path safety mirrors `read_page` / `list_links`: probe Layer.SOURCE then Layer.KNOWLEDGE,
     require active document, else PageNotFound. Inactive/missing src docs on the reverse
     side are filtered. Forward side returns ALL frontmatter entries with resolved/dangling
     flag — provenance drift is intentionally surfaced (decision #5).
@@ -249,7 +249,7 @@ async def read_provenance(
 Implementation outline:
 
 1. Reject malformed `path` (empty, NUL) → `PageNotFound`.
-2. Resolve path: probe `Layer.SOURCE` then `Layer.WIKI` via `_doc_id_for` → `storage.get_document`. Inactive → `PageNotFound`. Same pattern as `list_links` (`api.py:1898-1905`).
+2. Resolve path: probe `Layer.SOURCE` then `Layer.KNOWLEDGE` via `_doc_id_for` → `storage.get_document`. Inactive → `PageNotFound`. Same pattern as `list_links` (`api.py:1898-1905`).
 3. **Forward leg** (`direction in {"out", "both"}`): call `storage.provenance_from(match.doc_id)` → list of `ProvenanceEdge`. For each, probe `_doc_id_for(Layer.SOURCE, e.source_path_key)` (batched via `storage.get_documents([...])`). Build `ProvenanceSource(source_path=e.source_path, doc_id=resolved?.doc_id, title=resolved?.title, resolved=bool(resolved))`. Apply `limit` after building.
 4. **Reverse leg** (`direction in {"in", "both"}`): call `storage.provenance_to(match.path_key)`. Batch-resolve `src_doc_id` → documents; filter to active; build `DerivedPage(doc_id, path, title)`. Apply `limit` after filtering.
 5. Always release storage in `finally`.
@@ -315,7 +315,7 @@ Transport: reuse the existing httpx client (`request_json` or equivalent helper)
 
 ## 12. Lint integration (backfill path)
 
-Per decision #10, pre-existing wiki pages whose frontmatter has `sources:` but no provenance rows are surfaced as a lint issue and backfilled via the standard fixer pipeline.
+Per decision #10, pre-existing knowledge pages whose frontmatter has `sources:` but no provenance rows are surfaced as a lint issue and backfilled via the standard fixer pipeline.
 
 ### 12.1 New LintKind
 
@@ -372,7 +372,7 @@ class MissingProvenanceFixer:
     ) -> FixProposal | None:
         # Read frontmatter sources from the live file (do not trust the lint
         # report's snapshot — file may have changed since scan).
-        abs_path = (ctx.wiki_root / issue.path).resolve()
+        abs_path = (ctx.base_root / issue.path).resolve()
         if not abs_path.is_file():
             return None
         post = frontmatter.load(str(abs_path))
@@ -414,7 +414,7 @@ elif op.kind == "reconcile_provenance":
     return ApplyOutcome(...)  # success, no file changes
 ```
 
-This operation does NOT modify any wiki file, does NOT call `persist_wiki_page`, does NOT touch chunks/embeddings/links. It is the narrowest possible write — one Storage Protocol call.
+This operation does NOT modify any wiki file, does NOT call `persist_knowledge_page`, does NOT touch chunks/embeddings/links. It is the narrowest possible write — one Storage Protocol call.
 
 ### 12.5 Self-disabling
 
@@ -438,7 +438,7 @@ Add a `Provenance` test class run against both sqlite and postgres adapters (mir
 
 Run locally against `pgvector/pgvector:pg16` per [`feedback_run_pg_locally`](../../CONTEXT.md). CI runs both backends already.
 
-### 13.2 `persist_wiki_page` (`tests/test_page_index.py` or extend existing)
+### 13.2 `persist_knowledge_page` (`tests/test_page_index.py` or extend existing)
 
 1. `test_persist_writes_provenance_from_frontmatter`
 2. `test_persist_removes_stale_provenance_when_frontmatter_changes` (atomic replace semantics)
@@ -510,19 +510,19 @@ Under `## [0.2.6]`:
   is now a queryable edge in its own `provenance` storage table, exposed via
   `GET /v1/base/pages/{path}/provenance?direction=in|out|both` and the new
   `dikw client pages provenance` CLI. See [ADR-0001](docs/adr/0001-provenance-as-separate-edge.md).
-- **`missing_provenance` lint** — surfaces wiki pages whose frontmatter declares
+- **`missing_provenance` lint** — surfaces knowledge pages whose frontmatter declares
   `sources:` but whose provenance table rows are missing or stale, and a
   deterministic fixer (`source="deterministic"`, no LLM) that backfills via
   the standard `lint propose → lint apply` flow.
 
 ### Changed
-- `persist_wiki_page` now reconciles provenance edges from frontmatter on every
-  call, mirroring the existing wikilink reconcile. No-op when `sources:` is empty.
+- `persist_knowledge_page` now reconciles provenance edges from frontmatter on every
+  call, mirroring the existing knowledge baselink reconcile. No-op when `sources:` is empty.
 - `delete_document` now also deletes provenance rows where `src_doc_id` matches.
 
 ### Notes
 - **Legacy bases:** first `dikw client lint` run after upgrade will report one
-  `missing_provenance` issue per pre-existing wiki page that has a `sources:`
+  `missing_provenance` issue per pre-existing knowledge page that has a `sources:`
   frontmatter. Backfill via the standard two-step propose+apply flow:
   `dikw client lint propose --rule missing_provenance` (returns a `task_id`),
   then `dikw client lint apply <task_id>`. Issues stay resolved unless you
@@ -545,6 +545,6 @@ Under `## [0.2.6]`:
 
 These are real gaps but explicitly NOT in this PR:
 
-- **User-edit drift on wiki pages.** `dikw client ingest` does not rescan `wiki/`. If a user hand-edits a wiki page's `sources:` (or body — affects `links`) outside of synth / lint-apply, the engine does not detect the change. Existing limitation, applies equally to `links` today. Tracked separately as "wiki rescan in ingest" or "reconcile verb".
+- **User-edit drift on knowledge pages.** `dikw client ingest` does not rescan `knowledge/`. If a user hand-edits a knowledge page's `sources:` (or body — affects `links`) outside of synth / lint-apply, the engine does not detect the change. Existing limitation, applies equally to `links` today. Tracked separately as "wiki rescan in ingest" or "reconcile verb".
 - **Provenance lint check `dangling_source`.** Surface forward-direction provenance entries that don't resolve to an active source as a hygiene issue. Cheap follow-up once provenance is in place.
 - **Wisdom-layer provenance.** W items already cite K/D evidence via `wisdom_evidence` table — a separate (and pre-existing) attribution mechanism. No unification planned here.

@@ -1,4 +1,4 @@
-"""Per-process engine handle: cfg / wiki root / storage / task subsystem.
+"""Per-process engine handle: cfg / base root / storage / task subsystem.
 
 One ``ServerRuntime`` is built at server startup and torn down at shutdown;
 route handlers reach it via FastAPI dependencies. We keep this small —
@@ -25,6 +25,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from ..api import _assert_base_upgraded
 from ..config import CONFIG_FILENAME, DikwConfig, load_config
 from ..storage import Storage, build_storage
 from .auth import AuthConfig
@@ -38,39 +39,39 @@ from .tasks import (
 logger = logging.getLogger(__name__)
 
 
-_WIKI_ID_FILENAME = "wiki_id"
+_BASE_ID_FILENAME = "base_id"
 
 
-def _wiki_scope_id(root: Path) -> str:
-    """Stable identifier for the wiki this server is bound to.
+def _base_scope_id(root: Path) -> str:
+    """Stable identifier for the base this server is bound to.
 
     Used by the task store to scope every read + write so a shared
-    Postgres task DB does not leak rows across wikis, AND so multiple
-    replicas of the same wiki share state (a follow/cancel routed to
+    Postgres task DB does not leak rows across bases, AND so multiple
+    replicas of the same base share state (a follow/cancel routed to
     replica B must find the task submitted via replica A).
 
     Resolution order:
-      1. ``DIKW_WIKI_INSTANCE_ID`` env var — operator override for
-         exotic deployments (e.g. multiple wikis intentionally pooled
+      1. ``DIKW_BASE_INSTANCE_ID`` env var — operator override for
+         exotic deployments (e.g. multiple bases intentionally pooled
          under one task ID).
-      2. ``<root>/.dikw/wiki_id`` — a UUID4 generated on first run and
-         persisted to the wiki tree. Survives the wiki being mounted
+      2. ``<root>/.dikw/base_id`` — a UUID4 generated on first run and
+         persisted to the base tree. Survives the base being mounted
          at different paths in different containers, which a
          path-hash scheme cannot.
       3. Generate a fresh UUID4, write it to (2), return it.
 
     A path-based hash was the previous scheme but broke whenever two
-    replicas mounted the same wiki under different filesystem paths —
+    replicas mounted the same base under different filesystem paths —
     every cross-replica read filtered under a different scope and the
     public task APIs silently stopped working.
     """
-    env_override = os.getenv("DIKW_WIKI_INSTANCE_ID", "").strip()
+    env_override = os.getenv("DIKW_BASE_INSTANCE_ID", "").strip()
     if env_override:
         return env_override
 
     dikw_dir = root / ".dikw"
     dikw_dir.mkdir(parents=True, exist_ok=True)
-    id_path = dikw_dir / _WIKI_ID_FILENAME
+    id_path = dikw_dir / _BASE_ID_FILENAME
     try:
         existing = id_path.read_text(encoding="utf-8").strip()
         if existing:
@@ -79,7 +80,7 @@ def _wiki_scope_id(root: Path) -> str:
         pass
     new_id = uuid.uuid4().hex
     # ``write_text`` is sufficient — concurrent first-runs of the same
-    # wiki against the same volume would race here, but the file is
+    # base against the same volume would race here, but the file is
     # tiny + atomic at the FS layer (POSIX) and read-on-startup means
     # a brief mismatch only loses already-orphaned tasks. Operators
     # that fan out from cold should pre-seed the file.
@@ -97,10 +98,10 @@ class ServerRuntime:
     task_store: TaskStore
     manager: TaskManager
     auth: AuthConfig
-    # Serializes wiki-mutating ops (currently ingest) so two concurrent
+    # Serializes base-mutating ops (currently ingest) so two concurrent
     # tasks can't interleave their staging-commit + on-disk writes and
     # leave the sources/ tree as a mix of both. Held for the entire ingest
-    # runner — concurrent ingests on the same wiki are a degenerate case.
+    # runner — concurrent ingests on the same base are a degenerate case.
     ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -115,6 +116,7 @@ async def build_runtime(
             f"no {CONFIG_FILENAME} at {root} — initialise the base first "
             "or point `dikw serve --base` at an existing dikw base"
         )
+    _assert_base_upgraded(root)
     cfg = load_config(cfg_path)
 
     # Crash-recovery: a server killed mid-import leaves a staging dir
@@ -133,14 +135,14 @@ async def build_runtime(
     await storage.migrate()
 
     task_store = build_task_store(
-        cfg, root=root, instance_id=_wiki_scope_id(root)
+        cfg, root=root, instance_id=_base_scope_id(root)
     )
     await task_store.init()
 
     manager = TaskManager(store=task_store)
     # Auto-cleanup is safe only when this process owns the task store
-    # exclusively — i.e. the per-wiki sqlite file. With a shared Postgres
-    # task DB another live replica of *the same wiki* may have in-flight
+    # exclusively — i.e. the per-base sqlite file. With a shared Postgres
+    # task DB another live replica of *the same base* may have in-flight
     # tasks that belong to its own asyncio loop; cancelling them here
     # would mark a healthy peer's work as failed{server_restart}.
     #

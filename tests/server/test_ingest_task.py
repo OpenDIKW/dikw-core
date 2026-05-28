@@ -31,9 +31,9 @@ from .conftest import wait_task_terminal as _wait_terminal
 @pytest.mark.asyncio
 async def test_ingest_scans_existing_sources(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
-    src_dir = wiki_root / "sources" / "notes"
+    src_dir = base_root / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "preexisting.md").write_text("# Pre\nbody\n", encoding="utf-8")
 
@@ -71,9 +71,9 @@ async def test_ingest_submit_rejects_unknown_fields(
 @pytest.mark.asyncio
 async def test_event_tape_replay_after_terminal(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
-    src_dir = wiki_root / "sources"
+    src_dir = base_root / "sources"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "x.md").write_text("# X\n", encoding="utf-8")
 
@@ -102,9 +102,9 @@ async def test_event_tape_replay_after_terminal(
 @pytest.mark.asyncio
 async def test_resume_from_seq_returns_tail_only(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
-    src_dir = wiki_root / "sources"
+    src_dir = base_root / "sources"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "x.md").write_text("# X\n", encoding="utf-8")
 
@@ -140,14 +140,14 @@ async def test_resume_from_seq_returns_tail_only(
 @pytest.mark.asyncio
 async def test_file_error_event_lands_on_event_tape(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """Per-file failures during ingest must surface on the event tape
     as ``partial`` events with ``kind=file_error`` so a client tailing
     the NDJSON stream sees the failure live, and must also land on
     ``IngestReport.errors`` in the final result so a non-streaming
     poller sees the same information."""
-    src_dir = wiki_root / "sources" / "notes"
+    src_dir = base_root / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "good.md").write_text("# Good\n\nbody.\n", encoding="utf-8")
     # Broken YAML front-matter — frontmatter.loads → yaml.YAMLError →

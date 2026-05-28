@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ..domains.knowledge.wiki import WikiPage
+from ..domains.knowledge.page import KnowledgePage
 from ..progress import NoopReporter, ProgressReporter
 from ..prompts import load as load_prompt
 from ..providers.base import LLMProvider
@@ -101,7 +101,7 @@ def parse_judge_response(text: str) -> JudgeScore | None:
         return None
 
 
-def _format_prompt(*, page: WikiPage, source_text: str) -> str:
+def _format_prompt(*, page: KnowledgePage, source_text: str) -> str:
     return (
         load_prompt("eval_judge_synth")
         .replace("{page_path}", page.path)
@@ -112,13 +112,13 @@ def _format_prompt(*, page: WikiPage, source_text: str) -> str:
 
 
 _DEFAULT_JUDGE_SYSTEM = (
-    "You are an evaluation judge. Score wiki pages on four 0-5 "
+    "You are an evaluation judge. Score knowledge pages on four 0-5 "
     "dimensions. Return raw JSON only — no prose, no fences."
 )
 
 
 async def judge_synthesis(
-    pages: Sequence[WikiPage],
+    pages: Sequence[KnowledgePage],
     *,
     sources: Mapping[str, str],
     llm: LLMProvider,

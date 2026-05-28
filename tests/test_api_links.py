@@ -18,10 +18,10 @@ from dikw_core import api
 from dikw_core.api import _doc_id_for, _with_storage
 from dikw_core.schemas import DocumentRecord, Layer, LinkRecord, LinkType
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 
-def _doc(path: str, layer: Layer = Layer.WIKI) -> DocumentRecord:
+def _doc(path: str, layer: Layer = Layer.KNOWLEDGE) -> DocumentRecord:
     return DocumentRecord(
         doc_id=_doc_id_for(layer, path),
         path=path,
@@ -37,10 +37,10 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
     both an outgoing and an incoming edge. Returns ``(a_path, b_path,
     c_path)`` for assertions.
     """
-    init_test_wiki(root)
-    a_path = "wiki/a.md"
-    b_path = "wiki/b.md"
-    c_path = "wiki/c.md"
+    init_test_base(root)
+    a_path = "knowledge/a.md"
+    b_path = "knowledge/b.md"
+    c_path = "knowledge/c.md"
 
     cfg, _root, storage = await _with_storage(root)
     del cfg
@@ -50,7 +50,7 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
         # a -> b
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, a_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, a_path),
                 dst_path=b_path,
                 link_type=LinkType.WIKILINK,
                 anchor=None,
@@ -60,7 +60,7 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
         # b -> c
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, b_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, b_path),
                 dst_path=c_path,
                 link_type=LinkType.WIKILINK,
                 anchor="Section",
@@ -70,7 +70,7 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
         # c -> a
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, c_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, c_path),
                 dst_path=a_path,
                 link_type=LinkType.WIKILINK,
                 anchor=None,
@@ -101,7 +101,7 @@ async def test_list_links_both_returns_outgoing_and_incoming(
     assert len(result.incoming) == 1
     inb = result.incoming[0]
     assert inb.src_path == a_path
-    assert inb.src_doc_id == _doc_id_for(Layer.WIKI, a_path)
+    assert inb.src_doc_id == _doc_id_for(Layer.KNOWLEDGE, a_path)
     assert inb.link_type == LinkType.WIKILINK
     assert inb.line == 5
 
@@ -134,18 +134,18 @@ async def test_list_links_limit_caps_each_list_independently(
     per-direction cap, not a total. Without this an agent with
     ``limit=5`` could see 5 outgoing and 0 incoming on a popular hub
     page even though the hub has plenty of inbound edges."""
-    init_test_wiki(tmp_path)
-    hub_path = "wiki/hub.md"
+    init_test_base(tmp_path)
+    hub_path = "knowledge/hub.md"
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         await storage.upsert_document(_doc(hub_path))
         # Three outgoing edges hub -> {x, y, z}.
-        for i, dst in enumerate(("wiki/x.md", "wiki/y.md", "wiki/z.md"), start=1):
+        for i, dst in enumerate(("knowledge/x.md", "knowledge/y.md", "knowledge/z.md"), start=1):
             await storage.upsert_document(_doc(dst))
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=_doc_id_for(Layer.WIKI, hub_path),
+                    src_doc_id=_doc_id_for(Layer.KNOWLEDGE, hub_path),
                     dst_path=dst,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
@@ -153,11 +153,11 @@ async def test_list_links_limit_caps_each_list_independently(
                 )
             )
         # Three incoming edges {p, q, r} -> hub.
-        for i, src in enumerate(("wiki/p.md", "wiki/q.md", "wiki/r.md"), start=1):
+        for i, src in enumerate(("knowledge/p.md", "knowledge/q.md", "knowledge/r.md"), start=1):
             await storage.upsert_document(_doc(src))
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=_doc_id_for(Layer.WIKI, src),
+                    src_doc_id=_doc_id_for(Layer.KNOWLEDGE, src),
                     dst_path=hub_path,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
@@ -174,9 +174,9 @@ async def test_list_links_limit_caps_each_list_independently(
 
 @pytest.mark.asyncio
 async def test_list_links_unknown_path_raises(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.PageNotFound):
-        await api.list_links(tmp_path, "wiki/does-not-exist.md")
+        await api.list_links(tmp_path, "knowledge/does-not-exist.md")
 
 
 @pytest.mark.asyncio
@@ -190,10 +190,10 @@ async def test_list_links_outgoing_filters_inactive_or_unindexed_dst(
     fetch ``dst_path`` back through ``GET /v1/base/pages/{path}`` (it
     would 404).
     """
-    init_test_wiki(tmp_path)
-    src_path = "wiki/src.md"
-    live_dst = "wiki/live.md"
-    dead_dst = "wiki/dead.md"
+    init_test_base(tmp_path)
+    src_path = "knowledge/src.md"
+    live_dst = "knowledge/live.md"
+    dead_dst = "knowledge/dead.md"
     bare_url = "https://example.com/external"
 
     cfg, _root, storage = await _with_storage(tmp_path)
@@ -202,12 +202,12 @@ async def test_list_links_outgoing_filters_inactive_or_unindexed_dst(
         await storage.upsert_document(_doc(src_path))
         await storage.upsert_document(_doc(live_dst))
         await storage.upsert_document(_doc(dead_dst))
-        await storage.deactivate_document(_doc_id_for(Layer.WIKI, dead_dst))
+        await storage.deactivate_document(_doc_id_for(Layer.KNOWLEDGE, dead_dst))
 
         for i, dst in enumerate((live_dst, dead_dst, bare_url), start=1):
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=_doc_id_for(Layer.WIKI, src_path),
+                    src_doc_id=_doc_id_for(Layer.KNOWLEDGE, src_path),
                     dst_path=dst,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
@@ -245,9 +245,9 @@ async def test_list_links_incoming_resolves_src_path_via_documents(
     helper must translate that to ``src_path`` by joining against the
     documents table so the response is path-readable without a second
     round trip."""
-    init_test_wiki(tmp_path)
-    target_path = "wiki/target.md"
-    src_path = "wiki/origin.md"
+    init_test_base(tmp_path)
+    target_path = "knowledge/target.md"
+    src_path = "knowledge/origin.md"
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
@@ -255,7 +255,7 @@ async def test_list_links_incoming_resolves_src_path_via_documents(
         await storage.upsert_document(_doc(src_path))
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, src_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, src_path),
                 dst_path=target_path,
                 link_type=LinkType.WIKILINK,
                 anchor=None,
@@ -268,4 +268,4 @@ async def test_list_links_incoming_resolves_src_path_via_documents(
     result = await api.list_links(tmp_path, target_path, direction="in")
     assert len(result.incoming) == 1
     assert result.incoming[0].src_path == src_path
-    assert result.incoming[0].src_doc_id == _doc_id_for(Layer.WIKI, src_path)
+    assert result.incoming[0].src_doc_id == _doc_id_for(Layer.KNOWLEDGE, src_path)

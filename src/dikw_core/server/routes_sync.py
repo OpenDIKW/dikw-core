@@ -62,7 +62,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         rt: ServerRuntime = get_runtime(request.app)
         return {
             "engine_version": __version__,
-            "wiki_root": str(rt.root),
+            "base_root": str(rt.root),
             "storage_backend": rt.cfg.storage.backend,
             "providers": {
                 "llm": rt.cfg.provider.llm,
@@ -84,7 +84,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         # the engine is wired. We deliberately don't probe providers here
         # (that's what ``/v1/check`` is for) so a flapping LLM endpoint
         # doesn't make the server look unhealthy.
-        return {"status": "ready", "wiki_root": str(rt.root)}
+        return {"status": "ready", "base_root": str(rt.root)}
 
     # ---- engine fast paths --------------------------------------------
 

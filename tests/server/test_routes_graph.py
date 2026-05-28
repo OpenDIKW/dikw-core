@@ -23,37 +23,37 @@ from ..fakes import seed_doc as _seed
 
 async def _seed_minigraph(root: Path) -> None:
     await _seed(
-        root, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        root, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="See [[B]] and [[Missing]].\n",
     )
     await _seed(
-        root, layer=Layer.WIKI, path="wiki/B.md", title="B", body="# B\n",
+        root, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B", body="# B\n",
     )
 
 
 @pytest.mark.asyncio
 async def test_get_graph_default_returns_200(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    await _seed_minigraph(wiki_root)
+    await _seed_minigraph(base_root)
     resp = await server_client.get("/v1/base/graph")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert {n["path"] for n in body["nodes"]} == {"wiki/A.md", "wiki/B.md"}
+    assert {n["path"] for n in body["nodes"]} == {"knowledge/A.md", "knowledge/B.md"}
     edges = body["edges"]
     assert len(edges) == 1
-    assert edges[0]["source"] == "wiki/A.md"
-    assert edges[0]["target"] == "wiki/B.md"
+    assert edges[0]["source"] == "knowledge/A.md"
+    assert edges[0]["target"] == "knowledge/B.md"
     assert edges[0]["type"] == "wikilink"
     assert body["stats"]["unresolved_count"] == 1
 
 
 @pytest.mark.asyncio
 async def test_response_shape_matches_GraphResult(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """Lock the wire-level shape so client codegen can rely on it."""
-    await _seed_minigraph(wiki_root)
+    await _seed_minigraph(base_root)
     resp = await server_client.get("/v1/base/graph")
     assert resp.status_code == 200
     body = resp.json()
@@ -74,7 +74,7 @@ async def test_response_shape_matches_GraphResult(
 
 @pytest.mark.asyncio
 async def test_active_false_returns_only_deactivated(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """Mirrors ``GET /v1/base/pages?active=false`` semantics: returns
     the deactivated subset only. Through-the-wire ``active=None`` is
@@ -82,23 +82,23 @@ async def test_active_false_returns_only_deactivated(
     strings as 422); engine-side ``active=None`` is covered in
     ``tests/test_api_graph.py``."""
     await _seed(
-        wiki_root, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        base_root, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="# A\n", active=True,
     )
     await _seed(
-        wiki_root, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        base_root, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n", active=False,
     )
 
     resp = await server_client.get("/v1/base/graph", params={"active": "false"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert {n["path"] for n in body["nodes"]} == {"wiki/B.md"}
+    assert {n["path"] for n in body["nodes"]} == {"knowledge/B.md"}
 
 
 @pytest.mark.asyncio
 async def test_active_invalid_returns_422(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     resp = await server_client.get(
         "/v1/base/graph", params={"active": "maybe"}
@@ -109,7 +109,7 @@ async def test_active_invalid_returns_422(
 
 @pytest.mark.asyncio
 async def test_no_layer_query_param(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """Issue #89 v1 deliberately drops the ``layer`` knob from the
     proposal; the route returns the full base regardless. A ``?layer=...``
@@ -117,10 +117,10 @@ async def test_no_layer_query_param(
     is the chosen behaviour because forward-compat: a future v2 may
     re-introduce ``layer`` as additive)."""
     await _seed(
-        wiki_root, layer=Layer.WIKI, path="wiki/W.md", title="W", body="# W\n",
+        base_root, layer=Layer.KNOWLEDGE, path="knowledge/W.md", title="W", body="# W\n",
     )
     await _seed(
-        wiki_root, layer=Layer.SOURCE, path="sources/S.md", title="S", body="# S\n",
+        base_root, layer=Layer.SOURCE, path="sources/S.md", title="S", body="# S\n",
     )
 
     plain = await server_client.get("/v1/base/graph")
@@ -131,18 +131,18 @@ async def test_no_layer_query_param(
     plain_paths = {n["path"] for n in plain.json()["nodes"]}
     layered_paths = {n["path"] for n in with_layer.json()["nodes"]}
     # ``layer=wiki`` did NOT filter — both layers still in the node set.
-    assert plain_paths == {"wiki/W.md", "sources/S.md"}
+    assert plain_paths == {"knowledge/W.md", "sources/S.md"}
     assert layered_paths == plain_paths
 
 
 @pytest.mark.asyncio
 async def test_base_revision_stable_across_calls(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """``base_revision`` is content-addressed, so identical state must
     yield identical revision strings — the property a client relies on
     when caching graph responses keyed by revision."""
-    await _seed_minigraph(wiki_root)
+    await _seed_minigraph(base_root)
     r1 = (await server_client.get("/v1/base/graph")).json()
     r2 = (await server_client.get("/v1/base/graph")).json()
     assert r1["base_revision"] == r2["base_revision"]

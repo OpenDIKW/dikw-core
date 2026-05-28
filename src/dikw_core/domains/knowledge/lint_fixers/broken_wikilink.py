@@ -127,7 +127,7 @@ class BrokenWikilinkFixer:
         if best_title is None or best_ratio < HEURISTIC_RATIO_THRESHOLD:
             return await _propose_llm_grounded(issue, ctx, target, reporter)
 
-        abs_path = (ctx.wiki_root / issue.path).resolve()
+        abs_path = (ctx.base_root / issue.path).resolve()
         if not abs_path.is_file():
             # Source file vanished between lint scan and fix proposal —
             # skip rather than synthesising an op against missing state.
@@ -174,7 +174,7 @@ class BrokenWikilinkFixer:
 
 
 _GROUNDED_SYSTEM = (
-    "You write K-layer wiki pages for dikw-core, grounded strictly in "
+    "You write K-layer knowledge pages for dikw-core, grounded strictly in "
     "the evidence the user supplies. Emit exactly one <page> block. "
     "Every claim in the body must be traceable to the evidence chunks; "
     "if the evidence cannot support at least one well-grounded paragraph, "
@@ -237,7 +237,7 @@ async def _propose_llm_grounded(
     if not canonical_target:
         return None
 
-    src_abs = (ctx.wiki_root / issue.path).resolve()
+    src_abs = (ctx.base_root / issue.path).resolve()
     if not src_abs.is_file():
         return None
     body = frontmatter.loads(src_abs.read_text(encoding="utf-8")).content

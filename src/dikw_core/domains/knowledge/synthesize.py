@@ -1,7 +1,7 @@
-"""Synthesize K-layer wiki pages from D-layer source documents.
+"""Synthesize K-layer knowledge pages from D-layer source documents.
 
 The LLM emits one or more ``<page>`` XML blocks per call; the parser
-turns each into a ``WikiPage``. XML output (rather than JSON) avoids
+turns each into a ``KnowledgePage``. XML output (rather than JSON) avoids
 escaping pain and is easy to unit-test with a ``FakeLLM``. Long sources
 fan out into multiple LLM calls upstream (see ``grouping.py``);
 ``dedup_pages_by_slug`` then merges duplicates so the same entity
@@ -18,7 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from ...providers.base import LLMProvider
-from .wiki import WikiPage, build_page, now_iso
+from .page import KnowledgePage, build_page, now_iso
 
 _PAGE_BLOCK = re.compile(
     r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
@@ -57,7 +57,7 @@ class SynthesisPartialError(SynthesisError):
         self,
         message: str,
         *,
-        pages: list[WikiPage],
+        pages: list[KnowledgePage],
         errors: list[str],
         retry: bool = False,
     ) -> None:
@@ -69,7 +69,7 @@ class SynthesisPartialError(SynthesisError):
 
 @dataclass(frozen=True)
 class SynthesisOutcome:
-    page: WikiPage
+    page: KnowledgePage
     source_path: str
 
 
@@ -85,7 +85,7 @@ def _parse_one_page_block(
     *,
     source_path: str,
     allowed_types: tuple[str, ...],
-) -> WikiPage:
+) -> KnowledgePage:
     attrs = dict(_ATTR.findall(attrs_str))
 
     type_ = attrs.get("type", "note").strip().lower()
@@ -135,11 +135,11 @@ def parse_synthesis_response(
     *,
     source_path: str,
     allowed_types: tuple[str, ...] | None = None,
-) -> list[WikiPage]:
-    """Extract one or more ``WikiPage`` objects from the LLM's output.
+) -> list[KnowledgePage]:
+    """Extract one or more ``KnowledgePage`` objects from the LLM's output.
 
     Returns an empty list when the response contains no ``<page>`` block —
-    that's a legal "this section is not worth a wiki page" signal under
+    that's a legal "this section is not worth a knowledge page" signal under
     Stage A's fan-out prompt. Raises ``SynthesisError`` only when there
     are blocks but every one of them failed to parse;
     ``SynthesisPartialError`` carries the surviving pages plus the error
@@ -164,7 +164,7 @@ def parse_synthesis_response(
         return []
 
     types = allowed_types or _DEFAULT_ALLOWED_TYPES
-    pages: list[WikiPage] = []
+    pages: list[KnowledgePage] = []
     errors: list[str] = []
     for m in blocks:
         try:
@@ -205,10 +205,10 @@ def parse_synthesis_response(
 
 
 def dedup_pages_by_slug(
-    pages: Sequence[WikiPage],
+    pages: Sequence[KnowledgePage],
     *,
     strategy: SlugDedupStrategy = "merge_body",
-) -> list[WikiPage]:
+) -> list[KnowledgePage]:
     """Collapse pages that resolve to the same wiki path.
 
     Stage A fan-out lets the same entity surface in multiple
@@ -221,7 +221,7 @@ def dedup_pages_by_slug(
       ``tags`` and ``sources``.
     * ``keep_first``: drop subsequent pages with the same path.
     """
-    seen: dict[str, WikiPage] = {}
+    seen: dict[str, KnowledgePage] = {}
     order: list[str] = []
 
     for p in pages:
@@ -247,13 +247,13 @@ def dedup_pages_by_slug(
     return [seen[k] for k in order]
 
 
-def touch(page: WikiPage) -> WikiPage:
+def touch(page: KnowledgePage) -> KnowledgePage:
     """Return a copy of ``page`` with ``updated`` bumped to now."""
     return replace(page, updated=now_iso())
 
 
 DEFAULT_SYNTH_SYSTEM = (
-    "You synthesise K-layer wiki pages for dikw-core. "
+    "You synthesise K-layer knowledge pages for dikw-core. "
     "Preserve the dominant language of the source section in generated "
     "page titles, body text, tags, and new wikilink titles."
 )
@@ -271,7 +271,7 @@ async def synthesize_pages_from_text(
     temperature: float = 0.3,
     allowed_types: tuple[str, ...] | None = None,
     system: str = DEFAULT_SYNTH_SYSTEM,
-) -> list[WikiPage]:
+) -> list[KnowledgePage]:
     """One LLM call + parse — the shared "text to N pages" primitive.
 
     Used by:

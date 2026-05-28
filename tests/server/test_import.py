@@ -29,7 +29,7 @@ from ._import_helpers import packages_manifest, sha256, tar_bytes
 @pytest.mark.asyncio
 async def test_import_commits_into_sources(
     server_client: httpx.AsyncClient,
-    wiki_root: Any,
+    base_root: Any,
 ) -> None:
     """Single-package import commits the md straight into
     ``<base>/sources/`` and returns committed=[0]."""
@@ -48,7 +48,7 @@ async def test_import_commits_into_sources(
     body = resp.json()
     assert body["committed"] == [0]
     assert body["rejected"] == []
-    assert (wiki_root / "sources" / "notes" / "x.md").read_bytes() == files[
+    assert (base_root / "sources" / "notes" / "x.md").read_bytes() == files[
         "sources/notes/x.md"
     ]
 
@@ -160,18 +160,18 @@ async def test_tar_outside_allowed_top_dirs_rejected(
     """``sources/`` is the only allowed top-level dir in the new
     packages model (assets get co-located under ``sources/`` to
     preserve sibling-of-md asset resolution)."""
-    files = {"wiki/index.md": b"# index"}
+    files = {"knowledge/index.md": b"# index"}
     payload = tar_bytes(files)
     manifest = {
         "files": [
             {
-                "path": "wiki/index.md",
-                "size": len(files["wiki/index.md"]),
-                "sha256": sha256(files["wiki/index.md"]),
+                "path": "knowledge/index.md",
+                "size": len(files["knowledge/index.md"]),
+                "sha256": sha256(files["knowledge/index.md"]),
             }
         ],
         "packages": [],
-        "total_bytes": len(files["wiki/index.md"]),
+        "total_bytes": len(files["knowledge/index.md"]),
     }
     resp = await server_client.post(
         "/v1/import",

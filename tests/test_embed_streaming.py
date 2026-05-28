@@ -30,7 +30,7 @@ from dikw_core.storage.sqlite import SQLiteStorage
 from .fakes import (
     CountingEmbedder,
     FakeMultimodalEmbedding,
-    init_test_wiki,
+    init_test_base,
     register_text_version,
 )
 
@@ -45,8 +45,8 @@ def _setup_multibatch_wiki(tmp_path: Path, num_docs: int = 6) -> Path:
     Yields multi-batch ingests for the streaming + resume-scan tests
     (default batch_size=64 only ever produces one batch on this corpus).
     """
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="streaming-test wiki")
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="streaming-test wiki")
     sources = wiki / "sources" / "docs"
     sources.mkdir(parents=True, exist_ok=True)
     for i in range(num_docs):

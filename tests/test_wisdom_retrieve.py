@@ -18,7 +18,7 @@ import pytest
 from dikw_core import api
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_base
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -33,8 +33,8 @@ async def test_retrieve_returns_wisdom_hits(tmp_path: Path) -> None:
     FakeEmbeddings vector-leg deterministically ranks by token
     overlap, so a query that targets the wisdom page's body finds it.
     """
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     _drop_wisdom(
         wiki,
         "wisdom/elon-musk/first-principles.md",
@@ -64,8 +64,8 @@ async def test_retrieve_hit_layer_correctly_tagged(tmp_path: Path) -> None:
     the underlying document's ``Layer``. The client uses this to group
     or weight by layer (e.g. boost wiki over source, surface wisdom
     separately) so a mis-tag silently breaks the contract."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     # Drop one source + one wisdom doc and ensure both surface tagged
     # with their actual layer.
     src_dir = wiki / "sources" / "notes"

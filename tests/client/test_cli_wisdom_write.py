@@ -26,7 +26,7 @@ def _run(args: list[str]) -> Any:
 def test_wisdom_write_basic(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
 
@@ -44,14 +44,14 @@ def test_wisdom_write_basic(
     assert "created" in r.stdout.lower()
 
     # File landed on disk.
-    assert (client_wiki / "wisdom" / "first-principles.md").is_file()
+    assert (client_base / "wisdom" / "first-principles.md").is_file()
     _ = asgi_client
 
 
 def test_wisdom_write_with_author_and_status(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
 
@@ -67,7 +67,7 @@ def test_wisdom_write_with_author_and_status(
     ])
     assert r.exit_code == 0, r.stdout
 
-    abs_path = client_wiki / "wisdom" / "elon-musk" / "first-principles.md"
+    abs_path = client_base / "wisdom" / "elon-musk" / "first-principles.md"
     assert abs_path.is_file()
     text = abs_path.read_text(encoding="utf-8")
     assert "status: draft" in text
@@ -77,7 +77,7 @@ def test_wisdom_write_with_author_and_status(
 def test_wisdom_write_body_from_file(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
     tmp_path: Path,
 ) -> None:
     patch_transport_factory()
@@ -93,7 +93,7 @@ def test_wisdom_write_body_from_file(
         "--plain",
     ])
     assert r.exit_code == 0, r.stdout
-    written = (client_wiki / "wisdom" / "from-file.md").read_text(encoding="utf-8")
+    written = (client_base / "wisdom" / "from-file.md").read_text(encoding="utf-8")
     assert "body from file." in written
     _ = asgi_client
 
@@ -101,7 +101,7 @@ def test_wisdom_write_body_from_file(
 def test_wisdom_write_no_wait_returns_task_handle(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
 
@@ -118,13 +118,13 @@ def test_wisdom_write_no_wait_returns_task_handle(
     payload = json.loads(r.stdout)
     assert "task_id" in payload
     assert payload.get("status") in {"pending", "running", "succeeded"}
-    _ = (asgi_client, client_wiki)
+    _ = (asgi_client, client_base)
 
 
 def test_wisdom_write_rejects_both_body_and_body_file(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
     tmp_path: Path,
 ) -> None:
     patch_transport_factory()
@@ -145,13 +145,13 @@ def test_wisdom_write_rejects_both_body_and_body_file(
     # the exit code alone — the parameter check itself is verified by
     # the engine-layer kebab-case tests + the no-body test below.
     assert r.exit_code != 0
-    _ = (asgi_client, client_wiki)
+    _ = (asgi_client, client_base)
 
 
 def test_wisdom_write_rejects_no_body_input(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
 
@@ -163,17 +163,17 @@ def test_wisdom_write_rejects_no_body_input(
         "--plain",
     ])
     assert r.exit_code != 0, r.stdout
-    _ = (asgi_client, client_wiki)
+    _ = (asgi_client, client_base)
 
 
 def test_wisdom_write_tags_and_sources_repeatable(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
     # Pre-create a referenced source so provenance edges are populated.
-    src_dir = client_wiki / "sources" / "notes"
+    src_dir = client_base / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "x.md").write_text("# x\n", encoding="utf-8")
 
@@ -189,7 +189,7 @@ def test_wisdom_write_tags_and_sources_repeatable(
         "--plain",
     ])
     assert r.exit_code == 0, r.stdout
-    text = (client_wiki / "wisdom" / "tagged.md").read_text(encoding="utf-8")
+    text = (client_base / "wisdom" / "tagged.md").read_text(encoding="utf-8")
     assert "mental-model" in text
     assert "physics" in text
     assert "sources/notes/x.md" in text
@@ -199,7 +199,7 @@ def test_wisdom_write_tags_and_sources_repeatable(
 def test_wisdom_write_rejects_non_kebab_slug(
     asgi_client: tuple[Any, ServerRuntime],
     patch_transport_factory: Callable[[], None],
-    client_wiki: Path,
+    client_base: Path,
 ) -> None:
     patch_transport_factory()
 
@@ -213,4 +213,4 @@ def test_wisdom_write_rejects_non_kebab_slug(
     ])
     # Server returns 422 → CLI exits non-zero.
     assert r.exit_code != 0
-    _ = (asgi_client, client_wiki)
+    _ = (asgi_client, client_base)

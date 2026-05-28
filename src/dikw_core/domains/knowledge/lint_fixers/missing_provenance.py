@@ -31,7 +31,7 @@ from ..lint_fix import (
     FixProposal,
     bytes_sha256,
 )
-from ..wiki import frontmatter_str_list
+from ..page import frontmatter_str_list
 
 
 class MissingProvenanceFixer:
@@ -51,7 +51,7 @@ class MissingProvenanceFixer:
         ctx: FixerContext,
         reporter: Any,
     ) -> FixProposal | None:
-        abs_path = (ctx.wiki_root / issue.path).resolve()
+        abs_path = (ctx.base_root / issue.path).resolve()
         if not abs_path.is_file():
             # File vanished between scan and propose — nothing to
             # reconcile from. The next lint pass will reflect storage
@@ -64,7 +64,7 @@ class MissingProvenanceFixer:
         file_bytes = abs_path.read_bytes()
         post = frontmatter.loads(file_bytes.decode("utf-8"))
         # ``frontmatter_str_list`` is the shared malformed-shape guard
-        # — symmetric with ``persist_wiki_page`` and ``run_lint``. A
+        # — symmetric with ``persist_knowledge_page`` and ``run_lint``. A
         # YAML scalar / dict / null collapses to ``[]`` rather than
         # being iterated character-by-character into apply.
         source_paths = frontmatter_str_list(post.metadata, "sources")

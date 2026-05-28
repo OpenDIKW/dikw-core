@@ -28,7 +28,7 @@ from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
 from .links import build_title_indexes, parse_links, resolve_links
-from .wiki import frontmatter_str_list
+from .page import frontmatter_str_list
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
@@ -83,7 +83,7 @@ class LintIssue:
 @dataclass(frozen=True)
 class PageMeta:
     """Frontmatter slice ``run_lint`` already had to parse and that
-    downstream callers (``lint_propose`` building ``WikiPageMeta``)
+    downstream callers (``lint_propose`` building ``KnowledgePageMeta``)
     would otherwise re-parse from disk. Keyed by ``LintReport.page_meta``.
     """
 
@@ -151,7 +151,7 @@ class AtomicityVerdict:
 
 
 def check_atomicity(*, body: str, tags: list[str]) -> AtomicityVerdict:
-    """Decide whether a wiki page body+tags violate the atomicity heuristic.
+    """Decide whether a knowledge page body+tags violate the atomicity heuristic.
 
     A page is **non-atomic** when ANY of these independent symptoms trigger;
     each contributes one entry to ``violations``:
@@ -207,14 +207,14 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
 
     # ``page_docs`` aggregates the K + W layers because PR3 promoted
     # wisdom to a first-class document layer: a wikilink from a wisdom
-    # page to a wiki page (and vice versa) must surface here just like
+    # page to a knowledge page (and vice versa) must surface here just like
     # wiki↔wiki, and an orphan_page check on wiki must credit incoming
     # backlinks from wisdom so a legitimate wisdom citation doesn't
-    # trigger destructive lint apply on the wiki page. SYNTH context
+    # trigger destructive lint apply on the knowledge page. SYNTH context
     # builds (``api._synth_pages_from_source``) deliberately keep
-    # Layer.WIKI only — wisdom is hand-written and not LLM-authored.
+    # Layer.KNOWLEDGE only — wisdom is hand-written and not LLM-authored.
     page_docs = list(
-        await storage.list_documents(layer=Layer.WIKI, active=True)
+        await storage.list_documents(layer=Layer.KNOWLEDGE, active=True)
     ) + list(
         await storage.list_documents(layer=Layer.WISDOM, active=True)
     )
@@ -258,10 +258,10 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         if skip_kinds:
             suppressions[doc.path] = skip_kinds
         # Stash the frontmatter slice we already paid to parse so
-        # ``lint_propose`` can build ``WikiPageMeta`` without a second
+        # ``lint_propose`` can build ``KnowledgePageMeta`` without a second
         # disk pass over the same K-layer pages. ``frontmatter_str_list``
         # is the shared malformed-shape guard (scalar / dict / null →
-        # ``[]``) — same one ``persist_wiki_page`` and
+        # ``[]``) — same one ``persist_knowledge_page`` and
         # ``MissingProvenanceFixer`` use, so this lint pass's view of
         # ``sources:`` matches what storage actually stored.
         sources_tuple = tuple(frontmatter_str_list(post.metadata, "sources"))
@@ -327,7 +327,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                     LintIssue(
                         kind="broken_wikilink",
                         path=doc.path,
-                        detail=f"{u.target_text} has no matching wiki page",
+                        detail=f"{u.target_text} has no matching knowledge page",
                         line=u.line,
                     )
                 )
@@ -385,7 +385,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
     # exclusions are wiki-only because ``wiki/index.md`` + ``wiki/log.md``
     # are the K-layer scaffolds synth always writes. Wisdom has no
     # equivalent built-in scaffold — every author's choice.
-    orphan_exclusions = {"wiki/index.md", "wiki/log.md"}
+    orphan_exclusions = {"knowledge/index.md", "knowledge/log.md"}
     for doc in page_docs:
         if doc.path in orphan_exclusions:
             continue

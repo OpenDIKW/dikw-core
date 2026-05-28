@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from dikw_core.domains.knowledge.page import build_page
 from dikw_core.domains.knowledge.synthesize import (
     SynthesisError,
     SynthesisPartialError,
@@ -9,14 +10,13 @@ from dikw_core.domains.knowledge.synthesize import (
     parse_synthesis_response,
     synthesize_pages_from_text,
 )
-from dikw_core.domains.knowledge.wiki import build_page
 
 from .fakes import FakeLLM
 
 _SINGLE_PAGE_RESPONSE = """
 Here's the page:
 
-<page path="wiki/concepts/dikw-pyramid.md" type="concept">
+<page path="knowledge/concepts/dikw-pyramid.md" type="concept">
 ---
 tags: [dikw, model]
 ---
@@ -36,7 +36,7 @@ def test_parse_single_page_returns_one_element_list() -> None:
     )
     assert len(pages) == 1
     page = pages[0]
-    assert page.path == "wiki/concepts/dikw-pyramid.md"
+    assert page.path == "knowledge/concepts/dikw-pyramid.md"
     assert page.type == "concept"
     assert page.title == "DIKW pyramid"
     assert "Karpathy LLM Wiki" in page.body
@@ -45,7 +45,7 @@ def test_parse_single_page_returns_one_element_list() -> None:
 
 
 def test_parse_no_block_returns_empty_list() -> None:
-    # Stage A: a section with nothing worth a wiki page legitimately
+    # Stage A: a section with nothing worth a knowledge page legitimately
     # responds with zero <page> blocks. This used to raise — verify the
     # new contract.
     assert parse_synthesis_response("no page here", source_path="x") == []
@@ -53,7 +53,7 @@ def test_parse_no_block_returns_empty_list() -> None:
 
 def test_parse_bad_type_falls_back_to_note() -> None:
     raw = (
-        '<page path="wiki/notes/x.md" type="random">\n'
+        '<page path="knowledge/notes/x.md" type="random">\n'
         "---\ntags: []\n---\n\n"
         "# Random\n\nbody\n"
         "</page>"
@@ -65,7 +65,7 @@ def test_parse_bad_type_falls_back_to_note() -> None:
 
 def test_parse_accepts_custom_allowed_types() -> None:
     raw = (
-        '<page path="wiki/topics/spacex.md" type="topic">\n'
+        '<page path="knowledge/topics/spacex.md" type="topic">\n'
         "---\ntags: []\n---\n\n"
         "# SpaceX topic\n\nbody\n"
         "</page>"
@@ -78,12 +78,12 @@ def test_parse_accepts_custom_allowed_types() -> None:
     assert len(pages) == 1
     assert pages[0].type == "topic"
     # default_page_path picks the right folder from the custom type.
-    assert pages[0].path == "wiki/topics/spacex.md"
+    assert pages[0].path == "knowledge/topics/spacex.md"
 
 
 def test_parse_unknown_type_falls_back_within_custom_allowed_types() -> None:
     raw = (
-        '<page path="wiki/notes/x.md" type="bogus">\n'
+        '<page path="knowledge/notes/x.md" type="bogus">\n'
         "---\ntags: []\n---\n\n"
         "# Bogus\n\nbody\n"
         "</page>"
@@ -99,7 +99,7 @@ def test_parse_unknown_type_falls_back_within_custom_allowed_types() -> None:
 
 
 _TRUNCATED_LONE = """
-<page path="wiki/entities/spacex.md" type="entity">
+<page path="knowledge/entities/spacex.md" type="entity">
 ---
 tags: [aerospace]
 ---
@@ -122,7 +122,7 @@ def test_parse_truncated_only_block_raises_synthesis_error() -> None:
 
 
 _TRUNCATED_AFTER_GOOD = """
-<page path="wiki/entities/spacex.md" type="entity">
+<page path="knowledge/entities/spacex.md" type="entity">
 ---
 tags: [aerospace]
 ---
@@ -132,7 +132,7 @@ tags: [aerospace]
 Aerospace firm.
 </page>
 
-<page path="wiki/entities/tesla.md" type="entity">
+<page path="knowledge/entities/tesla.md" type="entity">
 ---
 tags: [automotive]
 ---
@@ -166,7 +166,7 @@ def test_parse_partial_block_failure_does_not_request_retry() -> None:
 
 def test_parse_unknown_type_without_note_falls_back_to_first_allowed() -> None:
     raw = (
-        '<page path="wiki/x/x.md" type="bogus">\n'
+        '<page path="knowledge/x/x.md" type="bogus">\n'
         "---\ntags: []\n---\n\n"
         "# X\n\nbody\n"
         "</page>"
@@ -182,7 +182,7 @@ def test_parse_unknown_type_without_note_falls_back_to_first_allowed() -> None:
 
 
 _MULTI_PAGE_RESPONSE = """
-<page path="wiki/entities/elon-musk.md" type="entity">
+<page path="knowledge/entities/elon-musk.md" type="entity">
 ---
 tags: [person]
 ---
@@ -192,7 +192,7 @@ tags: [person]
 Founder of [[SpaceX]] and [[Tesla]].
 </page>
 
-<page path="wiki/entities/spacex.md" type="entity">
+<page path="knowledge/entities/spacex.md" type="entity">
 ---
 tags: [company, space]
 ---
@@ -202,7 +202,7 @@ tags: [company, space]
 Aerospace manufacturer led by [[埃隆·马斯克]].
 </page>
 
-<page path="wiki/concepts/falcon-1.md" type="concept">
+<page path="knowledge/concepts/falcon-1.md" type="concept">
 ---
 tags: [rocket]
 ---
@@ -224,7 +224,7 @@ def test_parse_multiple_blocks_returns_all_pages() -> None:
 
 
 _PARTIAL_RESPONSE = """
-<page path="wiki/entities/ok.md" type="entity">
+<page path="knowledge/entities/ok.md" type="entity">
 ---
 tags: []
 ---
@@ -234,7 +234,7 @@ tags: []
 Body.
 </page>
 
-<page path="wiki/concepts/no-title.md" type="concept">
+<page path="knowledge/concepts/no-title.md" type="concept">
 ---
 tags: []
 ---
@@ -256,11 +256,11 @@ def test_parse_partial_failure_keeps_good_pages() -> None:
 
 def test_parse_all_blocks_fail_raises_synthesis_error() -> None:
     raw = (
-        '<page path="wiki/notes/a.md" type="note">\n'
+        '<page path="knowledge/notes/a.md" type="note">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here\n"
         "</page>\n"
-        '<page path="wiki/notes/b.md" type="note">\n'
+        '<page path="knowledge/notes/b.md" type="note">\n'
         "---\ntags: []\n---\n\n"
         "still no title\n"
         "</page>"

@@ -19,7 +19,7 @@ from dikw_core.domains.knowledge.lint_fix import (
     FixerContext,
     FixOperation,
     FixProposal,
-    WikiPageMeta,
+    KnowledgePageMeta,
     run_lint_propose,
 )
 from dikw_core.domains.knowledge.lint_fixers import (
@@ -28,26 +28,26 @@ from dikw_core.domains.knowledge.lint_fixers import (
 from dikw_core.domains.knowledge.lint_fixers.broken_wikilink import (
     BrokenWikilinkFixer,
 )
-from dikw_core.domains.knowledge.wiki import build_page
+from dikw_core.domains.knowledge.page import build_page
 from dikw_core.schemas import Hit, Layer
 
 from .fakes import FakeLLM
 
 
 def _make_page(title: str, body: str) -> Any:
-    """Build a real ``WikiPage`` so tests can write the same path layout
+    """Build a real ``KnowledgePage`` so tests can write the same path layout
     on disk that production synth would produce."""
     return build_page(title=title, body=body, type_="concept")
 
 
-def _meta_from(page: Any) -> WikiPageMeta:
-    return WikiPageMeta(path=page.path, title=page.title)
+def _meta_from(page: Any) -> KnowledgePageMeta:
+    return KnowledgePageMeta(path=page.path, title=page.title)
 
 
 def _ctx(
     *,
     pages: list[Any],
-    wiki_root: Path,
+    base_root: Path,
     llm: Any | None = None,
     enable_llm: bool = False,
     cfg: Any = None,
@@ -65,7 +65,7 @@ def _ctx(
         storage=None,
         llm=llm if llm is not None else FakeLLM(),  # type: ignore[arg-type]
         embedding=None,
-        wiki_root=wiki_root,
+        base_root=base_root,
         all_pages=[_meta_from(p) for p in pages],
         enable_llm=enable_llm,
         cfg=cfg,
@@ -91,13 +91,13 @@ async def test_fuzzy_match_above_threshold_proposes_update_page(
 ) -> None:
     """A broken ``[[foo bar]]`` should rewrite to the existing ``Foo Bar``
     page when normalized titles match within the 0.85 ratio band."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     target_page = _make_page("Foo Bar", "# Foo Bar\nbody\n")
     src_page = _make_page(
         "Source Page",
         "# Source Page\n\nSee [[foo  bar]] for context.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source Page\n---\n\n"
@@ -108,13 +108,13 @@ async def test_fuzzy_match_above_threshold_proposes_update_page(
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[foo  bar]] has no matching wiki page",
+        detail="[[foo  bar]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[target_page, src_page], wiki_root=wiki_root),
+        _ctx(pages=[target_page, src_page], base_root=base_root),
         reporter=_NullReporter(),
     )
 
@@ -139,13 +139,13 @@ async def test_fuzzy_match_miss_returns_none_in_pr1(tmp_path: Path) -> None:
     """When no existing title is close enough, PR1's heuristic-only
     path returns ``None`` (the evidence-backed LLM repair path shipped
     later in #83)."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     other = _make_page("Completely Different", "# Completely Different\n")
     src_page = _make_page(
         "Source Page",
         "# Source Page\n\nSee [[xyz123abc]] here.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source Page\n---\n\n"
@@ -156,13 +156,13 @@ async def test_fuzzy_match_miss_returns_none_in_pr1(tmp_path: Path) -> None:
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[xyz123abc]] has no matching wiki page",
+        detail="[[xyz123abc]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[other, src_page], wiki_root=wiki_root),
+        _ctx(pages=[other, src_page], base_root=base_root),
         reporter=_NullReporter(),
     )
     assert proposal is None
@@ -172,12 +172,12 @@ async def test_fuzzy_match_miss_returns_none_in_pr1(tmp_path: Path) -> None:
 async def test_match_excludes_self_page(tmp_path: Path) -> None:
     """A page must not propose a link to itself even if the broken
     target normalizes to the page's own title."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     src_page = _make_page(
         "Source Page",
         "# Source Page\n\nSee [[source page]].\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source Page\n---\n\n"
@@ -188,13 +188,13 @@ async def test_match_excludes_self_page(tmp_path: Path) -> None:
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[source page]] has no matching wiki page",
+        detail="[[source page]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root),
+        _ctx(pages=[src_page], base_root=base_root),
         reporter=_NullReporter(),
     )
     assert proposal is None
@@ -205,13 +205,13 @@ async def test_fuzzy_match_works_on_non_ascii_titles(tmp_path: Path) -> None:
     """The earlier ASCII-only ``[a-z0-9]`` normalize regex stripped
     every CJK glyph and made the fixer a no-op for multilingual bases.
     Verify a mixed-case CJK target now resolves."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     target_page = _make_page("卡尔曼滤波", "# 卡尔曼滤波\nbody\n")
     src_page = _make_page(
         "Source CJK",
         "# Source CJK\n\nReference [[卡尔曼 滤波]] here.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source CJK\n---\n\n"
@@ -222,13 +222,13 @@ async def test_fuzzy_match_works_on_non_ascii_titles(tmp_path: Path) -> None:
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[卡尔曼 滤波]] has no matching wiki page",
+        detail="[[卡尔曼 滤波]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[target_page, src_page], wiki_root=wiki_root),
+        _ctx(pages=[target_page, src_page], base_root=base_root),
         reporter=_NullReporter(),
     )
     assert proposal is not None, "non-ASCII titles must not be silently skipped"
@@ -241,13 +241,13 @@ async def test_extracts_target_from_detail_when_issue_lacks_explicit_target(
 ) -> None:
     """The lint scanner formats detail as ``[[<target>]] has no matching ...``;
     the fixer must parse that to recover the broken target text."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     target_page = _make_page("Karpathy Rule", "# Karpathy Rule\nbody\n")
     src_page = _make_page(
         "Source",
         "# Source\n\nApply [[karpathy rule]] here.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source\n---\n\n"
@@ -258,13 +258,13 @@ async def test_extracts_target_from_detail_when_issue_lacks_explicit_target(
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[karpathy rule]] has no matching wiki page",
+        detail="[[karpathy rule]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[target_page, src_page], wiki_root=wiki_root),
+        _ctx(pages=[target_page, src_page], base_root=base_root),
         reporter=_NullReporter(),
     )
     assert proposal is not None
@@ -346,12 +346,12 @@ def _make_broken_link_setup(
     must miss; LLM-grounded tests then assert that the fallback fires
     when evidence is present and is silent when not.
     """
-    wiki_root = tmp_path
+    base_root = tmp_path
     src_page = _make_page(
         "Source",
         f"# Source\n\nSee [[{broken_target}]] for context.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         f"---\ntitle: Source\n---\n\n# Source\n\nSee [[{broken_target}]] for context.\n",
@@ -360,17 +360,17 @@ def _make_broken_link_setup(
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail=f"[[{broken_target}]] has no matching wiki page",
+        detail=f"[[{broken_target}]] has no matching knowledge page",
         line=3,
     )
-    return wiki_root, src_page, issue
+    return base_root, src_page, issue
 
 
 # A 400+ char real-content body: passes the _MIN_BODY_CHARS=200 floor and
 # contains no _FORBIDDEN_BODY_TOKENS. Used by happy-path + canonicalization
 # tests where we want the grounded path to succeed end-to-end.
 _GROUNDED_LLM_RESPONSE = (
-    "<page path=\"wiki/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
     "---\n"
     "tags: [grounded]\n"
     "sources: [\"sources/foo.md\"]\n"
@@ -390,7 +390,7 @@ _GROUNDED_LLM_RESPONSE = (
 # Same shell, but the body still carries a TODO marker — the post-generation
 # guard must reject this even when evidence was sufficient.
 _TODO_LLM_RESPONSE = (
-    "<page path=\"wiki/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
     "---\n"
     "tags: [stub]\n"
     "---\n"
@@ -407,7 +407,7 @@ _TODO_LLM_RESPONSE = (
 # Body too short — passes the TODO-token check but fails the body length
 # floor. Guards against the LLM producing "Topic A is a topic." filler.
 _SHORT_LLM_RESPONSE = (
-    "<page path=\"wiki/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
     "---\n"
     "tags: [grounded]\n"
     "---\n"
@@ -501,13 +501,13 @@ async def test_broken_wikilink_llm_grounded_when_enough_evidence(
     """With ``enable_llm=True`` and sufficient D/I evidence the fixer must
     produce a ``create_page`` proposal whose body is the grounded LLM
     response — no TODO marker, no stub language."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     fake = FakeLLM(response_text=_GROUNDED_LLM_RESPONSE)
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True),
         reporter=_NullReporter(),
     )
 
@@ -520,7 +520,7 @@ async def test_broken_wikilink_llm_grounded_when_enough_evidence(
     assert isinstance(op, FixOperation)
     assert op.kind == "create_page"
     assert op.expected_hash is None
-    assert op.path.startswith("wiki/")
+    assert op.path.startswith("knowledge/")
     assert op.path.endswith(".md")
     assert op.new_body is not None
     assert "Whole New Topic" in op.new_body
@@ -545,11 +545,11 @@ async def test_broken_wikilink_llm_skipped_when_evidence_insufficient(
     orchestrator must record a structured ``evidence_insufficient`` reason
     so agents reading ``FixProposalReport.skipped`` see why the wikilink
     stays unrepaired (not the generic 'fixer returned None')."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     counter = _patch_evidence(monkeypatch, [])  # zero chunks
     fake = FakeLLM(response_text=_GROUNDED_LLM_RESPONSE)
 
-    ctx = _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True)
+    ctx = _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True)
     reporter = _ListReporter()
     report = await run_lint_propose(
         report=LintReport(issues=[issue]),
@@ -585,11 +585,11 @@ async def test_broken_wikilink_llm_rejects_todo_body(
     (prompt regression, model misbehavior). The fixer must reject the
     proposal and surface ``rejected_todo_marker`` as the skip reason —
     a defence-in-depth so #83 cannot resurface through a prompt drift."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     fake = FakeLLM(response_text=_TODO_LLM_RESPONSE)
 
-    ctx = _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True)
+    ctx = _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True)
     report = await run_lint_propose(
         report=LintReport(issues=[issue]),
         rule="broken_wikilink",
@@ -615,10 +615,10 @@ async def test_broken_wikilink_llm_rejects_title_mismatch(
     original ``[[Whole New Topic]]`` reference still broken — exactly
     the silent failure mode #83 is fighting. The fixer must reject the
     proposal with ``rejected_title_mismatch`` so agents see why."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     mismatched_response = (
-        "<page path=\"wiki/concepts/related-topic.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/related-topic.md\" type=\"concept\">\n"
         "---\n"
         "tags: [grounded]\n"
         "---\n"
@@ -634,7 +634,7 @@ async def test_broken_wikilink_llm_rejects_title_mismatch(
     )
     fake = FakeLLM(response_text=mismatched_response)
 
-    ctx = _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True)
+    ctx = _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True)
     report = await run_lint_propose(
         report=LintReport(issues=[issue]),
         rule="broken_wikilink",
@@ -690,13 +690,13 @@ async def test_broken_wikilink_collect_evidence_falls_back_to_bm25_on_hybrid_err
             return None
 
     monkeypatch.setattr(bwl_mod, "HybridSearcher", _FailingHybridSearcher)
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     fake = FakeLLM(response_text=_GROUNDED_LLM_RESPONSE)
     ctx = FixerContext(
         storage=_StubStorage(),  # type: ignore[arg-type]
         llm=fake,
         embedding=None,
-        wiki_root=wiki_root,
+        base_root=base_root,
         all_pages=[_meta_from(src_page)],
         enable_llm=True,
         cfg=_default_cfg(),
@@ -723,12 +723,12 @@ async def test_broken_wikilink_llm_rejects_singular_target_plural_title(
     a page indexed as ``networks`` would NOT resolve a stemmed lookup of
     ``network``. The fixer must mirror the resolver's asymmetric
     semantics or this proposal silently leaves ``broken_wikilink`` open."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     src_page = _make_page(
         "Source",
         "# Source\n\nSee [[Network]] for context.\n",
     )
-    src_abs = wiki_root / src_page.path
+    src_abs = base_root / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)
     src_abs.write_text(
         "---\ntitle: Source\n---\n\n# Source\n\nSee [[Network]] for context.\n",
@@ -737,12 +737,12 @@ async def test_broken_wikilink_llm_rejects_singular_target_plural_title(
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[Network]] has no matching wiki page",
+        detail="[[Network]] has no matching knowledge page",
         line=3,
     )
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     plural_response = (
-        "<page path=\"wiki/concepts/networks.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/networks.md\" type=\"concept\">\n"
         "---\n"
         "tags: [grounded]\n"
         "---\n"
@@ -757,7 +757,7 @@ async def test_broken_wikilink_llm_rejects_singular_target_plural_title(
         "</page>\n"
     )
     fake = FakeLLM(response_text=plural_response)
-    ctx = _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True)
+    ctx = _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True)
     report = await run_lint_propose(
         report=LintReport(issues=[issue]),
         rule="broken_wikilink",
@@ -783,14 +783,14 @@ async def test_broken_wikilink_llm_grounded_preserves_evidence_sources(
     override, ``parse_synthesis_response`` would stamp the referrer
     path on every generated stub, breaking source traceability for
     pages that were specifically built from D-layer evidence."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     hits = _grounded_evidence_hits()  # two hits with paths sources/foo.md and sources/bar.md
     _patch_evidence(monkeypatch, hits)
     fake = FakeLLM(response_text=_GROUNDED_LLM_RESPONSE)
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True),
         reporter=_NullReporter(),
     )
 
@@ -815,11 +815,11 @@ async def test_broken_wikilink_llm_rejects_too_short_body(
     resolve the wikilink but adds no knowledge. Body-length floor
     rejects it with ``rejected_body_too_short`` so the link stays
     flagged as broken."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     fake = FakeLLM(response_text=_SHORT_LLM_RESPONSE)
 
-    ctx = _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True)
+    ctx = _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True)
     report = await run_lint_propose(
         report=LintReport(issues=[issue]),
         rule="broken_wikilink",
@@ -842,13 +842,13 @@ async def test_broken_wikilink_llm_disabled_returns_none(
     """When ``enable_llm`` is False, a heuristic miss must still return
     None — the LLM path is opt-in, and the evidence pipeline must NOT
     even run (no storage hits, no embedder spend)."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     counter = _patch_evidence(monkeypatch, _grounded_evidence_hits())
     fake = FakeLLM(response_text=_GROUNDED_LLM_RESPONSE)
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=False),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=False),
         reporter=_NullReporter(),
     )
     assert proposal is None
@@ -871,7 +871,7 @@ async def test_broken_wikilink_llm_failure_returns_none(
     via reporter; the proposal report's ``skipped`` field stays clean
     of "LLM call failed" entries that would distract from the
     evidence-vs-quality decisions agents care about."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
 
     class _RaisingLLM:
@@ -883,7 +883,7 @@ async def test_broken_wikilink_llm_failure_returns_none(
         issue,
         _ctx(
             pages=[src_page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=_RaisingLLM(),
             enable_llm=True,
         ),
@@ -901,7 +901,7 @@ async def test_broken_wikilink_llm_strips_alias_and_anchor(
     bare canonical name; otherwise the LLM titles the page with the
     suffix (``Target|label``) and the next lint pass keeps reporting
     the wikilink as broken."""
-    wiki_root, src_page, _ = _make_broken_link_setup(
+    base_root, src_page, _ = _make_broken_link_setup(
         tmp_path, broken_target="Whole New Topic|Custom Label"
     )
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
@@ -909,13 +909,13 @@ async def test_broken_wikilink_llm_strips_alias_and_anchor(
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[Whole New Topic|Custom Label]] has no matching wiki page",
+        detail="[[Whole New Topic|Custom Label]] has no matching knowledge page",
         line=3,
     )
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True),
         reporter=_NullReporter(),
     )
     assert proposal is not None
@@ -932,13 +932,13 @@ async def test_broken_wikilink_llm_strips_alias_and_anchor(
     issue_anchor = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[Whole New Topic#background]] has no matching wiki page",
+        detail="[[Whole New Topic#background]] has no matching knowledge page",
         line=3,
     )
     proposal_anchor = await fixer.propose(
         issue_anchor,
         _ctx(
-            pages=[src_page], wiki_root=wiki_root,
+            pages=[src_page], base_root=base_root,
             llm=fake_anchor, enable_llm=True,
         ),
         reporter=_NullReporter(),
@@ -960,13 +960,13 @@ async def test_broken_wikilink_llm_unparseable_returns_none(
     soft failure (same channel as provider outages), not a FixerSkip —
     the grounded prompt explicitly offers a ``REFUSE: ...`` exit when
     evidence is insufficient, which lands here."""
-    wiki_root, src_page, issue = _make_broken_link_setup(tmp_path)
+    base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     fake = FakeLLM(response_text="REFUSE: insufficient evidence")
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True),
         reporter=_NullReporter(),
     )
     assert proposal is None
@@ -976,7 +976,7 @@ async def test_broken_wikilink_llm_unparseable_returns_none(
 
 
 _NON_ATOMIC_LLM_RESPONSE = (
-    "<page path=\"wiki/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
     "---\n"
     "tags: [child]\n"
     "---\n"
@@ -986,7 +986,7 @@ _NON_ATOMIC_LLM_RESPONSE = (
     "First atomic child page.\n"
     "</page>\n"
     "\n"
-    "<page path=\"wiki/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
     "---\n"
     "tags: [child]\n"
     "---\n"
@@ -1000,9 +1000,9 @@ _NON_ATOMIC_LLM_RESPONSE = (
 
 def _make_fat_page_on_disk(tmp_path: Path) -> tuple[Path, Any, Any]:
     """Write a non-atomic K-page to disk + the matching ``LintIssue``."""
-    wiki_root = tmp_path
-    page_path = "wiki/concepts/grab-bag.md"
-    abs_path = wiki_root / page_path
+    base_root = tmp_path
+    page_path = "knowledge/concepts/grab-bag.md"
+    abs_path = base_root / page_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     body = (
         "---\n"
@@ -1024,7 +1024,7 @@ def _make_fat_page_on_disk(tmp_path: Path) -> tuple[Path, Any, Any]:
         detail="page looks like multiple atomic notes glued together: 2 H2 sections",
         line=None,
     )
-    return wiki_root, page, issue
+    return base_root, page, issue
 
 
 @pytest.mark.asyncio
@@ -1037,14 +1037,14 @@ async def test_non_atomic_page_splits_into_n_create_plus_one_delete(
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     fake = FakeLLM(response_text=_NON_ATOMIC_LLM_RESPONSE)
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1065,8 +1065,8 @@ async def test_non_atomic_page_splits_into_n_create_plus_one_delete(
     # leaves [[Grab Bag]] in other pages to be fixed by a follow-up
     # broken_wikilink propose run (decision A in the plan).
     paths = {op.path for op in creates}
-    assert "wiki/concepts/grab-bag.md" not in paths
-    assert all(p.startswith("wiki/") and p.endswith(".md") for p in paths)
+    assert "knowledge/concepts/grab-bag.md" not in paths
+    assert all(p.startswith("knowledge/") and p.endswith(".md") for p in paths)
 
 
 @pytest.mark.asyncio
@@ -1077,9 +1077,9 @@ async def test_non_atomic_page_skips_when_synth_returns_one(tmp_path: Path) -> N
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     one_page_response = (
-        "<page path=\"wiki/concepts/single-atomic.md\" type=\"concept\">\n"
+        "<page path=\"knowledge/concepts/single-atomic.md\" type=\"concept\">\n"
         "---\ntags: [single]\n---\n\n# Single Atomic\n\nOnly one.\n"
         "</page>\n"
     )
@@ -1089,7 +1089,7 @@ async def test_non_atomic_page_skips_when_synth_returns_one(tmp_path: Path) -> N
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1107,14 +1107,14 @@ async def test_non_atomic_page_skips_on_synth_error(tmp_path: Path) -> None:
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     fake = FakeLLM(response_text="LLM refused to split.")
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1125,14 +1125,14 @@ async def test_non_atomic_page_skips_on_synth_error(tmp_path: Path) -> None:
 
 
 _TRUNCATED_NON_ATOMIC_RESPONSE = (
-    "<page path=\"wiki/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\n# Topic A\n\nFirst child.\n"
     "</page>\n\n"
-    "<page path=\"wiki/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\n# Topic B\n\nSecond child.\n"
     "</page>\n\n"
     # Third <page> opener with no </page> — synth marks this retry=True.
-    "<page path=\"wiki/concepts/topic-c.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-c.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\n# Topic C\n\nThird child body keeps "
     "going but max_tokens cut it off here."
 )
@@ -1148,14 +1148,14 @@ async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     fake = FakeLLM(response_text=_TRUNCATED_NON_ATOMIC_RESPONSE)
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1169,16 +1169,16 @@ async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
 
 
 _DETERMINISTIC_PARTIAL_RESPONSE = (
-    "<page path=\"wiki/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\n# Topic A\n\nFirst child.\n"
     "</page>\n\n"
-    "<page path=\"wiki/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\n# Topic B\n\nSecond child.\n"
     "</page>\n\n"
     # A third complete <page> block whose body is missing the required
     # ATX `# Title` line — parse_synthesis_response treats it as a
     # deterministic partial (retry=False).
-    "<page path=\"wiki/concepts/topic-c.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/topic-c.md\" type=\"concept\">\n"
     "---\ntags: [child]\n---\n\nNo title heading here, just prose.\n"
     "</page>\n"
 )
@@ -1196,14 +1196,14 @@ async def test_non_atomic_page_refuses_deterministic_partial(
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     fake = FakeLLM(response_text=_DETERMINISTIC_PARTIAL_RESPONSE)
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1227,7 +1227,7 @@ async def test_non_atomic_page_aborts_on_child_collision(
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     # An existing K-page at the path the LLM's first child would claim.
     colliding_existing = _make_page("Topic A", "# Topic A\nexisting body\n")
     fake = FakeLLM(response_text=_NON_ATOMIC_LLM_RESPONSE)
@@ -1238,7 +1238,7 @@ async def test_non_atomic_page_aborts_on_child_collision(
             # Include the colliding page in ctx.all_pages so the fixer
             # sees it via the ``existing_paths`` set.
             pages=[page, colliding_existing],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=True,
             cfg=_default_cfg(),
@@ -1258,14 +1258,14 @@ async def test_non_atomic_page_skips_when_llm_disabled(tmp_path: Path) -> None:
         NonAtomicPageFixer,
     )
 
-    wiki_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     fake = FakeLLM(response_text=_NON_ATOMIC_LLM_RESPONSE)
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,
         _ctx(
             pages=[page],
-            wiki_root=wiki_root,
+            base_root=base_root,
             llm=fake,
             enable_llm=False,
             cfg=_default_cfg(),
@@ -1287,7 +1287,7 @@ async def test_non_atomic_page_skips_when_llm_disabled(tmp_path: Path) -> None:
 # evidence-backed path stays gated by ``enable_llm`` alone.
 
 _CJK_GROUNDED_LLM_RESPONSE = (
-    "<page path=\"wiki/concepts/qin-dynasty.md\" type=\"concept\">\n"
+    "<page path=\"knowledge/concepts/qin-dynasty.md\" type=\"concept\">\n"
     "---\n"
     "tags: [history]\n"
     "sources: [\"sources/foo.md\"]\n"
@@ -1313,7 +1313,7 @@ async def test_broken_wikilink_short_cjk_target_enters_llm_when_enabled(
     With ``enable_llm=True`` AND sufficient D/I evidence the grounded
     LLM path MUST still fire; the heuristic length gate guards fuzzy
     match, not the LLM path."""
-    wiki_root, src_page, issue = _make_broken_link_setup(
+    base_root, src_page, issue = _make_broken_link_setup(
         tmp_path, broken_target="秦朝"
     )
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
@@ -1321,7 +1321,7 @@ async def test_broken_wikilink_short_cjk_target_enters_llm_when_enabled(
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=True),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=True),
         reporter=_NullReporter(),
     )
 
@@ -1342,7 +1342,7 @@ async def test_broken_wikilink_short_cjk_target_skipped_when_llm_disabled(
     """Same short CJK target with ``enable_llm=False``: propose returns
     None and the LLM is NEVER called — confirms the relaxed gate didn't
     accidentally enable the LLM path unconditionally."""
-    wiki_root, src_page, issue = _make_broken_link_setup(
+    base_root, src_page, issue = _make_broken_link_setup(
         tmp_path, broken_target="秦朝"
     )
     counter = _patch_evidence(monkeypatch, _grounded_evidence_hits())
@@ -1350,7 +1350,7 @@ async def test_broken_wikilink_short_cjk_target_skipped_when_llm_disabled(
     fixer = BrokenWikilinkFixer()
     proposal = await fixer.propose(
         issue,
-        _ctx(pages=[src_page], wiki_root=wiki_root, llm=fake, enable_llm=False),
+        _ctx(pages=[src_page], base_root=base_root, llm=fake, enable_llm=False),
         reporter=_NullReporter(),
     )
 

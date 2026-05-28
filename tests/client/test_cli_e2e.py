@@ -301,7 +301,7 @@ def _seed_pages_links(rt: ServerRuntime) -> tuple[str, str, str]:
     three paths for assertions."""
     import asyncio
 
-    a_path, b_path, c_path = "wiki/a.md", "wiki/b.md", "wiki/c.md"
+    a_path, b_path, c_path = "knowledge/a.md", "knowledge/b.md", "knowledge/c.md"
 
     async def _seed() -> None:
         cfg, _root, storage = await api._with_storage(rt.root)
@@ -310,17 +310,17 @@ def _seed_pages_links(rt: ServerRuntime) -> tuple[str, str, str]:
             for p in (a_path, b_path, c_path):
                 await storage.upsert_document(
                     DocumentRecord(
-                        doc_id=api._doc_id_for(Layer.WIKI, p),
+                        doc_id=api._doc_id_for(Layer.KNOWLEDGE, p),
                         path=p,
                         hash="0" * 64,
                         mtime=0.0,
-                        layer=Layer.WIKI,
+                        layer=Layer.KNOWLEDGE,
                         active=True,
                     )
                 )
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=api._doc_id_for(Layer.WIKI, a_path),
+                    src_doc_id=api._doc_id_for(Layer.KNOWLEDGE, a_path),
                     dst_path=b_path,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
@@ -329,7 +329,7 @@ def _seed_pages_links(rt: ServerRuntime) -> tuple[str, str, str]:
             )
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=api._doc_id_for(Layer.WIKI, b_path),
+                    src_doc_id=api._doc_id_for(Layer.KNOWLEDGE, b_path),
                     dst_path=c_path,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
@@ -393,7 +393,7 @@ def test_pages_links_unknown_path_exits_one(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "pages", "links", "wiki/missing.md"])
+    result = _run(["client", "pages", "links", "knowledge/missing.md"])
     assert result.exit_code == 1
     assert "page_not_found" in result.stdout or "404" in result.stdout
 
@@ -403,7 +403,7 @@ def test_pages_links_rejects_invalid_format(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "pages", "links", "wiki/a.md", "--format", "csv"])
+    result = _run(["client", "pages", "links", "knowledge/a.md", "--format", "csv"])
     assert result.exit_code == 2
     assert "must be 'json' or 'table'" in result.stdout
 
@@ -416,8 +416,8 @@ def _seed_pages_provenance(rt: ServerRuntime) -> tuple[str, str, str]:
 
     src_path = "sources/src.md"
     ghost_path = "sources/ghost.md"
-    a_path = "wiki/a.md"
-    b_path = "wiki/b.md"
+    a_path = "knowledge/a.md"
+    b_path = "knowledge/b.md"
 
     async def _seed() -> None:
         cfg, _root, storage = await api._with_storage(rt.root)
@@ -437,19 +437,19 @@ def _seed_pages_provenance(rt: ServerRuntime) -> tuple[str, str, str]:
             for p in (a_path, b_path):
                 await storage.upsert_document(
                     DocumentRecord(
-                        doc_id=api._doc_id_for(Layer.WIKI, p),
+                        doc_id=api._doc_id_for(Layer.KNOWLEDGE, p),
                         path=p,
                         hash="0" * 64,
                         mtime=0.0,
-                        layer=Layer.WIKI,
+                        layer=Layer.KNOWLEDGE,
                         active=True,
                     )
                 )
             await storage.replace_provenance_from(
-                api._doc_id_for(Layer.WIKI, a_path), [src_path, ghost_path]
+                api._doc_id_for(Layer.KNOWLEDGE, a_path), [src_path, ghost_path]
             )
             await storage.replace_provenance_from(
-                api._doc_id_for(Layer.WIKI, b_path), [src_path]
+                api._doc_id_for(Layer.KNOWLEDGE, b_path), [src_path]
             )
         finally:
             await storage.close()
@@ -540,7 +540,7 @@ def test_pages_provenance_unknown_path_exits_one(
     patch_transport_factory: Callable[[], None],
 ) -> None:
     patch_transport_factory()
-    result = _run(["client", "pages", "provenance", "wiki/missing.md"])
+    result = _run(["client", "pages", "provenance", "knowledge/missing.md"])
     assert result.exit_code == 1
     assert "page_not_found" in result.stdout or "404" in result.stdout
 
@@ -555,7 +555,7 @@ def test_pages_provenance_bad_direction_exits_two(
     to the server's 422."""
     patch_transport_factory()
     result = _run(
-        ["client", "pages", "provenance", "wiki/x.md", "--direction", "sideways"]
+        ["client", "pages", "provenance", "knowledge/x.md", "--direction", "sideways"]
     )
     assert result.exit_code == 2
     assert "--direction must be" in result.stdout

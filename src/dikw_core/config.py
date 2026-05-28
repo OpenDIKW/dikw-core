@@ -24,7 +24,7 @@ class ProviderConfig(BaseModel):
     # hard-bound to the ChatGPT backend (the validator below requires a
     # matching ``llm_base_url``); it speaks the OpenAI Responses API, not
     # Chat Completions, and rotates an OAuth access_token from
-    # ``<wiki>/.dikw/auth.json`` (dikw self-managed; bootstrap with
+    # ``<base>/.dikw/auth.json`` (dikw self-managed; bootstrap with
     # ``dikw auth login openai-codex`` or ``dikw auth import openai-codex``)
     # instead of an ``OPENAI_API_KEY``. Defaults to ``anthropic_compat`` so a
     # fresh ``dikw init`` against api.anthropic.com is one key away.
@@ -166,7 +166,7 @@ class RetrievalConfig(BaseModel):
     # Wikilink-graph retrieval leg. When ``graph_enabled`` is True, the
     # searcher takes the top ``graph_seed_top_k`` chunks from the
     # BM25+vector fused result, asks storage for chunks reachable via
-    # K-layer wikilinks, and folds them in as a fourth RRF leg with
+    # K-layer knowledgelinks, and folds them in as a fourth RRF leg with
     # ``graph_weight``. Default-off until eval evidence shows the leg
     # actually moves nDCG — wikilink graphs need to be dense enough for
     # one-hop neighbor expansion to be informative.
@@ -266,7 +266,7 @@ def _default_provider_config() -> ProviderConfig:
     """``DikwConfig.provider`` factory — defaults to a text-embedding-3-small
     profile. ``ProviderConfig`` itself still requires the 4 embedding-identity
     fields explicitly so user-provided yml stays unambiguous; this factory
-    exists so test fixtures and ``api.init_wiki`` can build a default
+    exists so test fixtures and ``api.init_base`` can build a default
     ``DikwConfig`` without restating those values."""
     return ProviderConfig(
         embedding_dim=1536,

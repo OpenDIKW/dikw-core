@@ -24,13 +24,13 @@ if str(_TOOLS_DIR) not in sys.path:
 
 from run_phase15_from_snapshot import resolve_active_text_version  # noqa: E402
 
-from .fakes import init_test_wiki, register_text_version  # noqa: E402
+from .fakes import init_test_base, register_text_version  # noqa: E402
 
 
 @pytest.mark.asyncio
 async def test_resolve_active_version_uses_active_row_dim(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, dim=128)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, dim=128)
 
     from dikw_core.config import load_config
     from dikw_core.storage import build_storage
@@ -58,8 +58,8 @@ async def test_resolve_active_version_uses_active_row_dim(tmp_path: Path) -> Non
 async def test_resolve_active_version_falls_back_to_cfg_when_none(
     tmp_path: Path,
 ) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     from dikw_core.config import load_config
     from dikw_core.storage import build_storage

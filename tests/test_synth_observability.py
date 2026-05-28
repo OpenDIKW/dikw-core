@@ -16,12 +16,12 @@ from dikw_core.schemas import ChunkRecord
 from .fakes import FakeLLM, make_provider_cfg
 from .test_progress_reporter import ListReporter
 
-_VALID_PAGE = '<page path="wiki/x.md" type="concept">\n# X\n\nbody\n</page>'
+_VALID_PAGE = '<page path="knowledge/x.md" type="concept">\n# X\n\nbody\n</page>'
 _UNPARSEABLE = "not a <page> block"
 # One closed page + one truncated opener → SynthesisPartialError.
 _PARTIAL_PAGE = (
-    '<page path="wiki/x.md" type="concept">\n# X\n\nbody\n</page>\n'
-    '<page path="wiki/y.md" type="concept">\n# Y'
+    '<page path="knowledge/x.md" type="concept">\n# X\n\nbody\n</page>\n'
+    '<page path="knowledge/y.md" type="concept">\n# Y'
 )
 
 

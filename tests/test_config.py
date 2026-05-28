@@ -65,7 +65,7 @@ sources:
 
 
 def test_find_config_walks_up(tmp_path: Path) -> None:
-    root = tmp_path / "wiki"
+    root = tmp_path / "knowledge"
     nested = root / "a" / "b" / "c"
     nested.mkdir(parents=True)
     (root / CONFIG_FILENAME).write_text(dump_config_yaml(default_config()), encoding="utf-8")

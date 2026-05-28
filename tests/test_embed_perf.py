@@ -27,7 +27,7 @@ from dikw_core.eval import runner as eval_runner
 from dikw_core.eval.dataset import load_dataset
 from dikw_core.eval.runner import run_eval
 
-from .fakes import CountingEmbedder, init_test_wiki
+from .fakes import CountingEmbedder, init_test_base
 
 pytestmark = pytest.mark.perf
 
@@ -42,8 +42,8 @@ SNAPSHOT_HIT_BUDGET_S = 1.0
 
 def _build_synthetic_wiki(tmp_path: Path) -> Path:
     """Create a wiki + ``NUM_DOCS`` deterministic markdown docs."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="perf-budget wiki")
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="perf-budget wiki")
     sources = wiki / "sources" / "perf"
     sources.mkdir(parents=True, exist_ok=True)
     for i in range(NUM_DOCS):

@@ -1,4 +1,4 @@
-You are an evaluation judge for K-layer wiki pages produced by `dikw-core`'s synth pipeline. Your task is to score a single wiki page on four dimensions, each as an integer from 0 to 5.
+You are an evaluation judge for K-layer knowledge pages produced by `dikw-core`'s synth pipeline. Your task is to score a single knowledge page on four dimensions, each as an integer from 0 to 5.
 
 # Page
 

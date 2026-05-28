@@ -43,8 +43,8 @@ class BrokenEmbedder:
 
 @pytest.fixture()
 def wiki(tmp_path: Path) -> Path:
-    w = tmp_path / "wiki"
-    api.init_wiki(w, description="check-command test wiki")
+    w = tmp_path / "knowledge"
+    api.init_base(w, description="check-command test wiki")
     return w
 
 
@@ -225,9 +225,9 @@ def test_cli_check_embed_only_shows_provider_label_when_yaml_set(
 
     # The runtime caches its DikwConfig at lifespan startup; reload so
     # the route reads the updated label.
-    from dikw_core.api import load_wiki
+    from dikw_core.api import load_base
 
-    rt.cfg, _ = load_wiki(rt.root)
+    rt.cfg, _ = load_base(rt.root)
 
     patch_transport_factory()
     result = CliRunner().invoke(app, ["client", "check", "--embed-only"])
@@ -251,7 +251,7 @@ def multimodal_wiki(tmp_path: Path) -> Path:
     import yaml
 
     w = tmp_path / "wiki-mm"
-    api.init_wiki(w, description="multimodal probe test wiki")
+    api.init_base(w, description="multimodal probe test wiki")
     cfg_path = w / "dikw.yml"
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     raw.setdefault("assets", {})["multimodal"] = {
@@ -329,7 +329,7 @@ async def test_check_multimodal_probe_target_reflects_mm_base_url(
     from tests.fakes import FakeMultimodalEmbedding
 
     w = tmp_path / "wiki-mm-split"
-    api.init_wiki(w, description="split-base-url test wiki")
+    api.init_base(w, description="split-base-url test wiki")
     cfg_path = w / "dikw.yml"
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     raw.setdefault("provider", {})["embedding_base_url"] = (

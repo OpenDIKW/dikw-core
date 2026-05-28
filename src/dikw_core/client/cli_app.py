@@ -1207,7 +1207,7 @@ def synth_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Synthesise K-layer wiki pages from D-layer sources.
+    """Synthesise K-layer knowledge pages from D-layer sources.
 
     Default is async — submit + print JSON task handle. Use ``--wait``
     to block + render + exit with task status."""

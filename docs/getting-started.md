@@ -23,7 +23,7 @@ The init command creates this tree:
 my-base/
 ├── dikw.yml              # the config the engine reads on every command
 ├── sources/              # your raw documents go here (Data layer)
-├── wiki/                 # LLM-authored knowledge pages, regenerated on synth
+├── knowledge/            # LLM-authored knowledge pages, regenerated on synth
 │   ├── index.md
 │   ├── log.md
 │   └── {entities,concepts,notes}/
@@ -33,10 +33,29 @@ my-base/
     └── index.sqlite
 ```
 
-The whole tree is the **dikw base**; the `wiki/` subdirectory is just
-the K-layer slice. Open the folder in Obsidian and you'll see the wiki +
+The whole tree is the **dikw base**; the `knowledge/` subdirectory is just
+the K-layer slice. Open the folder in Obsidian and you'll see the knowledge +
 wisdom pages render natively thanks to the `[[wikilink]]` syntax and
 YAML front-matter the engine emits.
+
+## Upgrading from 0.3.x to 0.4.0
+
+0.4.0 renamed the K-layer directory from `wiki/` to `knowledge/` (and
+the corresponding `Layer` enum, SQL table, and engine API symbols).
+There is no in-place migration — opening an 0.3.x base with 0.4.0
+raises `BaseUpgradeRequired`. For each existing base run:
+
+```bash
+cd <base>
+mv wiki knowledge       # rename the K-layer directory
+rm -rf .dikw            # drop the SQLite + auth + task ledger
+dikw init               # write a fresh dikw.yml (or hand-edit your existing one)
+dikw client ingest      # reindex sources + knowledge pages
+```
+
+If you tracked `<base>/.dikw/auth.json` (OAuth tokens) outside the
+base, re-run `dikw auth login <provider>` after the rebuild instead
+of deleting `.dikw/` wholesale.
 
 ## 2. Start the server
 
@@ -158,7 +177,7 @@ single `If-None-Match`.
 
 Every wikilink and cross-page markdown link the engine resolved is
 exposed as a single read-only graph payload — you don't have to walk
-the wiki tree page-by-page:
+the knowledge tree page-by-page:
 
 ```bash
 # Whole-base graph: nodes + edges + unresolved wikilinks.
@@ -182,7 +201,7 @@ it answers cheaply:
 
 ```bash
 # Forward: which D-layer sources was this K-page synth-authored from?
-uv run dikw client pages provenance wiki/concepts/topic.md \
+uv run dikw client pages provenance knowledge/concepts/topic.md \
   --direction out
 
 # Reverse: which K-pages claim this source in their `sources:`?
@@ -192,7 +211,7 @@ uv run dikw client pages provenance sources/foo.md --direction in
 Forward entries carry `resolved=true|false` — `false` means the
 frontmatter references a source the engine has never seen (typo,
 deleted source, renamed file). Reverse entries are only populated for
-`Layer.SOURCE` paths; asking a `wiki/...` path for `--direction in`
+`Layer.SOURCE` paths; asking a `knowledge/...` path for `--direction in`
 returns an empty list by design. JSON is the default output; pass
 `--format table` for the human ✓/✗ rendering.
 
@@ -207,8 +226,8 @@ uv run dikw client synth
 uv run dikw client synth --wait
 ```
 
-The LLM reads each source doc and produces a `wiki/<folder>/<slug>.md`
-page, cross-linked via `[[wikilinks]]`. `wiki/index.md` and `wiki/log.md`
+The LLM reads each source doc and produces a `knowledge/<folder>/<slug>.md`
+page, cross-linked via `[[wikilinks]]`. `knowledge/index.md` and `knowledge/log.md`
 regenerate automatically. Re-running is a no-op until you add new sources
 (or pass `--all` to resynthesise everything).
 
@@ -273,7 +292,7 @@ dikw client lint                             # broken_wikilink / orphan_page /
                                              # cover both K and W
 ```
 
-Wisdom pages can `[[wikilink]]` to wiki pages (and vice versa);
+Wisdom pages can `[[wikilink]]` to knowledge pages (and vice versa);
 cross-layer same-title collisions stay broken so `lint` surfaces the
 ambiguity — disambiguate with `[[wisdom/elon-musk/be-relentless|Be
 Relentless]]`. The wisdom-only `status` enum is validated by the

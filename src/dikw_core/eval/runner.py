@@ -55,7 +55,7 @@ from ..domains.data.backends import parse_any
 from ..domains.data.hashing import hash_file
 from ..domains.info.search import HybridSearcher, MultimodalSearch, RetrievalMode
 from ..domains.knowledge.links import parse_links
-from ..domains.knowledge.wiki import WikiPage, read_page
+from ..domains.knowledge.page import KnowledgePage, read_page
 from ..progress import NoopReporter, ProgressReporter
 from ..providers import (
     EmbeddingProvider,
@@ -447,20 +447,20 @@ async def run_eval(
     modes = _resolve_modes(mode)
 
     async def _build(target: Path) -> Path:
-        wiki = _materialise_wiki(
+        base = _materialise_base(
             target,
             spec,
             provider_cfg=effective_provider_cfg,
             retrieval_cfg=effective_retrieval_cfg,
             assets_cfg=effective_assets_cfg,
         )
-        _copy_corpus(spec.corpus_dir, wiki / "sources")
+        _copy_corpus(spec.corpus_dir, base / "sources")
         await api.ingest(
-            wiki,
+            base,
             embedder=effective_embedder,
             multimodal_embedder=multimodal_embedder,
         )
-        return wiki
+        return base
 
     mm_fingerprint = _multimodal_fingerprint(effective_assets_cfg.multimodal)
 
@@ -468,10 +468,10 @@ async def run_eval(
         # Original behaviour: throwaway temp dir, no cache touched.
         with tempfile.TemporaryDirectory(prefix="dikw-eval-") as tmp:
             await _reporter.progress(phase="ingest", current=0, total=0)
-            wiki = await _build(Path(tmp))
+            base = await _build(Path(tmp))
             await _reporter.progress(phase="ingest", current=1, total=1)
             per_mode = await _run_queries(
-                wiki,
+                base,
                 spec,
                 embedder=effective_embedder,
                 embedding_model=effective_provider_cfg.embedding_model,
@@ -515,10 +515,10 @@ async def run_eval(
                 total=1,
                 detail={"cache_hit": True},
             )
-        wiki = cache_dir / "wiki"
+        base = cache_dir / "base"
 
         per_mode = await _run_queries(
-            wiki,
+            base,
             spec,
             embedder=effective_embedder,
             embedding_model=effective_provider_cfg.embedding_model,
@@ -579,7 +579,7 @@ async def run_eval(
     )
 
 
-def _materialise_wiki(
+def _materialise_base(
     tmp_root: Path,
     spec: DatasetSpec,
     *,
@@ -601,8 +601,8 @@ def _materialise_wiki(
     synth-mode dataset can pin its own ``page_types`` whitelist into the
     throwaway wiki (separate from the user's production page_types).
     """
-    wiki = tmp_root / "wiki"
-    api.init_wiki(wiki, description=f"eval/{spec.name}")
+    base = tmp_root / "base"
+    api.init_base(base, description=f"eval/{spec.name}")
 
     from ..config import default_config  # local: keep module import light
 
@@ -612,8 +612,8 @@ def _materialise_wiki(
     cfg.assets = assets_cfg
     if schema_cfg is not None:
         cfg.schema_ = schema_cfg
-    (wiki / CONFIG_FILENAME).write_text(dump_config_yaml(cfg), encoding="utf-8")
-    return wiki
+    (base / CONFIG_FILENAME).write_text(dump_config_yaml(cfg), encoding="utf-8")
+    return base
 
 
 def _multimodal_fingerprint(mm_cfg: MultimodalEmbedConfig | None) -> str | None:
@@ -873,7 +873,7 @@ def _project_asset_view(
 
 
 async def _run_queries(
-    wiki: Path,
+    base: Path,
     spec: DatasetSpec,
     *,
     embedder: EmbeddingProvider,
@@ -884,9 +884,9 @@ async def _run_queries(
     """Run every query in ``spec`` once per mode against a single storage
     connection. Returns a dict keyed by mode.
     """
-    cfg, _root = api.load_wiki(wiki)
+    cfg, _root = api.load_base(base)
     storage = build_storage(
-        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+        cfg.storage, root=base, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
     )
     await storage.connect()
     await storage.migrate()
@@ -1080,7 +1080,7 @@ class _SynthMetricsBundle:
     ``_collect_metrics_bundle``; the pages and source texts are reused
     for judging instead of being re-read from disk."""
 
-    pages: list[WikiPage]
+    pages: list[KnowledgePage]
     source_text_by_path: dict[str, str]
     n_sources: int
     metrics: dict[str, float]
@@ -1140,7 +1140,7 @@ async def run_synth_eval(
         )
 
     with tempfile.TemporaryDirectory(prefix="dikw-synth-eval-") as tmpdir:
-        wiki = _materialise_wiki(
+        base = _materialise_base(
             Path(tmpdir),
             spec,
             provider_cfg=effective_provider_cfg,
@@ -1148,12 +1148,12 @@ async def run_synth_eval(
             assets_cfg=AssetsConfig(),
             schema_cfg=schema_cfg,
         )
-        _copy_corpus(spec.corpus_dir, wiki / "sources")
+        _copy_corpus(spec.corpus_dir, base / "sources")
 
         await _reporter.progress(
             phase="synth_eval/ingest", current=0, total=1
         )
-        await api.ingest(wiki, embedder=effective_embedder, reporter=_reporter)
+        await api.ingest(base, embedder=effective_embedder, reporter=_reporter)
         await _reporter.progress(
             phase="synth_eval/ingest", current=1, total=1
         )
@@ -1162,7 +1162,7 @@ async def run_synth_eval(
             phase="synth_eval/synth", current=0, total=1
         )
         synth_report = await api.synthesize(
-            wiki,
+            base,
             force_all=True,
             llm=llm,
             embedder=effective_embedder,
@@ -1180,7 +1180,7 @@ async def run_synth_eval(
 
         bundle = await _collect_metrics_bundle(
             spec=spec,
-            wiki=wiki,
+            base=base,
             synth_report=synth_report,
             embedder=effective_embedder,
             embedding_model=effective_provider_cfg.embedding_model,
@@ -1229,7 +1229,7 @@ async def run_synth_eval(
 async def _collect_metrics_bundle(
     *,
     spec: DatasetSpec,
-    wiki: Path,
+    base: Path,
     synth_report: api.SynthReport,
     embedder: EmbeddingProvider,
     embedding_model: str,
@@ -1238,25 +1238,25 @@ async def _collect_metrics_bundle(
     wiki and compute every K-layer metric.
 
     All keying uses the storage ``doc.path`` (``sources/<rel>``), which
-    matches ``WikiPage.sources[0]`` populated by ``synthesize`` from
+    matches ``KnowledgePage.sources[0]`` populated by ``synthesize`` from
     ``src.path``. Keeping the two sides on the same key (rather than
     stripping a ``sources/`` prefix on one side) is what makes
     ``fact_grounding_ratio`` and ``language_fidelity`` actually look up
     their chunks and texts.
     """
-    _cfg, _wiki_root, storage = await api._with_storage(wiki)
+    _cfg, _base_root, storage = await api._with_storage(base)
     try:
-        wiki_docs = list(
-            await storage.list_documents(layer=Layer.WIKI, active=True)
+        knowledge_docs = list(
+            await storage.list_documents(layer=Layer.KNOWLEDGE, active=True)
         )
         source_docs = list(
             await storage.list_documents(layer=Layer.SOURCE, active=True)
         )
 
-        pages: list[WikiPage] = []
-        for doc in wiki_docs:
+        pages: list[KnowledgePage] = []
+        for doc in knowledge_docs:
             try:
-                pages.append(read_page(wiki, doc.path))
+                pages.append(read_page(base, doc.path))
             except FileNotFoundError:
                 continue
 
@@ -1274,7 +1274,7 @@ async def _collect_metrics_bundle(
             chunks = await storage.list_chunks(doc.doc_id)
             chunks_by_source[doc.path] = chunks
             n_chunks += len(chunks)
-            source_file = wiki / doc.path
+            source_file = base / doc.path
             if source_file.is_file():
                 source_text_by_path[doc.path] = source_file.read_text(
                     encoding="utf-8"
@@ -1282,8 +1282,8 @@ async def _collect_metrics_bundle(
     finally:
         await storage.close()
 
-    pages_with_source_keys: list[tuple[WikiPage, str]] = []
-    pages_with_source_texts: list[tuple[WikiPage, str]] = []
+    pages_with_source_keys: list[tuple[KnowledgePage, str]] = []
+    pages_with_source_texts: list[tuple[KnowledgePage, str]] = []
     pages_per_source: dict[str, int] = {}
     for page in pages:
         if not page.sources:

@@ -12,7 +12,7 @@ dedicated ``provenance`` table separate from ``links``.
 What we guard:
 
 * path-not-registered → ``PageNotFound`` (same shape as ``list_links``)
-* path resolution probes ``Layer.SOURCE`` first, then ``Layer.WIKI``
+* path resolution probes ``Layer.SOURCE`` first, then ``Layer.KNOWLEDGE``
 * forward leg surfaces dangling sources faithfully (``resolved=False``)
 * reverse leg drops inactive K-pages
 * ``direction="in"|"out"|"both"`` filter populates the right lists
@@ -30,11 +30,11 @@ from dikw_core import api
 from dikw_core.api import _doc_id_for, _with_storage
 from dikw_core.schemas import DocumentRecord, Layer
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 
 def _doc(
-    path: str, layer: Layer = Layer.WIKI, *, title: str | None = None
+    path: str, layer: Layer = Layer.KNOWLEDGE, *, title: str | None = None
 ) -> DocumentRecord:
     return DocumentRecord(
         doc_id=_doc_id_for(layer, path),
@@ -56,21 +56,21 @@ async def test_read_provenance_forward_marks_dangling_when_source_missing(
     ``Layer.SOURCE`` document. Dangling entries carry ``resolved=False``
     + null ``doc_id``/``title`` so agents can detect drift; storage
     deliberately doesn't filter."""
-    init_test_wiki(tmp_path)
-    page_path = "wiki/page.md"
+    init_test_base(tmp_path)
+    page_path = "knowledge/page.md"
     real_src = "sources/real.md"
     ghost_src = "sources/ghost.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
-        await storage.upsert_document(_doc(page_path, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(page_path, layer=Layer.KNOWLEDGE))
         await storage.upsert_document(
             _doc(real_src, layer=Layer.SOURCE, title="Real")
         )
         # ghost_src deliberately NOT upserted.
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, page_path),
+            _doc_id_for(Layer.KNOWLEDGE, page_path),
             [real_src, ghost_src],
         )
     finally:
@@ -96,25 +96,25 @@ async def test_read_provenance_reverse_filters_inactive_pages(
     can't follow them anyway, and surfacing them would mislead about
     which live pages claim a source. ``delete_document`` cascades
     provenance, so this guards the deactivate-without-delete path."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_path = "sources/shared.md"
-    active_page = "wiki/active.md"
-    inactive_page = "wiki/inactive.md"
+    active_page = "knowledge/active.md"
+    inactive_page = "knowledge/inactive.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
-        await storage.upsert_document(_doc(active_page, layer=Layer.WIKI))
-        await storage.upsert_document(_doc(inactive_page, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(active_page, layer=Layer.KNOWLEDGE))
+        await storage.upsert_document(_doc(inactive_page, layer=Layer.KNOWLEDGE))
         for page in (active_page, inactive_page):
             await storage.replace_provenance_from(
-                _doc_id_for(Layer.WIKI, page), [src_path]
+                _doc_id_for(Layer.KNOWLEDGE, page), [src_path]
             )
         # Soft-deactivate one of them. Provenance row survives the soft
         # delete (only delete_document hard-deletes provenance); the
         # API must filter.
-        await storage.deactivate_document(_doc_id_for(Layer.WIKI, inactive_page))
+        await storage.deactivate_document(_doc_id_for(Layer.KNOWLEDGE, inactive_page))
     finally:
         await storage.close()
 
@@ -133,24 +133,24 @@ async def test_read_provenance_both_direction_populates_both_lists(
     path, forward is always empty (no provenance row has SOURCE on the
     src side); for a WIKI-layer path, reverse is always empty (nothing
     claims a K-page as its own source). The empty list IS the answer."""
-    init_test_wiki(tmp_path)
-    wiki_page = "wiki/page.md"
+    init_test_base(tmp_path)
+    wiki_page = "knowledge/page.md"
     src_path = "sources/src.md"
-    consumer_page = "wiki/consumer.md"
+    consumer_page = "knowledge/consumer.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
-        await storage.upsert_document(_doc(wiki_page, layer=Layer.WIKI))
-        await storage.upsert_document(_doc(consumer_page, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(wiki_page, layer=Layer.KNOWLEDGE))
+        await storage.upsert_document(_doc(consumer_page, layer=Layer.KNOWLEDGE))
         # wiki_page claims src_path as its source.
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, wiki_page), [src_path]
+            _doc_id_for(Layer.KNOWLEDGE, wiki_page), [src_path]
         )
         # consumer_page also claims src_path.
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, consumer_page), [src_path]
+            _doc_id_for(Layer.KNOWLEDGE, consumer_page), [src_path]
         )
     finally:
         await storage.close()
@@ -180,18 +180,18 @@ async def test_read_provenance_limit_caps_each_side_independently(
     — a hub source with many incoming K-pages must not starve the
     forward side of a separately-queried K-page. Mirrors ``list_links``
     semantics."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_paths = [f"sources/s{i}.md" for i in range(5)]
-    page_path = "wiki/page.md"
+    page_path = "knowledge/page.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         for sp in src_paths:
             await storage.upsert_document(_doc(sp, layer=Layer.SOURCE))
-        await storage.upsert_document(_doc(page_path, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(page_path, layer=Layer.KNOWLEDGE))
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, page_path), src_paths
+            _doc_id_for(Layer.KNOWLEDGE, page_path), src_paths
         )
     finally:
         await storage.close()
@@ -213,18 +213,18 @@ async def test_read_provenance_reverse_limit_caps_derived_pages(
     path. Companion to the forward-leg coverage above; both sides go
     through symmetric ``[:limit]`` slicing and the asymmetric layer
     gate means only this test exercises the reverse branch."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_path = "sources/hub.md"
-    consumer_paths = [f"wiki/consumer-{i}.md" for i in range(5)]
+    consumer_paths = [f"knowledge/consumer-{i}.md" for i in range(5)]
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
         for cp in consumer_paths:
-            await storage.upsert_document(_doc(cp, layer=Layer.WIKI))
+            await storage.upsert_document(_doc(cp, layer=Layer.KNOWLEDGE))
             await storage.replace_provenance_from(
-                _doc_id_for(Layer.WIKI, cp), [src_path]
+                _doc_id_for(Layer.KNOWLEDGE, cp), [src_path]
             )
     finally:
         await storage.close()
@@ -240,9 +240,9 @@ async def test_read_provenance_reverse_limit_caps_derived_pages(
 async def test_read_provenance_path_not_found_raises_page_not_found(
     tmp_path: Path,
 ) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.PageNotFound):
-        await api.read_provenance(tmp_path, "wiki/missing.md")
+        await api.read_provenance(tmp_path, "knowledge/missing.md")
 
 
 @pytest.mark.asyncio
@@ -253,8 +253,8 @@ async def test_read_provenance_rejects_malformed_path(
     before any storage I/O — same shape as ``list_links`` /
     ``read_page``. Pins the early-rejection branch so storage stays
     out of the malformed-input blast radius."""
-    init_test_wiki(tmp_path)
-    for bad in ("", "   ", "wiki/foo\x00.md"):
+    init_test_base(tmp_path)
+    for bad in ("", "   ", "knowledge/foo\x00.md"):
         with pytest.raises(api.PageNotFound):
             await api.read_provenance(tmp_path, bad)
 
@@ -263,16 +263,16 @@ async def test_read_provenance_rejects_malformed_path(
 async def test_read_provenance_negative_limit_raises(tmp_path: Path) -> None:
     """``limit < 0`` is a programmer error — raise ValueError before
     opening storage. Mirrors ``list_links``."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(ValueError):
-        await api.read_provenance(tmp_path, "wiki/page.md", limit=-1)
+        await api.read_provenance(tmp_path, "knowledge/page.md", limit=-1)
 
 
 @pytest.mark.asyncio
-async def test_read_provenance_wiki_layer_path_returns_only_forward(
+async def test_read_provenance_knowledge_layer_path_returns_only_forward(
     tmp_path: Path,
 ) -> None:
-    """A path that resolves to ``Layer.WIKI`` never has reverse rows by
+    """A path that resolves to ``Layer.KNOWLEDGE`` never has reverse rows by
     construction (no K-page claims another K-page as its source), so
     ``direction='in'`` returns an empty list and ``direction='both'``
     returns only the forward attribution. Symmetric to the SOURCE-side
@@ -280,17 +280,17 @@ async def test_read_provenance_wiki_layer_path_returns_only_forward(
     pins the layer-asymmetric shape so a regression that, e.g., stops
     filtering by layer becomes a test failure rather than a quiet
     semantic drift."""
-    init_test_wiki(tmp_path)
-    wiki_page = "wiki/page.md"
+    init_test_base(tmp_path)
+    wiki_page = "knowledge/page.md"
     src_path = "sources/src.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
         await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
-        await storage.upsert_document(_doc(wiki_page, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(wiki_page, layer=Layer.KNOWLEDGE))
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, wiki_page), [src_path]
+            _doc_id_for(Layer.KNOWLEDGE, wiki_page), [src_path]
         )
     finally:
         await storage.close()
@@ -303,7 +303,7 @@ async def test_read_provenance_wiki_layer_path_returns_only_forward(
 
 
 @pytest.mark.asyncio
-async def test_read_provenance_wiki_path_reverse_ignores_malformed_wiki_sources(
+async def test_read_provenance_knowledge_path_reverse_ignores_malformed_knowledge_sources(
     tmp_path: Path,
 ) -> None:
     """Defence-in-depth: even when a K-page's ``sources:`` accidentally
@@ -319,21 +319,21 @@ async def test_read_provenance_wiki_path_reverse_ignores_malformed_wiki_sources(
     The gate (``if match.layer == Layer.SOURCE`` around the reverse
     branch) keeps the contract honest regardless of malformed inputs.
     """
-    init_test_wiki(tmp_path)
-    real_wiki = "wiki/real.md"
-    offender_wiki = "wiki/offender.md"
+    init_test_base(tmp_path)
+    real_wiki = "knowledge/real.md"
+    offender_wiki = "knowledge/offender.md"
 
     cfg, _root, storage = await _with_storage(tmp_path)
     del cfg
     try:
-        await storage.upsert_document(_doc(real_wiki, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(real_wiki, layer=Layer.KNOWLEDGE))
         await storage.upsert_document(
-            _doc(offender_wiki, layer=Layer.WIKI)
+            _doc(offender_wiki, layer=Layer.KNOWLEDGE)
         )
         # Offender lists the WIKI path as if it were a source — malformed
         # but possible (frontmatter is user-editable).
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, offender_wiki), [real_wiki]
+            _doc_id_for(Layer.KNOWLEDGE, offender_wiki), [real_wiki]
         )
     finally:
         await storage.close()

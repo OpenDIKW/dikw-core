@@ -22,7 +22,7 @@ from dikw_core.domains.wisdom import write_wisdom_file
 from dikw_core.schemas import Layer, WisdomStatus
 from dikw_core.storage import Storage, build_storage
 
-from .fakes import FakeEmbeddings, init_test_wiki, seed_doc
+from .fakes import FakeEmbeddings, init_test_base, seed_doc
 
 
 async def _open_storage(wiki: Path) -> Storage:
@@ -37,8 +37,8 @@ async def _open_storage(wiki: Path) -> Storage:
 
 @pytest.mark.asyncio
 async def test_write_basic_no_author(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     report = await api.write_wisdom_page(
         wiki,
@@ -68,8 +68,8 @@ async def test_write_basic_no_author(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_with_author(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     report = await api.write_wisdom_page(
         wiki,
@@ -88,8 +88,8 @@ async def test_write_with_author(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_upsert_marks_updated(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     r1 = await api.write_wisdom_page(
         wiki,
@@ -119,8 +119,8 @@ async def test_write_status_only_change_reindexes(tmp_path: Path) -> None:
     body-hash short-circuit) so an explicit write is the user's
     contract to refresh the row, even if only frontmatter changed.
     """
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -151,15 +151,15 @@ async def test_write_status_only_change_reindexes(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_wikilink_resolves_to_existing_wiki_page(
+async def test_write_wikilink_resolves_to_existing_knowledge_page(
     tmp_path: Path,
 ) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     await seed_doc(
         wiki,
-        layer=Layer.WIKI,
-        path="wiki/concepts/tesla.md",
+        layer=Layer.KNOWLEDGE,
+        path="knowledge/concepts/tesla.md",
         body="---\ntitle: Tesla\n---\n# Tesla\n\nthe company.\n",
         title="Tesla",
     )
@@ -180,13 +180,13 @@ async def test_write_wikilink_resolves_to_existing_wiki_page(
         edges = await storage.links_from(wisdom_id)
     finally:
         await storage.close()
-    assert any(e.dst_path.endswith("wiki/concepts/tesla.md") for e in edges), edges
+    assert any(e.dst_path.endswith("knowledge/concepts/tesla.md") for e in edges), edges
 
 
 @pytest.mark.asyncio
 async def test_write_unresolved_wikilink_counted(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     report = await api.write_wisdom_page(
         wiki,
@@ -200,8 +200,8 @@ async def test_write_unresolved_wikilink_counted(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_sources_populate_provenance(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     src_dir = wiki / "sources" / "notes"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "musk-bio.md").write_text("# Musk Bio\n\nfacts.\n", encoding="utf-8")
@@ -243,8 +243,8 @@ async def test_write_sources_populate_provenance(tmp_path: Path) -> None:
 async def test_write_rejects_non_kebab_slug_or_author(
     tmp_path: Path, slug: str, author: str | None
 ) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     with pytest.raises(ValueError):
         await api.write_wisdom_page(
             wiki,
@@ -261,8 +261,8 @@ async def test_write_no_embed_skips_embedder(tmp_path: Path) -> None:
     """``no_embed=True`` writes the file + indexes chunks/links but
     never calls the embedder. The next ``dikw ingest`` will pick up
     embeddings via the missing-embedding resume scan."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     fake = FakeEmbeddings()
     embed_calls_before = getattr(fake, "embed_calls", 0)
@@ -284,8 +284,8 @@ async def test_write_no_embed_skips_embedder(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_with_embedder_counts_embedded_chunks(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     report = await api.write_wisdom_page(
         wiki,
@@ -304,10 +304,10 @@ async def test_write_with_embedder_counts_embedded_chunks(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_write_emits_wisdom_log_entry(tmp_path: Path) -> None:
-    """Like ingest, a wisdom write appends a ``wiki_log`` row so the
+    """Like ingest, a wisdom write appends a ``knowledge_log`` row so the
     base's activity log records the write event."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -320,7 +320,7 @@ async def test_write_emits_wisdom_log_entry(tmp_path: Path) -> None:
 
     storage = await _open_storage(wiki)
     try:
-        entries = await storage.list_wiki_log()
+        entries = await storage.list_knowledge_log()
     finally:
         await storage.close()
     assert any(
@@ -331,8 +331,8 @@ async def test_write_emits_wisdom_log_entry(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_tags_in_frontmatter(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -353,8 +353,8 @@ async def test_write_tags_in_frontmatter(tmp_path: Path) -> None:
 async def test_write_status_frontmatter_persisted_to_disk(tmp_path: Path) -> None:
     """The status enum value must serialize into the on-disk frontmatter
     so opening the file in Obsidian round-trips the field."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -377,8 +377,8 @@ async def test_extras_cannot_override_reserved_keys(tmp_path: Path) -> None:
     both ``title=`` and ``extras={"title": ...}`` is otherwise free to
     desync the on-disk frontmatter from the storage row (which always
     stores the validated ``title``)."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -415,7 +415,7 @@ def test_write_wisdom_file_rejects_path_escape(tmp_path: Path) -> None:
     """The low-level file writer must refuse a ``logical_path`` that
     resolves outside ``root`` — defense in depth for any direct caller
     that bypasses :func:`make_wisdom_path`."""
-    root = tmp_path / "wiki"
+    root = tmp_path / "knowledge"
     root.mkdir()
     with pytest.raises(ValueError, match="outside"):
         write_wisdom_file(
@@ -439,8 +439,8 @@ async def test_concurrent_writes_same_path_serialize(tmp_path: Path) -> None:
     ``(author, slug)`` must not both observe an empty document row and
     both report ``created=True``; the writes must be serialised so
     exactly one creates and any subsequent calls see the existing row."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     async def write(body: str) -> object:
         return await api.write_wisdom_page(
@@ -467,10 +467,10 @@ async def test_concurrent_writes_aliased_paths_share_lock(tmp_path: Path) -> Non
     base before stringifying, otherwise the per-path lock degrades to a
     per-input-string lock and two API callers using different aliases
     can both observe ``created=True``."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     # Alias 1: directory; alias 2: the dikw.yml file inside it.
-    # ``resolve_wiki_root`` accepts either and walks back to the same
+    # ``resolve_base_root`` accepts either and walks back to the same
     # base directory.
     config_path = wiki / "dikw.yml"
     assert config_path.is_file()
@@ -499,8 +499,8 @@ async def test_update_excludes_own_old_title_from_resolve(
     ``[[Old Title]]`` references must NOT resolve back to the page
     itself via the stale storage row — the cross-layer title index
     must exclude the document we're about to overwrite."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     # First write with the old title.
     await api.write_wisdom_page(
@@ -534,8 +534,8 @@ async def test_extras_cannot_corrupt_file_via_post_kwargs(tmp_path: Path) -> Non
     entire file to the literal string ``evil`` (frontmatter.dumps
     treats the handler kwarg as a custom dump handler) — silently
     destroying title, body, status, tags."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -564,8 +564,8 @@ async def test_extras_cannot_override_author_frontmatter(
     (``wisdom/<author>/<slug>.md``); ``extras={"author": "other"}``
     must not silently put a contradicting ``author`` into the
     frontmatter."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     await api.write_wisdom_page(
         wiki,
@@ -607,8 +607,8 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
     end-to-end, instead of leaving a partial doc with stale
     links/provenance. Mirrors the ingest wisdom branch recovery
     behaviour at api.py:1433."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
 
     # First write a normal page so a doc row exists.
     await api.write_wisdom_page(

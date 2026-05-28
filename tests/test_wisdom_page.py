@@ -20,7 +20,7 @@ from dikw_core.domains.wisdom.page import author_from_path
         ("wisdom/elon-musk/first-principles-thinking.md", "elon-musk"),
         ("wisdom/elon-musk/nested/sub/be-relentless.md", "elon-musk"),
         ("wisdom/be-relentless.md", None),
-        ("wiki/first-principles.md", None),
+        ("knowledge/first-principles.md", None),
         ("sources/notes/musk-bio.md", None),
         ("README.md", None),
         ("", None),

@@ -133,7 +133,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 committed, rejected = _commit_packages(
                     staging_root,
                     manifest_obj,
-                    wiki_root=rt.root,
+                    base_root=rt.root,
                     file_rejects=file_rejects,
                 )
         finally:
@@ -387,14 +387,14 @@ def _commit_packages(
     staging_root: Path,
     manifest: Manifest,
     *,
-    wiki_root: Path,
+    base_root: Path,
     file_rejects: dict[str, list[int]],
 ) -> tuple[list[int], list[RejectedPackage]]:
     """Per-package commit.
 
     For each package not flagged by ``file_rejects`` and whose
     recomputed ``package_sha256`` matches, ``os.replace`` moves the
-    md + assets into ``<wiki_root>/sources/`` preserving the staging
+    md + assets into ``<base_root>/sources/`` preserving the staging
     layout (``sources/<rel-path>``).
 
     Returns (committed_ids, rejected_entries).
@@ -413,7 +413,7 @@ def _commit_packages(
     # first package to commit takes the file out of staging, subsequent
     # packages just skip it. That's safe because the second package
     # references the *same* archive path which is now already in the
-    # wiki tree.
+    # knowledge tree.
     already_moved: set[str] = set()
     for pkg in manifest.packages:
         if pkg.id in package_rejected_for_file:
@@ -443,7 +443,7 @@ def _commit_packages(
             )
             continue
 
-        # Move files into the wiki tree. ``os.replace`` is atomic
+        # Move files into the knowledge tree. ``os.replace`` is atomic
         # per-file but the package as a whole isn't — a mid-package
         # failure would leave a half-applied package on disk and let
         # ingest see a md without its assets. We honour the per-
@@ -457,7 +457,7 @@ def _commit_packages(
                 if archive_path in already_moved:
                     continue
                 moved.append(
-                    _commit_one_file(staging_root, archive_path, wiki_root)
+                    _commit_one_file(staging_root, archive_path, base_root)
                 )
                 already_moved.add(archive_path)
         except OSError as e:
@@ -482,7 +482,7 @@ def _commit_packages(
 
 @dataclass
 class _MovedFile:
-    """One file successfully ``os.replace``d into the wiki tree, plus the
+    """One file successfully ``os.replace``d into the knowledge tree, plus the
     backup that lets us undo the overwrite if a later file in the same
     package fails."""
 
@@ -527,9 +527,9 @@ _BACKUP_SUFFIX = ".bak.import"
 
 
 def _commit_one_file(
-    staging_root: Path, archive_path: str, wiki_root: Path
+    staging_root: Path, archive_path: str, base_root: Path
 ) -> _MovedFile:
-    """Move ``staging_root/<archive_path>`` to ``wiki_root/<archive_path>``,
+    """Move ``staging_root/<archive_path>`` to ``base_root/<archive_path>``,
     backing up any pre-existing destination so a sibling file's later
     failure can restore the byte-identical original.
 
@@ -538,7 +538,7 @@ def _commit_one_file(
     so the default layout always satisfies that constraint.
     """
     src = staging_root / archive_path
-    dst = wiki_root / archive_path
+    dst = base_root / archive_path
     dst.parent.mkdir(parents=True, exist_ok=True)
     backup: Path | None = None
     if dst.exists():

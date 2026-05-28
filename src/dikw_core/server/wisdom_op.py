@@ -22,7 +22,7 @@ from ..schemas import WisdomWriteSubmit
 
 def make_wisdom_write_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     submit: WisdomWriteSubmit,
     lock: asyncio.Lock | None = None,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
@@ -47,7 +47,7 @@ def make_wisdom_write_runner(
         guard = lock if lock is not None else asyncio.Lock()
         async with guard:
             report = await api.write_wisdom_page(
-                wiki_root,
+                base_root,
                 slug=submit.slug,
                 title=submit.title,
                 body=submit.body,

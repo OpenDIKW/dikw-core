@@ -207,8 +207,8 @@ async def test_api_ingest_honours_embedding_batch_size(
 
     monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
 
-    wiki = tmp_path / "wiki"
-    api.init_wiki(wiki, description="batch-size smoke test")
+    wiki = tmp_path / "knowledge"
+    api.init_base(wiki, description="batch-size smoke test")
     (wiki / "dikw.yml").write_text(
         "provider:\n"
         "  llm: anthropic_compat\n"
