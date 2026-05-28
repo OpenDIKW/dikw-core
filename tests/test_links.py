@@ -41,10 +41,10 @@ def test_resolve_links_flags_unresolved_wikilinks() -> None:
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={"Known Page": "wiki/concepts/known.md"},
+        title_to_path={"Known Page": "knowledge/concepts/known.md"},
     )
     assert len(resolved) == 1
-    assert resolved[0].dst_path == "wiki/concepts/known.md"
+    assert resolved[0].dst_path == "knowledge/concepts/known.md"
     assert len(unresolved) == 1
     assert "Unknown Page" in unresolved[0].target_text
 
@@ -67,10 +67,10 @@ def test_resolve_fuzzy_plural_variant() -> None:
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={"Neural Network": "wiki/concepts/neural-network.md"},
+        title_to_path={"Neural Network": "knowledge/concepts/neural-network.md"},
     )
     assert len(resolved) == 1
-    assert resolved[0].dst_path == "wiki/concepts/neural-network.md"
+    assert resolved[0].dst_path == "knowledge/concepts/neural-network.md"
     assert unresolved == []
 
 
@@ -80,10 +80,10 @@ def test_resolve_fuzzy_punctuation_strip() -> None:
     resolved, _ = resolve_links(
         "doc:test",
         links,
-        title_to_path={"Elon Musk": "wiki/entities/elon-musk.md"},
+        title_to_path={"Elon Musk": "knowledge/entities/elon-musk.md"},
     )
     assert len(resolved) == 1
-    assert resolved[0].dst_path == "wiki/entities/elon-musk.md"
+    assert resolved[0].dst_path == "knowledge/entities/elon-musk.md"
 
 
 def test_resolve_fuzzy_collision_returns_unresolved() -> None:
@@ -95,8 +95,8 @@ def test_resolve_fuzzy_collision_returns_unresolved() -> None:
         "doc:test",
         links,
         title_to_path={
-            "Tesla": "wiki/entities/tesla-company.md",
-            "tesla": "wiki/concepts/tesla-unit.md",
+            "Tesla": "knowledge/entities/tesla-company.md",
+            "tesla": "knowledge/concepts/tesla-unit.md",
         },
     )
     assert resolved == []
@@ -110,10 +110,10 @@ def test_resolve_fuzzy_unicode_full_width_punctuation() -> None:
     resolved, _ = resolve_links(
         "doc:test",
         links,
-        title_to_path={"DIKW pyramid": "wiki/concepts/dikw.md"},
+        title_to_path={"DIKW pyramid": "knowledge/concepts/dikw.md"},
     )
     assert len(resolved) == 1
-    assert resolved[0].dst_path == "wiki/concepts/dikw.md"
+    assert resolved[0].dst_path == "knowledge/concepts/dikw.md"
 
 
 def test_resolve_fuzzy_preserves_internal_punctuation() -> None:
@@ -128,14 +128,14 @@ def test_resolve_fuzzy_preserves_internal_punctuation() -> None:
         "doc:test",
         links,
         title_to_path={
-            "C++": "wiki/concepts/cpp.md",
-            "C": "wiki/concepts/c-language.md",
+            "C++": "knowledge/concepts/cpp.md",
+            "C": "knowledge/concepts/c-language.md",
         },
     )
     by_target = {r.dst_path for r in resolved}
     assert by_target == {
-        "wiki/concepts/cpp.md",
-        "wiki/concepts/c-language.md",
+        "knowledge/concepts/cpp.md",
+        "knowledge/concepts/c-language.md",
     }
 
 
@@ -149,7 +149,7 @@ def test_resolve_fuzzy_does_not_invent_link_to_unrelated_technical_title() -> No
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={"C++": "wiki/concepts/cpp.md"},
+        title_to_path={"C++": "knowledge/concepts/cpp.md"},
     )
     assert resolved == []
     assert len(unresolved) == 1
@@ -166,15 +166,15 @@ def test_resolve_fuzzy_handles_e_plural_singulars() -> None:
         "doc:test",
         links,
         title_to_path={
-            "Use": "wiki/concepts/use.md",
-            "Database": "wiki/concepts/database.md",
-            "Movie": "wiki/concepts/movie.md",
+            "Use": "knowledge/concepts/use.md",
+            "Database": "knowledge/concepts/database.md",
+            "Movie": "knowledge/concepts/movie.md",
         },
     )
     assert {r.dst_path for r in resolved} == {
-        "wiki/concepts/use.md",
-        "wiki/concepts/database.md",
-        "wiki/concepts/movie.md",
+        "knowledge/concepts/use.md",
+        "knowledge/concepts/database.md",
+        "knowledge/concepts/movie.md",
     }
     assert unresolved == []
 
@@ -189,7 +189,7 @@ def test_resolve_fuzzy_does_not_invent_us_link_from_uses() -> None:
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={"Uses": "wiki/concepts/uses.md"},
+        title_to_path={"Uses": "knowledge/concepts/uses.md"},
     )
     assert resolved == []
     assert len(unresolved) == 1
@@ -205,7 +205,7 @@ def test_resolve_fuzzy_preserves_leading_punctuation() -> None:
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={".NET": "wiki/concepts/dotnet.md"},
+        title_to_path={".NET": "knowledge/concepts/dotnet.md"},
     )
     assert resolved == []
     assert len(unresolved) == 1
@@ -222,7 +222,7 @@ def test_resolve_fuzzy_does_not_stem_index_side() -> None:
     resolved, unresolved = resolve_links(
         "doc:test",
         links,
-        title_to_path={"Mars": "wiki/entities/mars.md"},
+        title_to_path={"Mars": "knowledge/entities/mars.md"},
     )
     assert resolved == []
     assert len(unresolved) == 1

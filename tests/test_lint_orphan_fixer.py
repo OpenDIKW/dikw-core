@@ -27,10 +27,10 @@ from dikw_core.domains.knowledge.lint import LintIssue
 from dikw_core.domains.knowledge.lint_fix import (
     FixerContext,
     FixProposal,
-    WikiPageMeta,
+    KnowledgePageMeta,
 )
 from dikw_core.domains.knowledge.lint_fixers import FIXER_REGISTRY
-from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.domains.knowledge.page import build_page, write_page
 
 from .fakes import FakeLLM
 
@@ -55,16 +55,16 @@ _NON_STUB_FILLER = (
 def _ctx(
     *,
     pages: list[Any],
-    wiki_root: Path,
+    base_root: Path,
     enable_llm: bool = False,
 ) -> FixerContext:
     return FixerContext(
         storage=None,
         llm=None,
         embedding=None,
-        wiki_root=wiki_root,
+        base_root=base_root,
         all_pages=[
-            WikiPageMeta(
+            KnowledgePageMeta(
                 path=p.path, title=p.title,
                 sources=tuple(p.sources), tags=tuple(p.tags),
             )
@@ -119,17 +119,17 @@ async def test_mark_as_leaf_when_no_candidates_writes_lint_skip(
     ``lint: {skip: [orphan_page], reason: ...}`` and the body
     untouched. The next lint pass will see the suppression and skip
     the page entirely."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     # An orphan with no shared signals — no other pages exist, so
     # nothing to link from / merge into.
     orphan = _make_page(
         "Isolated Note",
         "# Isolated Note\n\nA terminal observation, no obvious parent.\n",
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(_orphan_issue(orphan.path), ctx, _NullReporter())
 
     assert isinstance(proposal, FixProposal)
@@ -154,7 +154,7 @@ async def test_mark_as_leaf_preserves_existing_frontmatter(
     (title / type / tags / sources / any extras). The fixer reads the
     page's current frontmatter and emits a delta — not a replacement.
     """
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Lone Topic",
         f"# Lone Topic\n\n{_NON_STUB_FILLER}",
@@ -162,10 +162,10 @@ async def test_mark_as_leaf_preserves_existing_frontmatter(
         sources=["sources/doc.md"],
         extras={"custom_field": "preserved"},
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(_orphan_issue(orphan.path), ctx, _NullReporter())
 
     assert proposal is not None
@@ -190,16 +190,16 @@ async def test_mark_as_leaf_appends_to_existing_lint_skip(
     fixer must extend the list rather than overwrite. Idempotent on
     re-run for ``orphan_page`` — running propose twice doesn't double
     the entry."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Already Marked",
         f"# Already Marked\n\n{_NON_STUB_FILLER}",
         extras={"lint": {"skip": ["non_atomic_page"], "reason": "intentional"}},
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(_orphan_issue(orphan.path), ctx, _NullReporter())
 
     assert proposal is not None
@@ -217,7 +217,7 @@ async def test_link_from_existing_picks_shared_source_parent(
     that page becomes a strong parent candidate. The fixer emits an
     ``update_page`` on the parent appending a ``[[orphan-title]]``
     reference, NOT a ``mark_as_leaf`` proposal on the orphan."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Detail of Phenomenon",
         "# Detail of Phenomenon\n\nA narrow observation.\n",
@@ -228,11 +228,11 @@ async def test_link_from_existing_picks_shared_source_parent(
         "# Phenomenon Overview\n\nThe broader topic.\n",
         sources=["sources/paper.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, parent], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, parent], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -256,7 +256,7 @@ async def test_link_skipped_when_no_shared_signal_falls_back_to_leaf(
     """An orphan with no shared sources / tags / title overlap against
     any candidate must fall back to ``mark_as_leaf`` — the heuristic
     won't manufacture a parent just to silence lint."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Random Note",
         "# Random Note\n\nUnrelated to anything else.\n",
@@ -269,11 +269,11 @@ async def test_link_skipped_when_no_shared_signal_falls_back_to_leaf(
         sources=["sources/other.md"],
         tags=["tag/other"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, unrelated)
+    write_page(base_root, orphan)
+    write_page(base_root, unrelated)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, unrelated], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, unrelated], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -293,11 +293,11 @@ async def test_link_with_existing_backlink_emits_reconcile_update(
     """When the parent body already contains ``[[Orphan Title]]`` but
     the orphan is still flagged (storage ``links`` table is stale), the
     fixer must emit a no-content ``update_page`` so apply →
-    ``persist_wiki_page`` → ``replace_links_from`` reconciles storage.
+    ``persist_knowledge_page`` → ``replace_links_from`` reconciles storage.
 
     Falling to ``mark_as_leaf`` would mask the real bug (the link
     index is out of sync) and silence the user's only signal."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Orphan Detail",
         f"# Orphan Detail\n\n{_NON_STUB_FILLER}",
@@ -311,11 +311,11 @@ async def test_link_with_existing_backlink_emits_reconcile_update(
         "Parent Topic", parent_body,
         sources=["sources/shared.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, parent], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, parent], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -325,7 +325,7 @@ async def test_link_with_existing_backlink_emits_reconcile_update(
     op = proposal.operations[0]
     assert op.kind == "update_page"
     assert op.path == parent.path
-    # Body is unchanged — apply runs persist_wiki_page solely to
+    # Body is unchanged — apply runs persist_knowledge_page solely to
     # reconcile the stale storage.links_from snapshot.
     assert "[[Orphan Detail]]" in (op.new_body or "")
     assert "reconcile_links" in proposal.rationale.lower()
@@ -339,7 +339,7 @@ async def test_reconcile_detects_aliased_wikilink_in_body(
     resolve to the orphan, so the reconcile-detector must treat the
     parent as already-linked and emit a no-content update — NOT
     append a bare ``[[Orphan Detail]]`` next to the aliased form."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Orphan Detail",
         f"# Orphan Detail\n\n{_NON_STUB_FILLER}",
@@ -355,11 +355,11 @@ async def test_reconcile_detects_aliased_wikilink_in_body(
         "Parent Topic", parent_body,
         sources=["sources/shared.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, parent], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, parent], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -387,7 +387,7 @@ async def test_link_picks_highest_score_parent_when_multiple_candidates(
     """If several pages exceed the LINK threshold, the fixer must pick
     the strongest. A page sharing source + tag + title token wins
     over a page sharing only a single tag."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Engine Combustion",
         f"# Engine Combustion\n\n{_NON_STUB_FILLER}",
@@ -409,10 +409,10 @@ async def test_link_picks_highest_score_parent_when_multiple_candidates(
         tags=["topic/engine"],
     )
     for p in (orphan, weak, strong):
-        write_page(wiki_root, p)
+        write_page(base_root, p)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, weak, strong], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, weak, strong], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -430,12 +430,12 @@ async def test_empty_stub_orphan_proposes_delete(tmp_path: Path) -> None:
     propose ``delete_page`` (soft-delete to trash). The fixer must
     not mark such pages as intentional leaves: the user's intent
     was to discard them, the synth pass just left a stub."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     stub = _make_page("Quick Note", "tiny.\n")  # 5 chars in body
-    write_page(wiki_root, stub)
+    write_page(base_root, stub)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[stub], wiki_root=wiki_root)
+    ctx = _ctx(pages=[stub], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(stub.path), ctx, _NullReporter(),
     )
@@ -455,15 +455,15 @@ async def test_substantive_body_orphan_does_not_propose_delete(
     """Pages with real prose (above the stub byte threshold) must NOT
     be auto-deleted; they fall through to link / leaf strategies.
     Guards against accidentally trashing real notes."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     real_page = _make_page(
         "Real Note",
         "# Real Note\n\n" + ("Substantive paragraph. " * 10) + "\n",
     )
-    write_page(wiki_root, real_page)
+    write_page(base_root, real_page)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[real_page], wiki_root=wiki_root)
+    ctx = _ctx(pages=[real_page], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(real_page.path), ctx, _NullReporter(),
     )
@@ -480,17 +480,17 @@ async def test_terse_note_with_metadata_does_not_propose_delete(
     the byte threshold must NOT be auto-deleted. The stub gate must
     require additional signals (empty body, TODO marker, or absence
     of metadata) before proposing destruction."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     terse_note = _make_page(
         "Water Boiling Point",
         "Water boils at 100C.\n",
         sources=["sources/physics.md"],
         tags=["topic/physics"],
     )
-    write_page(wiki_root, terse_note)
+    write_page(base_root, terse_note)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[terse_note], wiki_root=wiki_root)
+    ctx = _ctx(pages=[terse_note], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(terse_note.path), ctx, _NullReporter(),
     )
@@ -506,17 +506,17 @@ async def test_terse_note_with_metadata_does_not_propose_delete(
 async def test_empty_body_orphan_still_deletes(tmp_path: Path) -> None:
     """The stub gate must still fire when the body is empty after
     frontmatter is stripped — even if the page has metadata."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     empty = _make_page(
         "Placeholder",
         "",  # truly empty body
         sources=["sources/x.md"],
         tags=["topic/x"],
     )
-    write_page(wiki_root, empty)
+    write_page(base_root, empty)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[empty], wiki_root=wiki_root)
+    ctx = _ctx(pages=[empty], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(empty.path), ctx, _NullReporter(),
     )
@@ -530,17 +530,17 @@ async def test_todo_pattern_orphan_proposes_delete(tmp_path: Path) -> None:
     marker is a stub regardless of metadata richness — the marker
     itself signals "not done yet, intended to be filled in or
     discarded"."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     todo_stub = _make_page(
         "Future Topic",
         "TODO: write this page.\n",
         sources=["sources/plan.md"],
         tags=["status/draft"],
     )
-    write_page(wiki_root, todo_stub)
+    write_page(base_root, todo_stub)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[todo_stub], wiki_root=wiki_root)
+    ctx = _ctx(pages=[todo_stub], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(todo_stub.path), ctx, _NullReporter(),
     )
@@ -555,15 +555,15 @@ async def test_stub_with_outbound_wikilinks_does_not_propose_delete(
     """Even a short page is meaningful if it links out — it's an index
     fragment, not a throwaway. Only body-< threshold AND zero outbound
     wikilinks qualifies as a deletable stub."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     stub_with_link = _make_page(
         "Tiny Index",
         "See [[Other Page]].\n",  # short body, but has a wikilink
     )
-    write_page(wiki_root, stub_with_link)
+    write_page(base_root, stub_with_link)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[stub_with_link], wiki_root=wiki_root)
+    ctx = _ctx(pages=[stub_with_link], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(stub_with_link.path), ctx, _NullReporter(),
     )
@@ -583,20 +583,20 @@ async def test_link_skipped_when_orphan_title_is_duplicated(
     rule the proposal was meant to fix). The fixer must detect the
     duplicate-title and fall back to mark_as_leaf so the user
     resolves the duplicate first. Codex P2-3."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     # Two pages with the same title — orphan is the one without an
     # inbound link, but the resolver picks whichever it sees first.
     orphan = _make_page(
         "Phenomenon",
         f"# Phenomenon\n\n{_NON_STUB_FILLER}",
         sources=["sources/p.md"],
-        path="wiki/concepts/phenomenon-a.md",
+        path="knowledge/concepts/phenomenon-a.md",
     )
     twin = _make_page(
         "Phenomenon",
         f"# Phenomenon\n\n{_NON_STUB_FILLER}",
         sources=["sources/p.md"],
-        path="wiki/concepts/phenomenon-b.md",
+        path="knowledge/concepts/phenomenon-b.md",
     )
     # A shared-source candidate that WOULD be picked as parent if we
     # didn't short-circuit on the duplicate-title condition.
@@ -606,10 +606,10 @@ async def test_link_skipped_when_orphan_title_is_duplicated(
         sources=["sources/p.md"],
     )
     for p in (orphan, twin, parent):
-        write_page(wiki_root, p)
+        write_page(base_root, p)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan, twin, parent], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan, twin, parent], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -633,15 +633,15 @@ async def test_link_excludes_orphan_itself_from_parent_candidates(
     """The orphan must never be its own parent — even if its title
     fuzzy-matches itself (trivially does), the scorer must exclude
     self-references."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Alone",
         "# Alone\n\nbody.\n",
         sources=["sources/x.md"],
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -667,7 +667,7 @@ async def test_link_uses_embedding_when_available_boosts_score(
 
     Without embedding-aware scoring, the orphan would fall through to
     mark_as_leaf — that's the contrast we're testing."""
-    from dikw_core.domains.knowledge.lint_fix import FixerContext, WikiPageMeta
+    from dikw_core.domains.knowledge.lint_fix import FixerContext, KnowledgePageMeta
     from dikw_core.schemas import (
         ChunkRecord,
         DocumentRecord,
@@ -679,7 +679,7 @@ async def test_link_uses_embedding_when_available_boosts_score(
     from .fakes import register_text_version_or_skip
 
     storage = parametrized_storage
-    wiki_root = tmp_path
+    base_root = tmp_path
 
     # Orphan + candidate share no sources / tags / title tokens.
     orphan = _make_page(
@@ -688,11 +688,11 @@ async def test_link_uses_embedding_when_available_boosts_score(
     candidate = _make_page(
         "Beta", "# Beta\n\nplant biochemistry overview.\n",
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, candidate)
+    write_page(base_root, orphan)
+    write_page(base_root, candidate)
 
-    orphan_id = doc_id_for(Layer.WIKI, orphan.path)
-    cand_id = doc_id_for(Layer.WIKI, candidate.path)
+    orphan_id = doc_id_for(Layer.KNOWLEDGE, orphan.path)
+    cand_id = doc_id_for(Layer.KNOWLEDGE, candidate.path)
     for path, doc_id, title in (
         (orphan.path, orphan_id, orphan.title),
         (candidate.path, cand_id, candidate.title),
@@ -701,7 +701,7 @@ async def test_link_uses_embedding_when_available_boosts_score(
             DocumentRecord(
                 doc_id=doc_id, path=path, title=title,
                 hash=f"hash-{path}", mtime=0.0,
-                layer=Layer.WIKI, active=True,
+                layer=Layer.KNOWLEDGE, active=True,
             )
         )
     orphan_chunk_ids = await storage.replace_chunks(
@@ -739,10 +739,10 @@ async def test_link_uses_embedding_when_available_boosts_score(
         storage=storage,
         llm=None,
         embedding=None,  # presence of storage + embeddings is enough
-        wiki_root=wiki_root,
+        base_root=base_root,
         all_pages=[
-            WikiPageMeta(path=orphan.path, title=orphan.title),
-            WikiPageMeta(path=candidate.path, title=candidate.title),
+            KnowledgePageMeta(path=orphan.path, title=orphan.title),
+            KnowledgePageMeta(path=candidate.path, title=candidate.title),
         ],
         enable_llm=False,
         cfg=None,
@@ -761,17 +761,17 @@ async def test_link_uses_embedding_when_available_boosts_score(
 
 
 @pytest.mark.asyncio
-async def test_link_embedding_vec_search_scoped_to_wiki_layer(
+async def test_link_embedding_vec_search_scoped_to_knowledge_layer(
     parametrized_storage: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``vec_search`` for the embedding leg must explicitly pass
-    ``layer=Layer.WIKI``. Without the filter, a base with many
+    ``layer=Layer.KNOWLEDGE``. Without the filter, a base with many
     SOURCE/WISDOM chunks routinely fills the top-K with non-wiki hits
     that the fixer then silently discards, leaving the real wiki
     parent without an embedding boost. Regression for codex P2-2 —
     asserted directly on the storage call kwargs (the previous
     behavioural assertion was sensitive to chunk_id ordering)."""
-    from dikw_core.domains.knowledge.lint_fix import FixerContext, WikiPageMeta
+    from dikw_core.domains.knowledge.lint_fix import FixerContext, KnowledgePageMeta
     from dikw_core.schemas import (
         ChunkRecord,
         DocumentRecord,
@@ -783,22 +783,22 @@ async def test_link_embedding_vec_search_scoped_to_wiki_layer(
     from .fakes import register_text_version_or_skip
 
     storage = parametrized_storage
-    wiki_root = tmp_path
+    base_root = tmp_path
 
     orphan = _make_page("Alpha", f"# Alpha\n\n{_NON_STUB_FILLER}")
     parent = _make_page("Beta", f"# Beta\n\n{_NON_STUB_FILLER}")
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
-    orphan_id = doc_id_for(Layer.WIKI, orphan.path)
-    parent_id = doc_id_for(Layer.WIKI, parent.path)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
+    orphan_id = doc_id_for(Layer.KNOWLEDGE, orphan.path)
+    parent_id = doc_id_for(Layer.KNOWLEDGE, parent.path)
     for d in (
         DocumentRecord(
             doc_id=orphan_id, path=orphan.path, title=orphan.title,
-            hash=f"hash-{orphan.path}", mtime=0.0, layer=Layer.WIKI, active=True,
+            hash=f"hash-{orphan.path}", mtime=0.0, layer=Layer.KNOWLEDGE, active=True,
         ),
         DocumentRecord(
             doc_id=parent_id, path=parent.path, title=parent.title,
-            hash=f"hash-{parent.path}", mtime=0.0, layer=Layer.WIKI, active=True,
+            hash=f"hash-{parent.path}", mtime=0.0, layer=Layer.KNOWLEDGE, active=True,
         ),
     ):
         await storage.upsert_document(d)
@@ -847,10 +847,10 @@ async def test_link_embedding_vec_search_scoped_to_wiki_layer(
 
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = FixerContext(
-        storage=storage, llm=None, embedding=None, wiki_root=wiki_root,
+        storage=storage, llm=None, embedding=None, base_root=base_root,
         all_pages=[
-            WikiPageMeta(path=orphan.path, title=orphan.title),
-            WikiPageMeta(path=parent.path, title=parent.title),
+            KnowledgePageMeta(path=orphan.path, title=orphan.title),
+            KnowledgePageMeta(path=parent.path, title=parent.title),
         ],
         enable_llm=False, cfg=None,
         path_to_doc_id={orphan.path: orphan_id, parent.path: parent_id},
@@ -859,7 +859,7 @@ async def test_link_embedding_vec_search_scoped_to_wiki_layer(
 
     assert captured_kwargs, "embedding leg never reached storage.vec_search"
     for kw in captured_kwargs:
-        assert kw.get("layer") is Layer.WIKI, (
+        assert kw.get("layer") is Layer.KNOWLEDGE, (
             f"vec_search must be scoped to WIKI; got kwargs {kw!r}"
         )
 
@@ -868,14 +868,14 @@ async def test_link_embedding_vec_search_scoped_to_wiki_layer(
 async def test_no_storage_falls_back_to_heuristic_only(tmp_path: Path) -> None:
     """When ``ctx.storage`` is None the embedding leg is skipped without
     error — pure heuristic determines the strategy."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Solo", f"# Solo\n\n{_NON_STUB_FILLER}", sources=["sources/x.md"],
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -904,34 +904,34 @@ async def test_mark_as_leaf_apply_makes_next_lint_pass_suppress(
     from dikw_core.schemas import DocumentRecord, Layer
 
     storage = parametrized_storage
-    wiki_root = tmp_path
+    base_root = tmp_path
 
     orphan = _make_page(
         "Pure Leaf",
         "# Pure Leaf\n\nA standalone observation worth keeping.\n",
     )
-    write_page(wiki_root, orphan)
+    write_page(base_root, orphan)
     await storage.upsert_document(
         DocumentRecord(
-            doc_id=doc_id_for(Layer.WIKI, orphan.path),
+            doc_id=doc_id_for(Layer.KNOWLEDGE, orphan.path),
             path=orphan.path,
             title=orphan.title,
             hash=f"hash-{orphan.path}",
             mtime=0.0,
-            layer=Layer.WIKI,
+            layer=Layer.KNOWLEDGE,
             active=True,
         )
     )
 
     # Sanity: lint reports it as orphan before the fix.
-    pre = await run_lint(storage, root=wiki_root)
+    pre = await run_lint(storage, root=base_root)
     assert any(
         i.kind == "orphan_page" and i.path == orphan.path for i in pre.issues
     )
     assert orphan.path not in pre.acknowledged_leaves
 
     fixer = FIXER_REGISTRY["orphan_page"]
-    ctx = _ctx(pages=[orphan], wiki_root=wiki_root)
+    ctx = _ctx(pages=[orphan], base_root=base_root)
     proposal = await fixer.propose(
         _orphan_issue(orphan.path), ctx, _NullReporter(),
     )
@@ -940,16 +940,16 @@ async def test_mark_as_leaf_apply_makes_next_lint_pass_suppress(
     apply_report = await run_lint_apply(
         proposal_report=FixProposalReport(proposals=[proposal]),
         storage=storage,
-        wiki_root=wiki_root,
+        base_root=base_root,
         reporter=_NullReporter(),
     )
     assert len(apply_report.applied) == 1, apply_report.skipped
 
     # On-disk frontmatter actually carries the lint.skip now.
-    post = frontmatter.load(str(wiki_root / orphan.path))
+    post = frontmatter.load(str(base_root / orphan.path))
     assert "orphan_page" in post.metadata.get("lint", {}).get("skip", [])
 
-    post_report = await run_lint(storage, root=wiki_root)
+    post_report = await run_lint(storage, root=base_root)
     orphan_after = [
         i for i in post_report.issues
         if i.kind == "orphan_page" and i.path == orphan.path
@@ -973,7 +973,7 @@ def _default_cfg() -> Any:
 def _ctx_llm(
     *,
     pages: list[Any],
-    wiki_root: Path,
+    base_root: Path,
     llm: Any,
     enable_llm: bool,
 ) -> FixerContext:
@@ -981,9 +981,9 @@ def _ctx_llm(
         storage=None,
         llm=llm,
         embedding=None,
-        wiki_root=wiki_root,
+        base_root=base_root,
         all_pages=[
-            WikiPageMeta(
+            KnowledgePageMeta(
                 path=p.path, title=p.title,
                 sources=tuple(p.sources), tags=tuple(p.tags),
             )
@@ -1018,7 +1018,7 @@ async def test_merge_strategy_skipped_when_llm_disabled(
     """A pair scoring above ``MERGE_THRESHOLD`` (two shared sources)
     must still produce a heuristic ``link_from_existing`` proposal when
     ``ctx.enable_llm=False`` — merge can never run without the LLM."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1029,12 +1029,12 @@ async def test_merge_strategy_skipped_when_llm_disabled(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=FakeLLM(), enable_llm=False,
     )
     proposal = await fixer.propose(
@@ -1058,7 +1058,7 @@ async def test_merge_strategy_generates_two_op_proposal(
     ``MERGE_THRESHOLD``, the fixer emits a 2-op proposal:
     ``update_page(parent, merged_body)`` + ``delete_page(orphan)``,
     sources/tags unioned into the parent's frontmatter."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}\nUnique orphan fact.\n",
@@ -1071,8 +1071,8 @@ async def test_merge_strategy_generates_two_op_proposal(
         sources=["sources/main.md", "sources/companion.md"],
         tags=["topic/main"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     merged_body = (
         "Combined overview.\n\n## Auxiliary Detail\n\n"
@@ -1085,7 +1085,7 @@ async def test_merge_strategy_generates_two_op_proposal(
     ))
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1122,7 +1122,7 @@ async def test_merge_unions_sources_preserving_parent_order(
     ordering and append orphan-only entries in orphan order. Regression
     guard: a naive ``set()`` union would non-deterministically reorder
     sources, churning the on-disk diff."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     # parent sources: [A, B]
     # orphan sources: [B, C, A]
     # expected union:   [A, B, C]  (parent first, then orphan-only items)
@@ -1138,8 +1138,8 @@ async def test_merge_unions_sources_preserving_parent_order(
         sources=["sources/a.md", "sources/b.md"],
         tags=["topic/main"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fake = FakeLLM(response_text=_merge_response(
         parent_path=parent.path, parent_type="concept",
@@ -1147,7 +1147,7 @@ async def test_merge_unions_sources_preserving_parent_order(
     ))
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1168,7 +1168,7 @@ async def test_merge_falls_through_to_link_when_llm_returns_no_pages(
     """If the LLM returns garbage (``safe_synthesize_pages`` → ``None``),
     the fixer must NOT silently skip — it should still produce a link
     proposal so the orphan is reachable on the next lint pass."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1179,14 +1179,14 @@ async def test_merge_falls_through_to_link_when_llm_returns_no_pages(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     # No <page> block → SynthesisError swallowed → safe_synthesize → None.
     fake = FakeLLM(response_text="Sorry, I cannot merge these.")
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1207,7 +1207,7 @@ async def test_merge_rejects_llm_response_with_wrong_target_path(
     If the LLM returns a block targeting a different path, the merge
     proposal would silently rewrite the parent with foreign content
     while still deleting the orphan — a destructive misroute. Refuse."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1218,19 +1218,19 @@ async def test_merge_rejects_llm_response_with_wrong_target_path(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     # LLM emits a valid block but targets a different path.
     bogus = _merge_response(
-        parent_path="wiki/concepts/something-else.md",
+        parent_path="knowledge/concepts/something-else.md",
         parent_type="concept", parent_title="Main Topic",
         merged_body="merged.\n", tags=[],
     )
     fake = FakeLLM(response_text=bogus)
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1250,7 +1250,7 @@ async def test_merge_rejects_llm_response_with_wrong_title(
     """A wrong-title page block could rewrite the parent under a title
     that no longer matches the frontmatter — wikilink resolution would
     break for every existing inbound link. Refuse."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1261,8 +1261,8 @@ async def test_merge_rejects_llm_response_with_wrong_title(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     # LLM emits the right path but a different title in the body.
     bogus = _merge_response(
@@ -1273,7 +1273,7 @@ async def test_merge_rejects_llm_response_with_wrong_title(
     fake = FakeLLM(response_text=bogus)
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1293,7 +1293,7 @@ async def test_merge_rejects_body_with_title_not_at_start(
     ``parse_synthesis_response``'s title extraction (which scans the
     whole body) but breaks the parent's wikilink resolution contract.
     Refuse."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1304,8 +1304,8 @@ async def test_merge_rejects_body_with_title_not_at_start(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     # Title heading appears after preamble prose — parser still finds
     # it (synth extracts the first ATX heading anywhere), but the
@@ -1318,7 +1318,7 @@ async def test_merge_rejects_body_with_title_not_at_start(
     fake = FakeLLM(response_text=bogus)
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1337,7 +1337,7 @@ async def test_merge_uses_strict_mode_refuses_multi_block_partial(
     parent. A deterministic-partial response (one valid <page> plus a
     malformed one) must NOT be accepted: the malformed block's content
     would be silently dropped along with the original orphan."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1348,8 +1348,8 @@ async def test_merge_uses_strict_mode_refuses_multi_block_partial(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/main.md", "sources/companion.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     # One valid block + one malformed (no ATX title) — parser raises
     # SynthesisPartialError(retry=False); strict mode rejects it.
@@ -1358,13 +1358,13 @@ async def test_merge_uses_strict_mode_refuses_multi_block_partial(
         parent_title="Main Topic", merged_body="merged.\n", tags=[],
     )
     malformed = (
-        '<page path="wiki/concepts/bad.md" type="concept">\n'
+        '<page path="knowledge/concepts/bad.md" type="concept">\n'
         "no ATX title in this block\n</page>\n"
     )
     fake = FakeLLM(response_text=valid + malformed)
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(
@@ -1384,7 +1384,7 @@ async def test_merge_skipped_when_score_below_merge_threshold(
     MERGE_T) must NOT go through the LLM merge path, even when the
     LLM is enabled. Confirms ``enable_llm=True`` doesn't lower the
     bar for invasive operations."""
-    wiki_root = tmp_path
+    base_root = tmp_path
     orphan = _make_page(
         "Auxiliary Detail",
         f"# Auxiliary Detail\n\n{_NON_STUB_FILLER}",
@@ -1395,13 +1395,13 @@ async def test_merge_skipped_when_score_below_merge_threshold(
         f"# Main Topic\n\n{_NON_STUB_FILLER}",
         sources=["sources/shared.md"],
     )
-    write_page(wiki_root, orphan)
-    write_page(wiki_root, parent)
+    write_page(base_root, orphan)
+    write_page(base_root, parent)
 
     fake = FakeLLM()  # default response — would be malformed
     fixer = FIXER_REGISTRY["orphan_page"]
     ctx = _ctx_llm(
-        pages=[orphan, parent], wiki_root=wiki_root,
+        pages=[orphan, parent], base_root=base_root,
         llm=fake, enable_llm=True,
     )
     proposal = await fixer.propose(

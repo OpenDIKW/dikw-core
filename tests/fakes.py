@@ -34,7 +34,7 @@ __all__ = [
     "FakeMultimodalEmbedding",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
-    "init_test_wiki",
+    "init_test_base",
     "make_codex_response",
     "make_jwt",
     "make_provider_cfg",
@@ -66,7 +66,7 @@ def png_with_dims(width: int, height: int) -> bytes:
 
 
 async def seed_asset(
-    wiki_root: Path,
+    base_root: Path,
     *,
     asset_id: str,
     stored_path: str,
@@ -75,7 +75,7 @@ async def seed_asset(
     drop_file: bool = True,
 ) -> None:
     """Upsert an ``AssetRecord`` against the wiki's storage + optionally
-    drop ``payload`` to ``<wiki_root>/<stored_path>``.
+    drop ``payload`` to ``<base_root>/<stored_path>``.
 
     Bypasses the markdown parser so a test can exercise the asset routes
     without a full ingest. The four new asset test files all share this
@@ -88,9 +88,9 @@ async def seed_asset(
     from dikw_core.schemas import AssetRecord as _AssetRecord
     from dikw_core.storage import build_storage as _build_storage
 
-    cfg = _load_config(wiki_root / "dikw.yml")
+    cfg = _load_config(base_root / "dikw.yml")
     storage = _build_storage(
-        cfg.storage, root=wiki_root, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+        cfg.storage, root=base_root, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
     )
     await storage.connect()
     await storage.migrate()
@@ -109,13 +109,13 @@ async def seed_asset(
     finally:
         await storage.close()
     if drop_file:
-        abs_path = wiki_root / stored_path
+        abs_path = base_root / stored_path
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_bytes(payload)
 
 
 async def seed_doc(
-    wiki_root: Path,
+    base_root: Path,
     *,
     layer: Any,
     path: str,
@@ -125,7 +125,7 @@ async def seed_doc(
     mtime: float = 0.0,
     doc_hash: str = "0" * 64,
 ) -> None:
-    """Drop ``body`` to ``<wiki_root>/<path>`` and upsert a matching
+    """Drop ``body`` to ``<base_root>/<path>`` and upsert a matching
     ``DocumentRecord`` against the wiki's storage.
 
     Bypasses the markdown parser + ingest pipeline so a test can
@@ -137,10 +137,10 @@ async def seed_doc(
     from dikw_core.api import _doc_id_for, _with_storage
     from dikw_core.schemas import DocumentRecord
 
-    abs_p = wiki_root / path
+    abs_p = base_root / path
     abs_p.parent.mkdir(parents=True, exist_ok=True)
     abs_p.write_text(body, encoding="utf-8")
-    cfg, _root, storage = await _with_storage(wiki_root)
+    cfg, _root, storage = await _with_storage(base_root)
     del cfg
     try:
         await storage.upsert_document(
@@ -276,15 +276,15 @@ def make_jwt(claims: dict[str, Any]) -> str:
     return f"{header}.{payload}.sig"
 
 
-def init_test_wiki(path: Any, *, description: str = "test wiki", dim: int = EMBED_DIM) -> None:
-    """``api.init_wiki`` + patch the dikw.yml so ``embedding_dim`` matches
+def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBED_DIM) -> None:
+    """``api.init_base`` + patch the dikw.yml so ``embedding_dim`` matches
     the test embedder. ``FakeEmbeddings`` produces ``EMBED_DIM`` (64) by
     default; tests using a different embedder pass ``dim``.
     """
     from dikw_core import api
     from dikw_core.config import dump_config_yaml, load_config
 
-    api.init_wiki(path, description=description)
+    api.init_base(path, description=description)
     cfg_path = path / "dikw.yml"
     cfg = load_config(cfg_path)
     cfg.provider.embedding_dim = dim

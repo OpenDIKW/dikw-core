@@ -23,13 +23,13 @@ def test_build_llm_returns_openai_codex_instance() -> None:
     cfg = make_provider_cfg(
         llm="openai_codex", llm_base_url=DEFAULT_CODEX_BASE_URL
     )
-    provider = build_llm(cfg, wiki_base=Path("dummy-wiki"))
+    provider = build_llm(cfg, base_root=Path("dummy-wiki"))
     assert isinstance(provider, OpenAICodexLLM)
 
 
-def test_build_llm_requires_wiki_base_for_openai_codex() -> None:
+def test_build_llm_requires_base_root_for_openai_codex() -> None:
     """``openai_codex`` stores its OAuth tokens at
-    ``<wiki_base>/.dikw/auth.json`` so the factory cannot build a working
+    ``<base_root>/.dikw/auth.json`` so the factory cannot build a working
     instance without one. The error message tells the engine where to
     plumb the wiki root from."""
     cfg = make_provider_cfg(
@@ -37,4 +37,4 @@ def test_build_llm_requires_wiki_base_for_openai_codex() -> None:
     )
     with pytest.raises(ProviderError) as excinfo:
         build_llm(cfg)
-    assert "wiki_base" in str(excinfo.value)
+    assert "base_root" in str(excinfo.value)

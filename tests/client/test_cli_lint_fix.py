@@ -22,14 +22,14 @@ from dikw_core.server.runtime import ServerRuntime
 
 
 @pytest.fixture()
-async def seeded_wiki(client_wiki: Path) -> Path:
-    """``client_wiki`` with two pages seeded — one target + one source
+async def seeded_wiki(client_base: Path) -> Path:
+    """``client_base`` with two pages seeded — one target + one source
     that links to a broken alias. Lives as an async fixture so the
     sync CliRunner-based tests don't have to drive asyncio themselves
     (CliRunner.invoke calls ``asyncio.run`` internally and conflicts
     with a test-level event loop)."""
-    await _seed(client_wiki)
-    return client_wiki
+    await _seed(client_base)
+    return client_base
 
 
 def _run(args: list[str]) -> Any:
@@ -39,11 +39,11 @@ def _run(args: list[str]) -> Any:
 def _wiki_doc_id(path: str) -> str:
     from dikw_core.domains.data.path_norm import normalize_path
 
-    return f"wiki:{normalize_path(path)}"
+    return f"knowledge:{normalize_path(path)}"
 
 
-async def _seed(wiki_root: Path) -> None:
-    target = wiki_root / "wiki/concepts/foo-bar.md"
+async def _seed(base_root: Path) -> None:
+    target = base_root / "knowledge/concepts/foo-bar.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "---\nid: K-foobar\ntype: concept\ntitle: Foo Bar\n"
@@ -52,7 +52,7 @@ async def _seed(wiki_root: Path) -> None:
         "# Foo Bar\n\nbody\n",
         encoding="utf-8",
     )
-    src = wiki_root / "wiki/concepts/source.md"
+    src = base_root / "knowledge/concepts/source.md"
     src.write_text(
         "---\nid: K-source\ntype: concept\ntitle: Source\n"
         "created: 2026-05-09T00:00:00+00:00\n"
@@ -60,17 +60,17 @@ async def _seed(wiki_root: Path) -> None:
         "# Source\n\nSee [[fooo bar]] for context.\n",
         encoding="utf-8",
     )
-    _cfg, _root, storage = await api_module._with_storage(wiki_root)
+    _cfg, _root, storage = await api_module._with_storage(base_root)
     try:
         for path, title in [
-            ("wiki/concepts/foo-bar.md", "Foo Bar"),
-            ("wiki/concepts/source.md", "Source"),
+            ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+            ("knowledge/concepts/source.md", "Source"),
         ]:
             await storage.upsert_document(
                 DocumentRecord(
                     doc_id=_wiki_doc_id(path), path=path, title=title,
                     hash=f"hash-{path}", mtime=0.0,
-                    layer=Layer.WIKI, active=True,
+                    layer=Layer.KNOWLEDGE, active=True,
                 )
             )
     finally:
@@ -131,7 +131,7 @@ def test_lint_propose_apply_cli_full_loop(
     assert "applied" in r3.stdout.lower()
 
     # 4. on-disk file now references the resolved target.
-    rewritten = (seeded_wiki / "wiki/concepts/source.md").read_text(
+    rewritten = (seeded_wiki / "knowledge/concepts/source.md").read_text(
         encoding="utf-8"
     )
     assert "[[Foo Bar]]" in rewritten
@@ -159,7 +159,7 @@ def test_lint_propose_apply_cli_full_loop(
 
 
 @pytest.fixture()
-async def orphan_seeded_wiki(client_wiki: Path) -> Path:
+async def orphan_seeded_wiki(client_base: Path) -> Path:
     """A 3-page wiki where:
 
     * ``parent.md`` and ``orphan.md`` share a ``sources`` entry — the
@@ -169,12 +169,12 @@ async def orphan_seeded_wiki(client_wiki: Path) -> Path:
       orphans; the fixer should propose a fix for the orphan only
       under ``--rule orphan_page`` filtering.
     """
-    await _seed_orphan_pair(client_wiki)
-    return client_wiki
+    await _seed_orphan_pair(client_base)
+    return client_base
 
 
-async def _seed_orphan_pair(wiki_root: Path) -> None:
-    parent = wiki_root / "wiki/concepts/parent-topic.md"
+async def _seed_orphan_pair(base_root: Path) -> None:
+    parent = base_root / "knowledge/concepts/parent-topic.md"
     parent.parent.mkdir(parents=True, exist_ok=True)
     parent.write_text(
         "---\nid: K-parent\ntype: concept\ntitle: Parent Topic\n"
@@ -185,7 +185,7 @@ async def _seed_orphan_pair(wiki_root: Path) -> None:
         "comfortably past the stub byte threshold.\n",
         encoding="utf-8",
     )
-    orphan = wiki_root / "wiki/concepts/orphan-detail.md"
+    orphan = base_root / "knowledge/concepts/orphan-detail.md"
     orphan.write_text(
         "---\nid: K-orphan\ntype: concept\ntitle: Orphan Detail\n"
         "sources: [sources/shared.md]\n"
@@ -195,17 +195,17 @@ async def _seed_orphan_pair(wiki_root: Path) -> None:
         "page but no other page links to it, well past the stub bar.\n",
         encoding="utf-8",
     )
-    _cfg, _root, storage = await api_module._with_storage(wiki_root)
+    _cfg, _root, storage = await api_module._with_storage(base_root)
     try:
         for path, title in [
-            ("wiki/concepts/parent-topic.md", "Parent Topic"),
-            ("wiki/concepts/orphan-detail.md", "Orphan Detail"),
+            ("knowledge/concepts/parent-topic.md", "Parent Topic"),
+            ("knowledge/concepts/orphan-detail.md", "Orphan Detail"),
         ]:
             await storage.upsert_document(
                 DocumentRecord(
                     doc_id=_wiki_doc_id(path), path=path, title=title,
                     hash=f"hash-{path}", mtime=0.0,
-                    layer=Layer.WIKI, active=True,
+                    layer=Layer.KNOWLEDGE, active=True,
                 )
             )
     finally:
@@ -243,7 +243,7 @@ def test_lint_orphan_page_propose_apply_roundtrip(
     # and the parent body must now reference the orphan via a backlink
     # under the stable ``## 相关`` heading. A leaf fallback at this score
     # would be a regression — assert the specific branch.
-    parent_body = (orphan_seeded_wiki / "wiki/concepts/parent-topic.md").read_text(
+    parent_body = (orphan_seeded_wiki / "knowledge/concepts/parent-topic.md").read_text(
         encoding="utf-8"
     )
     assert "[[Orphan Detail]]" in parent_body, (

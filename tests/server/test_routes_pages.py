@@ -109,23 +109,23 @@ async def test_get_page_path_escape_404(
 
 @pytest.mark.asyncio
 async def test_get_page_response_includes_assets(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """End-to-end: a markdown page with an image ref surfaces the asset
     under ``response.assets[]`` with a directly-usable ``url`` — remote
     callers can fetch image bytes without any server-side rewriting of
     the page body."""
-    src_dir = wiki_root / "sources" / "demo"
+    src_dir = base_root / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "diagram.png").write_bytes(png_with_dims(320, 240))
     rel = "sources/demo/page-with-image.md"
-    (wiki_root / rel).write_text(
+    (base_root / rel).write_text(
         "# With image\n\n"
         "Look at this diagram: ![diagram](./diagram.png)\n\n"
         "Body fodder so the chunker has material to work with.\n",
         encoding="utf-8",
     )
-    await api_module.ingest(wiki_root, embedder=FakeEmbeddings())
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
 
     resp = await server_client.get(f"/v1/base/pages/{rel}")
     assert resp.status_code == 200, resp.text

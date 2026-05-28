@@ -1,6 +1,6 @@
 """Fixer for ``non_atomic_page`` issues.
 
-Stage A's atomicity rule says one wiki page = one self-contained idea
+Stage A's atomicity rule says one knowledge page = one self-contained idea
 or entity. The lint scanner flags pages whose body, H1/H2 count, or
 distinct-wikilink count signals "this is N pages glued together"; this
 fixer asks the synth LLM to split the body into atomic children.
@@ -84,7 +84,7 @@ class NonAtomicPageFixer:
         if not ctx.enable_llm or ctx.llm is None or ctx.cfg is None:
             return None
 
-        abs_path = (ctx.wiki_root / issue.path).resolve()
+        abs_path = (ctx.base_root / issue.path).resolve()
         if not abs_path.is_file():
             return None
         file_bytes = abs_path.read_bytes()

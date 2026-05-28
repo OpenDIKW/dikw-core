@@ -17,7 +17,7 @@
 `dikw-core` is a greenfield, open-source project. The goal is an **AI-native knowledge engine** inspired by Karpathy's "LLM Wiki" pattern ([gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), but extended end-to-end across the **DIKW pyramid** — Data → Information → Knowledge → Wisdom.
 
 Why this project exists:
-- Karpathy's LLM-Wiki pattern captures a real gap in today's RAG stacks: **knowledge should be a compounding artifact, not a query-time search result.** His pattern stops at Knowledge (markdown wiki with index.md + log.md).
+- Karpathy's LLM-Wiki pattern captures a real gap in today's RAG stacks: **knowledge should be a compounding artifact, not a query-time search result.** His pattern stops at Knowledge (markdown knowledge base with index.md + log.md).
 - Existing reference tools (`mineru-doc-explorer`, `qmd`) implement the pattern in TypeScript/Node, local-first with GGUF models and SQLite+sqlite-vec. They cover D→I→K well but do not treat Wisdom (principles, lessons, transferable judgment) as a first-class layer.
 - The user wants a **Python-native** implementation that (a) makes all four DIKW layers first-class, (b) is pluggable across LLM providers via API, (c) targets personal and enterprise knowledge bases, (d) is packaged with `uv` and hosted on GitHub.
 
@@ -29,10 +29,10 @@ Design decisions already locked in (via clarifying Q&A):
 ## Vision & Principles
 
 1. **DIKW as first-class layers** — each layer has its own storage, schemas, and operations. The pipeline between layers is explicit (not an implicit by-product of retrieval).
-2. **Wiki-as-artifact** — Knowledge & Wisdom layers are plain markdown on disk, versioned with git by the user, editable by humans and LLMs. The engine is a tool; the wiki is the product.
+2. **Knowledge-as-artifact** — Knowledge & Wisdom layers are plain markdown on disk, versioned with git by the user, editable by humans and LLMs. The engine is a tool; the knowledge base is the product.
 3. **Scoping deterministic, reasoning probabilistic** (Karpathy) — navigation uses deterministic structure (index.md, link graph, FTS); LLM calls are reserved for K-layer synthesis. W layer is hand-written, not LLM-authored.
 4. **Server-as-the-engine, CLI-as-the-client** — the engine is a long-lived `dikw serve` (FastAPI + NDJSON streaming) process that owns storage and provider connections; humans drive it through `dikw client *`, agents through HTTP. There is no in-process import path for end-user operations.
-5. **Local-first data, pluggable compute** — the wiki lives on the user's filesystem; the default index is a local SQLite DB; only LLM calls leave the machine (and are provider-abstracted).
+5. **Local-first data, pluggable compute** — the base lives on the user's filesystem; the default index is a local SQLite DB; only LLM calls leave the machine (and are provider-abstracted).
 6. **Pluggable storage** — the engine talks to an abstract **Storage** interface, not to SQL directly. Two backends ship: **SQLite+sqlite-vec** (default, single-user local) and **Postgres+pgvector** (enterprise, multi-user). Swapping backends is a config change.
 7. **Obsidian-compatible on-disk format** — the K & W layers are written as a plain markdown tree that Obsidian (or any MD editor) opens as a vault: `[[wikilinks]]`, YAML front-matter with tags, folder-based organization, daily-note conventions. The engine is a collaborator, not a walled garden; the user owns the files.
 8. **YAGNI + extension points** — ship a tight MVP, but put named seams (provider adapter, storage adapter, source-backend registry, prompt registry) where known growth vectors are.
@@ -43,7 +43,7 @@ Design decisions already locked in (via clarifying Q&A):
 |---|---|---|---|
 | **D — Data** | Raw, immutable sources (markdown files the user curates) | filesystem + indexed `documents` table in SQLite (path, content hash, layer, active) | human |
 | **I — Information** | Parsed, chunked, embedded, indexed — enables fast lookup | SQLite FTS5 + sqlite-vec (`.dikw/index.sqlite`) | engine (deterministic) |
-| **K — Knowledge** | LLM-authored wiki pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md`; each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `wiki/` | LLM, human-editable |
+| **K — Knowledge** | LLM-authored knowledge pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md`; each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `knowledge/` | LLM, human-editable |
 | **W — Wisdom** | Distilled principles, heuristics, lessons, patterns — transferable beyond a single source | markdown files in `wisdom/` with explicit provenance & review status | LLM proposes, human confirms |
 
 The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.
@@ -72,7 +72,7 @@ The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.
  ┌────────────────┐     ┌───────────────────┐   ┌────────────────────┐
  │  Data (D)      │     │ Information (I)   │   │ Knowledge (K) /    │
  │  sources.py    │     │ chunk · embed ·   │   │ Wisdom (W)         │
- │  backends/md   │──▶  │ index · search    │◀─▶│ wiki/ · wisdom/    │
+ │  backends/md   │──▶  │ index · search    │◀─▶│ knowledge/ · wisdom/    │
  │  (content-hash)│     │ (FTS5 + vec + RRF)│   │ links · log        │
  └────────┬───────┘     └─────────┬─────────┘   └──────────┬─────────┘
           │                       │                        │
@@ -102,7 +102,7 @@ Module boundaries are chosen so each subpackage fits in a single reading pass an
 - **Storage (default)**: stdlib `sqlite3` + `sqlite-vec` (pip) for vectors; FTS5 built into SQLite. Behind a `Storage` Protocol.
 - **Storage (enterprise)**: Postgres 15+ with `pgvector` ≥0.6 and `tsvector` + GIN for full-text, via `psycopg[binary,pool]`. Optional extra: `uv pip install dikw-core[postgres]`.
 - **Schemas**: Pydantic v2 for config, records, tool I/O
-- **Markdown**: `markdown-it-py` + `python-frontmatter`; wiki-link parsing via a small in-repo module (not a heavy dep)
+- **Markdown**: `markdown-it-py` + `python-frontmatter`; wikilink parsing via a small in-repo module (not a heavy dep)
 - **LLM SDKs**: `anthropic`, `openai` (the `openai` SDK covers all OpenAI-compatible endpoints), behind a thin provider interface
 - **Embeddings**: default through an OpenAI-compatible `embeddings` endpoint (works for OpenAI, Ollama, TEI, etc.); Anthropic path uses OpenAI-compat for embeddings since Anthropic has no embeddings API
 - **HTTP server**: `fastapi` + `uvicorn[standard]` + `python-multipart` for source-import multipart payloads
@@ -112,9 +112,9 @@ Module boundaries are chosen so each subpackage fits in a single reading pass an
 
 Known patterns to reuse from references (concrete sources):
 - **Hybrid search pipeline (BM25 + vector + RRF + rerank)** — `mineru-doc-explorer/src/hybrid-search.ts`, `mineru-doc-explorer/src/search.ts`. Port the RRF fusion + position-aware blending logic.
-- **SQLite schema design + content-addressed storage** — `mineru-doc-explorer/src/db-schema.ts`, `mineru-doc-explorer/src/store.ts` (documents table with indexed content hash, links table, wiki_log).
+- **SQLite schema design + content-addressed storage** — `mineru-doc-explorer/src/db-schema.ts`, `mineru-doc-explorer/src/store.ts` (documents table with indexed content hash, links table, knowledge_log).
 - **Smart markdown chunking (~900 tokens, 15% overlap, heading-aware)** — `mineru-doc-explorer/src/store.ts` chunking section; `qmd/src/store.ts` lines ~257–310.
-- **Wikilink parsing + forward/backward graph** — `mineru-doc-explorer/src/links.ts`, `mineru-doc-explorer/src/wiki/{log,lint,index-gen}.ts`. Port to a small `knowledge/links.py`.
+- **Wikilink parsing + forward/backward graph** — `mineru-doc-explorer/src/links.ts`, `mineru-doc-explorer/src/knowledge/{log,lint,index-gen}.ts`. Port to a small `knowledge/links.py`.
 - **HTTP route grouping** — server endpoints map 1:1 to `dikw_core.api` methods, grouped under `/v1/{sync,tasks,import,retrieve}` so the wire surface mirrors the engine seam. Long ops (ingest / synth / eval) return a `task_id` whose progress is consumed via the paged JSON cursor at `GET /v1/tasks/{id}/events` (long-poll with `wait>0`); retrieve streams inline NDJSON (no task_id, short-lived); sync ops return JSON directly. **LLM synthesis is not a dikw-core verb** — agents call `retrieve` and run their own LLM on the returned chunks.
 - **YAML config + schema validation** — `mineru-doc-explorer/src/config-schema.ts` (Zod) → Pydantic v2 equivalent in `dikw_core/config.py`.
 - **Strong-signal short-circuit** (skip expensive LLM expansion when FTS already gives a confident top hit) — `qmd/src/store.ts:4057–4076`.
@@ -159,11 +159,11 @@ dikw-core/
 │   │   │   └── search.py     # BM25 + vector + RRF + optional rerank
 │   │   │
 │   │   ├── knowledge/        # K layer
-│   │   │   ├── wiki.py       # page read/write, front-matter conventions
-│   │   │   ├── synthesize.py # ingest → wiki pages (LLM-driven)
+│   │   │   ├── page.py       # page read/write, front-matter conventions
+│   │   │   ├── synthesize.py # ingest → knowledge pages (LLM-driven)
 │   │   │   ├── links.py      # wikilink/markdown/URL link graph
-│   │   │   ├── indexgen.py   # regenerate index.md from wiki/
-│   │   │   └── log.py        # append-only wiki_log + log.md renderer
+│   │   │   ├── indexgen.py   # regenerate index.md from knowledge/
+│   │   │   └── log.py        # append-only knowledge_log + log.md renderer
 │   │   │
 │   │   └── wisdom/           # W layer — hand-written first-class documents
 │   │       └── page.py       # author_from_path(wisdom/<author>/<slug>.md) → "<author>"
@@ -185,23 +185,23 @@ dikw-core/
 │   ├── fixtures/             # small MD corpora
 │   ├── test_chunk.py
 │   ├── test_search.py        # FTS + vector + RRF behavior on golden set
-│   ├── test_wiki.py
+│   ├── test_page.py
 │   ├── test_wisdom_*.py      # W-layer ingest / read / lint / retrieve tests
 │   ├── test_providers.py     # uses recorded responses
 │   ├── test_storage_contract.py  # same contract test runs against every backend
 │   ├── server/               # HTTP-level tests against an in-memory ASGI app
 │   └── client/               # transport, config, importer, progress renderer tests
 └── examples/
-    └── personal-wiki/        # runnable demo wiki
+    └── personal-base/        # runnable demo base
 ```
 
 ## On-Disk User Wiki Layout (convention, not code)
 
 ```
-my-wiki/
+my-base/
 ├── dikw.yml                  # config: sources, provider, schema
 ├── sources/                  # user-curated raw markdown (D layer)
-├── wiki/                     # K layer (LLM-authored, human-editable)
+├── knowledge/                     # K layer (LLM-authored, human-editable)
 │   ├── index.md              # auto-generated catalog
 │   ├── log.md                # append-only chronology
 │   ├── entities/
@@ -217,11 +217,11 @@ my-wiki/
     └── cache/                # model/artifact caches (backend-agnostic)
 ```
 
-**Obsidian vault compatibility** — `my-wiki/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
-- `[[Wikilinks]]` — the canonical link form in `wiki/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
-- **YAML front-matter** — engine-authored wiki pages carry `---`-delimited front-matter (typically `title`, `type`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
-- **Folder = category** — `wiki/entities/`, `wiki/concepts/`, `wiki/notes/`, `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior.
-- **Daily-note style log** — `wiki/log.md` keeps Karpathy's chronological format; optionally daily files under `wiki/log/YYYY/MM/YYYY-MM-DD.md` for vaults that already use Obsidian's daily-notes plugin (opt-in via `schema.log_style: daily`).
+**Obsidian vault compatibility** — `my-base/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
+- `[[Wikilinks]]` — the canonical link form in `knowledge/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
+- **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `type`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
+- **Folder = category** — `knowledge/entities/`, `knowledge/concepts/`, `knowledge/notes/`, `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior.
+- **Daily-note style log** — `knowledge/log.md` keeps Karpathy's chronological format; optionally daily files under `knowledge/log/YYYY/MM/YYYY-MM-DD.md` for vaults that already use Obsidian's daily-notes plugin (opt-in via `schema.log_style: daily`).
 - **Engine state stays out of the vault** — the `.dikw/` sidecar directory is gitignored and Obsidian-ignored (`.obsidian/app.json` `userIgnoreFilters` receives a `.dikw/` entry on `dikw init`).
 - **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing in Obsidian never sees engine-only constructs that would get stripped on round-trip.
 
@@ -242,7 +242,7 @@ storage:
   # schema: dikw            # isolates multi-tenant deployments
   # pool_size: 10
 schema:
-  description: "Personal research wiki on AI safety"
+  description: "Personal research base on AI safety"
   page_types: [entity, concept, note]
   wisdom_kinds: [principle, lesson, pattern]
 sources:
@@ -272,7 +272,7 @@ CREATE TABLE documents (
     title    TEXT,
     hash     TEXT NOT NULL,             -- sha256 of body; indexed for reverse lookup
     mtime    REAL,
-    layer    TEXT CHECK (layer IN ('source','wiki','wisdom')) NOT NULL,
+    layer    TEXT CHECK (layer IN ('source','knowledge','wisdom')) NOT NULL,
     active   INTEGER DEFAULT 1
 );
 CREATE INDEX documents_hash_idx ON documents(hash);
@@ -309,7 +309,7 @@ CREATE TABLE links (
     anchor     TEXT, line INTEGER,
     PRIMARY KEY (src_doc_id, dst_path, line)
 );
-CREATE TABLE wiki_log (
+CREATE TABLE knowledge_log (
     ts INTEGER, action TEXT, src TEXT, dst TEXT, note TEXT
 );
 
@@ -319,7 +319,7 @@ CREATE TABLE wiki_log (
 -- wisdom-specific column is ``documents.status``:
 ALTER TABLE documents ADD COLUMN status TEXT
     CHECK (status IS NULL OR status IN ('draft','published','favorite','archived'));
--- ``status`` is wisdom-only by application + adapter clamp — wiki/source
+-- ``status`` is wisdom-only by application + adapter clamp — knowledge/source
 -- rows always have status = NULL even if frontmatter declares one.
 ```
 
@@ -377,7 +377,7 @@ Each operation is implemented in `dikw_core.api` and surfaced over HTTP by the s
 | Op | Input | Output | Notes |
 |---|---|---|---|
 | `ingest(paths)` | file paths | updated `documents`/`chunks`/`documents_fts`/`vec_chunks_v<id>` | D→I; deterministic; idempotent by content hash |
-| `synthesize(scope)` | source doc_ids (or "new since log") | new/updated wiki pages + wiki_log entries | I→K; LLM call with prompts/synthesize.md |
+| `synthesize(scope)` | source doc_ids (or "new since log") | new/updated knowledge pages + knowledge_log entries | I→K; LLM call with prompts/synthesize.md |
 | `retrieve(q)` | user question | ranked chunks + page refs (no LLM call) | hybrid search via `info/search.py` (BM25 + vec RRF); **LLM synthesis is the agent's responsibility, not dikw-core's** |
 | `lint()` | — | report of broken links, orphan pages, duplicated entities | K+W hygiene; prompts/lint.md |
 | `status()` | — | counts per layer, last-ingest, last-synthesize, pending review | for CLI and HTTP `/v1/status` |
@@ -395,12 +395,12 @@ allowed and indexed with `author = None`.
 Wisdom pages share the K-page contract:
 
 - **YAML frontmatter:** optional `sources: [...]` list (same semantics as
-  wiki pages — populates the `provenance` table), optional
+  knowledge pages — populates the `provenance` table), optional
   `status: draft | published | favorite | archived` enum (omitted ≡
   published), free-form additional keys. Wiki and Source layer documents
   may carry `status:` in YAML but the engine forces
   `DocumentRecord.status = NULL` for them — status is wisdom-only.
-- **Body:** markdown with `[[wikilinks]]` that resolve across both wiki
+- **Body:** markdown with `[[wikilinks]]` that resolve across both knowledge
   and wisdom layers via title. Title collisions across layers fall
   through the existing refuse-to-resolve mechanism (lint surfaces the
   ambiguity); the user disambiguates with the path form
@@ -418,18 +418,18 @@ As of 0.3.0 the wisdom layer is fully wired end-to-end:
 
 - **ingest** scans `wisdom/**/*.md` and writes the same
   `documents` / `chunks` / per-version embedding / `links` /
-  `provenance` rows as wiki pages.
+  `provenance` rows as knowledge pages.
 - **retrieve** returns wisdom hits tagged `Hit.layer == "wisdom"`
-  alongside source + wiki hits; callers group or weight by layer in
+  alongside source + knowledge hits; callers group or weight by layer in
   their own assembly step.
 - **read** APIs (`GET /v1/base/pages/{path}`,
   `.../links`, `.../provenance`) accept wisdom paths and resolve
-  cross-layer wikilinks + provenance edges (wisdom→wiki,
-  wiki→wisdom, wisdom→source) symmetrically.
+  cross-layer wikilinks + provenance edges (wisdom→knowledge,
+  knowledge→wisdom, wisdom→source) symmetrically.
 - **lint** (`broken_wikilink`, `orphan_page`, `missing_provenance`,
   `duplicate_title`, `invalid_wisdom_status`) scans the unified
   WIKI + WISDOM page set; the orphan inbound counter credits
-  cross-layer edges so a wiki page cited only from wisdom is not
+  cross-layer edges so a knowledge page cited only from wisdom is not
   falsely flagged.
 
 There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
@@ -469,7 +469,7 @@ class Storage(Protocol):
     async def upsert_link(self, link: LinkRecord) -> None: ...
     async def links_from(self, src_doc_id: str) -> list[LinkRecord]: ...
     async def links_to(self, dst_path: str) -> list[LinkRecord]: ...
-    async def append_wiki_log(self, entry: WikiLogEntry) -> None: ...
+    async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None: ...
     async def replace_provenance_from(self, src_doc_id: str,
                                       source_paths: Sequence[str]) -> None: ...
 
@@ -511,22 +511,22 @@ class EmbeddingProvider(Protocol):
 
 `providers/anthropic.py` wraps the official `anthropic` SDK for LLM; raises for embedding (unsupported). `providers/openai_compat.py` wraps the official `openai` SDK and takes `base_url` + `api_key` from env/config, covering OpenAI proper, Azure OpenAI, Ollama, vLLM, TEI-style embedding endpoints, and any Claude Code-style OpenAI-compat. `providers/__init__.py` resolves instances from `dikw.yml`; swapping providers is a config-only change.
 
-Prompt caching: when the provider is Anthropic, use the `cache_control` param on the system prompt and large wiki blocks in `synthesize` — the wiki schema is near-static per session and is the prime caching target. (Query-time prompt caching is the agent's concern, not dikw-core's, since dikw-core does not call the LLM at retrieve time.)
+Prompt caching: when the provider is Anthropic, use the `cache_control` param on the system prompt and large knowledge blocks in `synthesize` — the knowledge schema is near-static per session and is the prime caching target. (Query-time prompt caching is the agent's concern, not dikw-core's, since dikw-core does not call the LLM at retrieve time.)
 
 ## Interfaces
 
 **Local CLI** (run in this process; no server required):
 - `dikw version` — print package version
-- `dikw init [path]` — scaffold `dikw.yml`, `sources/`, `wiki/`, `wisdom/`, `.dikw/`
+- `dikw init [path]` — scaffold `dikw.yml`, `sources/`, `knowledge/`, `wisdom/`, `.dikw/`
 - `dikw serve --base <path>` — start the FastAPI + NDJSON server bound to one base
 
 **Remote CLI** (`dikw client *`, also reachable via top-level aliases):
-- `dikw client status` — counts per layer (source / wiki / wisdom)
+- `dikw client status` — counts per layer (source / knowledge / wisdom)
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
 - `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
 - `dikw client ingest [--no-embed]` — chunk + embed the server's `sources/` AND `wisdom/` trees, stream progress
 - `dikw client synth [--all]` — K-layer synthesis (W layer is hand-written, not LLM-authored)
-- `dikw client pages {list,get,links,provenance} [--layer wiki|wisdom|source]` — read-side page APIs across all three layers
+- `dikw client pages {list,get,links,provenance} [--layer knowledge|wisdom|source]` — read-side page APIs across all three layers
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
 - `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; some kinds have no fixer yet)
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
@@ -540,10 +540,10 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 
 ## Phasing
 
-- **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty wiki.
+- **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty base.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
-- **Phase 2 — K (wiki):** `synthesize` prompt + worker, wiki page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `wiki/` with valid cross-links; `lint` reports 0 errors.
-- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same `persist_page` pipeline as wiki pages, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
+- **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
+- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same `persist_page` pipeline as knowledge pages, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
   - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `postgres:16`+`pgvector` container in CI. Packaged as `dikw-core[postgres]` optional extra.
@@ -570,10 +570,10 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 ## Verification (how we'll know it works end-to-end)
 
 1. `uv sync` resolves cleanly; `uv run pytest` green; `uv run ruff check` + `uv run mypy src` clean.
-2. `uv run dikw init examples/personal-wiki && cd examples/personal-wiki` scaffolds the expected tree.
+2. `uv run dikw init examples/personal-base && cd examples/personal-base` scaffolds the expected tree.
 3. Populate `sources/` with ~20 markdown notes (fixtures); `uv run dikw client ingest`; confirm FTS and vec rows via a diagnostic `dikw client status`.
 4. `uv run dikw client retrieve "what is DIKW?" --format json` returns at least one chunk hit with `path`, `text`, and `score`; LLM synthesis on top of these chunks is the agent's responsibility.
-5. `uv run dikw client synth`; check `wiki/index.md` and `wiki/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
+5. `uv run dikw client synth`; check `knowledge/index.md` and `knowledge/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
 6. Hand-write a wisdom page at `wisdom/<author>/<slug>.md` with optional `sources:` frontmatter pointing at a real source path; `uv run dikw client ingest` indexes it; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages get wisdom/<author>/<slug>.md` returns its body + chunk anchors.
 7. `uv run dikw client retrieve "<query that matches the wisdom body>" --format json` returns at least one hit with `layer: wisdom`; the agent groups by layer and assembles its own wisdom-grounded answer.
 8. `uv run dikw serve --base .` launches; a `GET /v1/base/pages/wisdom/<author>/<slug>.md` round-trip from any HTTP client returns the same page as step 6, and a `POST /v1/retrieve` round-trip returns chunks (including wisdom chunks) consumable by any HTTP agent.
@@ -677,6 +677,6 @@ not tied to text-only assumptions, and `LLMProvider` can grow an
 `images` parameter behind a capability flag. Generated content (e.g.
 LLM captions or transcripts) is **not** intended to live as columns
 on `assets`; it lands in a dedicated provider-driven side table or as
-K-layer wiki annotations so a re-run with a different model is a pure
+K-layer knowledge annotations so a re-run with a different model is a pure
 write, never a schema change.
 

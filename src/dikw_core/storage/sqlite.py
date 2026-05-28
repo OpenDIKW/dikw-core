@@ -35,13 +35,13 @@ from ..schemas import (
     EmbeddingRow,
     EmbeddingVersion,
     FTSHit,
+    KnowledgeLogEntry,
     Layer,
     LinkRecord,
     LinkType,
     ProvenanceEdge,
     StorageCounts,
     VecHit,
-    WikiLogEntry,
     WisdomStatus,
     dump_media_meta,
     load_media_meta,
@@ -921,23 +921,23 @@ class SQLiteStorage:
 
         return await asyncio.to_thread(_run)
 
-    async def append_wiki_log(self, entry: WikiLogEntry) -> None:
+    async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None:
         def _run() -> None:
             conn = self._require_conn()
             with conn:
                 conn.execute(
-                    "INSERT INTO wiki_log(ts, action, src, dst, note) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO knowledge_log(ts, action, src, dst, note) VALUES (?, ?, ?, ?, ?)",
                     (entry.ts, entry.action, entry.src, entry.dst, entry.note),
                 )
 
         await asyncio.to_thread(_run)
 
-    async def list_wiki_log(
+    async def list_knowledge_log(
         self, *, since_ts: float | None = None, limit: int | None = None
-    ) -> list[WikiLogEntry]:
-        def _run() -> list[WikiLogEntry]:
+    ) -> list[KnowledgeLogEntry]:
+        def _run() -> list[KnowledgeLogEntry]:
             conn = self._require_conn()
-            sql = "SELECT id, ts, action, src, dst, note FROM wiki_log"
+            sql = "SELECT id, ts, action, src, dst, note FROM knowledge_log"
             params: list[Any] = []
             if since_ts is not None:
                 sql += " WHERE ts >= ?"
@@ -951,7 +951,7 @@ class SQLiteStorage:
                 params.append(int(limit))
             rows = conn.execute(sql, params).fetchall()
             return [
-                WikiLogEntry(
+                KnowledgeLogEntry(
                     id=int(r["id"]),
                     ts=float(r["ts"]),
                     action=r["action"],
@@ -1388,7 +1388,7 @@ class SQLiteStorage:
             chunks = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
             embeddings = int(conn.execute("SELECT COUNT(*) FROM chunk_embed_meta").fetchone()[0])
             links = int(conn.execute("SELECT COUNT(*) FROM links").fetchone()[0])
-            last_log = conn.execute("SELECT MAX(ts) AS ts FROM wiki_log").fetchone()
+            last_log = conn.execute("SELECT MAX(ts) AS ts FROM knowledge_log").fetchone()
             assets_count = int(conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0])
             asset_emb_count = int(
                 conn.execute("SELECT COUNT(*) FROM asset_embed_meta").fetchone()[0]
@@ -1398,7 +1398,7 @@ class SQLiteStorage:
                 chunks=chunks,
                 embeddings=embeddings,
                 links=links,
-                last_wiki_log_ts=float(last_log["ts"]) if last_log and last_log["ts"] else None,
+                last_knowledge_log_ts=float(last_log["ts"]) if last_log and last_log["ts"] else None,
                 assets=assets_count,
                 asset_embeddings=asset_emb_count,
             )

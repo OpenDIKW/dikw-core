@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS documents (
     title    TEXT,
     hash     TEXT NOT NULL,
     mtime    DOUBLE PRECISION,
-    layer    TEXT NOT NULL CHECK (layer IN ('source','wiki','wisdom')),
+    layer    TEXT NOT NULL CHECK (layer IN ('source','knowledge','wisdom')),
     active   BOOLEAN NOT NULL DEFAULT TRUE,
     status   TEXT CHECK (
         status IS NULL OR status IN ('draft','published','favorite','archived')
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS provenance (
 CREATE INDEX IF NOT EXISTS provenance_source_key
     ON provenance(source_path_key);
 
-CREATE TABLE IF NOT EXISTS wiki_log (
+CREATE TABLE IF NOT EXISTS knowledge_log (
     id     BIGSERIAL PRIMARY KEY,
     ts     DOUBLE PRECISION NOT NULL,
     action TEXT NOT NULL,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS wiki_log (
     note   TEXT
 );
 
-CREATE INDEX IF NOT EXISTS wiki_log_ts ON wiki_log(ts);
+CREATE INDEX IF NOT EXISTS knowledge_log_ts ON knowledge_log(ts);
 
 -- ---- Multimedia assets ---------------------------------------------------
 

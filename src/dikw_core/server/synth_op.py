@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def make_synth_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     force_all: bool,
     no_embed: bool,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
@@ -41,9 +41,9 @@ def make_synth_runner(
         # Reload cfg from disk INSIDE the runner so providers stay
         # aligned with ``api.synthesize``'s own ``_with_storage`` reload.
         # See ``ingest_op.make_ingest_runner`` for the full reasoning.
-        cfg = load_config(wiki_root / CONFIG_FILENAME)
+        cfg = load_config(base_root / CONFIG_FILENAME)
         try:
-            llm = build_llm(cfg.provider, wiki_base=wiki_root)
+            llm = build_llm(cfg.provider, base_root=base_root)
         except Exception as e:
             raise BadRequest(
                 f"could not build LLM: {e}", code="llm_unavailable"
@@ -64,7 +64,7 @@ def make_synth_runner(
                 )
 
         report = await api.synthesize(
-            wiki_root,
+            base_root,
             force_all=force_all,
             llm=llm,
             embedder=embedder,
@@ -77,7 +77,7 @@ def make_synth_runner(
 
 def make_eval_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     dataset: str | None,
     mode: str,
     cache_mode: str,
@@ -117,7 +117,7 @@ def make_eval_runner(
         from ..eval.runner import EvalError, run_eval, run_synth_eval
         from ..providers import build_llm, build_multimodal_embedder
 
-        cfg = load_config(wiki_root / CONFIG_FILENAME)
+        cfg = load_config(base_root / CONFIG_FILENAME)
 
         if dataset is None:
             # No-arg ``dikw client eval`` ran every packaged dataset; preserve
@@ -174,7 +174,7 @@ def make_eval_runner(
             nonlocal _llm
             if _llm is None:
                 try:
-                    _llm = build_llm(cfg.provider, wiki_base=wiki_root)
+                    _llm = build_llm(cfg.provider, base_root=base_root)
                 except Exception as e:
                     raise BadRequest(
                         f"could not build LLM for synth eval: {e}",
@@ -245,7 +245,7 @@ def make_eval_runner(
                         all_passed = all_passed and synth_rep.passed
                     reports.append(dumped)
 
-        _ = wiki_root  # eval owns its own throwaway wiki tree
+        _ = base_root  # eval owns its own throwaway knowledge tree
         if eval_modes is not None:
             missing = [m for m in eval_modes if m not in modes_actually_run]
             if missing:

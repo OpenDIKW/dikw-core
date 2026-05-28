@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS documents (
     title    TEXT,
     hash     TEXT NOT NULL,
     mtime    REAL,
-    layer    TEXT NOT NULL CHECK (layer IN ('source','wiki','wisdom')),
+    layer    TEXT NOT NULL CHECK (layer IN ('source','knowledge','wisdom')),
     active   INTEGER NOT NULL DEFAULT 1,
     status   TEXT CHECK (
         status IS NULL OR status IN ('draft','published','favorite','archived')
@@ -128,7 +128,7 @@ CREATE INDEX IF NOT EXISTS provenance_source_key
 -- preserved when multiple events share the same ``ts`` (``time.time()``
 -- is float-second resolution; an ingest batch can append multiple rows
 -- in the same second). Mirrors the Postgres ``BIGSERIAL`` column.
-CREATE TABLE IF NOT EXISTS wiki_log (
+CREATE TABLE IF NOT EXISTS knowledge_log (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     ts     REAL NOT NULL,
     action TEXT NOT NULL,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS wiki_log (
     note   TEXT
 );
 
-CREATE INDEX IF NOT EXISTS wiki_log_ts ON wiki_log(ts);
+CREATE INDEX IF NOT EXISTS knowledge_log_ts ON knowledge_log(ts);
 
 -- ---- Multimedia assets ---------------------------------------------------
 

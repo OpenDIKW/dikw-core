@@ -18,14 +18,14 @@ Everything else is plumbing.
 | -------------------- | ------------------------------------------------ | ------------------------------ |
 | **D** — Data         | raw source files (markdown)                      | human                          |
 | **I** — Information  | parsed, chunked, FTS-indexed, embedded           | engine (deterministic)         |
-| **K** — Knowledge    | LLM-authored wiki pages, link graph, `index.md`  | LLM, human-editable            |
+| **K** — Knowledge    | LLM-authored knowledge pages, link graph, `index.md`  | LLM, human-editable            |
 | **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
 The W layer was refactored across 0.3.0 (PR1-PR4). The prior
 LLM-distilled `distill` / `_candidates/` / `review` pipeline is gone;
 wisdom is now hand-written first-class documents under
 `wisdom/<author>/<slug>.md`, indexed by `dikw ingest` through the same
-`persist_page` pipeline as wiki pages with chunks / embeddings /
+`persist_page` pipeline as knowledge pages with chunks / embeddings /
 `[[wikilinks]]` / `provenance` edges. `Layer.WISDOM` documents carry
 a wisdom-only `documents.status` column (CHECK-constrained to
 `draft | published | favorite | archived`) validated by the
@@ -34,7 +34,7 @@ wisdom chunks tagged `Hit.layer == "wisdom"`; `read_page` /
 `list_links` / `read_provenance` accept wisdom paths and resolve
 cross-layer edges; `broken_wikilink` / `orphan_page` /
 `missing_provenance` lint scans both K + W layers, crediting
-cross-layer wikilinks in the orphan inbound counter so a wiki page
+cross-layer wikilinks in the orphan inbound counter so a knowledge page
 cited only from wisdom is not falsely flagged. A separate write
 surface (`api.write_wisdom_page` / `POST /v1/base/wisdom` /
 `dikw client wisdom write`) lets agents create or update a single
@@ -48,7 +48,7 @@ ranked chunks + page refs and the agent layer runs its own LLM.
 
 ```text
 src/dikw_core/
-├── api.py                 thin facade — init_wiki, ingest, retrieve,
+├── api.py                 thin facade — init_base, ingest, retrieve,
 │                          synthesize, lint (+ lint_propose / lint_apply),
 │                          list_pages, read_page, list_links, read_provenance,
 │                          list_graph, read_asset, status, health,
@@ -69,12 +69,12 @@ src/dikw_core/
 │   │   ├── embed.py         batched embedding worker
 │   │   └── search.py        RRF-fused FTS + vector hybrid
 │   ├── knowledge/
-│   │   ├── wiki.py          WikiPage I/O (Obsidian-compatible front-matter)
+│   │   ├── page.py          KnowledgePage I/O (Obsidian-compatible front-matter)
 │   │   ├── page_index.py    persist_page(layer=...) — K + W layer indexing entrypoint reused by synth, ingest, lint apply
-│   │   ├── synthesize.py    LLM -> <page> blocks -> WikiPage
+│   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
-│   │   ├── indexgen.py      regenerate wiki/index.md
-│   │   ├── log.py           render wiki/log.md from wiki_log rows
+│   │   ├── indexgen.py      regenerate knowledge/index.md
+│   │   ├── log.py           render knowledge/log.md from knowledge_log rows
 │   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance; lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
@@ -256,7 +256,7 @@ page?" judgement happens upstream at synth time (see the next section)
 
 `resolve_links` only sees variants of titles that actually appear in a
 page body. Some duplicates never get a chance to be resolved because
-the LLM, generating new pages without seeing the existing wiki, simply
+the LLM, generating new pages without seeing the existing knowledge base, simply
 **writes a fresh `<page>` block under a different title** — a true
 semantic duplicate that no string-distance trick can absorb.
 `_synth_pages_from_source` (in `api.py`) closes that loop by feeding
@@ -266,10 +266,10 @@ two prompt sections to every group:
    listing the `Title (type)` of every page emitted by groups
    `0..N-1` of the SAME source. Stage A 1:N fan-out runs groups
    serially; without this, group 2 reinvents what group 1 wrote.
-2. **`## Existing wiki pages`** — a snapshot of the base K-layer.
+2. **`## Existing knowledge pages`** — a snapshot of the base K-layer.
    Below `synth.existing_pages_max_bytes` (default 16384 B ≈ 500
    pages × ~25 B/line) we render the full list. Above that the
-   prompt would balloon as the wiki grows, so we switch to a
+   prompt would balloon as the knowledge base grows, so we switch to a
    `vec_search`-gated top-K driven by the group's own chunk
    embeddings — the per-chunk embeddings already exist from ingest,
    so the only new Storage primitive is `get_chunk_embeddings`
@@ -293,8 +293,8 @@ costs nothing measurable.
 
 Both new fields (`existing_pages_max_bytes`, `existing_pages_top_k`)
 live on `SynthConfig` so a base-level `dikw.yml` can tune them per
-deployment — a wiki targeting tiny local models can drop the byte
-threshold; a wiki targeting Claude Opus's full context window can
+deployment — a base targeting tiny local models can drop the byte
+threshold; a base targeting Claude Opus's full context window can
 raise it.
 
 ## Asset exposure to remote clients
@@ -305,7 +305,7 @@ image into `<base>/assets/<h2>/<h8>-<stem>.<ext>` (content-addressed by
 SHA-256) and writes both an `AssetRecord` and the chunk → asset bridge
 rows (`chunk_asset_refs`). The server makes those bytes reachable from
 a remote process via two pieces, designed to be the **minimum surface
-that keeps the wiki tree itself unchanged**:
+that keeps the knowledge tree itself unchanged**:
 
 1. **`PageReadResult.assets[]` on `GET /v1/base/pages/{path}`** —
    page-level asset list, deduped by `asset_id`, ordered by first
@@ -314,7 +314,7 @@ that keeps the wiki tree itself unchanged**:
    `media_meta`, and `url` (always `/v1/assets/{asset_id}` — fixed
    shape so the client zero-parses). The page `body` itself is
    returned **verbatim** — no in-place URL rewriting — because the
-   `wiki/` tree is the product (Obsidian-compatible, user-owned),
+   `knowledge/` tree is the product (Obsidian-compatible, user-owned),
    and rewriting would diverge from the on-disk file.
 
 2. **`GET /v1/assets/{asset_id}`** — streams the raw bytes with the
@@ -342,7 +342,7 @@ behaviour, no new contract-suite cases.
 
 `dikw-web`'s Knowledge Graph view used to loop
 `GET /v1/base/pages/{path}` for every page and re-do wikilink
-resolution in the browser. That works for a 50-page demo wiki but
+resolution in the browser. That works for a 50-page demo base but
 breaks on large bases (N HTTP requests, single hang stalls the whole
 view) and silently drifts from the engine's K-layer link semantics.
 Issue #89 moves graph construction into the engine:

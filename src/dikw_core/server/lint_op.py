@@ -31,7 +31,7 @@ _APPLY_OP = "lint.apply"
 
 def make_lint_propose_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     rule: LintKind | None,
     limit: int,
     enable_llm: bool = False,
@@ -40,7 +40,7 @@ def make_lint_propose_runner(
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
         report = await api.lint_propose(
-            wiki_root,
+            base_root,
             rule=rule,
             limit=limit,
             enable_llm=enable_llm,
@@ -53,7 +53,7 @@ def make_lint_propose_runner(
 
 def make_lint_apply_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     proposal_task_id: str,
     task_store: TaskStore,
     pick: list[int] | None,
@@ -112,7 +112,7 @@ def make_lint_apply_runner(
             ) from e
 
         apply_report = await api.lint_apply(
-            wiki_root,
+            base_root,
             proposal_report=proposal_report,
             pick=pick,
             skip=skip,

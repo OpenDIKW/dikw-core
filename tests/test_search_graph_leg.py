@@ -1,4 +1,4 @@
-"""HybridSearcher's optional 4th leg: K-layer wikilink graph expansion.
+"""HybridSearcher's optional 4th leg: K-layer knowledgelink graph expansion.
 
 Verifies that when ``graph_enabled=True`` the searcher walks one hop via
 ``Storage.neighbor_chunks_via_links`` from the BM25/vector top-K, folds
@@ -32,7 +32,7 @@ def _doc(path: str) -> DocumentRecord:
         title=path.rsplit("/", 1)[-1].rstrip(".md"),
         hash=f"hash-{path}",
         mtime=time.time(),
-        layer=Layer.WIKI,
+        layer=Layer.KNOWLEDGE,
         active=True,
     )
 
@@ -43,9 +43,9 @@ async def linked_wiki(parametrized_storage):
     are arranged so a search for ``"alpha"`` matches A only — making the
     extra B/C hits a clear graph-leg signal."""
     storage = parametrized_storage
-    page_a = _doc("wiki/concepts/alpha.md")
-    page_b = _doc("wiki/concepts/bravo.md")
-    page_c = _doc("wiki/concepts/charlie.md")
+    page_a = _doc("knowledge/concepts/alpha.md")
+    page_b = _doc("knowledge/concepts/bravo.md")
+    page_c = _doc("knowledge/concepts/charlie.md")
     for d in (page_a, page_b, page_c):
         await storage.upsert_document(d)
 
@@ -86,7 +86,7 @@ async def linked_wiki(parametrized_storage):
         ],
     )
 
-    for dst in ("wiki/concepts/bravo.md", "wiki/concepts/charlie.md"):
+    for dst in ("knowledge/concepts/bravo.md", "knowledge/concepts/charlie.md"):
         await storage.upsert_link(
             LinkRecord(
                 src_doc_id=page_a.doc_id,
@@ -224,9 +224,9 @@ async def test_graph_weight_zero_treats_leg_as_off(linked_wiki) -> None:
 async def test_layer_filter_propagates_to_graph_leg(parametrized_storage) -> None:
     """The graph leg must respect the same layer filter as FTS/vector.
     Otherwise a wikilink from a K-layer page to a D-layer source would
-    leak across the layer boundary on a ``layer=Layer.WIKI`` search."""
+    leak across the layer boundary on a ``layer=Layer.KNOWLEDGE`` search."""
     storage = parametrized_storage
-    page_a = _doc("wiki/concepts/alpha.md")
+    page_a = _doc("knowledge/concepts/alpha.md")
     source_b = DocumentRecord(
         doc_id="D::sources/bravo.md",
         path="sources/bravo.md",
@@ -256,11 +256,11 @@ async def test_layer_filter_propagates_to_graph_leg(parametrized_storage) -> Non
         )
     )
     searcher = HybridSearcher(storage, embedder=None, graph_enabled=True)
-    hits = await searcher.search("alpha", limit=10, layer=Layer.WIKI)
+    hits = await searcher.search("alpha", limit=10, layer=Layer.KNOWLEDGE)
     chunk_ids = [h.chunk_id for h in hits]
     assert a_chunks[0] in chunk_ids
     assert b_chunks[0] not in chunk_ids, (
-        "graph leg leaked a Layer.SOURCE neighbor under layer=Layer.WIKI"
+        "graph leg leaked a Layer.SOURCE neighbor under layer=Layer.KNOWLEDGE"
     )
 
 

@@ -130,13 +130,13 @@ async def _prebatch_query_embeds(
     return cache
 
 
-async def replay(wiki: Path, dataset_name_or_path: str, mode: str) -> int:
+async def replay(base: Path, dataset_name_or_path: str, mode: str) -> int:
     spec: DatasetSpec = load_dataset(dataset_name_or_path)
-    cfg, _root = api.load_wiki(wiki)
+    cfg, _root = api.load_base(base)
     modes: list[RetrievalMode] = _resolve_modes(mode)  # type: ignore[arg-type]
 
     storage = build_storage(
-        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+        cfg.storage, root=base, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
     )
     await storage.connect()
     await storage.migrate()
@@ -247,11 +247,11 @@ async def replay(wiki: Path, dataset_name_or_path: str, mode: str) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--wiki", required=True, type=Path, help="Path to ingested wiki")
+    parser.add_argument("--base", required=True, type=Path, help="Path to ingested base")
     parser.add_argument("--dataset", required=True, help="Dataset name or path")
     parser.add_argument("--mode", default="all", help="bm25 | vector | hybrid | all")
     args = parser.parse_args()
-    rc = asyncio.run(replay(args.wiki, args.dataset, args.mode))
+    rc = asyncio.run(replay(args.base, args.dataset, args.mode))
     raise SystemExit(rc)
 
 

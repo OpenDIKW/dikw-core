@@ -51,8 +51,8 @@ def test_graph_get_emits_json_envelope(
     ``jq`` without any text-stripping."""
     patch_transport_factory()
     _, rt = asgi_client
-    _seed_sync(rt, layer=Layer.WIKI, path="wiki/A.md", title="A", body="[[B]]\n")
-    _seed_sync(rt, layer=Layer.WIKI, path="wiki/B.md", title="B", body="# B\n")
+    _seed_sync(rt, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A", body="[[B]]\n")
+    _seed_sync(rt, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B", body="# B\n")
 
     result = CliRunner().invoke(app, ["client", "graph", "get"])
 
@@ -66,7 +66,7 @@ def test_graph_get_emits_json_envelope(
         "unresolved",
         "stats",
     } <= payload.keys()
-    assert {n["path"] for n in payload["nodes"]} == {"wiki/A.md", "wiki/B.md"}
+    assert {n["path"] for n in payload["nodes"]} == {"knowledge/A.md", "knowledge/B.md"}
     assert payload["stats"]["edge_count"] == 1
 
 
@@ -79,17 +79,17 @@ def test_graph_get_active_flag_propagates_to_wire(
     forwards the param rather than silently using its default."""
     patch_transport_factory()
     _, rt = asgi_client
-    _seed_sync(rt, layer=Layer.WIKI, path="wiki/A.md", title="A", body="# A\n")
+    _seed_sync(rt, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A", body="# A\n")
     _seed_sync(
-        rt, layer=Layer.WIKI, path="wiki/B.md", title="B", body="# B\n", active=False,
+        rt, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B", body="# B\n", active=False,
     )
 
     # Default → only active.
     default = CliRunner().invoke(app, ["client", "graph", "get"])
     assert default.exit_code == 0, default.output
-    assert {n["path"] for n in json.loads(default.output)["nodes"]} == {"wiki/A.md"}
+    assert {n["path"] for n in json.loads(default.output)["nodes"]} == {"knowledge/A.md"}
 
     # --no-active → only deactivated (mirrors `?active=false` route semantics).
     inactive = CliRunner().invoke(app, ["client", "graph", "get", "--no-active"])
     assert inactive.exit_code == 0, inactive.output
-    assert {n["path"] for n in json.loads(inactive.output)["nodes"]} == {"wiki/B.md"}
+    assert {n["path"] for n in json.loads(inactive.output)["nodes"]} == {"knowledge/B.md"}

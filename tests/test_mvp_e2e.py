@@ -64,8 +64,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 def mvp_wiki(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    api.init_wiki(wiki, description="mvp e2e smoke test wiki")
+    wiki = tmp_path / "knowledge"
+    api.init_base(wiki, description="mvp e2e smoke test wiki")
 
     # The committed fixture is the source of truth for provider config —
     # drop it in wholesale so test and CLI see the same dikw.yml shape.
@@ -104,7 +104,7 @@ async def test_ingest_then_query_returns_karpathy_citation(
     # hybrid-search path against live providers. dikw-core no longer
     # owns the LLM-synthesis step (PR-1 removed ``query``) — agents
     # compose retrieve output with their own LLM.
-    cfg, _ = api.load_wiki(mvp_wiki)
+    cfg, _ = api.load_base(mvp_wiki)
     embedder = build_embedder(cfg.provider)
 
     ingest_report = await api.ingest(mvp_wiki, embedder=embedder)

@@ -29,7 +29,7 @@ def build_storage(
     the same segmented string through ``to_tsvector('simple', …)`` into
     a plain ``chunks.fts`` tsvector column. Same Python helper, same
     byte-level result on both adapters.
-    See ``RetrievalConfig.cjk_tokenizer`` for the wiki-level surface.
+    See ``RetrievalConfig.cjk_tokenizer`` for the base-level surface.
     """
     if isinstance(config, SQLiteStorageConfig):
         path = Path(config.path)

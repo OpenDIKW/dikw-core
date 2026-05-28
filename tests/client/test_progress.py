@@ -121,7 +121,7 @@ def test_render_ingest_report_table_has_metrics() -> None:
 
 def test_render_status_handles_missing_keys() -> None:
     """A pre-init wiki returns mostly zeros; renderer must not blow up
-    on missing optional fields like ``last_wiki_log_ts``."""
+    on missing optional fields like ``last_knowledge_log_ts``."""
     console = Console(record=True, width=80, force_terminal=False)
     render_status(
         console,
@@ -151,7 +151,7 @@ def test_render_health_report_renders_all_blocks() -> None:
             "storage_engine": "sqlite",
             "layer_counts": {
                 "sources": 3,
-                "wiki_pages": 2,
+                "knowledge_pages": 2,
                 "wisdom_items": 0,
                 "chunks": 11,
             },

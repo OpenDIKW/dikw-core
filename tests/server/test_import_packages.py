@@ -53,7 +53,7 @@ def _post(
 @pytest.mark.asyncio
 async def test_single_package_md_only_committed(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     files = {"sources/note.md": b"# n\nbody\n"}
     manifest = _manifest_with_packages(
@@ -66,7 +66,7 @@ async def test_single_package_md_only_committed(
     body = resp.json()
     assert body["committed"] == [0]
     assert body["rejected"] == []
-    assert (wiki_root / "sources" / "note.md").read_bytes() == files[
+    assert (base_root / "sources" / "note.md").read_bytes() == files[
         "sources/note.md"
     ]
 
@@ -74,7 +74,7 @@ async def test_single_package_md_only_committed(
 @pytest.mark.asyncio
 async def test_two_packages_share_one_asset(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """A logo embedded by two notes: one tar entry, two packages
     referencing the same archive path."""
@@ -96,15 +96,15 @@ async def test_two_packages_share_one_asset(
     body = resp.json()
     assert sorted(body["committed"]) == [0, 1]
     assert body["rejected"] == []
-    assert (wiki_root / "sources" / "note1.md").exists()
-    assert (wiki_root / "sources" / "note2.md").exists()
-    assert (wiki_root / "sources" / "logo.png").exists()
+    assert (base_root / "sources" / "note1.md").exists()
+    assert (base_root / "sources" / "note2.md").exists()
+    assert (base_root / "sources" / "logo.png").exists()
 
 
 @pytest.mark.asyncio
 async def test_cross_directory_asset_archive_layout(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """``![](../shared/logo.png)`` in ``sources/sub/note.md`` packs the
     asset at ``sources/shared/logo.png`` (the relative path resolved
@@ -125,8 +125,8 @@ async def test_cross_directory_asset_archive_layout(
 
     resp = await _post(server_client, files, manifest)
     assert resp.status_code == 200, resp.text
-    assert (wiki_root / "sources" / "sub" / "note.md").exists()
-    assert (wiki_root / "sources" / "shared" / "logo.png").exists()
+    assert (base_root / "sources" / "sub" / "note.md").exists()
+    assert (base_root / "sources" / "shared" / "logo.png").exists()
 
 
 # ---- per-package failure (200 with rejected) ---------------------------
@@ -135,7 +135,7 @@ async def test_cross_directory_asset_archive_layout(
 @pytest.mark.asyncio
 async def test_package_sha256_mismatch_rejects_only_that_package(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """Tampering one package's ``package_sha256`` rejects that package
     alone; the other packages commit normally. Status is 200 because
@@ -162,14 +162,14 @@ async def test_package_sha256_mismatch_rejects_only_that_package(
     assert rej["id"] == 1
     assert rej["code"] == "manifest_package_sha256_mismatch"
     # a.md committed; b.md absent
-    assert (wiki_root / "sources" / "a.md").exists()
-    assert not (wiki_root / "sources" / "b.md").exists()
+    assert (base_root / "sources" / "a.md").exists()
+    assert not (base_root / "sources" / "b.md").exists()
 
 
 @pytest.mark.asyncio
 async def test_file_sha256_mismatch_rejects_packages_referencing_it(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """A bad file-level sha rejects every package that references that
     file (the asset shared by both packages → both rejected)."""
@@ -197,8 +197,8 @@ async def test_file_sha256_mismatch_rejects_packages_referencing_it(
     assert sorted(r["id"] for r in body["rejected"]) == [0, 1]
     for r in body["rejected"]:
         assert r["code"] == "manifest_sha256_mismatch"
-    assert not (wiki_root / "sources" / "a.md").exists()
-    assert not (wiki_root / "sources" / "b.md").exists()
+    assert not (base_root / "sources" / "a.md").exists()
+    assert not (base_root / "sources" / "b.md").exists()
 
 
 # ---- schema-level rejection (4xx) --------------------------------------
@@ -299,7 +299,7 @@ async def test_package_md_path_not_in_files_rejected(
 @pytest.mark.asyncio
 async def test_staging_dir_cleared_after_success(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     files = {"sources/note.md": b"# n\n"}
     manifest = _manifest_with_packages(
@@ -309,7 +309,7 @@ async def test_staging_dir_cleared_after_success(
     resp = await _post(server_client, files, manifest)
     assert resp.status_code == 200, resp.text
 
-    staging_root = wiki_root / ".dikw" / "staging"
+    staging_root = base_root / ".dikw" / "staging"
     # Either the parent dir doesn't exist, or it's empty — depends on
     # whether the server lazily creates it. Both states satisfy "no
     # leftover staging from this import."
@@ -320,7 +320,7 @@ async def test_staging_dir_cleared_after_success(
 @pytest.mark.asyncio
 async def test_staging_dir_cleared_after_per_package_reject(
     server_client: httpx.AsyncClient,
-    wiki_root: Path,
+    base_root: Path,
 ) -> None:
     """Even when some packages are rejected (200 with rejected list),
     the staging tree must be cleaned up — staging is an implementation
@@ -341,7 +341,7 @@ async def test_staging_dir_cleared_after_per_package_reject(
     resp = await _post(server_client, files, manifest)
     assert resp.status_code == 200, resp.text
 
-    staging_root = wiki_root / ".dikw" / "staging"
+    staging_root = base_root / ".dikw" / "staging"
     if staging_root.exists():
         assert list(staging_root.iterdir()) == []
 

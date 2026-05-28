@@ -30,8 +30,8 @@ byte-identical to the most recent retrieval baseline — wisdom rows
 that don't exist can't shift fusion ranks. The user-side validation is the smoke test in
 the PR description: drop one wisdom file with `[[wikilink]]` +
 `sources:` frontmatter, ingest, run retrieve against a query that
-matches both a wiki page and the wisdom page, and confirm
-`Hit.layer == "wisdom"` arrives alongside the wiki hit. Hard
+matches both a knowledge page and the wisdom page, and confirm
+`Hit.layer == "wisdom"` arrives alongside the knowledge hit. Hard
 nDCG/MRR numbers will land in a follow-up when the
 elon-musk-validation dataset is extended with a wisdom subdirectory
 (out of PR3 scope — needs a curated wisdom seed + qrel updates).
@@ -275,9 +275,9 @@ uv run dikw client lint proposals --format json > props.json
 
 - `add_to_moc` strategy (issue #82 item 2) — deferred. MOC topic
   recovery is a deterministic-scoping hard problem and overlaps with
-  `wiki/index.md`; more natural to schedule into synth (which is
+  `knowledge/index.md`; more natural to schedule into synth (which is
   already clustering source material) than to bolt onto lint.
-- `wiki/index.md` promotion to a real K-page — conflicts with
+- `knowledge/index.md` promotion to a real K-page — conflicts with
   `indexgen.py`'s rewrite contract.
 - Wire orphan score into `dikw client eval` metrics — current baseline table
   is good enough for first iteration.
@@ -538,7 +538,7 @@ stubs:
   (`# Twitter`, `# Tesla`),
 - contained the literal `TODO` marker as the prompt requires,
 - referenced the source page that triggered the link
-  (`broken [[Twitter]] reference in wiki/entities/elon-musk.md`),
+  (`broken [[Twitter]] reference in knowledge/entities/elon-musk.md`),
 - did **not** invent biographical or factual claims — at most a
   one-sentence summary of the surrounding context, which the prompt
   explicitly allows ("source page mentions [[Twitter]] in connection
@@ -554,7 +554,7 @@ uv run python <baseline-script>
 
 | metric | value |
 |---|---|
-| issues consumed | 1 (`wiki/entities/errol-musk.md`) |
+| issues consumed | 1 (`knowledge/entities/errol-musk.md`) |
 | proposal ops | 2 × `create_page` + 1 × `delete_page` |
 | LLM children | 2 atomic notes |
 
@@ -562,9 +562,9 @@ The non-atomic page (flagged for "2 H1 sections — atomic page should
 have exactly one") was split into two semantically-distinct atomic
 children:
 
-1. `wiki/notes/errol-musk-harsh-parenting.md` — Errol's "extremely
+1. `knowledge/notes/errol-musk-harsh-parenting.md` — Errol's "extremely
    severe dictatorship" parenting style.
-2. `wiki/notes/errol-musk-emerald-trade.md` — Errol's 1986 emerald
+2. `knowledge/notes/errol-musk-emerald-trade.md` — Errol's 1986 emerald
    trade in Zambia.
 
 Both children link back to `[[Errol Musk]]` via wikilink, exactly
@@ -576,7 +576,7 @@ fixer's stub fallback or fuzzy match against any new entity page).
 ### Caveats
 
 - This is a **proposal** spot check, not an apply baseline — no
-  changes were written to the wiki tree. `dikw client lint apply`
+  changes were written to the knowledge tree. `dikw client lint apply`
   exists and is covered by 13 PR1 unit tests
   (`tests/test_lint_apply.py`); the proposal payloads above carry
   hash guards + create-collision skips so apply is safe even with
@@ -593,7 +593,7 @@ fixer's stub fallback or fuzzy match against any new entity page).
 **Status:** non-destructive proof + measured signal-side A/B for PR2
 (`feat/synth-existing-pages-context`, shipped as PR #69 commit
 `8c6d392`). Pre-PR2 snapshot captured before the rebuild; post-PR2
-column captured 2026-05-10 by wiping `wiki/` + `.dikw/index.sqlite`
+column captured 2026-05-10 by wiping `knowledge/` + `.dikw/index.sqlite`
 on the same base and re-running ingest + synth + lint via an ad-hoc
 baseline script (since removed). Codex SSE keepalive bug **did not
 trigger** — synth fans out to 19 groups of ≤3600 tokens each, so the
@@ -603,7 +603,7 @@ trigger condition (single oversize request) never appears.
 
 Each `_synth_pages_from_source` LLM call now receives two new prompt
 sections — `## Already created in this batch` (per-source accumulator)
-+ `## Existing wiki pages` (full base snapshot under
++ `## Existing knowledge pages` (full base snapshot under
 `synth.existing_pages_max_bytes`, default 16384 B; vec_search-gated
 top-K above) — and is told to emit zero `<page>` blocks for any
 candidate that semantically duplicates an entry. Storage gains one
@@ -615,19 +615,19 @@ new primitive (`get_chunk_embeddings`); pure SELECT, zero DDL.
   both adapters' existing `vec_chunks_v<id>` tables already store
   row-per-chunk embeddings. New contract test
   (`test_get_chunk_embeddings_round_trip`) green on SQLite + PG.
-- **Synth pipeline:** unchanged for empty/fresh wikis (no existing
+- **Synth pipeline:** unchanged for empty/fresh bases (no existing
   pages → `(no existing pages …)` sentinel renders, prompt structure
-  preserved); for non-empty wikis the LLM gets *more* context, never
+  preserved); for non-empty bases the LLM gets *more* context, never
   less. `_synth_pages_from_source` accepts `storage` + `text_version_id`
   as **optional** kwargs so the narrow-unit `test_synth_observability`
   suite keeps working without storage plumbing.
-- **Retrieval / lint / wiki schema:** untouched. `RetrievalConfig` and
+- **Retrieval / lint / knowledge schema:** untouched. `RetrievalConfig` and
   `LintReport` shapes unchanged.
 - **Test signal:** 1000-test full suite green; ruff + mypy clean.
 
 ### A/B — `elon-musk-validation` base, 2026-05-10
 
-Pre-PR2 column captured from the wiki tree synthesised under the
+Pre-PR2 column captured from the knowledge tree synthesised under the
 pre-PR2 prompt (2026-04 / 2026-05 commits). Post-PR2 column captured
 by an ad-hoc baseline script (since removed) after a full
 wipe-and-rebuild on the same source + same provider config.
@@ -642,7 +642,7 @@ post-PR2 synth fan-out: 19 groups from 91 chunks
 
 | metric                    | pre-PR2 | post-PR2 |     Δ |
 |---------------------------|--------:|---------:|------:|
-| total wiki pages          |      74 |       76 |    +2 |
+| total knowledge pages          |      74 |       76 |    +2 |
 | ├─ entities/              |      23 |       34 |   +11 |
 | ├─ notes/                 |      41 |       39 |    -2 |
 | └─ concepts/              |      10 |        3 |    -7 |
@@ -671,7 +671,7 @@ post-PR2 synth fan-out: 19 groups from 91 chunks
   contributes by making each group aware of what the *other* groups
   already wrote, which reduces the temptation to dump multiple H1s
   into one page to "cover the topic."
-- **total wiki pages ↓ — falsified (74 → 76, +2).** The hypothesis
+- **total knowledge pages ↓ — falsified (74 → 76, +2).** The hypothesis
   was that semantic duplicates collapse into references. Actual
   outcome: page count is roughly flat, but the **type distribution**
   shifted hard — entities +11, concepts -7, notes -2. Reading this
@@ -710,17 +710,17 @@ with `lint apply`.
 (`feat/wikilink-recall`, commit `669a826` after PG-parametrize +
 ranking-quality + fusion-compat tests). Confirms the leg is
 non-destructive on standard retrieval benchmarks (which never produce
-K-layer wikilinks). Ships **default-off**.
+K-layer knowledgelinks). Ships **default-off**.
 
 ### Why not "+0.01 nDCG@10 on scifact + cmteb"?
 
 The original plan's acceptance gate ("graph leg must lift nDCG@10 by
 ≥ 0.01 on SciFact + cmteb-t2-subset") is conceptually unmeasurable:
 
-- The graph leg walks the K-layer wikilink graph
+- The graph leg walks the K-layer knowledgelink graph
   (`Storage.neighbor_chunks_via_links`). Wikilinks are persisted to
   storage **only inside K-layer page persistence**
-  (`api.py:_persist_wiki_page` → `parse_links` → `storage.upsert_link`).
+  (`api.py:_persist_knowledge_page` → `parse_links` → `storage.upsert_link`).
 - Retrieval eval datasets (SciFact, cmteb, mvp, wiki-mini-mm) only
   ingest as D-layer sources — `dikw client eval` never invokes synth, so the
   `links` table stays empty regardless of `[[...]]` syntax in corpus.
@@ -761,7 +761,7 @@ Ship `RetrievalConfig.graph_enabled=False` as default. The unit-test
 suite (`tests/test_search_graph_leg.py` — 16 tests across sqlite + PG,
 covering ranking-quality + RRF + CombSUM + CombMNZ) locks the
 intended behaviour when the user opts in. Validation of the leg's
-recall improvement on a real K-layer wiki corpus is a separate
+recall improvement on a real K-layer knowledge corpus is a separate
 follow-up dependent on building a wiki-rich eval dataset with qrels.
 
 ### Cache-vs-RetrievalConfig caveat
@@ -793,7 +793,7 @@ LLM-generated K-layer pages.
   `dikw auth import openai-codex` from `~/.codex/auth.json`.
 - **Embedding:** `Qwen3-Embedding-0.6B` via Gitee AI (1024-dim, batch_size=16).
 - **Synth:** target_tokens_per_group=3600, max_pages_per_group=4,
-  slug_dedup=merge_body. Resulted in **19 chunk groups → 70 wiki pages
+  slug_dedup=merge_body. Resulted in **19 chunk groups → 70 knowledge pages
   created + 2 updated** (zero parse / LLM errors).
 - **Branch:** integration of `main + feat/atomicity-lint + feat/wikilink-recall`
   (validate/elon-musk).
@@ -1733,7 +1733,7 @@ verdict requires a re-run after the BM25 CJK fix.
 1. **P0 — FTS5 CJK tokenizer.** Default `unicode61` doesn't segment
    CJK; switch to SQLite's built-in `trigram` (lowest friction, no
    new dep) or evaluate jieba-based segmentation. Schema change with
-   a re-index migration path for existing wikis. Independent branch.
+   a re-index migration path for existing knowledge bases. Independent branch.
 2. **After P0 — Re-run this baseline.** Same donor wiki, same
    sampling, same dump pipeline; should produce a non-trivial BM25
    leg whose nDCG@10 lands closer to the 0.50–0.65 published range,

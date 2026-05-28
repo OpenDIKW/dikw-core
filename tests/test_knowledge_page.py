@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dikw_core.domains.knowledge.wiki import (
+from dikw_core.domains.knowledge.page import (
     build_page,
     default_page_path,
     make_page_id,
@@ -27,13 +27,13 @@ def test_make_page_id_is_stable() -> None:
 
 
 def test_default_page_path_buckets_by_type() -> None:
-    assert default_page_path("concept", "DIKW Pyramid") == "wiki/concepts/dikw-pyramid.md"
-    assert default_page_path("entity", "Andrej Karpathy") == "wiki/entities/andrej-karpathy.md"
-    assert default_page_path("note", "Random thought") == "wiki/notes/random-thought.md"
+    assert default_page_path("concept", "DIKW Pyramid") == "knowledge/concepts/dikw-pyramid.md"
+    assert default_page_path("entity", "Andrej Karpathy") == "knowledge/entities/andrej-karpathy.md"
+    assert default_page_path("note", "Random thought") == "knowledge/notes/random-thought.md"
     # Custom types declared in SchemaConfig.page_types pluralize as <type>s
-    # so a "topic" bucket lands under wiki/topics/ without needing
+    # so a "topic" bucket lands under knowledge/topics/ without needing
     # _TYPE_FOLDERS to be expanded for every new type the user declares.
-    assert default_page_path("topic", "SpaceX") == "wiki/topics/spacex.md"
+    assert default_page_path("topic", "SpaceX") == "knowledge/topics/spacex.md"
 
 
 def test_write_then_read_roundtrip(tmp_path: Path) -> None:

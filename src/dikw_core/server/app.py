@@ -61,17 +61,17 @@ def build_app(
 
 def build_app_from_disk(
     *,
-    wiki_root: Path,
+    base_root: Path,
     host: str,
     token_override: str | None = None,
 ) -> FastAPI:
     """Convenience: resolve auth from env, build a runtime that loads the
-    wiki at ``wiki_root``, return the wired FastAPI app. Used by
+    wiki at ``base_root``, return the wired FastAPI app. Used by
     ``dikw serve``."""
     auth = load_auth_config(host=host, token_override=token_override)
 
     async def _factory() -> ServerRuntime:
-        return await build_runtime(root=wiki_root, auth=auth)
+        return await build_runtime(root=base_root, auth=auth)
 
     return build_app(runtime_factory=_factory, auth=auth)
 

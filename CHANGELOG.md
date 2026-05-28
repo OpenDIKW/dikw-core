@@ -7,6 +7,78 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.4.0 — BREAKING term rename: K layer "wiki" → "knowledge"
+
+⚠️ **Breaking change for every existing base.** The K-layer
+on-disk directory, the `Layer` enum value, the `wiki_log` SQL
+table, and every `wiki_*` API symbol have been renamed to use
+`knowledge` consistently. Bases initialised by ≤0.3.6 are **not
+readable** by 0.4.0; no in-place migration is provided.
+
+**Manual upgrade for an existing base:**
+
+```bash
+cd <base>
+mv wiki knowledge       # rename the K-layer directory
+rm -rf .dikw            # drop the SQLite + auth + task ledger
+# (dikw.yml stays — your existing config is reused)
+dikw serve --base . &   # start the server
+dikw client ingest      # reindex sources + knowledge pages
+```
+
+Opening a 0.3.x base with 0.4.0 raises `BaseUpgradeRequired`
+with the exact command above; the server refuses to start until
+the rename is done.
+
+### Why
+
+`wiki` was historically overloaded — it named the K-layer DIKW
+role, the on-disk directory, and the `[[wikilink]]` body
+syntax. CONTEXT.md called this out as a long-standing
+ambiguity. In 0.4.0 the term is reserved exclusively for
+**wikilink** syntax; everything else uses `knowledge`. This
+removes a recurring source of confusion in LLM prompts, public
+APIs, and new-contributor onboarding.
+
+### Renames
+
+- **On disk:** `<base>/wiki/` → `<base>/knowledge/`,
+  `<base>/trash/wiki/` → `<base>/trash/knowledge/`,
+  `wiki/index.md` → `knowledge/index.md`,
+  `wiki/log.md` → `knowledge/log.md`.
+- **Layer enum / DB:** `Layer.WIKI` → `Layer.KNOWLEDGE`
+  (string value `'wiki'` → `'knowledge'`); SQL table `wiki_log`
+  → `knowledge_log`; storage CHECK constraint values updated.
+- **Engine API:** `WikiPage` → `KnowledgePage`,
+  `WikiPageMeta` → `KnowledgePageMeta`,
+  `WikiLogEntry` → `KnowledgeLogEntry`;
+  `persist_wiki_page` → `persist_knowledge_page`;
+  `init_wiki` / `load_wiki` / `resolve_wiki_root` →
+  `init_base` / `load_base` / `resolve_base_root`;
+  module `domains/knowledge/wiki.py` → `domains/knowledge/page.py`.
+- **Field rename:** `SynthReport.wiki_pages` →
+  `knowledge_pages`; progress `wiki_pages_changed` →
+  `knowledge_pages_changed`; `StorageCounts.last_wiki_log_ts`
+  → `last_knowledge_log_ts`.
+- **HTTP / CLI:** response field `"wiki_root"` →
+  `"base_root"`; `dikw auth ... --wiki, -w` →
+  `--base, -b` (consistent with `dikw serve --base`).
+- **Storage protocol:** `append_wiki_log` /
+  `list_wiki_log` → `append_knowledge_log` /
+  `list_knowledge_log`.
+- **Runtime:** `<base>/.dikw/wiki_id` → `<base>/.dikw/base_id`;
+  env var `DIKW_WIKI_INSTANCE_ID` → `DIKW_BASE_INSTANCE_ID`.
+
+### Preserved (still spelled "wiki")
+
+The `[[wikilink]]` syntax keeps its name everywhere:
+- `LinkType.WIKILINK`, regex `WIKILINK_RE`, lint kind
+  `broken_wikilink`, prompt file
+  `lint_fix_broken_wikilink_grounded.md`,
+  `SynthReport.unresolved_wikilinks`,
+  storage method `replace_links_from`, and every
+  docstring/comment that talks about `[[Target]]` resolution.
+
 ### Added — `read_page` surfaces parsed frontmatter
 
 `api.read_page` and `GET /v1/base/pages/{path}` now return the parsed

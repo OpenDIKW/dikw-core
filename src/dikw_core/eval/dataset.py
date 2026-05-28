@@ -228,8 +228,8 @@ class SynthSection(BaseModel):
     ``duplicate_threshold=0.85``. Retrieval-only datasets that don't
     declare synth still parse and ``run_synth_eval`` (if invoked) gets
     sensible numbers. ``page_types`` is dataset-local and written into
-    the throwaway wiki's ``dikw.yml`` at eval time, so a synth-eval
-    dataset can pin a tighter type set than the user's production wiki.
+    the throwaway base's ``dikw.yml`` at eval time, so a synth-eval
+    dataset can pin a tighter type set than the user's production base.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -258,7 +258,7 @@ class JudgeSection(BaseModel):
     ``model`` lets a dataset pin a specific model id (handy when the
     wiki's configured LLM is a small / fast model unsuitable for
     judging); ``None`` falls back to ``cfg.provider.llm_model``. Judge
-    runs use the wiki's configured provider — a separate provider per
+    runs use the knowledge base's configured provider — a separate provider per
     dataset would mean a separate auth / billing path and isn't needed
     yet. ``extra="forbid"`` ensures a ``provider:`` typo isn't silently
     ignored.

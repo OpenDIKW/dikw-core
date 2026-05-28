@@ -17,7 +17,7 @@ import pytest
 from dikw_core import api
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_wiki, png_with_dims
+from .fakes import FakeEmbeddings, init_test_base, png_with_dims
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -25,7 +25,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 def _bootstrap_wiki_with_fixture(tmp_path: Path) -> tuple[Path, str]:
     """Init a wiki, drop one fixture markdown into ``sources/demo/``,
     return ``(root, sources_relative_path)``. Caller still has to ingest."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     fixture = next(FIXTURES.glob("*.md"))
@@ -61,7 +61,7 @@ async def test_read_page_returns_body_and_anchors(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_read_page_unknown_path_raises(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.PageNotFound):
         await api.read_page(tmp_path, "sources/does-not-exist.md")
 
@@ -71,7 +71,7 @@ async def test_read_page_path_escape_attempt_raises(tmp_path: Path) -> None:
     """``../etc/passwd``-style paths are not in the documents table, so
     they get the same ``PageNotFound`` — no special-case sandbox check
     needed because the lookup is index-driven."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.PageNotFound):
         await api.read_page(tmp_path, "../etc/passwd")
 
@@ -87,13 +87,13 @@ async def test_read_page_k_layer_anchors_survive_frontmatter_roundtrip(
     while comparing against the on-disk parsed body at read time would
     falsely flag every K-layer page as stale (anchors=[]).
 
-    This test directly drives ``_persist_wiki_page`` (no real LLM
+    This test directly drives ``_persist_knowledge_page`` (no real LLM
     needed) and verifies anchors survive the serialise→parse cycle.
     """
-    from dikw_core.api import _persist_wiki_page
-    from dikw_core.domains.knowledge.wiki import build_page, write_page
+    from dikw_core.api import _persist_knowledge_page
+    from dikw_core.domains.knowledge.page import build_page, write_page
 
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     page = build_page(
         title="Rountrip Test",
         body=(
@@ -109,7 +109,7 @@ async def test_read_page_k_layer_anchors_survive_frontmatter_roundtrip(
 
     cfg, _root, storage = await api._with_storage(tmp_path)
     try:
-        await _persist_wiki_page(
+        await _persist_knowledge_page(
             storage=storage,
             root=tmp_path,
             page=page,
@@ -122,7 +122,7 @@ async def test_read_page_k_layer_anchors_survive_frontmatter_roundtrip(
         await storage.close()
 
     result = await api.read_page(tmp_path, page.path)
-    assert result.layer == Layer.WIKI
+    assert result.layer == Layer.KNOWLEDGE
     assert result.anchors, (
         "K-layer anchors got dropped — hash mismatch between "
         "synthesise-time and read-time body coordinate space"
@@ -178,7 +178,7 @@ async def test_read_page_returns_frontmatter(tmp_path: Path) -> None:
     re-reading the on-disk file themselves. Fixture ``dikw.md`` carries
     ``title: DIKW pyramid`` + ``tags: [dikw, concept]`` — both must come
     through verbatim."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(FIXTURES / "dikw.md", src_dir / "dikw.md")
@@ -194,7 +194,7 @@ async def test_read_page_returns_frontmatter(tmp_path: Path) -> None:
 async def test_read_page_frontmatter_empty_when_absent(tmp_path: Path) -> None:
     """A markdown file with no ``---`` fence returns ``frontmatter == {}``
     (not ``None``) so callers can ``page.frontmatter.get(k)`` unconditionally."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     rel = "sources/demo/no-fm.md"
@@ -215,10 +215,10 @@ async def test_read_page_k_layer_frontmatter_roundtrip(tmp_path: Path) -> None:
     ``sources`` must survive that roundtrip in the ``frontmatter`` dict
     so agents that drive ``synth`` can inspect provenance + tags via the
     same endpoint they already use for body."""
-    from dikw_core.api import _persist_wiki_page
-    from dikw_core.domains.knowledge.wiki import build_page, write_page
+    from dikw_core.api import _persist_knowledge_page
+    from dikw_core.domains.knowledge.page import build_page, write_page
 
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     page = build_page(
         title="Frontmatter Roundtrip",
         body="# Frontmatter Roundtrip\n\nBody.\n",
@@ -229,7 +229,7 @@ async def test_read_page_k_layer_frontmatter_roundtrip(tmp_path: Path) -> None:
 
     cfg, _root, storage = await api._with_storage(tmp_path)
     try:
-        await _persist_wiki_page(
+        await _persist_knowledge_page(
             storage=storage,
             root=tmp_path,
             page=page,
@@ -242,7 +242,7 @@ async def test_read_page_k_layer_frontmatter_roundtrip(tmp_path: Path) -> None:
         await storage.close()
 
     result = await api.read_page(tmp_path, page.path)
-    assert result.layer == Layer.WIKI
+    assert result.layer == Layer.KNOWLEDGE
     assert result.frontmatter.get("tags") == ["roundtrip", "test"]
     assert result.frontmatter.get("sources") == ["sources/whatever.md"]
 
@@ -256,7 +256,7 @@ async def test_read_page_anchors_align_with_parsed_body(tmp_path: Path) -> None:
     chunker produced. Otherwise a YAML front-matter doc would slide
     every anchor by the front-matter width.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     rel = "sources/demo/with-frontmatter.md"
@@ -359,7 +359,7 @@ async def test_read_page_unindexed_file_raises(tmp_path: Path) -> None:
     registered document (``dikw.yml``, raw ``sources/`` files dropped in
     after ingest, etc.) must NOT be readable through this endpoint —
     only indexed pages are addressable."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     # ``dikw.yml`` exists after init but is not a DocumentRecord.
     assert (tmp_path / "dikw.yml").is_file()
     with pytest.raises(api.PageNotFound):
@@ -380,7 +380,7 @@ async def test_read_page_rejects_malformed_path(
 ) -> None:
     """Empty / whitespace-only / null-byte paths must surface as
     ``PageNotFound``, NOT as a 500 from a deeper Path/storage error."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.PageNotFound):
         await api.read_page(tmp_path, bad_path)
 
@@ -399,7 +399,7 @@ async def test_read_page_relative_to_guard_traps_corrupt_doc(
     code path because httpx normalises ``..`` segments client-side; this
     test plants the corrupt doc directly into storage instead.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
 
     cfg, _root, storage = await api._with_storage(tmp_path)
     del cfg
@@ -443,7 +443,7 @@ async def test_read_page_includes_assets(tmp_path: Path) -> None:
     carrying enough info for a remote client to fetch the bytes via
     ``GET /v1/assets/{asset_id}``.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "arch.png").write_bytes(png_with_dims(640, 480))
@@ -495,7 +495,7 @@ async def test_read_page_dedups_assets_referenced_twice(tmp_path: Path) -> None:
     """If the same image is referenced from multiple chunks (or twice in
     one chunk), the page-level ``assets`` list must dedupe by
     ``asset_id`` — content-addressed assets have one canonical entry."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "same.png").write_bytes(png_with_dims(100, 100))

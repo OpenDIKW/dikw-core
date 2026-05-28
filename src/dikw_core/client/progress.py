@@ -510,7 +510,7 @@ def render_lint_apply_report(
     """Print the per-op summary of a ``lint.apply`` task result."""
     applied = report.get("applied") or []
     skipped = report.get("skipped") or []
-    paths = report.get("wiki_paths_changed") or []
+    paths = report.get("knowledge_paths_changed") or []
     console.print(
         f"[green]applied[/green] {len(applied)} op(s); "
         f"[yellow]skipped[/yellow] {len(skipped)}"
@@ -555,7 +555,7 @@ def render_health_report(console: Console, report: Mapping[str, Any]) -> None:
     counts_table.add_column("layer")
     counts_table.add_column("count", justify="right")
     if isinstance(counts, dict):
-        for key in ("sources", "wiki_pages", "wisdom_items", "chunks"):
+        for key in ("sources", "knowledge_pages", "wisdom_items", "chunks"):
             raw = counts.get(key)
             # ``isinstance(_, int | float)`` admits ``bool`` (subtype of
             # int); exclude it so a future schema slip-up that puts True
@@ -616,15 +616,15 @@ def render_status(console: Console, counts: Mapping[str, Any]) -> None:
     table.add_column("count", justify="right")
     layers = counts.get("documents_by_layer") or {}
     if isinstance(layers, dict):
-        for layer in ("source", "wiki", "wisdom"):
+        for layer in ("source", "knowledge", "wisdom"):
             table.add_row(layer, str(int(layers.get(layer) or 0)))
     table.add_row("chunks (I)", str(int(counts.get("chunks") or 0)))
     table.add_row("embeddings (I)", str(int(counts.get("embeddings") or 0)))
     table.add_row("links (K)", str(int(counts.get("links") or 0)))
     console.print(table)
-    last = counts.get("last_wiki_log_ts")
+    last = counts.get("last_knowledge_log_ts")
     if last is not None:
-        console.print(f"last wiki_log ts: [dim]{last}[/dim]")
+        console.print(f"last knowledge_log ts: [dim]{last}[/dim]")
 
 
 def render_check_report(console: Console, report: Mapping[str, Any]) -> None:

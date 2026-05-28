@@ -30,7 +30,7 @@ from dikw_core.eval.runner import (
 
 from .fakes import FakeLLM
 
-_SYNTH_PAGE_RESPONSE = """<page path="wiki/concepts/alpha.md" type="concept">
+_SYNTH_PAGE_RESPONSE = """<page path="knowledge/concepts/alpha.md" type="concept">
 ---
 tags: [topic/sample]
 ---
@@ -41,7 +41,7 @@ Alpha is a concept described in the corpus.
 </page>
 """
 
-_SYNTH_BETA_RESPONSE = """<page path="wiki/concepts/beta.md" type="concept">
+_SYNTH_BETA_RESPONSE = """<page path="knowledge/concepts/beta.md" type="concept">
 ---
 tags: [topic/sample]
 ---
@@ -314,7 +314,7 @@ async def test_run_synth_eval_threshold_failure_blocks_passed(
     spec = load_dataset(ds)
     # Body that doesn't echo source text → grounding ratio < 1.0 with
     # FakeEmbeddings' bag-of-words even on a single sentence.
-    response = """<page path="wiki/concepts/zeta.md" type="concept">
+    response = """<page path="knowledge/concepts/zeta.md" type="concept">
 ---
 tags: [topic/sample]
 ---

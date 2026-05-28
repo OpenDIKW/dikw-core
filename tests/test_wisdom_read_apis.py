@@ -2,7 +2,7 @@
 
 PR2 wrote wisdom files into ``documents`` but ``read_page``,
 ``list_links``, and ``read_provenance`` still iterated
-``(Layer.SOURCE, Layer.WIKI)``. PR3 extends them to ``Layer.WISDOM`` so
+``(Layer.SOURCE, Layer.KNOWLEDGE)``. PR3 extends them to ``Layer.WISDOM`` so
 a user who ingested ``wisdom/elon-musk/*.md`` can actually fetch what
 they wrote — and so wikilinks pointing at wisdom pages from other
 layers resolve at read time, not just persist time.
@@ -18,7 +18,7 @@ from dikw_core import api
 from dikw_core.api import PageNotFound
 from dikw_core.schemas import Layer
 
-from .fakes import FakeEmbeddings, init_test_wiki, seed_doc
+from .fakes import FakeEmbeddings, init_test_base, seed_doc
 
 
 def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
@@ -29,8 +29,8 @@ def _drop_wisdom(wiki: Path, rel: str, body: str) -> None:
 
 @pytest.mark.asyncio
 async def test_read_page_returns_wisdom_layer(tmp_path: Path) -> None:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     _drop_wisdom(
         wiki,
         "wisdom/elon-musk/first-principles.md",
@@ -48,8 +48,8 @@ async def test_read_page_returns_wisdom_layer(tmp_path: Path) -> None:
 async def test_read_page_404_for_unindexed_wisdom_path(tmp_path: Path) -> None:
     """An unindexed wisdom path must still 404 — wisdom inclusion in
     the read path must not weaken the index-driven safety guard."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     with pytest.raises(PageNotFound):
         await api.read_page(wiki, "wisdom/ghost/never-written.md")
 
@@ -58,15 +58,15 @@ async def test_read_page_404_for_unindexed_wisdom_path(tmp_path: Path) -> None:
 async def test_list_links_returns_outgoing_from_wisdom_to_wiki(
     tmp_path: Path,
 ) -> None:
-    """A wisdom page links to a wiki page via ``[[Tesla]]``. ``list_links``
+    """A wisdom page links to a knowledge page via ``[[Tesla]]``. ``list_links``
     must (a) accept the wisdom source path, and (b) resolve the wiki dst
     candidate doc_id so the outgoing edge surfaces in the response."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     await seed_doc(
         wiki,
-        layer=Layer.WIKI,
-        path="wiki/concepts/tesla.md",
+        layer=Layer.KNOWLEDGE,
+        path="knowledge/concepts/tesla.md",
         body="---\ntitle: Tesla\n---\n# Tesla\n",
         title="Tesla",
     )
@@ -81,22 +81,22 @@ async def test_list_links_returns_outgoing_from_wisdom_to_wiki(
         wiki, "wisdom/elon-musk/note.md", direction="out"
     )
     out_paths = [e.dst_path for e in links.outgoing]
-    assert "wiki/concepts/tesla.md" in out_paths
+    assert "knowledge/concepts/tesla.md" in out_paths
 
 
 @pytest.mark.asyncio
-async def test_list_links_incoming_to_wiki_credits_wisdom_backlinks(
+async def test_list_links_incoming_to_knowledge_credits_wisdom_backlinks(
     tmp_path: Path,
 ) -> None:
-    """A wiki page's incoming links must include wikilinks from wisdom
-    pages — without this the wiki page's backlink view loses the
+    """A knowledge page's incoming links must include wikilinks from wisdom
+    pages — without this the knowledge page's backlink view loses the
     wisdom-side conversations the user actually wrote."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     await seed_doc(
         wiki,
-        layer=Layer.WIKI,
-        path="wiki/concepts/tesla.md",
+        layer=Layer.KNOWLEDGE,
+        path="knowledge/concepts/tesla.md",
         body="---\ntitle: Tesla\n---\n# Tesla\n",
         title="Tesla",
     )
@@ -107,7 +107,7 @@ async def test_list_links_incoming_to_wiki_credits_wisdom_backlinks(
     )
     await api.ingest(wiki, embedder=FakeEmbeddings())
 
-    links = await api.list_links(wiki, "wiki/concepts/tesla.md", direction="in")
+    links = await api.list_links(wiki, "knowledge/concepts/tesla.md", direction="in")
     in_paths = [e.src_path for e in links.incoming]
     assert "wisdom/elon-musk/note.md" in in_paths
 
@@ -120,8 +120,8 @@ async def test_read_provenance_forward_returns_wisdom_sources(
     forward provenance (``derived_from``) via the read API. Without
     extending the layer probe, the call 404s even though
     ``persist_page`` wrote the provenance row."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     src_dir = wiki / "sources" / "notes"
     src_dir.mkdir(parents=True)
     (src_dir / "musk-bio.md").write_text("# Bio\n\nfacts.\n", encoding="utf-8")
@@ -147,10 +147,10 @@ async def test_read_provenance_reverse_includes_wisdom_in_derived_pages(
     """The reverse leg (``direction=in``) reports K-layer pages whose
     ``sources:`` claim this source path. Wisdom pages legitimately
     cite sources too, so they SHOULD surface as ``DerivedPage`` rows
-    alongside wiki pages — anything cited via ``sources:`` is a
+    alongside knowledge pages — anything cited via ``sources:`` is a
     legitimate derived page regardless of layer."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     src_dir = wiki / "sources" / "notes"
     src_dir.mkdir(parents=True)
     (src_dir / "musk-bio.md").write_text("# Bio\n\nfacts.\n", encoding="utf-8")

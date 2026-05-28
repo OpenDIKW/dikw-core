@@ -14,7 +14,7 @@ import pytest
 
 from dikw_core import api
 
-from .fakes import init_test_wiki, png_with_dims, seed_asset
+from .fakes import init_test_base, png_with_dims, seed_asset
 
 
 def _new_asset_id(payload: bytes) -> str:
@@ -27,7 +27,7 @@ def _rel_for(asset_id: str) -> str:
 
 @pytest.mark.asyncio
 async def test_read_asset_returns_path_and_record(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     payload = png_with_dims(1, 1)
     asset_id = _new_asset_id(payload)
     rel = _rel_for(asset_id)
@@ -46,7 +46,7 @@ async def test_read_asset_returns_path_and_record(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_read_asset_unknown_id_raises_not_found(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     with pytest.raises(api.AssetNotFound):
         await api.read_asset(tmp_path, "deadbeef" * 8)
 
@@ -54,7 +54,7 @@ async def test_read_asset_unknown_id_raises_not_found(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_read_asset_missing_file_raises_not_found(tmp_path: Path) -> None:
     """Row registered, file gone — refuse rather than 500 with the path."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     payload = png_with_dims(1, 1)
     asset_id = _new_asset_id(payload)
     rel = _rel_for(asset_id)
@@ -75,7 +75,7 @@ async def test_read_asset_rejects_stored_path_escape(tmp_path: Path) -> None:
     """Defence-in-depth: a row's ``stored_path`` pointing outside the
     configured assets dir must refuse to serve even when a real file
     sits at that path."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     payload = b"top secret bytes"
     outside_rel = "secrets/outside.bin"
     (tmp_path / outside_rel).parent.mkdir(parents=True, exist_ok=True)

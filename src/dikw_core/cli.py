@@ -73,7 +73,7 @@ def init_cmd(
 ) -> None:
     """Scaffold a new dikw base at PATH (no server required)."""
     try:
-        root = api.init_wiki(path, description=description or None)
+        root = api.init_base(path, description=description or None)
     except FileExistsError as e:
         console.print(f"[red]error:[/red] {e}")
         raise typer.Exit(code=1) from e
@@ -148,7 +148,7 @@ def serve_cmd(
         raise typer.Exit(code=2) from e
 
     fastapi_app = build_app_from_disk(
-        wiki_root=base_root,
+        base_root=base_root,
         host=host,
         token_override=token,
     )
@@ -169,7 +169,7 @@ def serve_cmd(
 # ---- mount local auth subcommands --------------------------------------
 
 # ``dikw auth login|import|status|list|logout`` — manage the local OAuth
-# token store at ``<wiki>/.dikw/auth.json``. Local-only (does not talk
+# token store at ``<base>/.dikw/auth.json``. Local-only (does not talk
 # to ``dikw serve``); must run on the same host as the server process.
 app.add_typer(auth_app, name="auth")
 

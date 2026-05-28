@@ -72,7 +72,7 @@ def test_login_invokes_device_code_login_and_reports_account(
     monkeypatch.setattr("dikw_core.auth_cli.webbrowser.open", lambda *a, **kw: None)
 
     result = runner.invoke(
-        app, ["login", "openai-codex", "--wiki", str(dikw_base), "--no-browser"]
+        app, ["login", "openai-codex", "--base", str(dikw_base), "--no-browser"]
     )
     assert result.exit_code == 0, result.output
     assert "QWER-ASDF" in result.output
@@ -82,7 +82,7 @@ def test_login_invokes_device_code_login_and_reports_account(
 
 def test_login_rejects_unknown_provider(dikw_base: Path) -> None:
     result = runner.invoke(
-        app, ["login", "anthropic", "--wiki", str(dikw_base)]
+        app, ["login", "anthropic", "--base", str(dikw_base)]
     )
     assert result.exit_code == 2
     assert "not supported" in result.output
@@ -112,7 +112,7 @@ def test_import_invokes_import_from_codex_cli_with_force_flag(
     monkeypatch.setattr("dikw_core.auth_cli.import_from_codex_cli", fake_import)
 
     result = runner.invoke(
-        app, ["import", "openai-codex", "--wiki", str(dikw_base), "--force"]
+        app, ["import", "openai-codex", "--base", str(dikw_base), "--force"]
     )
     assert result.exit_code == 0, result.output
     assert captured["force"] is True
@@ -134,7 +134,7 @@ def test_import_defaults_provider_to_openai_codex(
             expires_at=None,
         ),
     )
-    result = runner.invoke(app, ["import", "--wiki", str(dikw_base)])
+    result = runner.invoke(app, ["import", "--base", str(dikw_base)])
     assert result.exit_code == 0
 
 
@@ -151,7 +151,7 @@ def test_status_reports_active_when_token_fresh(
     fresh = _fresh_jwt(account_id="acc-fresh")
     make_dikw_auth_store(dikw_base, access_token=fresh, refresh_token="rt-1")
     result = runner.invoke(
-        app, ["status", "openai-codex", "--wiki", str(dikw_base)]
+        app, ["status", "openai-codex", "--base", str(dikw_base)]
     )
     assert result.exit_code == 0, result.output
     assert "active" in result.output
@@ -164,7 +164,7 @@ def test_status_exits_nonzero_when_no_credentials(
     """A user who never logged in should see a non-zero exit so shell
     pipelines can branch on it."""
     result = runner.invoke(
-        app, ["status", "openai-codex", "--wiki", str(dikw_base)]
+        app, ["status", "openai-codex", "--base", str(dikw_base)]
     )
     assert result.exit_code == 1
     assert "no credentials" in result.output.lower()
@@ -179,7 +179,7 @@ def test_status_exits_nonzero_when_no_credentials(
 def test_list_shows_no_providers_when_store_empty(
     dikw_base: Path,
 ) -> None:
-    result = runner.invoke(app, ["list", "--wiki", str(dikw_base)])
+    result = runner.invoke(app, ["list", "--base", str(dikw_base)])
     assert result.exit_code == 0
     assert "no providers" in result.output.lower()
 
@@ -203,7 +203,7 @@ def test_list_shows_configured_provider(
             account_id="acc-list",
         ),
     )
-    result = runner.invoke(app, ["list", "--wiki", str(dikw_base)])
+    result = runner.invoke(app, ["list", "--base", str(dikw_base)])
     assert result.exit_code == 0
     assert "openai-codex" in result.output
     assert "acc-list" in result.output
@@ -220,7 +220,7 @@ def test_logout_with_yes_flag_removes_provider(
     make_dikw_auth_store(dikw_base, access_token=_fresh_jwt(), refresh_token="rt-1")
     result = runner.invoke(
         app,
-        ["logout", "openai-codex", "--wiki", str(dikw_base), "--yes"],
+        ["logout", "openai-codex", "--base", str(dikw_base), "--yes"],
     )
     assert result.exit_code == 0
     assert "removed" in result.output.lower()
@@ -233,7 +233,7 @@ def test_logout_without_yes_aborts_on_no_input(
     make_dikw_auth_store(dikw_base, access_token=_fresh_jwt(), refresh_token="rt-1")
     result = runner.invoke(
         app,
-        ["logout", "openai-codex", "--wiki", str(dikw_base)],
+        ["logout", "openai-codex", "--base", str(dikw_base)],
         input="\n",
     )
     assert result.exit_code == 1
@@ -245,7 +245,7 @@ def test_logout_when_no_credentials_present(
 ) -> None:
     result = runner.invoke(
         app,
-        ["logout", "openai-codex", "--wiki", str(dikw_base), "--yes"],
+        ["logout", "openai-codex", "--base", str(dikw_base), "--yes"],
     )
     assert result.exit_code == 1
     assert "no credentials" in result.output.lower()

@@ -27,7 +27,7 @@ from dikw_core.schemas import DocumentRecord, Layer
 
 def _doc(
     path: str,
-    layer: Layer = Layer.WIKI,
+    layer: Layer = Layer.KNOWLEDGE,
     *,
     title: str | None = None,
 ) -> DocumentRecord:
@@ -49,19 +49,19 @@ async def _seed_basic(root: Path) -> tuple[str, str, str]:
     b_path)`` for assertions."""
     src_path = "sources/src.md"
     ghost_path = "sources/ghost.md"
-    a_path = "wiki/a.md"
-    b_path = "wiki/b.md"
+    a_path = "knowledge/a.md"
+    b_path = "knowledge/b.md"
     cfg, _root, storage = await _with_storage(root)
     del cfg
     try:
         await storage.upsert_document(_doc(src_path, layer=Layer.SOURCE))
         for p in (a_path, b_path):
-            await storage.upsert_document(_doc(p, layer=Layer.WIKI))
+            await storage.upsert_document(_doc(p, layer=Layer.KNOWLEDGE))
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, a_path), [src_path, ghost_path]
+            _doc_id_for(Layer.KNOWLEDGE, a_path), [src_path, ghost_path]
         )
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, b_path), [src_path]
+            _doc_id_for(Layer.KNOWLEDGE, b_path), [src_path]
         )
     finally:
         await storage.close()
@@ -70,11 +70,11 @@ async def _seed_basic(root: Path) -> tuple[str, str, str]:
 
 @pytest.mark.asyncio
 async def test_get_provenance_returns_page_provenance_result(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """Wire shape: K-page → forward sources populated, reverse empty;
     response carries ``path`` + ``derived_from`` + ``derived_pages``."""
-    _src, a_path, _b = await _seed_basic(wiki_root)
+    _src, a_path, _b = await _seed_basic(base_root)
     resp = await server_client.get(f"/v1/base/pages/{a_path}/provenance")
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -92,12 +92,12 @@ async def test_get_provenance_returns_page_provenance_result(
 
 @pytest.mark.asyncio
 async def test_get_provenance_reverse_for_source_returns_derived_pages(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """A SOURCE-layer path returns the K-pages whose frontmatter
     ``sources:`` claims it — the answer to the "which pages reference
     this source?" question this feature exists for."""
-    src_path, a_path, b_path = await _seed_basic(wiki_root)
+    src_path, a_path, b_path = await _seed_basic(base_root)
     resp = await server_client.get(f"/v1/base/pages/{src_path}/provenance")
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -110,11 +110,11 @@ async def test_get_provenance_reverse_for_source_returns_derived_pages(
 
 @pytest.mark.asyncio
 async def test_get_provenance_direction_filter(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """``direction=in`` vs ``out`` populates only the matching list.
     Same semantics as ``/links?direction``."""
-    src_path, a_path, _b = await _seed_basic(wiki_root)
+    src_path, a_path, _b = await _seed_basic(base_root)
 
     out_only = await server_client.get(
         f"/v1/base/pages/{a_path}/provenance", params={"direction": "out"}
@@ -133,9 +133,9 @@ async def test_get_provenance_direction_filter(
 
 @pytest.mark.asyncio
 async def test_get_provenance_unknown_path_404(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    resp = await server_client.get("/v1/base/pages/wiki/missing.md/provenance")
+    resp = await server_client.get("/v1/base/pages/knowledge/missing.md/provenance")
     assert resp.status_code == 404
     body = resp.json()
     assert body["error"]["code"] == "page_not_found"
@@ -143,9 +143,9 @@ async def test_get_provenance_unknown_path_404(
 
 @pytest.mark.asyncio
 async def test_get_provenance_rejects_bad_direction(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    _src, a_path, _b = await _seed_basic(wiki_root)
+    _src, a_path, _b = await _seed_basic(base_root)
     resp = await server_client.get(
         f"/v1/base/pages/{a_path}/provenance",
         params={"direction": "sideways"},
@@ -155,11 +155,11 @@ async def test_get_provenance_rejects_bad_direction(
 
 @pytest.mark.asyncio
 async def test_get_provenance_rejects_negative_limit(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """``limit < 0`` is rejected by FastAPI's ``Query(ge=0)`` before
     the handler runs — matches the ``/links`` route's clamp policy."""
-    _src, a_path, _b = await _seed_basic(wiki_root)
+    _src, a_path, _b = await _seed_basic(base_root)
     resp = await server_client.get(
         f"/v1/base/pages/{a_path}/provenance", params={"limit": -1}
     )
@@ -168,20 +168,20 @@ async def test_get_provenance_rejects_negative_limit(
 
 @pytest.mark.asyncio
 async def test_get_provenance_limit_caps_each_side(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """``limit`` caps ``derived_from`` (and would cap ``derived_pages``
     on a SOURCE-layer query — symmetric)."""
-    page_path = "wiki/hub.md"
+    page_path = "knowledge/hub.md"
     src_paths = [f"sources/s{i}.md" for i in range(5)]
-    cfg, _root, storage = await _with_storage(wiki_root)
+    cfg, _root, storage = await _with_storage(base_root)
     del cfg
     try:
-        await storage.upsert_document(_doc(page_path, layer=Layer.WIKI))
+        await storage.upsert_document(_doc(page_path, layer=Layer.KNOWLEDGE))
         for sp in src_paths:
             await storage.upsert_document(_doc(sp, layer=Layer.SOURCE))
         await storage.replace_provenance_from(
-            _doc_id_for(Layer.WIKI, page_path), src_paths
+            _doc_id_for(Layer.KNOWLEDGE, page_path), src_paths
         )
     finally:
         await storage.close()
@@ -196,15 +196,15 @@ async def test_get_provenance_limit_caps_each_side(
 
 @pytest.mark.asyncio
 async def test_get_page_route_still_works_after_provenance_route_added(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
     """Route-ordering invariant: ``/provenance`` is declared BEFORE the
     catch-all ``{path:path}`` get_page handler, but a plain page-read
-    against ``/v1/base/pages/wiki/foo.md`` (no /provenance suffix) must
+    against ``/v1/base/pages/knowledge/foo.md`` (no /provenance suffix) must
     still resolve to ``get_page`` (404 here is fine — what we're guarding
     against is the route silently re-routing into ``get_page_provenance``
     and returning the wrong shape)."""
-    resp = await server_client.get("/v1/base/pages/wiki/does-not-exist.md")
+    resp = await server_client.get("/v1/base/pages/knowledge/does-not-exist.md")
     assert resp.status_code == 404
     body = resp.json()
     assert body["error"]["code"] == "page_not_found"

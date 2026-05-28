@@ -144,9 +144,9 @@ After conversion, run all three retrieval modes for an apples-to-apples
 comparison against published BM25 baselines:
 
 ```bash
-uv run --env-file scratch-bench-wiki/.env \
+uv run --env-file scratch-bench-base/.env \
     dikw client eval --dataset scifact --embedder provider \
-    --path ./scratch-bench-wiki --retrieval all
+    --path ./scratch-bench-base --retrieval all
 ```
 
 See [`docs/providers.md`](../docs/providers.md#public-benchmark-calibration-with-gitee-ai)

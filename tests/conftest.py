@@ -35,7 +35,7 @@ from dikw_core.server.runtime import ServerRuntime, build_runtime, teardown_runt
 from dikw_core.storage.base import Storage
 from dikw_core.storage.sqlite import SQLiteStorage
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -121,7 +121,7 @@ def dikw_base(tmp_path: Path) -> Path:
     """Return a tmp path role-playing as a wiki base. ``.dikw/`` is
     pre-created so the auth store can be written without bootstrapping a
     full wiki."""
-    base = tmp_path / "wiki"
+    base = tmp_path / "knowledge"
     (base / ".dikw").mkdir(parents=True, exist_ok=True)
     return base
 
@@ -191,15 +191,15 @@ def make_codex_cli_auth_store(
 
 
 @pytest.fixture()
-def client_wiki(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="client-test wiki")
+def client_base(tmp_path: Path) -> Path:
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="client-test wiki")
     return wiki
 
 
 @pytest.fixture()
 async def asgi_client(
-    client_wiki: Path,
+    client_base: Path,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, ServerRuntime]]:
     """Build the FastAPI app + an ``httpx.AsyncClient`` bound to it.
 
@@ -209,7 +209,7 @@ async def asgi_client(
     a CLI command, etc.).
     """
     auth = AuthConfig(host="127.0.0.1", token=None)
-    rt = await build_runtime(root=client_wiki, auth=auth)
+    rt = await build_runtime(root=client_base, auth=auth)
 
     async def _factory() -> ServerRuntime:
         return rt

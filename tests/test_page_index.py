@@ -1,8 +1,8 @@
-"""Tests for ``persist_wiki_page`` — the public K-layer indexing function
+"""Tests for ``persist_knowledge_page`` — the public K-layer indexing function
 shared between synth and lint-apply.
 
-The synth path is already covered by ``test_persist_wiki_page.py``
-(routed through ``api._persist_wiki_page``); this file pins the
+The synth path is already covered by ``test_persist_knowledge_page.py``
+(routed through ``api._persist_knowledge_page``); this file pins the
 provider-free path lint-apply uses (``embedder=None``) so the indexing
 contract — document upsert + chunks + outgoing-link reconciliation —
 holds without an embedder configured.
@@ -14,14 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from dikw_core.domains.knowledge.page_index import persist_wiki_page, wiki_doc_id
-from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.domains.knowledge.page import build_page, write_page
+from dikw_core.domains.knowledge.page_index import persist_knowledge_page, wiki_doc_id
 from dikw_core.schemas import DocumentRecord, Layer, LinkType
 from dikw_core.storage.base import Storage
 
 
 @pytest.mark.asyncio
-async def test_persist_wiki_page_writes_document_chunks_and_links(
+async def test_persist_knowledge_page_writes_document_chunks_and_links(
     parametrized_storage: Storage, tmp_path: Path,
 ) -> None:
     """End-to-end: write a page that links to a pre-seeded target and
@@ -31,7 +31,7 @@ async def test_persist_wiki_page_writes_document_chunks_and_links(
 
     target = build_page(title="Foo", body="# Foo\nbody.\n", type_="concept")
     write_page(tmp_path, target)
-    await persist_wiki_page(
+    await persist_knowledge_page(
         storage=storage, root=tmp_path, path=target.path, title=target.title,
         embedder=None, embedding_model="", text_version_id=None,
     )
@@ -40,16 +40,16 @@ async def test_persist_wiki_page_writes_document_chunks_and_links(
         title="Source",
         body="# Source\n\nSee [[Foo]] here.\n",
         type_="concept",
-        path="wiki/concepts/source.md",
+        path="knowledge/concepts/source.md",
     )
     write_page(tmp_path, src)
-    unresolved, _ = await persist_wiki_page(
+    unresolved, _ = await persist_knowledge_page(
         storage=storage, root=tmp_path, path=src.path, title=src.title,
         embedder=None, embedding_model="", text_version_id=None,
     )
 
     assert unresolved == 0
-    docs = list(await storage.list_documents(layer=Layer.WIKI, active=True))
+    docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=True))
     src_doc = next(d for d in docs if d.path == src.path)
     assert src_doc.title == "Source"
 
@@ -65,7 +65,7 @@ async def test_persist_wiki_page_writes_document_chunks_and_links(
 
 
 @pytest.mark.asyncio
-async def test_persist_wiki_page_skips_embedding_when_embedder_none(
+async def test_persist_knowledge_page_skips_embedding_when_embedder_none(
     parametrized_storage: Storage, tmp_path: Path,
 ) -> None:
     """Lint-apply caller passes embedder=None to keep apply provider-free.
@@ -75,7 +75,7 @@ async def test_persist_wiki_page_skips_embedding_when_embedder_none(
     page = build_page(title="X", body="body\n", type_="concept")
     write_page(tmp_path, page)
 
-    await persist_wiki_page(
+    await persist_knowledge_page(
         storage=storage, root=tmp_path, path=page.path,
         embedder=None, embedding_model="", text_version_id=None,
     )
@@ -86,7 +86,7 @@ async def test_persist_wiki_page_skips_embedding_when_embedder_none(
 
 
 @pytest.mark.asyncio
-async def test_persist_wiki_page_reports_unresolved_count(
+async def test_persist_knowledge_page_reports_unresolved_count(
     parametrized_storage: Storage, tmp_path: Path,
 ) -> None:
     """An unresolved ``[[Missing]]`` should bump the returned count so
@@ -96,20 +96,20 @@ async def test_persist_wiki_page_reports_unresolved_count(
         title="Source",
         body="See [[Missing]] which has no target.\n",
         type_="concept",
-        path="wiki/concepts/src.md",
+        path="knowledge/concepts/src.md",
     )
     write_page(tmp_path, page)
     # Seed a placeholder document row so resolve_links can self-exclude.
-    # The hash/mtime placeholders below are overwritten by persist_wiki_page
+    # The hash/mtime placeholders below are overwritten by persist_knowledge_page
     # — only the row's existence at this path matters for the test.
     src_id = wiki_doc_id(page.path)
     await storage.upsert_document(DocumentRecord(
         doc_id=src_id, path=page.path, title=page.title,
         hash="placeholder-overwritten-by-persist", mtime=0.0,
-        layer=Layer.WIKI, active=True,
+        layer=Layer.KNOWLEDGE, active=True,
     ))
 
-    unresolved, _ = await persist_wiki_page(
+    unresolved, _ = await persist_knowledge_page(
         storage=storage, root=tmp_path, path=page.path, title=page.title,
         embedder=None, embedding_model="", text_version_id=None,
     )

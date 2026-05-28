@@ -21,12 +21,12 @@ import pytest
 from dikw_core import api
 from dikw_core.config import dump_config_yaml, load_config
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_base
 from .test_progress_reporter import ListReporter
 
 
 def _seed_wiki(tmp_path: Path) -> Path:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     src_dir = tmp_path / "sources" / "demo"
     src_dir.mkdir(parents=True, exist_ok=True)
     return src_dir

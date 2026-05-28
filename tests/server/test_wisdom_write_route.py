@@ -24,7 +24,7 @@ from .conftest import wait_task_terminal
 
 @pytest.mark.asyncio
 async def test_wisdom_write_creates_file_and_task_succeeds(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     resp = await server_client.post(
         "/v1/base/wisdom",
@@ -51,13 +51,13 @@ async def test_wisdom_write_creates_file_and_task_succeeds(
     assert payload["created"] is True
     assert payload["embedded"] == 0  # no_embed=True
 
-    abs_path = wiki_root / "wisdom" / "elon-musk" / "first-principles.md"
+    abs_path = base_root / "wisdom" / "elon-musk" / "first-principles.md"
     assert abs_path.is_file()
 
 
 @pytest.mark.asyncio
 async def test_wisdom_write_upsert_marks_updated(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     body1 = {"slug": "x", "title": "X", "body": "first.\n", "no_embed": True}
     r1 = await server_client.post("/v1/base/wisdom", json=body1)
@@ -74,12 +74,12 @@ async def test_wisdom_write_upsert_marks_updated(
     assert row2["status"] == "succeeded"
     result2 = (await server_client.get(f"/v1/tasks/{r2.json()['task_id']}/result")).json()
     assert result2["result"]["created"] is False
-    _ = wiki_root
+    _ = base_root
 
 
 @pytest.mark.asyncio
 async def test_wisdom_write_rejects_non_kebab_slug(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     resp = await server_client.post(
         "/v1/base/wisdom",
@@ -92,12 +92,12 @@ async def test_wisdom_write_rejects_non_kebab_slug(
     )
     # Pydantic field_validator → 422
     assert resp.status_code == 422, resp.text
-    _ = wiki_root
+    _ = base_root
 
 
 @pytest.mark.asyncio
 async def test_wisdom_write_rejects_non_kebab_author(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     resp = await server_client.post(
         "/v1/base/wisdom",
@@ -110,24 +110,24 @@ async def test_wisdom_write_rejects_non_kebab_author(
         },
     )
     assert resp.status_code == 422, resp.text
-    _ = wiki_root
+    _ = base_root
 
 
 @pytest.mark.asyncio
 async def test_wisdom_write_rejects_missing_title(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     resp = await server_client.post(
         "/v1/base/wisdom",
         json={"slug": "ok", "body": "b.\n", "no_embed": True},
     )
     assert resp.status_code == 422
-    _ = wiki_root
+    _ = base_root
 
 
 @pytest.mark.asyncio
 async def test_wisdom_write_emits_progress_event(
-    server_client: httpx.AsyncClient, wiki_root: Path,
+    server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:
     """The runner must emit at least one ``wisdom_write`` phase event so
     NDJSON consumers (UI / agent observability) can see progress."""
@@ -151,4 +151,4 @@ async def test_wisdom_write_emits_progress_event(
     assert any(
         e.get("phase") == "wisdom_write" for e in events
     ), [e.get("phase") for e in events]
-    _ = wiki_root
+    _ = base_root

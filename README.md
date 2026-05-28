@@ -11,7 +11,7 @@
 
 AI-native knowledge engine that turns your documents into **Data → Information → Knowledge → Wisdom**.
 
-Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown wiki (the K layer), `dikw-core` adds a first-class **Wisdom layer** for human-authored principles, lessons, and patterns that apply beyond any single source.
+Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), extended end-to-end across the full DIKW pyramid. Where Karpathy's pattern stops at a compounding markdown knowledge base (the K layer), `dikw-core` adds a first-class **Wisdom layer** for human-authored principles, lessons, and patterns that apply beyond any single source.
 
 > Status: alpha. Under active construction; APIs, on-disk formats, database schema, and CLI will change.
 
@@ -21,7 +21,7 @@ Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6
 - Four explicit DIKW layers with their own operations:
   - **D**ata — raw sources you curate.
   - **I**nformation — parsed, chunked, embedded, indexed (FTS5 + vectors).
-  - **K**nowledge — LLM-authored wiki pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
+  - **K**nowledge — LLM-authored knowledge pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
   - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`. (W layer is being refactored to first-class documents in 0.3.0; PR1 removed the 0.2.x LLM-distill + review workflow, PR2 will index wisdom pages and PR3 will surface them in retrieve. See CHANGELOG.)
 - Pluggable LLM providers (API-first): Anthropic + OpenAI-compatible (covers OpenAI, Azure, Ollama, DeepSeek, Gemini-compat).
 - Pluggable storage: SQLite+sqlite-vec (default), Postgres+pgvector (enterprise) — swap by config.
@@ -79,7 +79,7 @@ Local-only commands run in this process:
 | command                     | does                                                                          |
 | --------------------------- | ----------------------------------------------------------------------------- |
 | `dikw version`              | print the package version                                                     |
-| `dikw init <path>`          | scaffold a dikw base (sources / wiki / wisdom / `.dikw/` + `dikw.yml`)        |
+| `dikw init <path>`          | scaffold a dikw base (sources / knowledge / wisdom / `.dikw/` + `dikw.yml`)        |
 | `dikw serve --base <path>`  | start the FastAPI + NDJSON server bound to one base                           |
 
 Everything else lives under `dikw client *` and talks to a running server.
@@ -95,7 +95,7 @@ keeps the local-vs-HTTP boundary unambiguous for both agents and humans:
 | `dikw client import <path>` | pre-flight + import local md packages (md + referenced assets) into the server's `sources/` |
 | `dikw client ingest [--no-embed]` | parse + chunk + FTS-index + embed the server's `sources/` tree           |
 | `dikw client retrieve "<q>"` | hybrid search returning ranked chunks + page refs (no LLM call); agent supplies its own synthesis |
-| `dikw client synth [--all]` | LLM turns source docs into K-layer wiki pages; maintains `index.md`+`log.md`  |
+| `dikw client synth [--all]` | LLM turns source docs into K-layer knowledge pages; maintains `index.md`+`log.md`  |
 | `dikw client lint [propose\|proposals\|apply]` | report broken wikilinks / orphan pages / duplicate titles; propose + apply structured fixes |
 | `dikw client pages {list,get,links}` | enumerate pages / read a page body + chunk anchors / walk the K-layer link graph |
 | `dikw client graph get`     | fetch the whole base graph (nodes + edges + unresolved wikilinks) in one read |

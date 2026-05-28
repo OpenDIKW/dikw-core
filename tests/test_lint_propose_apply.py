@@ -22,21 +22,21 @@ from dikw_core import api
 from dikw_core.domains.knowledge.lint_fix import FixProposalReport
 from dikw_core.schemas import DocumentRecord, Layer
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 
 
 def _wiki_doc_id(path: str) -> str:
     from dikw_core.domains.data.path_norm import normalize_path
 
-    return f"wiki:{normalize_path(path)}"
+    return f"knowledge:{normalize_path(path)}"
 
 
 @pytest.fixture
 def populated_wiki(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     # Seed two pages: a target (Foo Bar) and a source with a broken alias.
-    target = wiki / "wiki/concepts/foo-bar.md"
+    target = wiki / "knowledge/concepts/foo-bar.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "---\nid: K-foobar\ntype: concept\ntitle: Foo Bar\n"
@@ -45,7 +45,7 @@ def populated_wiki(tmp_path: Path) -> Path:
         "# Foo Bar\n\nbody\n",
         encoding="utf-8",
     )
-    src = wiki / "wiki/concepts/source.md"
+    src = wiki / "knowledge/concepts/source.md"
     src.write_text(
         "---\nid: K-source\ntype: concept\ntitle: Source\n"
         "created: 2026-05-09T00:00:00+00:00\n"
@@ -63,14 +63,14 @@ async def test_propose_apply_relint_clean_e2e(populated_wiki: Path) -> None:
     _cfg, _root, storage = await api._with_storage(populated_wiki)
     try:
         for path, title in [
-            ("wiki/concepts/foo-bar.md", "Foo Bar"),
-            ("wiki/concepts/source.md", "Source"),
+            ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+            ("knowledge/concepts/source.md", "Source"),
         ]:
             await storage.upsert_document(
                 DocumentRecord(
                     doc_id=_wiki_doc_id(path), path=path, title=title,
                     hash=f"hash-{path}", mtime=0.0,
-                    layer=Layer.WIKI, active=True,
+                    layer=Layer.KNOWLEDGE, active=True,
                 )
             )
     finally:
@@ -98,10 +98,10 @@ async def test_propose_apply_relint_clean_e2e(populated_wiki: Path) -> None:
     )
     assert len(apply_report.applied) == 1
     assert apply_report.skipped == []
-    assert "wiki/concepts/source.md" in apply_report.wiki_paths_changed
+    assert "knowledge/concepts/source.md" in apply_report.knowledge_paths_changed
 
     # 4. file content updated on disk.
-    rewritten = (populated_wiki / "wiki/concepts/source.md").read_text(
+    rewritten = (populated_wiki / "knowledge/concepts/source.md").read_text(
         encoding="utf-8"
     )
     assert "[[Foo Bar]]" in rewritten
@@ -145,14 +145,14 @@ async def test_propose_apply_against_postgres(populated_wiki: Path) -> None:
         _cfg, _root, storage = await api._with_storage(populated_wiki)
         try:
             for path, title in [
-                ("wiki/concepts/foo-bar.md", "Foo Bar"),
-                ("wiki/concepts/source.md", "Source"),
+                ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+                ("knowledge/concepts/source.md", "Source"),
             ]:
                 await storage.upsert_document(
                     DocumentRecord(
                         doc_id=_wiki_doc_id(path), path=path, title=title,
                         hash=f"hash-{path}", mtime=0.0,
-                        layer=Layer.WIKI, active=True,
+                        layer=Layer.KNOWLEDGE, active=True,
                     )
                 )
         finally:
@@ -167,7 +167,7 @@ async def test_propose_apply_against_postgres(populated_wiki: Path) -> None:
         )
         assert len(apply_report.applied) == 1
 
-        rewritten = (populated_wiki / "wiki/concepts/source.md").read_text(
+        rewritten = (populated_wiki / "knowledge/concepts/source.md").read_text(
             encoding="utf-8"
         )
         assert "[[Foo Bar]]" in rewritten

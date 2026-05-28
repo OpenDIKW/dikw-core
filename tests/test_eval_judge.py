@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from dikw_core.domains.knowledge.wiki import WikiPage, build_page
+from dikw_core.domains.knowledge.page import KnowledgePage, build_page
 from dikw_core.eval.judge import (
     JudgeScore,
     JudgeSummary,
@@ -30,7 +30,7 @@ def _valid_payload(**overrides: object) -> str:
     return json.dumps(base)
 
 
-def _page(title: str, body: str = "# T\n\nbody.\n", source: str = "sources/a.md") -> WikiPage:
+def _page(title: str, body: str = "# T\n\nbody.\n", source: str = "sources/a.md") -> KnowledgePage:
     return build_page(
         title=title,
         body=body,

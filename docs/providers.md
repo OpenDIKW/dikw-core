@@ -25,7 +25,7 @@ to speak), not the vendor — vendor is whatever `llm_base_url` points at:
   Targets the codex model family (`gpt-5.5` / `gpt-5.4-mini` /
   `gpt-5.3-codex` / …) which lives only on `chatgpt.com/backend-api/codex`
   and isn't reachable through the public `api.openai.com`. Authenticates
-  with a ChatGPT OAuth `access_token` loaded from `<wiki>/.dikw/auth.json`
+  with a ChatGPT OAuth `access_token` loaded from `<base>/.dikw/auth.json`
   (dikw's self-managed token store — separate from codex CLI's
   `~/.codex/auth.json`). Dikw refreshes it before each call when it's near
   expiry and writes the rotated tokens back. **No `OPENAI_API_KEY`
@@ -50,7 +50,7 @@ cross-check the vendor's own docs.
 | Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | LLM key env | Embed key env |
 |---|---|---|---|---|---|---|
 | **OpenAI** (default) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
-| **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *OAuth via `<wiki>/.dikw/auth.json` — bootstrap with `dikw auth login openai-codex`* | — |
+| **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *OAuth via `<base>/.dikw/auth.json` — bootstrap with `dikw auth login openai-codex`* | — |
 | **Anthropic** | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **MiniMax** | `anthropic_compat` | `https://api.minimaxi.com/anthropic` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
@@ -61,7 +61,7 @@ cross-check the vendor's own docs.
 
 **Reference configs** (committed in this repo):
 - [`tests/fixtures/live-minimax-gitee.dikw.yml`](../tests/fixtures/live-minimax-gitee.dikw.yml)
-  — MiniMax LLM + Gitee AI embeddings. Drop-in for a fresh wiki.
+  — MiniMax LLM + Gitee AI embeddings. Drop-in for a fresh base.
 
 Add more fixtures over time as you verify combinations; PRs welcome.
 
@@ -80,10 +80,10 @@ Add more fixtures over time as you verify combinations; PRs welcome.
    (see gotcha #1). Reingestion is required.
 4. **Verify** — `dikw client check` talks to a running server, so use
    `serve-and-run` for one-shot probes (it spawns a temporary `dikw
-   serve` against `<wiki>`, runs the inner check, tears it down):
+   serve` against `<base>`, runs the inner check, tears it down):
    ```bash
-   uv run --env-file .env dikw client serve-and-run --base <wiki> -- check --llm-only
-   uv run --env-file .env dikw client serve-and-run --base <wiki> -- check --embed-only
+   uv run --env-file .env dikw client serve-and-run --base <base> -- check --llm-only
+   uv run --env-file .env dikw client serve-and-run --base <base> -- check --embed-only
    ```
    Each variant pings one endpoint with one tiny request; failures
    print the error inline. Exit 0/1 is scriptable.
@@ -174,7 +174,7 @@ SQLite FTS5's default `unicode61` tokenizer splits CJK one character
 at a time, which collapses BM25 on Chinese / Japanese into single-char
 IDF. Measured on CMTEB T2Retrieval: **nDCG@10 = 0.031**, 91.7% of
 queries zero-recall — vs ≈ 0.5–0.65 on the published Anserini+jieba
-baselines. The default is now `jieba`, so a fresh wiki picks up the
+baselines. The default is now `jieba`, so a fresh base picks up the
 right tokenizer with no config; pin it explicitly only if you need
 the legacy whitespace path:
 
@@ -205,9 +205,9 @@ dropping CJK hits. To change: wipe `.dikw/index.sqlite` and `dikw client ingest`
 The codex protocol differs from the other two on every axis worth
 flagging — keep these in mind before flipping `llm: openai_codex`:
 
-- **Self-managed token store at `<wiki>/.dikw/auth.json`.** Dikw keeps its
+- **Self-managed token store at `<base>/.dikw/auth.json`.** Dikw keeps its
   own copy of the access_token + refresh_token, separate from codex CLI's
-  `~/.codex/auth.json`. Each wiki base owns its own credentials. The store
+  `~/.codex/auth.json`. Each base owns its own credentials. The store
   follows a multi-provider schema (`{"version":1,"providers":{...}}`) so
   future OAuth providers (e.g. anthropic) can sit alongside.
 - **Why a separate store: refresh_token rotation.** ChatGPT's OAuth issuer
@@ -224,7 +224,7 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
     `~/.codex/auth.json` (override source via `$CODEX_HOME`). Useful if
     you've already run `codex` and want dikw to inherit that session.
   - **Lazy migration** — the first time dikw needs a token after upgrade,
-    if `<wiki>/.dikw/auth.json` is missing but `~/.codex/auth.json`
+    if `<base>/.dikw/auth.json` is missing but `~/.codex/auth.json`
     exists with a non-expired access_token, dikw imports it transparently
     and logs a one-line message to stderr telling you it happened. From
     that point on dikw never writes to `~/.codex/auth.json` again, so
@@ -262,7 +262,7 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   the user yet (a follow-up PR will add a `--show-reasoning` toggle).
 - **`$CODEX_HOME` is consulted only by `dikw auth import`** as the source
   path. Dikw does not write to that location. The dikw store path
-  follows the wiki base — multi-base setups carry independent credentials
+  follows the base — multi-base setups carry independent credentials
   (copy `<old-base>/.dikw/auth.json` to `<new-base>/.dikw/auth.json` to
   share, or run `dikw auth login` per base).
 - **Recovery from a stolen / revoked refresh_token.** When you see
@@ -280,8 +280,8 @@ runner is the same `dikw client eval` you use on the dogfood mvp set.
 Setup once:
 
 ```bash
-uv run dikw init scratch-bench-wiki
-cd scratch-bench-wiki
+uv run dikw init scratch-bench-base
+cd scratch-bench-base
 # Edit dikw.yml's provider block:
 #   embedding: openai_compat
 #   embedding_base_url: https://ai.gitee.com/v1
@@ -310,8 +310,8 @@ uv run python evals/tools/convert_beir.py \
 Run the full ablation and dump per-mode rankings for offline re-fusion:
 
 ```bash
-uv run --env-file scratch-bench-wiki/.env \
-    dikw client serve-and-run --base ./scratch-bench-wiki -- \
+uv run --env-file scratch-bench-base/.env \
+    dikw client serve-and-run --base ./scratch-bench-base -- \
     eval --dataset scifact --embedder provider --retrieval all \
     --dump-raw /tmp/scifact-raw.jsonl
 ```
@@ -400,7 +400,7 @@ default tokenizer doesn't segment Chinese.
 
 The codex protocol picks up `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex`,
 and the rest of the ChatGPT-only model family. Authentication is OAuth
-via dikw's self-managed token store at `<wiki>/.dikw/auth.json` — see
+via dikw's self-managed token store at `<base>/.dikw/auth.json` — see
 gotcha #8 for the why and how it differs from codex CLI's
 `~/.codex/auth.json`.
 

@@ -21,7 +21,7 @@ import pytest
 from dikw_core import api
 from dikw_core.progress import CancelToken, NoopReporter
 
-from .fakes import FakeEmbeddings, FakeLLM, init_test_wiki
+from .fakes import FakeEmbeddings, FakeLLM, init_test_base
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -115,8 +115,8 @@ class TestPrimitives:
 
 @pytest.fixture()
 def wiki_with_fixtures(tmp_path: Path) -> Path:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="reporter wiki")
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="reporter wiki")
     dest = wiki / "sources" / "notes"
     dest.mkdir(parents=True, exist_ok=True)
     for src in FIXTURES.glob("*.md"):

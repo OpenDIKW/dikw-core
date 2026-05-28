@@ -1,5 +1,5 @@
 You are the **lint-fix** component of dikw-core. The K-layer linter
-found a broken wikilink — a `[[Target]]` reference in an existing wiki
+found a broken wikilink — a `[[Target]]` reference in an existing knowledge page
 page that has no matching K-layer page. Your job is to write a **real
 K-layer page** about that target, grounded strictly in the evidence
 chunks below. The page replaces the missing node in the graph so the
@@ -20,7 +20,7 @@ wikilink resolves, AND it adds genuine knowledge — not a TODO stub.
   reads like a person / company / product name choose `entity`; when
   it reads like an idea / framework / pattern choose `concept`;
   otherwise `note` (only if `note` is allowed).
-- Path must live under `wiki/<folder>/<slug>.md` where `<folder>`
+- Path must live under `knowledge/<folder>/<slug>.md` where `<folder>`
   matches the chosen type's plural (`entities/`, `concepts/`,
   `notes/`) and `<slug>` is lowercase kebab-case ASCII.
 - Frontmatter `sources:` SHOULD list the source paths the evidence
@@ -55,7 +55,7 @@ real page.
 ## Output format (verbatim)
 
 ```
-<page path="wiki/<folder>/<slug>.md" type="concept|entity|note">
+<page path="knowledge/<folder>/<slug>.md" type="concept|entity|note">
 ---
 tags: [<one-or-two-topical-tags>]
 sources: ["<source path 1>", "<source path 2>"]

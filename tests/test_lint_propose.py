@@ -18,7 +18,7 @@ from dikw_core.domains.knowledge.lint_fix import (
     FixProposalReport,
     run_lint_propose,
 )
-from dikw_core.domains.knowledge.wiki import build_page
+from dikw_core.domains.knowledge.page import build_page
 from dikw_core.progress import CancelToken
 
 
@@ -48,7 +48,7 @@ class _ListReporter:
         return self.token
 
 
-def _issue(kind: str, path: str = "wiki/concepts/x.md", line: int = 1) -> LintIssue:
+def _issue(kind: str, path: str = "knowledge/concepts/x.md", line: int = 1) -> LintIssue:
     return LintIssue(kind=kind, path=path, detail=f"[[stub]] for {path}", line=line)  # type: ignore[arg-type]
 
 
@@ -94,7 +94,7 @@ class _ScriptedFixer:
 def _ctx(tmp_path: Path) -> FixerContext:
     return FixerContext(
         storage=None, llm=None, embedding=None,
-        wiki_root=tmp_path, all_pages=[],
+        base_root=tmp_path, all_pages=[],
     )
 
 
@@ -103,16 +103,16 @@ async def test_orchestrator_filters_by_rule_and_applies_limit(
     tmp_path: Path,
 ) -> None:
     issues = [
-        _issue("broken_wikilink", "wiki/a.md"),
-        _issue("orphan_page", "wiki/b.md"),
-        _issue("broken_wikilink", "wiki/c.md"),
-        _issue("broken_wikilink", "wiki/d.md"),
+        _issue("broken_wikilink", "knowledge/a.md"),
+        _issue("orphan_page", "knowledge/b.md"),
+        _issue("broken_wikilink", "knowledge/c.md"),
+        _issue("broken_wikilink", "knowledge/d.md"),
     ]
     fixer = _ScriptedFixer(
         by_path={
-            "wiki/a.md": _proposal_for(issues[0]),
-            "wiki/c.md": _proposal_for(issues[2]),
-            "wiki/d.md": _proposal_for(issues[3]),
+            "knowledge/a.md": _proposal_for(issues[0]),
+            "knowledge/c.md": _proposal_for(issues[2]),
+            "knowledge/d.md": _proposal_for(issues[3]),
         }
     )
     registry: dict[str, Fixer] = {"broken_wikilink": fixer}  # type: ignore[dict-item]
@@ -130,7 +130,7 @@ async def test_orchestrator_filters_by_rule_and_applies_limit(
     assert isinstance(report, FixProposalReport)
     assert len(report.proposals) == 2
     # Only first two broken_wikilink issues seen — orphan filtered out, last skipped by limit
-    assert fixer.seen == ["wiki/a.md", "wiki/c.md"]
+    assert fixer.seen == ["knowledge/a.md", "knowledge/c.md"]
     progress_events = [e for e in reporter.events if e[0] == "progress"]
     assert progress_events
     assert progress_events[0][1]["phase"] == "lint_propose"
@@ -142,8 +142,8 @@ async def test_orchestrator_filters_by_rule_and_applies_limit(
 async def test_orchestrator_records_fixer_returning_none_as_skipped(
     tmp_path: Path,
 ) -> None:
-    issues = [_issue("broken_wikilink", "wiki/a.md")]
-    fixer = _ScriptedFixer(by_path={"wiki/a.md": None})
+    issues = [_issue("broken_wikilink", "knowledge/a.md")]
+    fixer = _ScriptedFixer(by_path={"knowledge/a.md": None})
     registry: dict[str, Fixer] = {"broken_wikilink": fixer}  # type: ignore[dict-item]
 
     report = await run_lint_propose(
@@ -155,7 +155,7 @@ async def test_orchestrator_records_fixer_returning_none_as_skipped(
     )
     assert report.proposals == []
     assert len(report.skipped) == 1
-    assert report.skipped[0]["issue_path"] == "wiki/a.md"
+    assert report.skipped[0]["issue_path"] == "knowledge/a.md"
     assert "fixer returned None" in report.skipped[0]["reason"]
 
 
@@ -164,13 +164,13 @@ async def test_orchestrator_records_fixer_exception_as_skipped(
     tmp_path: Path,
 ) -> None:
     issues = [
-        _issue("broken_wikilink", "wiki/a.md"),
-        _issue("broken_wikilink", "wiki/b.md"),
+        _issue("broken_wikilink", "knowledge/a.md"),
+        _issue("broken_wikilink", "knowledge/b.md"),
     ]
     fixer = _ScriptedFixer(
         by_path={
-            "wiki/a.md": RuntimeError("boom"),
-            "wiki/b.md": _proposal_for(issues[1]),
+            "knowledge/a.md": RuntimeError("boom"),
+            "knowledge/b.md": _proposal_for(issues[1]),
         }
     )
     registry: dict[str, Fixer] = {"broken_wikilink": fixer}  # type: ignore[dict-item]
@@ -185,9 +185,9 @@ async def test_orchestrator_records_fixer_exception_as_skipped(
     )
     # Exception in one issue must not fail the whole task.
     assert len(report.proposals) == 1
-    assert report.proposals[0].issue_path == "wiki/b.md"
+    assert report.proposals[0].issue_path == "knowledge/b.md"
     assert any(
-        s["issue_path"] == "wiki/a.md" and "boom" in s["reason"]
+        s["issue_path"] == "knowledge/a.md" and "boom" in s["reason"]
         for s in report.skipped
     )
     log_events = [e for e in reporter.events if e[0] == "log"]
@@ -198,7 +198,7 @@ async def test_orchestrator_records_fixer_exception_as_skipped(
 async def test_orchestrator_skips_issue_when_no_fixer_registered(
     tmp_path: Path,
 ) -> None:
-    issues = [_issue("orphan_page", "wiki/a.md")]
+    issues = [_issue("orphan_page", "knowledge/a.md")]
     # Empty registry — orphan_page has no fixer in PR1.
     report = await run_lint_propose(
         report=LintReport(issues=issues),
@@ -214,7 +214,7 @@ async def test_orchestrator_skips_issue_when_no_fixer_registered(
 
 @pytest.mark.asyncio
 async def test_orchestrator_honours_cancel_token(tmp_path: Path) -> None:
-    issues = [_issue("broken_wikilink", f"wiki/p{i}.md") for i in range(5)]
+    issues = [_issue("broken_wikilink", f"knowledge/p{i}.md") for i in range(5)]
 
     @dataclass
     class _CancellingFixer:
@@ -245,7 +245,7 @@ async def test_orchestrator_honours_cancel_token(tmp_path: Path) -> None:
     # Cancellation is checked at the top of each loop iteration; the
     # cancelling fixer ran twice (set the token on iter 2), and the
     # third iteration's pre-check raised before invoking the fixer.
-    assert fixer.seen == ["wiki/p0.md", "wiki/p1.md"]
+    assert fixer.seen == ["knowledge/p0.md", "knowledge/p1.md"]
 
 
 @pytest.mark.asyncio
@@ -294,12 +294,12 @@ async def test_propose_kind_is_kept_in_sync(tmp_path: Path) -> None:
 
     ctx = FixerContext(
         storage=None, llm=None, embedding=None,
-        wiki_root=tmp_path, all_pages=[target_page, src_page],
+        base_root=tmp_path, all_pages=[target_page, src_page],
     )
     issue = LintIssue(
         kind="broken_wikilink",
         path=src_page.path,
-        detail="[[existing page]] has no matching wiki page",
+        detail="[[existing page]] has no matching knowledge page",
         line=3,
     )
     report = await run_lint_propose(

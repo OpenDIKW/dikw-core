@@ -22,7 +22,7 @@ import pytest
 from dikw_core import api
 from dikw_core.schemas import Layer
 
-from .fakes import init_test_wiki
+from .fakes import init_test_base
 from .fakes import seed_doc as _seed_doc
 
 
@@ -35,7 +35,7 @@ def _node_by_path(graph: Any, path: str) -> Any:
 
 @pytest.mark.asyncio
 async def test_empty_base_returns_empty_graph(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     g = await api.list_graph(tmp_path)
     assert g.nodes == []
     assert g.edges == []
@@ -48,30 +48,30 @@ async def test_empty_base_returns_empty_graph(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_three_pages_one_edge_each(tmp_path: Path) -> None:
     """A→B, A→C, B→C → 3 nodes + 3 edges."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="# A\n\nLinks to [[B]] and [[C]].\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n\nLinks to [[C]].\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/C.md", title="C",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/C.md", title="C",
         body="# C\n\nLeaf.\n",
     )
 
     g = await api.list_graph(tmp_path)
     paths = {n.path for n in g.nodes}
-    assert paths == {"wiki/A.md", "wiki/B.md", "wiki/C.md"}
+    assert paths == {"knowledge/A.md", "knowledge/B.md", "knowledge/C.md"}
     assert g.stats.node_count == 3
 
     edges = {(e.source, e.target) for e in g.edges}
     assert edges == {
-        ("wiki/A.md", "wiki/B.md"),
-        ("wiki/A.md", "wiki/C.md"),
-        ("wiki/B.md", "wiki/C.md"),
+        ("knowledge/A.md", "knowledge/B.md"),
+        ("knowledge/A.md", "knowledge/C.md"),
+        ("knowledge/B.md", "knowledge/C.md"),
     }
     assert g.stats.edge_count == 3
     assert g.stats.unresolved_count == 0
@@ -80,21 +80,21 @@ async def test_three_pages_one_edge_each(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_repeated_link_aggregates_weight(tmp_path: Path) -> None:
     """A → B twice → one edge with weight=2."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="See [[B]] and again [[B]].\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B", body="# B\n",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B", body="# B\n",
     )
 
     g = await api.list_graph(tmp_path)
-    a_to_b = [e for e in g.edges if e.source == "wiki/A.md" and e.target == "wiki/B.md"]
+    a_to_b = [e for e in g.edges if e.source == "knowledge/A.md" and e.target == "knowledge/B.md"]
     assert len(a_to_b) == 1
     assert a_to_b[0].weight == 2
     # `id` is deterministic on (source, target).
-    assert a_to_b[0].id == "wiki/A.md->wiki/B.md"
+    assert a_to_b[0].id == "knowledge/A.md->knowledge/B.md"
 
 
 @pytest.mark.asyncio
@@ -104,18 +104,18 @@ async def test_inbound_outbound_distinct_pages(tmp_path: Path) -> None:
     Issue #89: counts are over distinct *connected pages*, not raw link
     occurrences.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[B]] [[B]] [[C]]\n",
     )
-    await _seed_doc(tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B", body="# B\n")
-    await _seed_doc(tmp_path, layer=Layer.WIKI, path="wiki/C.md", title="C", body="# C\n")
+    await _seed_doc(tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B", body="# B\n")
+    await _seed_doc(tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/C.md", title="C", body="# C\n")
 
     g = await api.list_graph(tmp_path)
-    a = _node_by_path(g, "wiki/A.md")
-    b = _node_by_path(g, "wiki/B.md")
-    c = _node_by_path(g, "wiki/C.md")
+    a = _node_by_path(g, "knowledge/A.md")
+    b = _node_by_path(g, "knowledge/B.md")
+    c = _node_by_path(g, "knowledge/C.md")
     assert a.outbound == 2  # distinct B, C — NOT 3
     assert a.inbound == 0
     assert b.inbound == 1
@@ -128,36 +128,36 @@ async def test_unresolved_wikilinks_no_ghost_nodes(tmp_path: Path) -> None:
 
     Issue #89 v1: "should not create ghost nodes in the first version."
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[Unknown Page]] and [[Also Missing]]\n",
     )
 
     g = await api.list_graph(tmp_path)
-    assert {n.path for n in g.nodes} == {"wiki/A.md"}
+    assert {n.path for n in g.nodes} == {"knowledge/A.md"}
     assert g.edges == []
     assert g.stats.unresolved_count == 2
     assert {(u.source, u.target_text) for u in g.unresolved} == {
-        ("wiki/A.md", "Unknown Page"),
-        ("wiki/A.md", "Also Missing"),
+        ("knowledge/A.md", "Unknown Page"),
+        ("knowledge/A.md", "Also Missing"),
     }
 
 
 @pytest.mark.asyncio
 async def test_active_filter_default_excludes_deactivated(tmp_path: Path) -> None:
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[B]]\n", active=True,
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n", active=False,
     )
 
     g = await api.list_graph(tmp_path)  # active=True default
-    assert {n.path for n in g.nodes} == {"wiki/A.md"}
+    assert {n.path for n in g.nodes} == {"knowledge/A.md"}
     # Edge to B is filtered because B is not in node set.
     assert g.edges == []
     # And [[B]] surfaces as unresolved-from-A's-POV (resolution index
@@ -171,23 +171,23 @@ async def test_active_none_returns_all_docs(tmp_path: Path) -> None:
     """``active=None`` matches the ``list_pages`` convention: no
     active-flag filter, both active and deactivated docs land in the
     node set, and edges between them resolve normally."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[B]]\n", active=True,
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n", active=False,
     )
 
     g = await api.list_graph(tmp_path, active=None)
-    assert {n.path for n in g.nodes} == {"wiki/A.md", "wiki/B.md"}
-    assert {(e.source, e.target) for e in g.edges} == {("wiki/A.md", "wiki/B.md")}
+    assert {n.path for n in g.nodes} == {"knowledge/A.md", "knowledge/B.md"}
+    assert {(e.source, e.target) for e in g.edges} == {("knowledge/A.md", "knowledge/B.md")}
     # Deactivated node retains its ``active=False`` flag in the wire
     # payload so a renderer can grey it out.
-    assert _node_by_path(g, "wiki/B.md").active is False
-    assert _node_by_path(g, "wiki/A.md").active is True
+    assert _node_by_path(g, "knowledge/B.md").active is False
+    assert _node_by_path(g, "knowledge/A.md").active is True
 
 
 @pytest.mark.asyncio
@@ -196,27 +196,27 @@ async def test_active_false_returns_only_deactivated(tmp_path: Path) -> None:
     deactivated subset. Rare use case, but the convention has to stay
     consistent so a client that already speaks the ``/v1/base/pages``
     contract doesn't need a graph-specific exception."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="# A\n", active=True,
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n", active=False,
     )
 
     g = await api.list_graph(tmp_path, active=False)
-    assert {n.path for n in g.nodes} == {"wiki/B.md"}
+    assert {n.path for n in g.nodes} == {"knowledge/B.md"}
 
 
 @pytest.mark.asyncio
 async def test_cross_layer_edges_included(tmp_path: Path) -> None:
-    """A wiki page's ``[[Source Doc Title]]`` resolves to a source-layer
+    """A knowledge page's ``[[Source Doc Title]]`` resolves to a source-layer
     page → edge with type=wikilink, both layers in the node set."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/note.md", title="Note",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/note.md", title="Note",
         body="See [[Source Doc Title]] for the raw input.\n",
     )
     await _seed_doc(
@@ -225,14 +225,14 @@ async def test_cross_layer_edges_included(tmp_path: Path) -> None:
     )
 
     g = await api.list_graph(tmp_path)
-    assert {n.path for n in g.nodes} == {"wiki/note.md", "sources/raw.md"}
+    assert {n.path for n in g.nodes} == {"knowledge/note.md", "sources/raw.md"}
     assert {(e.source, e.target) for e in g.edges} == {
-        ("wiki/note.md", "sources/raw.md")
+        ("knowledge/note.md", "sources/raw.md")
     }
     edge = next(iter(g.edges))
     assert edge.type == "wikilink"
     # Layers are exposed on nodes so a client renderer can color by layer.
-    assert _node_by_path(g, "wiki/note.md").layer == "wiki"
+    assert _node_by_path(g, "knowledge/note.md").layer == "knowledge"
     assert _node_by_path(g, "sources/raw.md").layer == "source"
 
 
@@ -240,7 +240,7 @@ async def test_cross_layer_edges_included(tmp_path: Path) -> None:
 async def test_markdown_link_edge(tmp_path: Path) -> None:
     """A markdown ``[X](other.md)`` link whose href matches a node path
     counts as an edge with ``type=markdown``."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
         tmp_path, layer=Layer.SOURCE, path="sources/a.md", title="A",
         body="See [the other](sources/b.md) for details.\n",
@@ -262,9 +262,9 @@ async def test_markdown_link_edge(tmp_path: Path) -> None:
 async def test_url_link_not_in_edges_or_unresolved(tmp_path: Path) -> None:
     """``[Anthropic](https://anthropic.com)`` and bare URLs neither
     create edges nor count as unresolved (URLs are out-of-graph)."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="See [Anthropic](https://anthropic.com) and https://example.com.\n",
     )
 
@@ -278,16 +278,16 @@ async def test_url_link_not_in_edges_or_unresolved(tmp_path: Path) -> None:
 async def test_deterministic_ordering(tmp_path: Path) -> None:
     """Two consecutive calls return byte-identical node + edge + unresolved
     sequences. The only field allowed to differ is ``generated_at``."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     # Seed in scrambled creation order to make sure sort is path-driven,
     # not insertion-driven.
     for path, title, body in (
-        ("wiki/zeta.md", "Zeta", "[[Alpha]]\n"),
-        ("wiki/alpha.md", "Alpha", "[[Beta]] [[Gamma]]\n"),
-        ("wiki/beta.md", "Beta", "[[Alpha]]\n"),
-        ("wiki/gamma.md", "Gamma", "[[Missing]]\n"),
+        ("knowledge/zeta.md", "Zeta", "[[Alpha]]\n"),
+        ("knowledge/alpha.md", "Alpha", "[[Beta]] [[Gamma]]\n"),
+        ("knowledge/beta.md", "Beta", "[[Alpha]]\n"),
+        ("knowledge/gamma.md", "Gamma", "[[Missing]]\n"),
     ):
-        await _seed_doc(tmp_path, layer=Layer.WIKI, path=path, title=title, body=body)
+        await _seed_doc(tmp_path, layer=Layer.KNOWLEDGE, path=path, title=title, body=body)
 
     g1 = await api.list_graph(tmp_path)
     g2 = await api.list_graph(tmp_path)
@@ -307,25 +307,25 @@ async def test_deterministic_ordering(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_anchor_preserved_on_edge(tmp_path: Path) -> None:
     """``[[B#section]]`` → edge with anchor='section'."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="See [[B#section]].\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n## section\n",
     )
 
     g = await api.list_graph(tmp_path)
-    edge = next(e for e in g.edges if e.source == "wiki/A.md")
-    assert edge.target == "wiki/B.md"
+    edge = next(e for e in g.edges if e.source == "knowledge/A.md")
+    assert edge.target == "knowledge/B.md"
     assert edge.anchor == "section"
 
 
 @pytest.mark.asyncio
 async def test_duplicate_titles_collision_refuse(tmp_path: Path) -> None:
-    """Source-layer ``Foo.md`` titled ``Foo`` + synth-layer wiki page
+    """Source-layer ``Foo.md`` titled ``Foo`` + synth-layer knowledge page
     titled ``Foo`` create an ambiguous resolution target. Per
     Karpathy's rule (wrong-merge irreversible, missed-resolve
     fixable), ``[[Foo]]`` from a third page must NOT silently bind to
@@ -335,31 +335,31 @@ async def test_duplicate_titles_collision_refuse(tmp_path: Path) -> None:
     This is more frequent in graph mode than in K-layer synth because
     graph widens the resolution universe to include source-layer
     titles (often = filename stem), which routinely collide with the
-    wiki page synthesized from that very source.
+    knowledge page synthesized from that very source.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
         tmp_path, layer=Layer.SOURCE, path="sources/foo.md", title="Foo",
         body="# Foo source\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/Foo.md", title="Foo",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/Foo.md", title="Foo",
         body="# Foo wiki\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/notes/refers.md",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/notes/refers.md",
         title="Refers", body="See [[Foo]] for context.\n",
     )
 
     g = await api.list_graph(tmp_path)
     # The [[Foo]] reference must NOT create an edge (would be wrong
     # half the time).
-    assert all(e.source != "wiki/notes/refers.md" for e in g.edges), (
+    assert all(e.source != "knowledge/notes/refers.md" for e in g.edges), (
         f"expected no edge from refers.md (ambiguous Foo); got {g.edges}"
     )
     # And it MUST be reported as unresolved so a user can triage.
     assert any(
-        u.source == "wiki/notes/refers.md" and u.target_text == "Foo"
+        u.source == "knowledge/notes/refers.md" and u.target_text == "Foo"
         for u in g.unresolved
     ), f"expected ambiguous [[Foo]] in unresolved; got {g.unresolved}"
 
@@ -372,20 +372,20 @@ async def test_base_revision_changes_when_body_edited(tmp_path: Path) -> None:
     keyed on it doesn't serve a stale graph. Storing only
     ``DocumentRecord.mtime`` (set at ingest time) misses on-disk
     edits; the digest must observe current body content."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[B]]\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n",
     )
 
     rev_before = (await api.list_graph(tmp_path)).base_revision
 
     # Edit on disk, no ingest. Stored mtime stays at 0.0 (the seed value).
-    (tmp_path / "wiki/A.md").write_text(
+    (tmp_path / "knowledge/A.md").write_text(
         "[[B]] [[B]]\n",  # added a duplicate link → graph weight changes
         encoding="utf-8",
     )
@@ -407,9 +407,9 @@ async def test_base_revision_changes_when_title_metadata_changes(
     the body bytes) shifts node labels and edge resolution. A digest
     that observed only body sha256 would let a client cache serve
     stale node labels. The digest must observe title too."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="Alpha",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="Alpha",
         body="# A\n",
     )
 
@@ -418,7 +418,7 @@ async def test_base_revision_changes_when_title_metadata_changes(
     # Re-seed same path + same body, different title — what a re-ingest
     # of an edited front-matter does.
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="Alpha Renamed",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="Alpha Renamed",
         body="# A\n",
     )
 
@@ -439,9 +439,9 @@ async def test_path_escape_doc_is_filtered(tmp_path: Path) -> None:
     from dikw_core.api import _doc_id_for, _with_storage
     from dikw_core.schemas import DocumentRecord
 
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/legit.md", title="Legit",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/legit.md", title="Legit",
         body="# Legit\n",
     )
 
@@ -456,12 +456,12 @@ async def test_path_escape_doc_is_filtered(tmp_path: Path) -> None:
     try:
         await storage.upsert_document(
             DocumentRecord(
-                doc_id=_doc_id_for(Layer.WIKI, escape_path),
+                doc_id=_doc_id_for(Layer.KNOWLEDGE, escape_path),
                 path=escape_path,
                 title="Escape",
                 hash="0" * 64,
                 mtime=0.0,
-                layer=Layer.WIKI,
+                layer=Layer.KNOWLEDGE,
                 active=True,
             )
         )
@@ -470,7 +470,7 @@ async def test_path_escape_doc_is_filtered(tmp_path: Path) -> None:
 
     g = await api.list_graph(tmp_path)
     # Legit doc is in the graph; the escape doc is filtered out.
-    assert "wiki/legit.md" in {n.path for n in g.nodes}
+    assert "knowledge/legit.md" in {n.path for n in g.nodes}
     assert escape_path not in {n.path for n in g.nodes}
 
 
@@ -480,10 +480,10 @@ async def test_markdown_link_target_normalized_for_lookup(tmp_path: Path) -> Non
     different case / Unicode form on case-insensitive or NFC-normalizing
     filesystems. The engine's K-layer storage already normalizes via
     ``path_key`` (NFC + casefold), so a markdown ``[B](Wiki/Foo.md)``
-    link against a node registered as ``wiki/foo.md`` MUST count as
+    link against a node registered as ``knowledge/foo.md`` MUST count as
     an edge — otherwise valid edges are silently dropped on macOS /
     Windows."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
         tmp_path, layer=Layer.SOURCE, path="sources/a.md", title="A",
         body="See [the other](Sources/B.md) for details.\n",
@@ -516,34 +516,34 @@ async def test_fuzzy_collision_includes_ambiguous_titles(tmp_path: Path) -> None
     Correct behavior: ``[[Foos]]`` is unresolved (3-way fuzzy
     collision), NOT silently bound to ``Foo!``.
     """
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
         tmp_path, layer=Layer.SOURCE, path="sources/foo-1.md", title="Foo",
         body="# Foo source one\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/Foo.md", title="Foo",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/Foo.md", title="Foo",
         body="# Foo wiki\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/Foo-bang.md", title="Foo!",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/Foo-bang.md", title="Foo!",
         body="# Foo bang\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/refers.md", title="Refers",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/refers.md", title="Refers",
         body="See [[Foos]].\n",
     )
 
     g = await api.list_graph(tmp_path)
     assert all(
-        e.target != "wiki/Foo-bang.md" or e.source != "wiki/refers.md"
+        e.target != "knowledge/Foo-bang.md" or e.source != "knowledge/refers.md"
         for e in g.edges
     ), (
         f"[[Foos]] must NOT silently bind to Foo! when ambiguous Foo "
         f"paths exist; got edges {g.edges!r}"
     )
     assert any(
-        u.source == "wiki/refers.md" and u.target_text == "Foos"
+        u.source == "knowledge/refers.md" and u.target_text == "Foos"
         for u in g.unresolved
     ), f"expected [[Foos]] in unresolved (3-way fuzzy collision); got {g.unresolved}"
 
@@ -552,13 +552,13 @@ async def test_fuzzy_collision_includes_ambiguous_titles(tmp_path: Path) -> None
 async def test_does_not_trigger_writes(tmp_path: Path) -> None:
     """``list_graph`` is read-only — no documents/links/chunks rows
     appear or change as a side effect of calling it."""
-    init_test_wiki(tmp_path)
+    init_test_base(tmp_path)
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/A.md", title="A",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/A.md", title="A",
         body="[[B]]\n",
     )
     await _seed_doc(
-        tmp_path, layer=Layer.WIKI, path="wiki/B.md", title="B",
+        tmp_path, layer=Layer.KNOWLEDGE, path="knowledge/B.md", title="B",
         body="# B\n",
     )
 

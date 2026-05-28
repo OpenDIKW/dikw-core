@@ -41,13 +41,13 @@ from ..schemas import (
     EmbeddingRow,
     EmbeddingVersion,
     FTSHit,
+    KnowledgeLogEntry,
     Layer,
     LinkRecord,
     LinkType,
     ProvenanceEdge,
     StorageCounts,
     VecHit,
-    WikiLogEntry,
     WisdomStatus,
     dump_media_meta,
     load_media_meta,
@@ -823,20 +823,20 @@ class PostgresStorage:
             for row in rows
         ]
 
-    async def append_wiki_log(self, entry: WikiLogEntry) -> None:
+    async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None:
         async with self._acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO wiki_log(ts, action, src, dst, note) "
+                    "INSERT INTO knowledge_log(ts, action, src, dst, note) "
                     "VALUES (%s, %s, %s, %s, %s)",
                     (entry.ts, entry.action, entry.src, entry.dst, entry.note),
                 )
             await conn.commit()
 
-    async def list_wiki_log(
+    async def list_knowledge_log(
         self, *, since_ts: float | None = None, limit: int | None = None
-    ) -> list[WikiLogEntry]:
-        sql = "SELECT id, ts, action, src, dst, note FROM wiki_log"
+    ) -> list[KnowledgeLogEntry]:
+        sql = "SELECT id, ts, action, src, dst, note FROM knowledge_log"
         params: list[Any] = []
         if since_ts is not None:
             sql += " WHERE ts >= %s"
@@ -852,7 +852,7 @@ class PostgresStorage:
             await cur.execute(sql, params)
             rows = await cur.fetchall()
         return [
-            WikiLogEntry(
+            KnowledgeLogEntry(
                 id=int(r[0]),
                 ts=float(r[1]),
                 action=r[2],
@@ -878,7 +878,7 @@ class PostgresStorage:
             embeddings = int((await cur.fetchone())[0])
             await cur.execute("SELECT COUNT(*) FROM links")
             links = int((await cur.fetchone())[0])
-            await cur.execute("SELECT MAX(ts) FROM wiki_log")
+            await cur.execute("SELECT MAX(ts) FROM knowledge_log")
             last = (await cur.fetchone())[0]
             await cur.execute("SELECT COUNT(*) FROM assets")
             assets_count = int((await cur.fetchone())[0])
@@ -890,7 +890,7 @@ class PostgresStorage:
             chunks=chunks,
             embeddings=embeddings,
             links=links,
-            last_wiki_log_ts=float(last) if last is not None else None,
+            last_knowledge_log_ts=float(last) if last is not None else None,
             assets=assets_count,
             asset_embeddings=asset_emb_count,
         )

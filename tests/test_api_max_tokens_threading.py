@@ -22,8 +22,8 @@ def _write_wiki(
     *,
     llm_max_tokens_synth: int,
 ) -> Path:
-    wiki = tmp_path / "wiki"
-    api.init_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    api.init_base(wiki)
     # Overwrite the auto-generated dikw.yml with per-op overrides. Fake
     # embeddings need dim=64 to match ``FakeEmbeddings``.
     (wiki / "dikw.yml").write_text(

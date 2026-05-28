@@ -329,7 +329,7 @@ class _CodexHarness:
 
     def make(self) -> LLMProvider:
         return OpenAICodexLLM(
-            base_url=DEFAULT_CODEX_BASE_URL, wiki_base=Path("dummy-wiki")
+            base_url=DEFAULT_CODEX_BASE_URL, base_root=Path("dummy-wiki")
         )
 
     def arrange_complete(self, script: _CompleteScript) -> None:

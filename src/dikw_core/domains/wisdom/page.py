@@ -105,7 +105,7 @@ def write_wisdom_file(
     wisdom is user-authored content, and the engine writes only the
     fields the caller explicitly supplied so a file round-tripped
     through this API isn't visibly different from one hand-edited in
-    Obsidian. Distinct from :func:`domains.knowledge.wiki.write_page`,
+    Obsidian. Distinct from :func:`domains.knowledge.page.write_page`,
     which always serialises ``id``/``type``/``created``/``updated`` —
     those are wiki-only frontmatter conventions and would pollute a
     user-authored wisdom file with engine metadata.

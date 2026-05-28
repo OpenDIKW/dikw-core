@@ -31,7 +31,7 @@ def _ingest_report_to_dict(report: api.IngestReport) -> dict[str, Any]:
 
 def make_ingest_runner(
     *,
-    wiki_root: Path,
+    base_root: Path,
     no_embed: bool,
     lock: asyncio.Lock | None = None,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
@@ -45,7 +45,7 @@ def make_ingest_runner(
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
         # The lock is held for the whole runner — concurrent ingests on
-        # the same wiki would race on the storage row writes, so single-
+        # the same base would race on the storage row writes, so single-
         # threading the entire op is the only safe story.
         guard = lock if lock is not None else asyncio.Lock()
         async with guard:
@@ -56,7 +56,7 @@ def make_ingest_runner(
             # ``dikw.yml`` while the long-lived server is up gets
             # vectors tagged with the FRESH ``embed_version`` but
             # produced by the STALE provider URL/model — silent corruption.
-            cfg = load_config(wiki_root / CONFIG_FILENAME)
+            cfg = load_config(base_root / CONFIG_FILENAME)
 
             embedder = None
             multimodal_embedder = None
@@ -88,7 +88,7 @@ def make_ingest_runner(
                         )
 
             report = await api.ingest(
-                wiki_root,
+                base_root,
                 embedder=embedder,
                 multimodal_embedder=multimodal_embedder,
                 reporter=reporter,

@@ -700,7 +700,7 @@ async def test_run_eval_threads_multimodal_config_into_temp_wiki(
 
     captured_cfgs: list[dict[str, object]] = []
 
-    # Stop after _materialise_wiki + _copy_corpus run by intercepting
+    # Stop after _materialise_base + _copy_corpus run by intercepting
     # api.ingest — we only need to verify the wiki's dikw.yml shape.
     real_ingest = api_mod.ingest
 
@@ -867,7 +867,7 @@ async def test_eval_snapshot_cache_hit_skips_ingest(
     # Snapshot dir landed at the expected location.
     snapshot_dirs = list((cache_root / "toy").glob("fake__*"))
     assert len(snapshot_dirs) == 1
-    assert (snapshot_dirs[0] / "wiki" / ".dikw" / "index.sqlite").exists()
+    assert (snapshot_dirs[0] / "base" / ".dikw" / "index.sqlite").exists()
 
 
 async def test_eval_cache_mode_rebuild_forces_cold(

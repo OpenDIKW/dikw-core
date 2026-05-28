@@ -8,12 +8,12 @@ For the four DIKW layers themselves (D / I / K / W — what each layer contains,
 
 ### Naming the layers
 
-**K layer** vs **wiki tree**: "wiki" is overloaded — say "K layer" when referring to the role, "wiki tree" when referring to the on-disk files under `<base>/wiki/`. Bare "wiki" is ambiguous.
+**K layer** vs **knowledge tree**: say "K layer" when referring to the DIKW role, "knowledge tree" when referring to the on-disk files under `<base>/knowledge/`. The bare term "wiki" is reserved for wikilink syntax (`[[Target]]`) — it never refers to the K layer or the on-disk directory.
 
 ### Containers
 
 **base**:
-The root directory of one knowledge engine instance. Owned by the user, contains `dikw.yml`, `sources/`, `wiki/`, `wisdom/`, `.dikw/`. One `dikw serve` process binds to exactly one base.
+The root directory of one knowledge engine instance. Owned by the user, contains `dikw.yml`, `sources/`, `knowledge/`, `wisdom/`, `.dikw/`. One `dikw serve` process binds to exactly one base.
 _Avoid_: knowledge base, workspace, home, root, vault
 
 **source**:
@@ -29,11 +29,11 @@ _Avoid_: source (which is the file on disk before it has been indexed)
 Two distinct, deliberately separated relationships connect pages. Conflating them pollutes graph-leg retrieval.
 
 **wikilink** (a.k.a. **link**):
-A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src_doc_id → dst_path`, with `link_type`, `anchor`, `line`). Forms the K↔K graph that feeds graph-leg retrieval and orphan/broken-link lint. Reconciled from the body on every `persist_wiki_page` via `replace_links_from`.
+A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src_doc_id → dst_path`, with `link_type`, `anchor`, `line`). Forms the K↔K graph that feeds graph-leg retrieval and orphan/broken-link lint. Reconciled from the body on every `persist_knowledge_page` via `replace_links_from`.
 _Avoid_: reference, citation (overloaded), provenance (the other edge).
 
 **provenance**:
-The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the wiki tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_wiki_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
+The page→source attribution recorded in a K-page's `sources:` **frontmatter** — "this K-page was synth-authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the knowledge tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_knowledge_page` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
 _Avoid_: reference, link, citation; "sources" alone (that's the frontmatter key, not the relationship).
 
 ### Pipeline verbs
@@ -51,10 +51,10 @@ _HTTP_: `POST /v1/ingest`
 _Avoid_: index (verb), process
 
 **synth**:
-LLM-author K-layer wiki pages from D-layer sources. Writes `<base>/wiki/*.md`, updates `index.md` + `log.md`.
+LLM-author K-layer knowledge pages from D-layer sources. Writes `<base>/knowledge/*.md`, updates `index.md` + `log.md`.
 _CLI_: `dikw client synth`
 _HTTP_: `POST /v1/synth`
-_Avoid_: summarize, build wiki
+_Avoid_: summarize, build wiki (the term "wiki" is reserved for wikilink syntax)
 
 **retrieve**:
 End-of-pipeline read path. Hybrid search (BM25 + vector + RRF) over the I layer returns ranked chunks + page refs. **No LLM call** — the agent owns synthesis (rewrite, expansion, conversation context, the final answer prompt). `dikw-core` no longer ships an in-engine `query` verb.
@@ -66,8 +66,8 @@ _Avoid_: query, ask, search
 
 - **import** writes to `<base>/sources/`; **ingest** reads from it. Without import the user puts files there by hand; without ingest the files don't reach D/I.
 - A **source** becomes one or more **documents** after **ingest** (markdown front-matter splits, asset attachments, etc.).
-- A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple wiki pages).
-- The user owns `<base>/sources/`, `<base>/wiki/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written in 0.3.0; PR2 of the W refactor wires them into the documents table so they participate in retrieve/lint.
+- A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple knowledge pages).
+- The user owns `<base>/sources/`, `<base>/knowledge/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written in 0.3.0; PR2 of the W refactor wires them into the documents table so they participate in retrieve/lint.
 - A K-layer **document** carries **provenance** edges back to the **source**(s) it was synth-authored from (`provenance` table, distinct from `links`). The reverse — "which K-pages derive from this source" — is the query this edge exists to answer.
 
 ## Example dialogue
@@ -81,7 +81,7 @@ _Avoid_: query, ask, search
 ## Flagged ambiguities
 
 - **upload** was used as the user-facing verb for the import action. Resolved: `upload` is reserved for HTTP-wire descriptions only (multipart upload, payload upload). The user-facing verb is `import`. The two are honest at different layers — the CLI speaks domain, the HTTP path speaks transport.
-- **wiki** is used both for the K-layer role and for the on-disk directory `<base>/wiki/`. Resolved: say "K layer" for the role, "wiki tree" for the files. Bare "wiki" is ambiguous.
+- **wiki** was historically overloaded: K-layer role, on-disk directory, and wikilink syntax. Resolved (0.4.0): say "K layer" for the role, "knowledge tree" for the on-disk files, and reserve **wiki** exclusively for **wikilink** (`[[Target]]`) syntax. The term "wiki" no longer refers to the K layer or its files.
 - **document** vs **source**: in the D layer they're nearly synonymous (one source → one document, usually), but **source** is the file on disk and **document** is the indexed row. Keep them distinct because in K + W layers the documents have no corresponding source file — they were LLM-authored.
 - **reference / 引用** was used for "source X is used by page Y". Resolved into two distinct edges: **wikilink** (body `[[…]]`, the K↔K graph) and **provenance** (frontmatter `sources:`, page→source attribution). They are stored in separate tables and never mixed — a page can have one without the other.
 

@@ -1,4 +1,4 @@
-"""Wiki page I/O for the K (Knowledge) layer.
+"""Knowledge page I/O for the K (Knowledge) layer.
 
 Pages are plain markdown files under ``wiki/`` with YAML front-matter. They
 follow Obsidian-friendly conventions so the same folder can be opened in
@@ -11,7 +11,9 @@ Obsidian alongside the engine:
 * ``sources`` — list of D-layer paths this page summarises.
 
 Page slugs are derived from the title (kebab-case, ASCII-safe). Folders
-match the ``type`` by default: ``wiki/<type>s/<slug>.md``.
+match the ``type`` by default: ``wiki/<type>s/<slug>.md`` (the on-disk
+``wiki/`` directory prefix is renamed to ``knowledge/`` in a later
+refactor step).
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def type_from_path(path: str) -> str:
     recognised collapses to ``"page"``.
     """
     parts = path.split("/")
-    if len(parts) >= 3 and parts[0] == "wiki":
+    if len(parts) >= 3 and parts[0] == "knowledge":
         bucket = parts[1]
         if bucket in _FOLDER_TYPES:
             return _FOLDER_TYPES[bucket]
@@ -69,10 +71,10 @@ def type_from_path(path: str) -> str:
 
 
 @dataclass(frozen=True)
-class WikiPage:
-    """In-memory representation of a K-layer wiki page."""
+class KnowledgePage:
+    """In-memory representation of a K-layer knowledge page."""
 
-    path: str                 # wiki-relative, e.g. ``wiki/concepts/dikw.md``
+    path: str                 # base-relative, e.g. ``wiki/concepts/dikw.md``
     id: str
     type: str
     title: str
@@ -120,18 +122,18 @@ def slugify(title: str) -> str:
 
 
 def default_page_path(type_: str, title: str) -> str:
-    """Return the wiki-relative path the engine writes a new page to."""
-    return f"wiki/{type_to_folder(type_)}/{slugify(title)}.md"
+    """Return the base-relative path the engine writes a new page to."""
+    return f"knowledge/{type_to_folder(type_)}/{slugify(title)}.md"
 
 
-def read_page(root: Path, path: str) -> WikiPage:
+def read_page(root: Path, path: str) -> KnowledgePage:
     abs_path = (root / path).resolve()
     if not abs_path.is_file():
         raise FileNotFoundError(path)
     post = frontmatter.load(str(abs_path))
     meta = dict(post.metadata)
     # ``tags`` and ``sources`` go through the shared malformed-shape
-    # guard for the same reason ``persist_wiki_page`` / ``run_lint`` /
+    # guard for the same reason ``persist_knowledge_page`` / ``run_lint`` /
     # ``MissingProvenanceFixer`` do — a hand-written YAML scalar
     # (``sources: foo.md``) would otherwise become a character-per-row
     # list. The ``pop`` happens explicitly first so ``extras`` doesn't
@@ -140,7 +142,7 @@ def read_page(root: Path, path: str) -> WikiPage:
     sources = frontmatter_str_list(meta, "sources")
     meta.pop("tags", None)
     meta.pop("sources", None)
-    return WikiPage(
+    return KnowledgePage(
         path=path,
         id=str(meta.pop("id", make_page_id(str(meta.get("title", path)), str(meta.get("type", "note"))))),
         type=str(meta.pop("type", "note")),
@@ -154,7 +156,7 @@ def read_page(root: Path, path: str) -> WikiPage:
     )
 
 
-def write_page(root: Path, page: WikiPage) -> Path:
+def write_page(root: Path, page: KnowledgePage) -> Path:
     """Serialize ``page`` to disk under ``root / page.path``. Returns the absolute path."""
     abs_path = (root / page.path).resolve()
     abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,10 +187,10 @@ def build_page(
     sources: list[str] | None = None,
     path: str | None = None,
     extras: dict[str, Any] | None = None,
-) -> WikiPage:
-    """Construct a fresh ``WikiPage`` with engine defaults filled in."""
+) -> KnowledgePage:
+    """Construct a fresh ``KnowledgePage`` with engine defaults filled in."""
     now = now_iso()
-    return WikiPage(
+    return KnowledgePage(
         path=path or default_page_path(type_, title),
         id=make_page_id(title, type_),
         type=type_,
@@ -203,7 +205,7 @@ def build_page(
 
 
 def path_slug_title(path: str) -> str:
-    """Derive a human-readable title from a wiki page's path stem.
+    """Derive a human-readable title from a knowledge page's path stem.
 
     The convention across the K layer: ``wiki/concepts/topic-a.md`` →
     ``"Topic A"``. Centralised here so ``_fallback_title``,

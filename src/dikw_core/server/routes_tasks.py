@@ -353,7 +353,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
         runner: TaskRunner = make_ingest_runner(
-            wiki_root=rt.root,
+            base_root=rt.root,
             no_embed=body.no_embed,
             lock=rt.ingest_lock,
         )
@@ -371,7 +371,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
         runner: TaskRunner = make_synth_runner(
-            wiki_root=rt.root,
+            base_root=rt.root,
             force_all=body.force_all,
             no_embed=body.no_embed,
         )
@@ -392,7 +392,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
         runner: TaskRunner = make_lint_propose_runner(
-            wiki_root=rt.root,
+            base_root=rt.root,
             rule=body.rule,
             limit=body.limit,
             enable_llm=body.enable_llm,
@@ -415,7 +415,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
         runner: TaskRunner = make_lint_apply_runner(
-            wiki_root=rt.root,
+            base_root=rt.root,
             proposal_task_id=body.proposal_task_id,
             task_store=rt.task_store,
             pick=body.pick,
@@ -443,7 +443,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         # base would otherwise race on storage rows and on the
         # cross-layer title index snapshot.
         runner: TaskRunner = make_wisdom_write_runner(
-            wiki_root=rt.root, submit=body, lock=rt.ingest_lock
+            base_root=rt.root, submit=body, lock=rt.ingest_lock
         )
         # Keep ``params`` lightweight — the full body (title + body +
         # tags + sources + extras) can be tens of KB and bloats the task
@@ -487,7 +487,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 f"judge_sample must be >= 1, got {body.judge_sample!r}"
             )
         runner: TaskRunner = make_eval_runner(
-            wiki_root=rt.root,
+            base_root=rt.root,
             dataset=body.dataset,
             mode=body.mode,
             cache_mode=body.cache_mode,

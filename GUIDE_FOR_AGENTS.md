@@ -12,7 +12,7 @@ server, and verify that the server is reachable.
 `dikw-core` is a Python service plus CLI for a DIKW knowledge base:
 
 - `sources/` stores source markdown and imported source packages.
-- `wiki/` stores generated K-layer wiki pages.
+- `knowledge/` stores generated K-layer knowledge pages.
 - `wisdom/` stores W-layer review artifacts.
 - `.dikw/` stores runtime state such as SQLite data and task history.
 - `dikw.yml` is the base configuration file.
@@ -79,7 +79,7 @@ Install converters only when importing matching non-Markdown material.
 
 ## Create a Base
 
-Create a directory that will hold `dikw.yml`, `sources/`, `wiki/`, `wisdom/`,
+Create a directory that will hold `dikw.yml`, `sources/`, `knowledge/`, `wisdom/`,
 and `.dikw/`:
 
 ```bash
@@ -152,7 +152,7 @@ Expected shape:
   "storage_engine": "sqlite",
   "layer_counts": {
     "sources": 0,
-    "wiki_pages": 0,
+    "knowledge_pages": 0,
     "wisdom_items": 0,
     "chunks": 0
   },

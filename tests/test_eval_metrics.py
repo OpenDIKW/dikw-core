@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from dikw_core.domains.knowledge.wiki import WikiPage, build_page
+from dikw_core.domains.knowledge.page import KnowledgePage, build_page
 from dikw_core.eval.fake_embedder import FakeEmbeddings
 from dikw_core.eval.metrics import (
     GroundingClaim,
@@ -185,7 +185,7 @@ def _page(
     body: str,
     tags: list[str] | None = None,
     type_: str = "concept",
-) -> WikiPage:
+) -> KnowledgePage:
     return build_page(
         title=title,
         body=body,
@@ -349,11 +349,11 @@ async def test_fact_grounding_ratio_verbatim_match_is_one() -> None:
     embedder = FakeEmbeddings()
     page = _page("A", "# A\n\nThe sky is blue today.\n")
     chunks_by_source = {
-        "wiki/sources/a.md": [
-            _chunk("wiki/sources/a.md", 0, "The sky is blue today."),
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "The sky is blue today."),
         ],
     }
-    pages_with_sources = [(page, "wiki/sources/a.md")]
+    pages_with_sources = [(page, "knowledge/sources/a.md")]
     score = await fact_grounding_ratio(
         pages_with_sources=pages_with_sources,
         chunks_by_source=chunks_by_source,
@@ -370,11 +370,11 @@ async def test_fact_grounding_ratio_disjoint_vocab_is_zero() -> None:
     embedder = FakeEmbeddings()
     page = _page("A", "# A\n\nDeep ocean trenches are mysterious.\n")
     chunks_by_source = {
-        "wiki/sources/a.md": [
-            _chunk("wiki/sources/a.md", 0, "Pizza toppings vary widely."),
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "Pizza toppings vary widely."),
         ],
     }
-    pages_with_sources = [(page, "wiki/sources/a.md")]
+    pages_with_sources = [(page, "knowledge/sources/a.md")]
     score = await fact_grounding_ratio(
         pages_with_sources=pages_with_sources,
         chunks_by_source=chunks_by_source,
@@ -396,14 +396,14 @@ async def test_compute_grounding_cosines_emits_one_entry_per_claim() -> None:
         "Second claim covers another topic.\n",
     )
     chunks_by_source = {
-        "wiki/sources/a.md": [
+        "knowledge/sources/a.md": [
             _chunk(
-                "wiki/sources/a.md", 0, "First claim here is grounded."
+                "knowledge/sources/a.md", 0, "First claim here is grounded."
             ),
-            _chunk("wiki/sources/a.md", 1, "Unrelated content."),
+            _chunk("knowledge/sources/a.md", 1, "Unrelated content."),
         ],
     }
-    pages_with_sources = [(page, "wiki/sources/a.md")]
+    pages_with_sources = [(page, "knowledge/sources/a.md")]
     claims = await compute_grounding_cosines(
         pages_with_sources=pages_with_sources,
         chunks_by_source=chunks_by_source,
@@ -431,7 +431,7 @@ def test_reduce_grounding_ratio_pages_with_no_claims_score_one() -> None:
     """Same vacuous-1.0 floor as the metric: a page that emitted no claim
     sentences shouldn't drag the aggregate down."""
     page = _page("A", "# A\n\n[[Other]]\n")
-    pages_with_sources = [(page, "wiki/sources/a.md")]
+    pages_with_sources = [(page, "knowledge/sources/a.md")]
     # No GroundingClaim entries for page A (mirroring what
     # compute_grounding_cosines does for claim-less pages).
     ratio = reduce_grounding_ratio(
@@ -459,11 +459,11 @@ async def test_fact_grounding_ratio_skips_page_with_no_claims() -> None:
     embedder = FakeEmbeddings()
     page = _page("A", "# A\n\n[[Other]]\n")
     chunks_by_source = {
-        "wiki/sources/a.md": [
-            _chunk("wiki/sources/a.md", 0, "Unrelated text."),
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "Unrelated text."),
         ],
     }
-    pages_with_sources = [(page, "wiki/sources/a.md")]
+    pages_with_sources = [(page, "knowledge/sources/a.md")]
     score = await fact_grounding_ratio(
         pages_with_sources=pages_with_sources,
         chunks_by_source=chunks_by_source,

@@ -34,7 +34,7 @@ import httpx
 import pytest
 
 from dikw_core.client import serve_and_run as sar
-from tests.fakes import init_test_wiki
+from tests.fakes import init_test_base
 
 # ---- pure-function helpers ---------------------------------------------
 
@@ -204,10 +204,10 @@ def test_build_inner_command_preserves_explicit_client_prefix() -> None:
 
 def test_run_refuses_empty_inner_cmd(tmp_path: Path) -> None:
     """No inner command is a usage error, not an implicit no-op."""
-    init_test_wiki(tmp_path / "wiki", description="empty inner cmd")
+    init_test_base(tmp_path / "knowledge", description="empty inner cmd")
     rc = sar.run(
         sar.ServeAndRunOptions(
-            base=tmp_path / "wiki",
+            base=tmp_path / "knowledge",
             host="127.0.0.1",
             port=0,
             token=None,
@@ -225,8 +225,8 @@ def test_run_refuses_empty_inner_cmd(tmp_path: Path) -> None:
 
 @pytest.fixture()
 def wiki_for_serve(tmp_path: Path) -> Iterator[Path]:
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki, description="serve-and-run integration")
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki, description="serve-and-run integration")
     yield wiki
 
 

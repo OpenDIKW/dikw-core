@@ -5,7 +5,7 @@ detect semantic duplicates against pages already in the wiki AND pages
 just emitted by an earlier group within the same source:
 
 * ``## Already created in this batch:`` — per-source accumulator
-* ``## Existing wiki pages:`` — full snapshot up to a byte threshold,
+* ``## Existing knowledge pages:`` — full snapshot up to a byte threshold,
   switching to a vec_search-gated top-K beyond that
 
 Without these sections the LLM happily regenerates pages it cannot see,
@@ -22,10 +22,10 @@ import pytest
 
 from dikw_core import api
 from dikw_core.config import dump_config_yaml, load_config
-from dikw_core.domains.knowledge.wiki import build_page, write_page
+from dikw_core.domains.knowledge.page import build_page, write_page
 from dikw_core.providers import LLMResponse
 
-from .fakes import FakeEmbeddings, init_test_wiki
+from .fakes import FakeEmbeddings, init_test_base
 
 
 class CapturingLLM:
@@ -76,7 +76,7 @@ class GroupKeyedLLM:
         idx = len(self.calls)
         self.calls.append(user)
         text = (
-            f'<page path="wiki/concepts/group-{idx}-page.md" type="concept">\n'
+            f'<page path="knowledge/concepts/group-{idx}-page.md" type="concept">\n'
             f"---\ntags: [synthetic]\n---\n\n"
             f"# Group {idx} page\n\n"
             f"Synthetic page emitted by group {idx}.\n"
@@ -103,7 +103,7 @@ def _override_synth_cfg(wiki: Path, **kwargs: Any) -> None:
 async def _seed_wiki_page(
     wiki: Path, *, title: str, type_: str, body: str | None = None
 ) -> None:
-    """Create one K-layer page directly via ``_persist_wiki_page`` so a
+    """Create one K-layer page directly via ``_persist_knowledge_page`` so a
     later synth invocation sees it as an "existing" page in storage.
     """
     _cfg, root, storage = await api._with_storage(wiki)
@@ -114,7 +114,7 @@ async def _seed_wiki_page(
             type_=type_,
         )
         write_page(root, page)
-        await api._persist_wiki_page(
+        await api._persist_knowledge_page(
             storage=storage,
             root=root,
             page=page,
@@ -129,9 +129,9 @@ async def _seed_wiki_page(
 @pytest.mark.asyncio
 async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> None:
     """An existing K-layer page renders into the prompt's
-    ``## Existing wiki pages`` section as ``- Title (type)``."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    ``## Existing knowledge pages`` section as ``- Title (type)``."""
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     await _seed_wiki_page(wiki, title="Tesla", type_="entity")
 
     _write_source(
@@ -148,7 +148,7 @@ async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> N
 
     assert llm.calls, "synth must invoke the LLM at least once"
     prompt = llm.calls[0]
-    assert "## Existing wiki pages" in prompt, (
+    assert "## Existing knowledge pages" in prompt, (
         "fresh-base synth must render the existing-pages section header"
     )
     assert "- Tesla (entity)" in prompt, (
@@ -165,8 +165,8 @@ async def test_synth_prompt_includes_batch_accumulator_after_first_group(
     runs groups serially against the same source — the second group
     needs to know what the first one already wrote so it can reference
     via ``[[Title]]`` instead of regenerating."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     # Force at least two groups: shrink target_tokens_per_group hard.
     _override_synth_cfg(wiki, target_tokens_per_group=80)
 
@@ -211,8 +211,8 @@ async def test_synth_existing_pages_truncates_to_retrieval_top_k(
     truncation the prompt would balloon as the wiki grows, eventually
     overflowing the model's context window.
     """
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     # Set thresholds tight enough that a handful of pages overflow and
     # only top-K=3 survive the retrieval gate.
     _override_synth_cfg(
@@ -261,8 +261,8 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
     requested. force_all must NOT render the base existing-pages
     section. (The in-batch accumulator still runs so groups within the
     same source coordinate.)"""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     await _seed_wiki_page(wiki, title="Tesla", type_="entity")
 
     _write_source(
@@ -279,7 +279,7 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
 
     assert llm.calls
     prompt = llm.calls[0]
-    assert "## Existing wiki pages" not in prompt, (
+    assert "## Existing knowledge pages" not in prompt, (
         "force_all=True must not surface the existing-pages section; "
         "regeneration would otherwise be suppressed by the duplicate rule"
     )
@@ -287,7 +287,7 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_synth_existing_pages_falls_back_when_wiki_unembedded(
+async def test_synth_existing_pages_falls_back_when_knowledge_unembedded(
     tmp_path: Path,
 ) -> None:
     """``--no-embed`` wikis (or wikis whose K-layer pages predate the
@@ -297,8 +297,8 @@ async def test_synth_existing_pages_falls_back_when_wiki_unembedded(
     — fresh wiki)`` and be told to generate freely, dropping all
     duplicate-avoidance signal exactly when the wiki has the most to
     offer it. We fall back to a bounded prefix of the snapshot."""
-    wiki = tmp_path / "wiki"
-    init_test_wiki(wiki)
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
     _override_synth_cfg(
         wiki, existing_pages_max_bytes=200, existing_pages_top_k=3
     )
@@ -319,7 +319,7 @@ async def test_synth_existing_pages_falls_back_when_wiki_unembedded(
     await api.synthesize(wiki, llm=llm, embedder=embedder)
 
     prompt = llm.calls[0]
-    assert "## Existing wiki pages" in prompt, (
+    assert "## Existing knowledge pages" in prompt, (
         "fallback must surface the existing-pages section, not the "
         "fresh-wiki sentinel"
     )

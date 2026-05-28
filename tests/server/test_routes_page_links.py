@@ -19,19 +19,19 @@ from dikw_core.schemas import DocumentRecord, Layer, LinkRecord, LinkType
 
 def _doc(path: str) -> DocumentRecord:
     return DocumentRecord(
-        doc_id=_doc_id_for(Layer.WIKI, path),
+        doc_id=_doc_id_for(Layer.KNOWLEDGE, path),
         path=path,
         hash="0" * 64,
         mtime=0.0,
-        layer=Layer.WIKI,
+        layer=Layer.KNOWLEDGE,
         active=True,
     )
 
 
 async def _seed_triangle(root: Path) -> tuple[str, str, str]:
-    a_path = "wiki/a.md"
-    b_path = "wiki/b.md"
-    c_path = "wiki/c.md"
+    a_path = "knowledge/a.md"
+    b_path = "knowledge/b.md"
+    c_path = "knowledge/c.md"
     cfg, _root, storage = await _with_storage(root)
     del cfg
     try:
@@ -39,7 +39,7 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
             await storage.upsert_document(_doc(p))
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, a_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, a_path),
                 dst_path=b_path,
                 link_type=LinkType.WIKILINK,
                 anchor=None,
@@ -48,7 +48,7 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
         )
         await storage.upsert_link(
             LinkRecord(
-                src_doc_id=_doc_id_for(Layer.WIKI, b_path),
+                src_doc_id=_doc_id_for(Layer.KNOWLEDGE, b_path),
                 dst_path=c_path,
                 link_type=LinkType.WIKILINK,
                 anchor="Section",
@@ -62,9 +62,9 @@ async def _seed_triangle(root: Path) -> tuple[str, str, str]:
 
 @pytest.mark.asyncio
 async def test_get_page_links_both_returns_in_and_out(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    a_path, b_path, c_path = await _seed_triangle(wiki_root)
+    a_path, b_path, c_path = await _seed_triangle(base_root)
     resp = await server_client.get(f"/v1/base/pages/{b_path}/links")
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -78,16 +78,16 @@ async def test_get_page_links_both_returns_in_and_out(
     assert len(body["incoming"]) == 1
     inb = body["incoming"][0]
     assert inb["src_path"] == a_path
-    assert inb["src_doc_id"] == _doc_id_for(Layer.WIKI, a_path)
+    assert inb["src_doc_id"] == _doc_id_for(Layer.KNOWLEDGE, a_path)
     assert inb["link_type"] == "wikilink"
     assert inb["line"] == 5
 
 
 @pytest.mark.asyncio
 async def test_get_page_links_out_only(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    _, b_path, _ = await _seed_triangle(wiki_root)
+    _, b_path, _ = await _seed_triangle(base_root)
     resp = await server_client.get(
         f"/v1/base/pages/{b_path}/links", params={"direction": "out"}
     )
@@ -98,9 +98,9 @@ async def test_get_page_links_out_only(
 
 @pytest.mark.asyncio
 async def test_get_page_links_in_only(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    _, b_path, _ = await _seed_triangle(wiki_root)
+    _, b_path, _ = await _seed_triangle(base_root)
     resp = await server_client.get(
         f"/v1/base/pages/{b_path}/links", params={"direction": "in"}
     )
@@ -111,9 +111,9 @@ async def test_get_page_links_in_only(
 
 @pytest.mark.asyncio
 async def test_get_page_links_unknown_path_404(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    resp = await server_client.get("/v1/base/pages/wiki/missing.md/links")
+    resp = await server_client.get("/v1/base/pages/knowledge/missing.md/links")
     assert resp.status_code == 404
     body = resp.json()
     assert body["error"]["code"] == "page_not_found"
@@ -121,9 +121,9 @@ async def test_get_page_links_unknown_path_404(
 
 @pytest.mark.asyncio
 async def test_get_page_links_rejects_bad_direction(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    _, b_path, _ = await _seed_triangle(wiki_root)
+    _, b_path, _ = await _seed_triangle(base_root)
     resp = await server_client.get(
         f"/v1/base/pages/{b_path}/links", params={"direction": "sideways"}
     )
@@ -133,29 +133,29 @@ async def test_get_page_links_rejects_bad_direction(
 
 @pytest.mark.asyncio
 async def test_get_page_links_limit_caps_each_list(
-    server_client: httpx.AsyncClient, wiki_root: Path
+    server_client: httpx.AsyncClient, base_root: Path
 ) -> None:
-    hub_path = "wiki/hub.md"
-    cfg, _root, storage = await _with_storage(wiki_root)
+    hub_path = "knowledge/hub.md"
+    cfg, _root, storage = await _with_storage(base_root)
     del cfg
     try:
         await storage.upsert_document(_doc(hub_path))
-        for i, dst in enumerate(("wiki/x.md", "wiki/y.md", "wiki/z.md"), start=1):
+        for i, dst in enumerate(("knowledge/x.md", "knowledge/y.md", "knowledge/z.md"), start=1):
             await storage.upsert_document(_doc(dst))
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=_doc_id_for(Layer.WIKI, hub_path),
+                    src_doc_id=_doc_id_for(Layer.KNOWLEDGE, hub_path),
                     dst_path=dst,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
                     line=i,
                 )
             )
-        for i, src in enumerate(("wiki/p.md", "wiki/q.md", "wiki/r.md"), start=1):
+        for i, src in enumerate(("knowledge/p.md", "knowledge/q.md", "knowledge/r.md"), start=1):
             await storage.upsert_document(_doc(src))
             await storage.upsert_link(
                 LinkRecord(
-                    src_doc_id=_doc_id_for(Layer.WIKI, src),
+                    src_doc_id=_doc_id_for(Layer.KNOWLEDGE, src),
                     dst_path=hub_path,
                     link_type=LinkType.WIKILINK,
                     anchor=None,
