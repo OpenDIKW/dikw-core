@@ -646,9 +646,14 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
         embedder=FakeEmbeddings(),
     )
 
-    # Inject an embedder that raises mid-stream — simulates a provider
+    # Inject an embedder that passes preflight (the one-token check
+    # _preflight_embedder makes before any file mutation) but raises
+    # on the second call — simulates a content-dependent provider
     # error after upsert_document + replace_chunks have already
-    # committed the new content.
+    # committed the new content. With the 0.4.0 preflight gate, an
+    # unconditionally-failing embedder would be caught before persist
+    # touches anything and the deactivate-on-failure path would never
+    # be exercised.
     class BrokenEmbedder:
         dim = 8
         normalize = True
@@ -656,8 +661,13 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
         model = "broken"
         revision = ""
         modality = "text"
+        call_count = 0
 
         async def embed(self, texts, **kwargs):  # type: ignore[no-untyped-def]
+            self.call_count += 1
+            if self.call_count == 1:
+                # Preflight call — succeed so the test reaches persist.
+                return [[0.0] * 64 for _ in texts]
             raise RuntimeError("simulated embedder failure")
 
     with pytest.raises(RuntimeError, match="simulated embedder failure"):

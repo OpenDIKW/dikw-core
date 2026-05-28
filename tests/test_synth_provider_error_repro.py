@@ -24,7 +24,7 @@ import pytest
 from dikw_core import api
 from dikw_core.config import DikwConfig
 from dikw_core.progress import CancelToken
-from dikw_core.providers.base import LLMResponse, ProviderError
+from dikw_core.providers.base import LLMResponse, TransientProviderError
 from dikw_core.schemas import ChunkRecord
 
 from .fakes import make_provider_cfg
@@ -33,13 +33,15 @@ from .test_progress_reporter import ListReporter
 
 @dataclass
 class FlakyLLM:
-    """LLM that raises ``ProviderError`` on the configured call indices.
+    """LLM that raises ``TransientProviderError`` on the configured call indices.
 
     Mirrors the codex empty-response failure mode from issue #134:
-    ``response.output=None`` + zero text deltas → ``ProviderError``.
-    Call counter is global (across all groups), so a test can script
-    "raise on call 0 then succeed", "raise twice then succeed",
-    "raise forever", etc.
+    ``response.output=None`` + zero text deltas → ``TransientProviderError``
+    (the codex provider classifies the reducer-bug case as transient
+    since it's empirically retryable — auth flap, quota throttle,
+    content-refusal that resolves on a second attempt). Call counter is
+    global (across all groups), so a test can script "raise on call 0
+    then succeed", "raise twice then succeed", "raise forever", etc.
     """
 
     response_text: str
@@ -60,7 +62,7 @@ class FlakyLLM:
         idx = self.call_count
         self.call_count += 1
         if idx in self.raise_on_calls:
-            raise ProviderError(
+            raise TransientProviderError(
                 "OpenAI codex backend returned response.output=None and "
                 "shipped zero text deltas; the SDK reducer fallback has "
                 "no partial response to surface."
@@ -215,7 +217,7 @@ async def test_progress_emits_retrying_and_skipped_events() -> None:
     assert rd["group_pos"] == 2
     assert rd["attempt"] == 1
     assert rd["max_attempts"] == 3
-    assert rd["error_kind"] == "ProviderError"
+    assert rd["error_kind"] == "TransientProviderError"
     assert rd["error_msg"]
 
     skipped = next(
@@ -227,7 +229,7 @@ async def test_progress_emits_retrying_and_skipped_events() -> None:
     assert sd["group_pos"] == 2
     assert sd["attempts"] == 3
     assert sd["reason"] == "provider_error"
-    assert sd["error_kind"] == "ProviderError"
+    assert sd["error_kind"] == "TransientProviderError"
 
 
 @pytest.mark.asyncio
