@@ -21,7 +21,8 @@ readable** by 0.4.0; no in-place migration is provided.
 cd <base>
 mv wiki knowledge       # rename the K-layer directory
 rm -rf .dikw            # drop the SQLite + auth + task ledger
-dikw init               # write a fresh dikw.yml (or hand-edit your existing one)
+# (dikw.yml stays — your existing config is reused)
+dikw serve --base . &   # start the server
 dikw client ingest      # reindex sources + knowledge pages
 ```
 

@@ -583,12 +583,17 @@ def _assert_base_upgraded(root: Path) -> None:
     legacy = root / "wiki"
     current = root / "knowledge"
     if legacy.exists() and not current.exists():
+        # The existing ``dikw.yml`` is preserved — re-running ``dikw init``
+        # would raise ``FileExistsError``. After wiping ``.dikw/``,
+        # starting the server and running ``dikw client ingest`` rebuilds
+        # the SQLite index and re-chunks both sources/ and knowledge/.
         raise BaseUpgradeRequired(
             f"base at {root} was created by dikw-core ≤0.3.6; the K layer "
             "directory must be renamed from wiki/ to knowledge/ and the "
             "database rebuilt. Run:\n"
-            f"    cd {root} && mv wiki knowledge && rm -rf .dikw && "
-            "dikw init && dikw ingest"
+            f"    cd {root} && mv wiki knowledge && rm -rf .dikw\n"
+            "then start the server (`dikw serve --base .`) and run "
+            "`dikw client ingest` to reindex."
         )
 
 

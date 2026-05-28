@@ -49,13 +49,15 @@ raises `BaseUpgradeRequired`. For each existing base run:
 cd <base>
 mv wiki knowledge       # rename the K-layer directory
 rm -rf .dikw            # drop the SQLite + auth + task ledger
-dikw init               # write a fresh dikw.yml (or hand-edit your existing one)
+# (dikw.yml stays — your existing config is reused)
+dikw serve --base . &   # start the server
 dikw client ingest      # reindex sources + knowledge pages
 ```
 
-If you tracked `<base>/.dikw/auth.json` (OAuth tokens) outside the
-base, re-run `dikw auth login <provider>` after the rebuild instead
-of deleting `.dikw/` wholesale.
+If you tracked `<base>/.dikw/auth.json` (OAuth tokens), re-run
+`dikw auth login <provider>` (or `dikw auth import <provider>`) after
+the rebuild — `rm -rf .dikw` wipes the credential store along with
+the SQLite index.
 
 ## 2. Start the server
 

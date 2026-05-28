@@ -315,14 +315,15 @@ class Storage(Protocol):
         result. Returns chunks in descending ``edge_count`` order
         (most-cross-referenced first), capped at ``limit``. ``layer``
         filters the *neighbor* chunks (not the seeds), letting the
-        caller keep fan-out inside e.g. WIKI pages only.
+        caller keep fan-out inside e.g. KNOWLEDGE pages only.
         """
         ...
+
     async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None: ...
     async def list_knowledge_log(
         self, *, since_ts: float | None = None, limit: int | None = None
     ) -> list[KnowledgeLogEntry]:
-        """Return wiki-log entries in chronological order."""
+        """Return knowledge-log entries in chronological order."""
         ...
 
     # ---- D layer: multimedia assets --------------------------------------
