@@ -573,28 +573,35 @@ class BaseUpgradeRequired(RuntimeError):
 def _assert_base_upgraded(root: Path) -> None:
     """Refuse to operate against a legacy ``wiki/`` tree.
 
-    Detection is intentionally cheap (one ``Path.exists`` probe): if the
-    user has a ``wiki/`` directory but no ``knowledge/`` directory, this
-    is a 0.3.x base that has not been upgraded. We do not auto-migrate
-    because the SQLite/Postgres schema also changed (``Layer`` enum
-    value + ``wiki_log`` table name) and the alpha policy is to ask the
-    user to rebuild rather than carry compatibility code forever.
+    Fires whenever ``<root>/wiki/`` exists and contains any markdown
+    content — covering both the unmodified 0.3.x layout AND the partial-
+    migration case where a user (or tool) created ``knowledge/`` ahead
+    of ``mv wiki knowledge`` and would otherwise silently abandon the
+    legacy ``wiki/*.md`` content. We do not auto-migrate because the
+    SQLite/Postgres schema also changed (``Layer`` enum value +
+    ``wiki_log`` table name) and the alpha policy is to ask the user to
+    rebuild rather than carry compatibility code forever.
     """
     legacy = root / "wiki"
-    current = root / "knowledge"
-    if legacy.exists() and not current.exists():
-        # The existing ``dikw.yml`` is preserved — re-running ``dikw init``
-        # would raise ``FileExistsError``. After wiping ``.dikw/``,
-        # starting the server and running ``dikw client ingest`` rebuilds
-        # the SQLite index and re-chunks both sources/ and knowledge/.
-        raise BaseUpgradeRequired(
-            f"base at {root} was created by dikw-core ≤0.3.6; the K layer "
-            "directory must be renamed from wiki/ to knowledge/ and the "
-            "database rebuilt. Run:\n"
-            f"    cd {root} && mv wiki knowledge && rm -rf .dikw\n"
-            "then start the server (`dikw serve --base .`) and run "
-            "`dikw client ingest` to reindex."
-        )
+    if not legacy.is_dir():
+        return
+    # A bare empty ``wiki/`` left behind by an earlier rename attempt
+    # is harmless; only flag if it still carries markdown content the
+    # user would lose. ``rglob`` is bounded by the on-disk knowledge
+    # tree size — same order of magnitude as ingest's existing scan.
+    if not any(legacy.rglob("*.md")):
+        return
+    raise BaseUpgradeRequired(
+        f"base at {root} carries a legacy `wiki/` directory from "
+        "dikw-core ≤0.3.6; the K layer directory must be renamed to "
+        "`knowledge/` and the database rebuilt. Run:\n"
+        f"    cd {root} && mv wiki knowledge && rm -rf .dikw\n"
+        "then start the server (`dikw serve --base .`) and run "
+        "`dikw client ingest` to reindex. (If `knowledge/` already "
+        "exists and you intended to merge content, do the merge by "
+        "hand before retrying — the engine refuses to silently abandon "
+        "wiki/*.md files.)"
+    )
 
 
 def init_base(root: str | Path, *, description: str | None = None) -> Path:

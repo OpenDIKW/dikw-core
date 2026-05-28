@@ -121,6 +121,23 @@ def test_parse_truncated_only_block_raises_synthesis_error() -> None:
     assert "truncated" in str(excinfo.value)
 
 
+def test_parse_rejects_legacy_wiki_path_prefix() -> None:
+    """A stale LLM emitting the pre-0.4.0 ``wiki/`` prefix must be
+    rejected — otherwise synth would write a file under
+    ``<base>/wiki/...`` and the next ``dikw serve`` would refuse to
+    load the base because ``BaseUpgradeRequired`` flags non-empty
+    ``wiki/`` trees."""
+    raw = (
+        '<page path="wiki/concepts/legacy.md" type="concept">\n'
+        "---\ntags: []\n---\n\n# Legacy\n\nbody\n"
+        "</page>"
+    )
+    with pytest.raises(SynthesisError) as excinfo:
+        parse_synthesis_response(raw, source_path="sources/x.md")
+    assert "knowledge/" in str(excinfo.value)
+    assert "wiki/" in str(excinfo.value)
+
+
 _TRUNCATED_AFTER_GOOD = """
 <page path="knowledge/entities/spacex.md" type="entity">
 ---

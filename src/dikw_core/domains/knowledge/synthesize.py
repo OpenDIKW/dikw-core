@@ -119,6 +119,18 @@ def _parse_one_page_block(
         tags = []
 
     path = attrs.get("path") or None
+    # The LLM is told (via prompts/synthesize.md) to emit paths under
+    # ``knowledge/<folder>/<slug>.md``. A stale model that echoes the
+    # pre-0.4.0 ``wiki/`` prefix would otherwise create files under a
+    # directory that the next ``dikw serve`` would refuse to load
+    # (``BaseUpgradeRequired`` flags any non-empty ``wiki/`` tree).
+    # Reject up-front so the bad page never lands on disk.
+    if path is not None and not path.startswith("knowledge/"):
+        raise SynthesisError(
+            f"LLM emitted a page with path={path!r}; paths must live "
+            "under `knowledge/` (the legacy `wiki/` prefix was renamed "
+            "in 0.4.0)."
+        )
     return build_page(
         title=title,
         body=body.rstrip() + "\n",
