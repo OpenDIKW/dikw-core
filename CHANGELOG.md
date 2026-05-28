@@ -58,28 +58,47 @@ on each entry call out exactly what shape changes break.
 ### Fixed
 
 - **`lint apply` / `wisdom write` no longer flip the active text
-  embed version.** Both paths now reuse the active version returned
-  by `storage.get_active_embed_version("text")` instead of
+  embed version, and defer inline embed when cfg has drifted from
+  the active identity.** Both paths now reuse the active version
+  returned by `storage.get_active_embed_version("text")` instead of
   registering-and-activating a new identity from `cfg.provider`.
   Activating here would have stranded every other vector in the
   now-inactive table and gutted dense retrieval until the next full
-  ingest. When no active version exists yet (fresh base), inline
-  embed is deferred to the next ingest's resume scan instead.
-  Mirrors `synthesize`'s long-standing reuse pattern.
-- **Embedding provider SDK exceptions wrap to `ProviderError`.**
+  ingest. **Drift detection**: when the active version's
+  `(provider, model)` identity differs from `cfg.provider` (the user
+  edited `dikw.yml` between full ingests), inline embed is also
+  deferred — otherwise the cfg-built embedder would produce vectors
+  under the old version's table and silently mix vector spaces. When
+  no active version exists yet (fresh base), inline embed is
+  deferred to the next ingest's resume scan, which goes through the
+  full register-and-activate path. Mirrors `synthesize`'s
+  long-standing reuse pattern.
+- **Embedding provider errors classified as transient vs. permanent.**
   `OpenAICompatEmbeddings.embed` and `GiteeMultimodalEmbedding.embed`
-  catch `openai.OpenAIError` and `httpx.HTTPError` respectively and
-  re-raise as `ProviderError` so the per-batch retry-skip in
-  `consume_embedding_stream` treats transient API failures
-  (timeouts, rate limits, 5xx, connection resets) the same way it
-  treats local provider errors. Without this wrap a single
-  transient embed call aborted the whole ingest / lint-apply /
-  wisdom-write run.
+  now classify exceptions into `TransientProviderError` (retryable:
+  timeouts, rate limits, 5xx, 408/429, connect drops, parse failures)
+  vs. plain `ProviderError` (permanent: 401, 403, 404, invalid model
+  id, missing API key). The per-batch retry-skip in
+  `consume_embedding_stream` retries only `TransientProviderError`;
+  permanent errors propagate so misconfig fails fast instead of being
+  silently retried-then-skipped (a single missing/wrong API key would
+  otherwise have produced "success, 0 vectors" runs).
 - **Synth forwards `cfg.provider.embedding_error_retries` to
   `persist_knowledge`.** The K-layer inline embed inside synthesize
   was silently using `retries=0` regardless of the configured
   retry budget; ingest, lint apply, and wisdom write already
   forwarded it.
+
+### Known limitations
+
+- **W→W forward-ref wikilinks**: a wisdom page `A` written before
+  its `[[B]]` target wisdom page exists keeps the link unresolved
+  in storage until `A` is re-written via `dikw client wisdom write`.
+  Symmetric to the long-standing K→K limitation — synth doesn't
+  re-resolve K-page links when a later page introduces the target
+  either. A future `dikw client reindex <path>` will close both
+  gaps; until then, re-writing the referring page is the
+  user-facing workaround.
 
 ## 0.4.0 — BREAKING term rename: K layer "wiki" → "knowledge"
 

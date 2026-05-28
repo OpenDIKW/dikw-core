@@ -39,7 +39,7 @@ from typing import Any
 import httpx
 
 from ..schemas import MultimodalInput
-from .base import ProviderError
+from .base import ProviderError, TransientProviderError
 from .openai_compat import _resolve_embedding_api_key
 
 _DEFAULT_BASE_URL = "https://ai.gitee.com/v1"
@@ -113,16 +113,13 @@ class GiteeMultimodalEmbedding:
                 "model": model,
                 "input": [_serialize_input(i) for i in batch],
             }
-            # Wrap httpx + JSON parsing exceptions as ``ProviderError`` so
-            # the embed-batch retry-skip in
-            # ``info.embed._run_batch_with_retry`` treats transient
-            # vendor failures (5xx, timeouts, connection resets, malformed
-            # JSON) the same way it treats local provider errors. Without
-            # this wrap, ``raise_for_status`` raises
-            # ``httpx.HTTPStatusError`` and ``resp.json()`` raises
-            # ``json.JSONDecodeError``; neither is a ``ProviderError`` so
-            # a single transient failure aborts the whole ingest /
-            # wisdom-write call (codex review finding, 0.4.0).
+            # Wrap httpx + JSON parsing exceptions and classify into
+            # transient vs permanent so the embed-batch retry-skip in
+            # ``info.embed._run_batch_with_retry`` retries transient
+            # vendor failures (5xx, 408/429, timeouts, connection
+            # resets) but propagates permanent ones (401, 403, 404,
+            # invalid model id) instead of silently retrying-then-
+            # skipping. Codex review finding, 0.4.0.
             try:
                 resp = await client.post(
                     f"{self._base_url}/embeddings", json=payload
@@ -131,13 +128,31 @@ class GiteeMultimodalEmbedding:
                 data = resp.json()
                 # OpenAI-compat response: {"data": [{"index": int, "embedding": [...]}]}
                 rows = sorted(data["data"], key=lambda r: r.get("index", 0))
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                err = (
+                    TransientProviderError
+                    if status >= 500 or status in (408, 429)
+                    else ProviderError
+                )
+                raise err(
+                    f"Gitee multimodal embedding call failed with status "
+                    f"{status}: {exc}"
+                ) from exc
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                raise TransientProviderError(
+                    f"Gitee multimodal embedding call timed out / connection "
+                    f"failed: {type(exc).__name__}: {exc}"
+                ) from exc
             except httpx.HTTPError as exc:
                 raise ProviderError(
                     f"Gitee multimodal embedding call failed: "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
             except (KeyError, ValueError, TypeError) as exc:
-                raise ProviderError(
+                # Parse failures often indicate a transient CDN / proxy
+                # serving a partial response — retry once before giving up.
+                raise TransientProviderError(
                     f"Gitee multimodal response parse failed: "
                     f"{type(exc).__name__}: {exc}"
                 ) from exc

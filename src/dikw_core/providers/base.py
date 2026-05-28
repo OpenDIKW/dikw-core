@@ -52,7 +52,27 @@ class LLMStreamEvent(BaseModel):
 
 
 class ProviderError(RuntimeError):
-    """Base class for provider errors (auth, network, invalid model, etc.)."""
+    """Base class for provider errors (auth, network, invalid model, etc.).
+
+    ``ProviderError`` (the bare base) is the **permanent** failure class:
+    auth failures, missing API key, invalid model id, 4xx other than
+    rate-limit / request-timeout. Retry loops (``consume_embedding_stream``,
+    the synth path's group retry) MUST let it propagate so misconfig
+    fails fast instead of being silently retried-then-skipped.
+    For retryable failures use :class:`TransientProviderError`.
+    """
+
+
+class TransientProviderError(ProviderError):
+    """A retryable provider failure (5xx, 408, 429, timeout, connect drop, …).
+
+    Raised by embedding / LLM adapters when the upstream call failed in
+    a way that's plausibly worth retrying. The embed-batch retry-skip
+    inside ``info.embed._run_batch_with_retry`` catches **only** this
+    subclass — bare ``ProviderError`` propagates so permanent misconfig
+    (missing key, 401, unknown model) fails the call instead of
+    silently emitting an empty embedding batch.
+    """
 
 
 @runtime_checkable
@@ -124,4 +144,5 @@ __all__ = [
     "MultimodalEmbeddingProvider",
     "ProviderError",
     "ToolSpec",
+    "TransientProviderError",
 ]

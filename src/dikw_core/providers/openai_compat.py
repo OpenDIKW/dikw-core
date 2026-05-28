@@ -11,7 +11,13 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from ._http import build_no_keepalive_async_client
-from .base import LLMResponse, LLMStreamEvent, ProviderError, ToolSpec
+from .base import (
+    LLMResponse,
+    LLMStreamEvent,
+    ProviderError,
+    ToolSpec,
+    TransientProviderError,
+)
 
 if TYPE_CHECKING:  # avoid importing openai at module load for envs without it
     from openai import AsyncOpenAI
@@ -237,19 +243,40 @@ class OpenAICompatEmbeddings:
         kwargs: dict[str, Any] = {"model": model, "input": texts}
         if self._default_dimensions is not None:
             kwargs["dimensions"] = self._default_dimensions
-        # Wrap OpenAI SDK exceptions as ``ProviderError`` so the embed-
-        # batch retry-skip in ``info.embed._run_batch_with_retry`` treats
-        # transient API failures (timeouts, rate limits, 5xx) the same
-        # way it treats local provider errors. Without this wrap, the
-        # SDK raises ``openai.OpenAIError`` subclasses that the retry
-        # handler doesn't catch — a single 503 then aborts the whole
-        # ingest / lint-apply / wisdom-write call (codex review
-        # finding, 0.4.0). ``openai`` is reached lazily at call time
-        # — same lazy import the ``_client`` helper uses, so envs
-        # without the SDK still load this module.
-        from openai import OpenAIError
+        # Wrap OpenAI SDK exceptions and classify into transient vs.
+        # permanent so the embed-batch retry-skip in
+        # ``info.embed._run_batch_with_retry`` retries transient API
+        # failures (timeouts, rate limits, 5xx, connect drops) but
+        # propagates permanent misconfig (401, model-not-found, 4xx
+        # other than 408/429) instead of silently retrying-then-
+        # skipping. Without classification, missing-key / auth /
+        # invalid-model errors get swallowed and the call reports
+        # "success, 0 vectors embedded" — a silent corruption.
+        # Codex review finding, 0.4.0.
+        from openai import (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            OpenAIError,
+        )
         try:
             resp = await client.embeddings.create(**kwargs)
+        except (APITimeoutError, APIConnectionError) as exc:
+            raise TransientProviderError(
+                f"OpenAI-compat embedding call timed out / connection failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        except APIStatusError as exc:
+            status = getattr(exc, "status_code", None)
+            err = (
+                TransientProviderError
+                if status is not None and (status >= 500 or status in (408, 429))
+                else ProviderError
+            )
+            raise err(
+                f"OpenAI-compat embedding call failed with status {status}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         except OpenAIError as exc:
             raise ProviderError(
                 f"OpenAI-compat embedding call failed: "

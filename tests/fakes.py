@@ -22,7 +22,7 @@ import pytest
 from dikw_core.config import ProviderConfig
 from dikw_core.eval.fake_embedder import EMBED_DIM, FakeEmbeddings
 from dikw_core.providers import LLMResponse, LLMStreamEvent, ToolSpec
-from dikw_core.providers.base import ProviderError
+from dikw_core.providers.base import TransientProviderError
 from dikw_core.schemas import EmbeddingVersion, MultimodalInput
 
 __all__ = [
@@ -362,11 +362,20 @@ async def register_text_version(
     storage: Any,
     *,
     dim: int = EMBED_DIM,
-    provider: str = "test",
-    model: str = "fake",
+    provider: str = "openai_compat@api.openai.com",
+    model: str = "text-embedding-3-small",
     revision: str = "",
 ) -> int:
     """Register a text ``embed_versions`` row in ``storage`` and return its id.
+
+    Defaults to the cfg-derived identity (``openai_compat`` +
+    ``text-embedding-3-small``) so tests that combine ``init_test_base``
+    with this helper end up with an active version whose identity
+    matches the cfg the base is initialised with. Otherwise the 0.4.0
+    drift-detection in ``_resolve_active_text_version_for_inline_embed``
+    treats the mismatch as "user edited dikw.yml between full ingests"
+    and defers inline embed, breaking write_wisdom_page / lint_apply
+    tests that expect inline embeddings to land.
 
     Cross-test helper; production code resolves the version from
     ``ProviderConfig`` via ``api.ingest`` / ``api.query``. Tests that
@@ -461,12 +470,18 @@ class CountingEmbedder:
 
 @dataclass
 class FlakyEmbedder:
-    """Raises ``ProviderError`` on configured call indices.
+    """Raises ``TransientProviderError`` on configured call indices.
 
     Used to exercise the per-batch retry-skip in ``embed_chunks`` and
     ``consume_embedding_stream``. The call counter is zero-based and
     global across all batches: ``raise_on_calls={0, 1}`` raises on the
     first two embed calls then succeeds on the third.
+
+    Raises the **transient** subclass because the retry-skip handler
+    only catches transient failures from 0.4.0 onward — bare
+    ``ProviderError`` propagates so permanent misconfig (missing key,
+    401, invalid model id) fails fast instead of being silently
+    swallowed.
     """
 
     inner: FakeEmbeddings = field(default_factory=FakeEmbeddings)
@@ -479,8 +494,8 @@ class FlakyEmbedder:
         self.embed_calls += 1
         self.total_texts += len(texts)
         if idx in self.raise_on_calls:
-            raise ProviderError(
-                f"FlakyEmbedder simulated ProviderError on call {idx}"
+            raise TransientProviderError(
+                f"FlakyEmbedder simulated TransientProviderError on call {idx}"
             )
         return await self.inner.embed(texts, model=model)
 

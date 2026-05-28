@@ -29,7 +29,7 @@ from pathlib import Path
 
 from ...progress import ProgressReporter
 from ...providers import EmbeddingProvider, MultimodalEmbeddingProvider
-from ...providers.base import ProviderError
+from ...providers.base import TransientProviderError
 from ...schemas import (
     AssetEmbeddingRow,
     AssetRecord,
@@ -122,15 +122,17 @@ async def embed_chunks(
     each batch immediately. Per-batch failure cost is bounded: prior
     batches are already on disk when the next API call raises.
 
-    Per-batch retry-skip: on ``ProviderError`` the batch is retried up
-    to ``retries`` more times with linear backoff (``backoff_seconds``
-    * attempt). After exhausted retries the batch yields an
-    ``EmbedBatchResult`` with ``error`` set and empty ``rows`` — the
-    chunks remain in storage without vectors and get reconciled by the
-    next ingest's missing-embedding resume scan. ``retries=0`` (the
-    default) means a single attempt then skip on failure, so a caller
-    that wants the legacy "first failure raises" behaviour must not
-    use this path (or wrap with try/except on the consumer side).
+    Per-batch retry-skip: on ``TransientProviderError`` (5xx / timeout /
+    rate-limit / connection drop) the batch is retried up to ``retries``
+    more times with linear backoff (``backoff_seconds`` * attempt).
+    After exhausted retries the batch yields an ``EmbedBatchResult``
+    with ``error`` set and empty ``rows`` — the chunks remain in
+    storage without vectors and get reconciled by the next ingest's
+    missing-embedding resume scan. Bare ``ProviderError`` (permanent
+    misconfig: missing API key, 401, invalid model id) is NOT
+    retried-then-skipped — it propagates so the call fails fast
+    instead of silently emitting zero vectors. ``retries=0`` (the
+    default) means a single attempt then skip on transient failure.
 
     When ``storage`` is supplied, each batch first looks up
     ``sha256(chunk.text)`` in ``storage.embed_cache`` and routes hits
@@ -238,16 +240,21 @@ async def _run_batch_with_retry(
     batch_idx: int,
     total_batches: int,
 ) -> EmbedBatchResult:
-    """Call ``_embed_one_batch`` with bounded ``ProviderError`` retry-skip.
+    """Call ``_embed_one_batch`` with bounded ``TransientProviderError`` retry-skip.
 
     On final failure returns a skip ``EmbedBatchResult`` whose
     ``rows`` is empty and ``error`` describes the failure. The caller
     (``consume_embedding_stream``) leaves the chunks in storage without
     vectors so the next ingest's missing-embedding resume scan picks
     them up. ``retries=0`` means a single attempt then skip.
+
+    Only :class:`TransientProviderError` is retried-then-skipped.
+    Bare :class:`ProviderError` (permanent: auth failure, missing
+    key, invalid model id) propagates so the embed call fails fast
+    instead of silently emitting zero vectors.
     """
     max_attempts = retries + 1
-    last_error: ProviderError | None = None
+    last_error: TransientProviderError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             rows = await _embed_one_batch(
@@ -259,7 +266,7 @@ async def _run_batch_with_retry(
                 error_template=error_template,
             )
             return EmbedBatchResult(rows=rows, attempts=attempt)
-        except ProviderError as pe:
+        except TransientProviderError as pe:
             last_error = pe
             if attempt < max_attempts:
                 logger.warning(

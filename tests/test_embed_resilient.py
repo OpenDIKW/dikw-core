@@ -118,6 +118,51 @@ async def test_embed_chunks_skips_batch_after_exhausted_retries(
         await storage.close()
 
 
+async def test_embed_chunks_permanent_error_propagates_without_retry(
+    tmp_path: Path,
+) -> None:
+    """A permanent ``ProviderError`` (auth fail, missing key, invalid
+    model id) propagates immediately — the retry-skip handler only
+    catches ``TransientProviderError``. Otherwise misconfig gets
+    silently swallowed and the ingest reports "success, 0 vectors"
+    instead of failing fast (codex round-2 finding, 0.4.0).
+    """
+    from dataclasses import dataclass, field
+
+    from dikw_core.providers.base import ProviderError
+
+    @dataclass
+    class PermanentEmbedder:
+        calls: int = field(default=0, init=False)
+
+        async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+            self.calls += 1
+            raise ProviderError("simulated permanent failure (e.g. 401)")
+
+    storage = await _new_storage(tmp_path)
+    try:
+        version_id = await register_text_version(storage)
+        embedder = PermanentEmbedder()
+
+        with pytest.raises(ProviderError):
+            async for _ in embed_chunks(
+                embedder,
+                _chunks(2),
+                model="fake",
+                version_id=version_id,
+                batch_size=2,
+                retries=3,  # would normally be retried, but permanent must not
+                backoff_seconds=0.0,
+            ):
+                pass
+
+        # Only one attempt — the retry handler did NOT retry the permanent
+        # error.
+        assert embedder.calls == 1
+    finally:
+        await storage.close()
+
+
 async def test_embed_chunks_retries_zero_means_no_retry(tmp_path: Path) -> None:
     """``retries=0`` → one attempt then skip on ProviderError.
 

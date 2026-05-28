@@ -332,7 +332,7 @@ async def _register_text_version(
 
 
 async def _resolve_active_text_version_for_inline_embed(
-    storage: Storage,
+    storage: Storage, cfg_provider: ProviderConfig | None = None
 ) -> tuple[int, str] | None:
     """Return ``(version_id, model)`` of the active text embed version, or None.
 
@@ -343,9 +343,20 @@ async def _resolve_active_text_version_for_inline_embed(
     ingest`` re-embeds the full corpus. Mirrors the pattern used by
     ``synthesize`` (api.py:2484-2497).
 
-    Returns ``None`` when no active text version exists yet (fresh base
-    that hasn't been ingested). The caller then drops the embedder and
-    defers the embedding to the next ingest's resume scan.
+    Returns ``None`` when:
+
+    1. No active text version exists yet (fresh base, no ingest run), or
+    2. ``cfg_provider`` is supplied and its embedding identity has
+       drifted from the active version's identity (different endpoint
+       or model). The caller built its embedder from cfg, so its
+       vectors would land under the wrong version table — defer to the
+       next ingest's resume scan (which goes through the full register-
+       and-activate path) instead of silently mixing vector spaces.
+
+    Drift detection compares ``(provider, model)`` — the two fields
+    that define which vec table the vectors live in. ``revision`` /
+    ``dim`` are part of the registered row but follow from
+    ``(provider, model)`` in practice. Codex review finding, 0.4.0.
     """
     try:
         active_text = await storage.get_active_embed_version(modality="text")
@@ -353,6 +364,15 @@ async def _resolve_active_text_version_for_inline_embed(
         return None
     if active_text is None or active_text.version_id is None:
         return None
+    if cfg_provider is not None:
+        cfg_provider_key = _qualified_provider(
+            cfg_provider.embedding, cfg_provider.embedding_base_url
+        )
+        if (
+            active_text.provider != cfg_provider_key
+            or active_text.model != cfg_provider.embedding_model
+        ):
+            return None
     return active_text.version_id, active_text.model
 
 
@@ -2962,7 +2982,9 @@ async def lint_apply(
         if active_embedder is None and os.environ.get("DIKW_EMBEDDING_API_KEY"):
             active_embedder = build_embedder(cfg.provider)
         if active_embedder is not None:
-            resolved = await _resolve_active_text_version_for_inline_embed(storage)
+            resolved = await _resolve_active_text_version_for_inline_embed(
+                storage, cfg.provider
+            )
             if resolved is not None:
                 text_version_id, embedding_model = resolved
             else:
@@ -3123,14 +3145,16 @@ async def write_wisdom_page(
                 if active_embedder is None:
                     active_embedder = build_embedder(cfg.provider)
                 resolved = await _resolve_active_text_version_for_inline_embed(
-                    storage
+                    storage, cfg.provider
                 )
                 if resolved is not None:
                     text_version_id, embedding_model = resolved
                 else:
-                    # No active text version yet — defer embedding to the
+                    # Either no active text version yet OR cfg has drifted
+                    # from the active identity — defer embedding to the
                     # next ingest's resume scan instead of activating a
-                    # fresh version here.
+                    # fresh version here or storing vectors under the
+                    # wrong version table.
                     active_embedder = None
 
             # Cooperative cancellation poll: synth/lint/ingest all check

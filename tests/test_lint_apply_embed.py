@@ -441,3 +441,68 @@ async def test_synth_persist_helper_forwards_embedding_retry_settings(
 
     assert captured.get("retries") == 5
     assert captured.get("backoff_seconds") == 2.5
+
+
+@pytest.mark.asyncio
+async def test_api_lint_apply_defers_inline_embed_on_cfg_drift(
+    tmp_path: Path,
+) -> None:
+    """When the active text version's identity differs from cfg.provider
+    (user edited ``dikw.yml`` between full ingests), ``lint apply`` must
+    NOT inline-embed — the vectors would land under the old version
+    table but be produced by a different endpoint/model and silently
+    mix vector spaces. Defer to the next ingest's resume scan, which
+    goes through full register-and-activate (codex round-2 finding,
+    0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.schemas import EmbeddingVersion
+
+    base_root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        # Pre-register the LEGACY active version with a different
+        # provider host than what test cfg would derive
+        # (cfg.provider.embedding="openai_compat" + default host →
+        # "openai_compat@api.openai.com"). Make sure ours doesn't match.
+        await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="openai_compat@different-host.example",
+                model="legacy-model",
+                revision="",
+                dim=EMBED_DIM,
+                normalize=True,
+                distance="cosine",
+                modality="text",
+            )
+        )
+        await _seed_page(
+            storage=storage,
+            base_root=base_root,
+            path="knowledge/concepts/source.md",
+            title="Source",
+            body="# Source\n\nSee [[foo  bar]] for context.\n",
+        )
+        abs_src = base_root / "knowledge/concepts/source.md"
+        expected_hash = file_sha256(abs_src)
+    finally:
+        await storage.close()
+
+    proposal_report = FixProposalReport(
+        proposals=[_update_proposal(
+            path="knowledge/concepts/source.md",
+            new_body="# Source\n\nSee [[Foo Bar]] for context.\n",
+            expected_hash=expected_hash,
+        )]
+    )
+
+    report = await api.lint_apply(
+        base_root,
+        proposal_report=proposal_report,
+        reporter=_NullReporter(),
+        embedder=FakeEmbeddings(),
+    )
+
+    # The cfg-vs-active drift caused inline embed to defer — chunks land
+    # without vectors, surfaced as chunks_pending_embedding > 0.
+    assert report.chunks_embedded == 0
+    assert report.chunks_pending_embedding > 0
