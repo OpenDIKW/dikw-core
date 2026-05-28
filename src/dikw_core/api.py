@@ -113,6 +113,7 @@ from .providers import (
     EmbeddingProvider,
     LLMProvider,
     MultimodalEmbeddingProvider,
+    ProviderError,
     build_embedder,
     build_llm,
     build_multimodal_embedder,
@@ -3750,13 +3751,94 @@ async def _synth_pages_from_source(
             len(group.section_starts),
             group.token_count,
         )
-        response = await llm.complete(
-            system=DEFAULT_SYNTH_SYSTEM,
-            user=user_prompt,
-            model=cfg.provider.llm_model,
-            max_tokens=cfg.provider.llm_max_tokens_synth,
-            temperature=0.3,
-        )
+        # Per-group ProviderError resilience (issue #134). One bad group
+        # (codex empty-response, auth flap, refusal) must not abort the
+        # whole task — retry up to ``provider_error_retries`` times with
+        # linear backoff, then skip the group and continue with the
+        # next. The skip is recorded as a parse-style error so
+        # ``synth_source_done`` is NOT written (the marker is gated on
+        # ``outcome.parse_errors == 0`` and re-running synth has another
+        # chance to succeed on the flaky group).
+        max_attempts = cfg.synth.provider_error_retries + 1
+        response = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = await llm.complete(
+                    system=DEFAULT_SYNTH_SYSTEM,
+                    user=user_prompt,
+                    model=cfg.provider.llm_model,
+                    max_tokens=cfg.provider.llm_max_tokens_synth,
+                    temperature=0.3,
+                )
+                break
+            except ProviderError as pe:
+                if attempt < max_attempts:
+                    backoff_s = (
+                        cfg.synth.provider_error_retry_backoff_seconds
+                        * attempt
+                    )
+                    logger.warning(
+                        "  group %d/%d ProviderError on attempt %d/%d: "
+                        "%s — retrying in %.1fs",
+                        group_pos,
+                        total_groups,
+                        attempt,
+                        max_attempts,
+                        pe,
+                        backoff_s,
+                    )
+                    await _reporter.progress(
+                        phase="synth_llm",
+                        current=group_pos - 1,
+                        total=total_groups,
+                        detail={
+                            "source_path": source_path,
+                            "group_pos": group_pos,
+                            "status": "retrying",
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "error_kind": type(pe).__name__,
+                            "error_msg": str(pe)[:200],
+                        },
+                    )
+                    if backoff_s > 0:
+                        await asyncio.sleep(backoff_s)
+                    # Honor cancellation between attempts so a user-
+                    # issued cancel during a flapping run terminates
+                    # promptly instead of consuming the full budget.
+                    cancel.raise_if_cancelled()
+                else:
+                    errors += 1
+                    notes.append(
+                        f"group {group_pos}/{total_groups} provider "
+                        f"error (skipped after {attempt} attempt(s)): {pe}"
+                    )
+                    logger.warning(
+                        "  group %d/%d ProviderError on attempt %d/%d "
+                        "(final), skipping group: %s",
+                        group_pos,
+                        total_groups,
+                        attempt,
+                        max_attempts,
+                        pe,
+                    )
+                    await _reporter.progress(
+                        phase="synth_llm",
+                        current=group_pos,
+                        total=total_groups,
+                        detail={
+                            "source_path": source_path,
+                            "group_pos": group_pos,
+                            "status": "skipped",
+                            "reason": "provider_error",
+                            "attempts": attempt,
+                            "error_kind": type(pe).__name__,
+                            "error_msg": str(pe)[:200],
+                        },
+                    )
+        if response is None:
+            # All attempts exhausted; move on to the next group.
+            continue
         await _reporter.progress(
             phase="synth_llm",
             current=group_pos,

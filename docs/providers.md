@@ -254,6 +254,21 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   before the reducer fired (auth / quota / refusal failures), the
   provider raises `ProviderError` instead of returning an empty
   response, so synth doesn't silently drop a source page.
+- **`synth` retries `ProviderError` per group, then skips.** Since
+  0.4.0, a single `ProviderError` (the empty-response case above, or
+  any other provider failure) on one source group no longer aborts the
+  whole `synth` task. The engine retries the call up to
+  `synth.provider_error_retries` times (default `2`) with linear
+  backoff (`synth.provider_error_retry_backoff_seconds`, default
+  `2.0` → `2s` / `4s`), then skips the group and continues with the
+  next. The skip is counted as a parse-style error so
+  `synth_source_done` is **not** written and a follow-up `dikw
+  client synth` will retry the flaky group from scratch. NDJSON
+  consumers see new per-group `status="retrying"` and
+  `status="skipped"` events. Setting `provider_error_retries: 0`
+  disables retries (one attempt only), but the group is still
+  *skipped* on failure rather than re-raised — by design, since the
+  fix exists precisely so that one bad group cannot abort the task.
 - **Reasoning fragments are dropped today.** dikw's `LLMStreamEvent`
   Protocol carries a `reasoning` event type and the codex provider emits
   it for `response.reasoning_summary_text.delta` events, but the

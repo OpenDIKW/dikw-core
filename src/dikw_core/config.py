@@ -234,6 +234,15 @@ class SynthConfig(BaseModel):
     # retrieval to stay within the model's context window.
     existing_pages_max_bytes: int = 16384
     existing_pages_top_k: int = 50
+    # Per-group ``ProviderError`` resilience. A single bad source group
+    # (e.g. the openai_codex empty-response edge case in issue #134)
+    # used to abort the whole synth task; now we retry the call up to
+    # ``provider_error_retries`` times with linear backoff before
+    # skipping the group and continuing. ``retries=0`` means "no
+    # retries — one attempt, then skip on failure"; the synth task
+    # never re-raises a per-group ProviderError, by design.
+    provider_error_retries: int = Field(default=2, ge=0)
+    provider_error_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
 
 
 class MultimodalEmbedConfig(BaseModel):
