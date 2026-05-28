@@ -113,7 +113,7 @@ async def test_openai_compat_embed_classifies_404_model_as_permanent() -> None:
     embedder._client_cache = fake_client
 
     with pytest.raises(ProviderError) as ei:
-        await embedder.embed(["hello"], model="bogus-model"),
+        await embedder.embed(["hello"], model="bogus-model")
     assert not isinstance(ei.value, TransientProviderError)
 
 

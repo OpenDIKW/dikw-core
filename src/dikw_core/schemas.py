@@ -846,6 +846,15 @@ class WisdomWriteReport(BaseModel):
     path. ``embedded`` is the count of chunks whose vectors landed in
     the per-version vec table this call; ``0`` when ``no_embed=True``
     or no embedder was resolvable.
+
+    ``chunks_pending_embedding`` is the count of chunks whose vectors
+    are NOT yet in storage but will be reconciled by the next
+    ``dikw client ingest`` resume scan. Non-zero values surface
+    cleanly (a) when ``no_embed=True``, (b) when the embedder
+    transient-fails enough batches to exhaust the retry budget,
+    or (c) when the inline-embed path defers because no active text
+    version exists yet OR ``cfg.provider`` drifted from the active
+    version's identity. Symmetric with :class:`ApplyReport`.
     """
 
     path: str
@@ -853,4 +862,5 @@ class WisdomWriteReport(BaseModel):
     hash: str
     chunks: int
     embedded: int
+    chunks_pending_embedding: int = 0
     unresolved_wikilinks: int

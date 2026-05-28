@@ -490,12 +490,20 @@ def render_wisdom_write_report(
     action = "created" if created else "updated"
     chunks = int(report.get("chunks") or 0)
     embedded = int(report.get("embedded") or 0)
+    pending = int(report.get("chunks_pending_embedding") or 0)
     unresolved = int(report.get("unresolved_wikilinks") or 0)
     color = "green" if created else "cyan"
-    console.print(
-        f"[{color}]{action}[/{color}] [bold]{path}[/bold] — "
-        f"{chunks} chunk(s), {embedded} embedded"
-    )
+    if pending:
+        console.print(
+            f"[{color}]{action}[/{color}] [bold]{path}[/bold] — "
+            f"{chunks} chunk(s), {embedded} embedded, "
+            f"{pending} pending — next dikw client ingest reconciles them"
+        )
+    else:
+        console.print(
+            f"[{color}]{action}[/{color}] [bold]{path}[/bold] — "
+            f"{chunks} chunk(s), {embedded} embedded"
+        )
     if unresolved:
         console.print(
             f"[yellow]warning[/yellow]: {unresolved} unresolved "

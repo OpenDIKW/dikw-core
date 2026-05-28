@@ -57,6 +57,33 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **Synth's per-group retry-skip now catches only
+  `TransientProviderError`** — symmetric with the 0.4.0 embed-batch
+  retry change. Without this, a permanent LLM `ProviderError` (typo
+  in `cfg.provider.llm_model`, missing key, invalid model id) was
+  silently retried-then-skipped, producing "synth succeeded with
+  0 pages" runs instead of failing fast. The `openai_codex`
+  reducer-bug path (issue #134 / #135) now raises
+  `TransientProviderError` so synth's narrowed retry still catches
+  it.
+- **`embed_assets` gained per-batch retry-skip** — symmetric with
+  `embed_chunks` / `embed_chunks_multimodal`. Without it, a single
+  5xx / timeout mid-pass aborted the whole asset embedding run; the
+  retry-then-skip path now persists prior batches and the resume
+  scan reconciles missing asset vectors on the next ingest. Both
+  retries pass `cfg.provider.embedding_error_retries` and backoff.
+- **`lint apply` now builds and threads `fuzzy_index` through
+  `persist_knowledge` and Phase 2 referrer reconciliation** —
+  without it, fuzzy-resolvable wikilinks like `[[Neural Networks]] →
+  Neural Network` silently broke inside lint apply and the next
+  lint propose flagged them as `broken_wikilink`, causing churn.
+- **`WisdomWriteReport` gained `chunks_pending_embedding`** — fully
+  symmetric with `ApplyReport`. Non-zero values surface when
+  `no_embed=True`, when the inline-embed path defers (no active
+  text version yet or `cfg.provider` drift), or when transient
+  embed failures exhaust the retry budget. CLI render prints
+  "N pending — next dikw client ingest reconciles them" mirroring
+  the lint apply message.
 - **`lint apply` / `wisdom write` no longer flip the active text
   embed version, defer inline embed on cfg drift, and preflight the
   embedder before mutating files.** Both paths now reuse the active

@@ -44,7 +44,7 @@ from ...schemas import Layer
 from ...storage.base import Storage
 from ..data.hashing import hash_bytes, hash_file
 from ..info.tokenize import CjkTokenizer
-from .links import parse_links, resolve_links
+from .links import build_fuzzy_index, parse_links, resolve_links
 from .lint import LintKind
 from .page import KnowledgePage, build_page, path_slug_title, write_page
 from .page_index import persist_knowledge
@@ -681,6 +681,17 @@ async def run_lint_apply(
         if op_title not in title_to_path:
             title_to_path[op_title] = op.path
 
+    # Build the companion fuzzy index alongside ``title_to_path``.
+    # Without it, persist_knowledge / resolve_links degrade to
+    # exact-match only — fuzzy-resolvable links like ``[[Neural
+    # Networks]] → Neural Network`` silently break inside lint apply
+    # and the next lint propose flags them as broken_wikilink, causing
+    # churn (code-review finding, 0.4.0). ``_persist_layered_page``
+    # only auto-derives a fuzzy index when ``title_to_path is None``,
+    # so callers that supply ``title_to_path`` must also supply
+    # ``fuzzy_index`` explicitly.
+    fuzzy_index = build_fuzzy_index(title_to_path)
+
     # Phase 1: persist each still-extant changed page into storage:
     # upsert document + replace_chunks + reconcile outgoing links + (if
     # an embedder is configured) embed rebuilt chunks inline. The
@@ -701,6 +712,7 @@ async def run_lint_apply(
             text_version_id=text_version_id,
             cjk_tokenizer=cjk_tokenizer,
             title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
             retries=embedding_error_retries,
             backoff_seconds=embedding_error_retry_backoff_seconds,
         )
@@ -731,7 +743,10 @@ async def run_lint_apply(
         body = frontmatter.loads(abs_path.read_text(encoding="utf-8")).content
         parsed_links_ = parse_links(body)
         resolved, _ = resolve_links(
-            doc_id, parsed_links_, title_to_path=title_to_path,
+            doc_id,
+            parsed_links_,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
         )
         await storage.replace_links_from(doc_id, resolved)
 

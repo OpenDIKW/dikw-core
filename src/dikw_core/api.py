@@ -113,7 +113,6 @@ from .providers import (
     EmbeddingProvider,
     LLMProvider,
     MultimodalEmbeddingProvider,
-    ProviderError,
     TransientProviderError,
     build_embedder,
     build_llm,
@@ -1504,6 +1503,8 @@ async def ingest(
                     model=mm_cfg.model,
                     version_id=mm_version_id,
                     batch_size=mm_cfg.batch,
+                    retries=cfg.provider.embedding_error_retries,
+                    backoff_seconds=cfg.provider.embedding_error_retry_backoff_seconds,
                 ):
                     if batch_rows:
                         await storage.upsert_asset_embeddings(batch_rows)
@@ -3331,12 +3332,18 @@ async def write_wisdom_page(
                 detail={"path": logical_path, "step": "done"},
             )
 
+            # ``chunks_pending_embedding`` mirrors ApplyReport — non-zero
+            # when no_embed=True, when the inline-embed path deferred
+            # (no active text version yet, or cfg drifted), or when
+            # transient embed failures exhausted the retry budget.
+            chunks_pending_embedding = len(chunks) - embedded
             return WisdomWriteReport(
                 path=logical_path,
                 created=created,
                 hash=doc.hash,
                 chunks=len(chunks),
                 embedded=embedded,
+                chunks_pending_embedding=chunks_pending_embedding,
                 unresolved_wikilinks=unresolved,
             )
         finally:
@@ -3742,14 +3749,21 @@ async def _synth_pages_from_source(
                     temperature=0.3,
                 )
                 break
-            except ProviderError as pe:
+            except TransientProviderError as pe:
+                # Symmetric with the embed-batch retry-skip semantics:
+                # only TransientProviderError is retried-then-skipped.
+                # Bare ProviderError (auth fail, invalid model id,
+                # missing API key) propagates so synth fails fast
+                # instead of silently retry-skipping every group and
+                # reporting "succeeded with 0 pages" (code-review
+                # finding, 0.4.0).
                 if attempt < max_attempts:
                     backoff_s = (
                         cfg.synth.provider_error_retry_backoff_seconds
                         * attempt
                     )
                     logger.warning(
-                        "  group %d/%d ProviderError on attempt %d/%d: "
+                        "  group %d/%d TransientProviderError on attempt %d/%d: "
                         "%s — retrying in %.1fs",
                         group_pos,
                         total_groups,
@@ -3785,7 +3799,7 @@ async def _synth_pages_from_source(
                         f"error (skipped after {attempt} attempt(s)): {pe}"
                     )
                     logger.warning(
-                        "  group %d/%d ProviderError on attempt %d/%d "
+                        "  group %d/%d TransientProviderError on attempt %d/%d "
                         "(final), skipping group: %s",
                         group_pos,
                         total_groups,

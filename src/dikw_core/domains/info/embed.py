@@ -407,6 +407,8 @@ async def embed_assets(
     model: str,
     version_id: int,
     batch_size: int = 16,
+    retries: int = 0,
+    backoff_seconds: float = 0.0,
 ) -> AsyncIterator[list[AssetEmbeddingRow]]:
     """Embed asset binaries via the multimodal provider, streaming
     one ``list[AssetEmbeddingRow]`` per provider call.
@@ -459,7 +461,43 @@ async def embed_assets(
             continue
 
         inputs = [MultimodalInput(images=[img]) for _, img in batch_pairs]
-        vectors = await provider.embed(inputs, model=model)
+        # Per-batch retry-skip on TransientProviderError so a single
+        # 5xx / timeout / connect drop mid-pass doesn't abort the whole
+        # asset embedding run (every prior batch was already persisted).
+        # ``retries=0`` = single attempt then skip; the skipped batch
+        # yields an empty list so the caller can advance progress and
+        # the resume scan reconciles missing asset vectors on the next
+        # ingest. Code-review finding, 0.4.0.
+        max_attempts = retries + 1
+        vectors: list[list[float]] | None = None
+        last_error: TransientProviderError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                vectors = await provider.embed(inputs, model=model)
+                break
+            except TransientProviderError as pe:
+                last_error = pe
+                if attempt < max_attempts:
+                    logger.warning(
+                        "asset batch failed (attempt %d/%d): %s; retrying",
+                        attempt,
+                        max_attempts,
+                        pe,
+                    )
+                    if backoff_seconds > 0:
+                        await asyncio.sleep(backoff_seconds * attempt)
+                else:
+                    logger.warning(
+                        "asset batch skipped after %d attempt(s): %s",
+                        attempt,
+                        pe,
+                    )
+        if vectors is None:
+            # Exhausted retries — yield empty list so caller bookkeeping
+            # stays aligned and the resume scan reconciles next pass.
+            del last_error
+            yield []
+            continue
         if len(vectors) != len(batch_pairs):
             raise RuntimeError(
                 f"multimodal provider returned {len(vectors)} vectors for "
