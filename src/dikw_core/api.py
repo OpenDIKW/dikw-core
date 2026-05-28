@@ -114,6 +114,7 @@ from .providers import (
     LLMProvider,
     MultimodalEmbeddingProvider,
     ProviderError,
+    TransientProviderError,
     build_embedder,
     build_llm,
     build_multimodal_embedder,
@@ -347,16 +348,20 @@ async def _resolve_active_text_version_for_inline_embed(
 
     1. No active text version exists yet (fresh base, no ingest run), or
     2. ``cfg_provider`` is supplied and its embedding identity has
-       drifted from the active version's identity (different endpoint
-       or model). The caller built its embedder from cfg, so its
-       vectors would land under the wrong version table — defer to the
-       next ingest's resume scan (which goes through the full register-
-       and-activate path) instead of silently mixing vector spaces.
+       drifted from the active version's identity. The caller built
+       its embedder from cfg, so its vectors would land under the
+       wrong version table — defer to the next ingest's resume scan
+       (which goes through the full register-and-activate path)
+       instead of silently mixing vector spaces.
 
-    Drift detection compares ``(provider, model)`` — the two fields
-    that define which vec table the vectors live in. ``revision`` /
-    ``dim`` are part of the registered row but follow from
-    ``(provider, model)`` in practice. Codex review finding, 0.4.0.
+    Drift detection compares the **full** version identity:
+    ``(provider, model, revision, dim, normalize, distance)``.
+    ``(provider, model)`` defines which vec table; ``revision`` /
+    ``dim`` / ``normalize`` / ``distance`` define the vector space.
+    A dim mismatch would raise StorageError at upsert_embeddings time
+    AFTER files were already mutated (lint apply Phase 0); a
+    revision bump or normalize/distance flip would silently mix
+    semantically-different vectors. Codex review finding, 0.4.0.
     """
     try:
         active_text = await storage.get_active_embed_version(modality="text")
@@ -371,9 +376,41 @@ async def _resolve_active_text_version_for_inline_embed(
         if (
             active_text.provider != cfg_provider_key
             or active_text.model != cfg_provider.embedding_model
+            or active_text.revision != cfg_provider.embedding_revision
+            or active_text.dim != cfg_provider.embedding_dim
+            or active_text.normalize != cfg_provider.embedding_normalize
+            or active_text.distance != cfg_provider.embedding_distance
         ):
             return None
     return active_text.version_id, active_text.model
+
+
+async def _preflight_embedder(
+    embedder: EmbeddingProvider, model: str
+) -> None:
+    """One-token embed call to surface permanent provider failures upfront.
+
+    Lint apply / wisdom write mutate the filesystem before
+    ``persist_knowledge`` / ``persist_wisdom`` reach the embed call.
+    A permanent ``ProviderError`` (bad API key, 401, invalid model id)
+    raised mid-persist aborts with partial state: documents row
+    upserted, chunks replaced, but links / provenance not reconciled
+    and no ApplyReport returned to the caller.
+
+    Preflight makes the embed call BEFORE any filesystem mutation so
+    misconfig surfaces while state is still clean. Permanent errors
+    propagate as-is to the caller; transient errors are tolerated
+    (the actual embed has its own retry-skip budget — they may still
+    succeed). One round-trip cost per apply / wisdom write.
+
+    Codex review finding, 0.4.0.
+    """
+    try:
+        await embedder.embed(["preflight"], model=model)
+    except TransientProviderError:
+        # The real embed call will retry; preflight only blocks on
+        # permanent failures.
+        return
 
 
 # ---- public result models ------------------------------------------------
@@ -2987,10 +3024,19 @@ async def lint_apply(
             )
             if resolved is not None:
                 text_version_id, embedding_model = resolved
+                # Preflight the embedder BEFORE Phase 0 mutates any
+                # files — a permanent ProviderError (bad API key, 401,
+                # invalid model id) raised mid-persist would otherwise
+                # abort with files rewritten / deleted but storage
+                # partially updated and no ApplyReport returned (codex
+                # review finding, 0.4.0).
+                await _preflight_embedder(active_embedder, embedding_model)
             else:
-                # No active text version yet (fresh base, no ingest run).
-                # Defer the embedding to the next ingest's resume scan
-                # instead of registering a new active version here.
+                # No active text version yet (fresh base, no ingest run)
+                # or cfg drifted from active identity. Defer the
+                # embedding to the next ingest's resume scan instead of
+                # registering a new active version here or storing
+                # vectors under the wrong version table.
                 active_embedder = None
 
         return await run_lint_apply(
@@ -3149,6 +3195,11 @@ async def write_wisdom_page(
                 )
                 if resolved is not None:
                     text_version_id, embedding_model = resolved
+                    # Preflight before the file write so a permanent
+                    # ProviderError surfaces while state is still clean.
+                    # Mirrors the lint apply preflight (codex review
+                    # finding, 0.4.0).
+                    await _preflight_embedder(active_embedder, embedding_model)
                 else:
                     # Either no active text version yet OR cfg has drifted
                     # from the active identity — defer embedding to the

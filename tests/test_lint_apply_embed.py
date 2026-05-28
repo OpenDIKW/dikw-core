@@ -506,3 +506,130 @@ async def test_api_lint_apply_defers_inline_embed_on_cfg_drift(
     # without vectors, surfaced as chunks_pending_embedding > 0.
     assert report.chunks_embedded == 0
     assert report.chunks_pending_embedding > 0
+
+
+@pytest.mark.asyncio
+async def test_api_lint_apply_defers_inline_embed_on_dim_drift(
+    tmp_path: Path,
+) -> None:
+    """Drift detection must compare full identity, including ``dim`` —
+    not just ``(provider, model)``. A cfg dim change would otherwise
+    let the new embedder produce different-dim vectors that get
+    stored under the old version table and abort the apply with a
+    StorageError dim mismatch after files were already rewritten
+    (codex round-3 finding, 0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.schemas import EmbeddingVersion
+
+    base_root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        # Pre-register an active version whose dim differs from cfg's
+        # default (cfg defaults to embedding_dim=1536 for openai_compat;
+        # the test base overrides it to EMBED_DIM=64 via init_test_base,
+        # but here we register a 128-dim active version — the cfg-vs-
+        # active dim mismatch should defer embed.).
+        await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="openai_compat@api.openai.com",
+                model="text-embedding-3-small",
+                revision="",
+                dim=128,  # ≠ test cfg's EMBED_DIM (64)
+                normalize=True,
+                distance="cosine",
+                modality="text",
+            )
+        )
+        await _seed_page(
+            storage=storage,
+            base_root=base_root,
+            path="knowledge/concepts/source.md",
+            title="Source",
+            body="# Source\n\nSee [[foo  bar]] for context.\n",
+        )
+        abs_src = base_root / "knowledge/concepts/source.md"
+        expected_hash = file_sha256(abs_src)
+    finally:
+        await storage.close()
+
+    proposal_report = FixProposalReport(
+        proposals=[_update_proposal(
+            path="knowledge/concepts/source.md",
+            new_body="# Source\n\nSee [[Foo Bar]] for context.\n",
+            expected_hash=expected_hash,
+        )]
+    )
+
+    report = await api.lint_apply(
+        base_root,
+        proposal_report=proposal_report,
+        reporter=_NullReporter(),
+        embedder=FakeEmbeddings(),
+    )
+
+    # Drift detected — embed deferred to next ingest's resume scan.
+    assert report.chunks_embedded == 0
+    assert report.chunks_pending_embedding > 0
+
+
+@pytest.mark.asyncio
+async def test_api_lint_apply_preflights_embedder_before_mutating_files(
+    tmp_path: Path,
+) -> None:
+    """A permanent ``ProviderError`` raised by the embedder must NOT
+    leave files / storage in a partial state. Preflight catches the
+    failure before Phase 0 mutates anything (codex round-3 finding,
+    0.4.0).
+    """
+    from dikw_core import api
+    from dikw_core.providers.base import ProviderError
+    from dikw_core.schemas import EmbeddingVersion
+
+    base_root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="openai_compat@api.openai.com",
+                model="text-embedding-3-small",
+                revision="",
+                dim=EMBED_DIM,
+                normalize=True,
+                distance="cosine",
+                modality="text",
+            )
+        )
+        await _seed_page(
+            storage=storage,
+            base_root=base_root,
+            path="knowledge/concepts/source.md",
+            title="Source",
+            body="# Source\n\nSee [[foo  bar]] for context.\n",
+        )
+        abs_src = base_root / "knowledge/concepts/source.md"
+        expected_hash = file_sha256(abs_src)
+        body_before = abs_src.read_text(encoding="utf-8")
+    finally:
+        await storage.close()
+
+    class _PermanentlyBrokenEmbedder:
+        async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+            raise ProviderError("simulated bad API key (401)")
+
+    proposal_report = FixProposalReport(
+        proposals=[_update_proposal(
+            path="knowledge/concepts/source.md",
+            new_body="# Source\n\nSee [[Foo Bar]] for context.\n",
+            expected_hash=expected_hash,
+        )]
+    )
+
+    with pytest.raises(ProviderError):
+        await api.lint_apply(
+            base_root,
+            proposal_report=proposal_report,
+            reporter=_NullReporter(),
+            embedder=_PermanentlyBrokenEmbedder(),  # type: ignore[arg-type]
+        )
+
+    # File on disk is unchanged — preflight aborted before mutation.
+    assert abs_src.read_text(encoding="utf-8") == body_before
