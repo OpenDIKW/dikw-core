@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -267,6 +267,22 @@ class PageReadResult(BaseModel):
 
     ``assets`` is the deduped union of every asset referenced by any
     chunk of the page (by ``asset_id``). Empty for text-only pages.
+
+    ``frontmatter`` is the parsed YAML front-matter as a plain dict —
+    ``tags``, ``sources``, ``status``, custom keys, all preserved as the
+    user wrote them. Empty ``{}`` when the file has no front-matter or
+    when the YAML failed to parse (mirrors the ``anchors=[]`` fallback
+    so callers can use the empty-anchors signal to tell parse failure
+    from a genuinely metadata-free page).
+
+    Values round-trip through pydantic + FastAPI's JSON encoder, so
+    standard scalars (``str`` / ``int`` / ``float`` / ``bool`` /
+    ``date`` / ``datetime``) and nested ``list``/``dict`` come through
+    cleanly. YAML scalars that decode to a non-JSON-safe Python type
+    (most plausibly ``bytes`` from ``!!binary``) will surface as a
+    response-encoding error rather than be silently lossy-coerced —
+    by design, the wiki tree is the product and we don't mutate values
+    the user wrote.
     """
 
     doc_id: str
@@ -276,6 +292,7 @@ class PageReadResult(BaseModel):
     body: str
     anchors: list[PageAnchor] = Field(default_factory=list)
     assets: list[PageAsset] = Field(default_factory=list)
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
 
 
 class LinkRecord(BaseModel):
