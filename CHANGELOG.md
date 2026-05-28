@@ -79,6 +79,35 @@ The `[[wikilink]]` syntax keeps its name everywhere:
   storage method `replace_links_from`, and every
   docstring/comment that talks about `[[Target]]` resolution.
 
+### Added — synth retries `ProviderError` per group, then skips
+
+Fixes [#134]. A single `ProviderError` raised by `llm.complete` for
+one source group used to abort the whole `synth` task — prior groups'
+work was lost and later sources never ran. The canonical trigger was
+the `openai_codex` empty-streaming-response edge case (`response.
+output=None` + zero text deltas), but any `ProviderError` (auth flap,
+quota, refusal) hit the same dead-end.
+
+`_synth_pages_from_source` now wraps `llm.complete` in a bounded
+per-group retry loop: up to `cfg.synth.provider_error_retries`
+retries (default `2`, so `3` attempts total) with linear backoff
+(`provider_error_retry_backoff_seconds`, default `2.0` → `2s`/`4s`).
+After the retries are exhausted the group is recorded as a parse-
+style error and **skipped**; subsequent groups in the same source
+and later sources continue to process. The skip is counted in
+`outcome.parse_errors`, so `synth_source_done` is **not** written
+and re-running `synth` retries the flaky group.
+
+Per-group NDJSON progress events surface the new states:
+`status="retrying"` (one per failed attempt that still has retries
+left, carries `attempt` / `max_attempts` / `error_kind` /
+`error_msg`) and `status="skipped"` (terminal, carries
+`reason="provider_error"` / `attempts` / `error_kind` /
+`error_msg`). Set `provider_error_retries: 0` in `dikw.yml` to
+revert to the legacy fail-fast behavior.
+
+[#134]: https://github.com/OpenDIKW/dikw-core/issues/134
+
 ### Added — `read_page` surfaces parsed frontmatter
 
 `api.read_page` and `GET /v1/base/pages/{path}` now return the parsed
