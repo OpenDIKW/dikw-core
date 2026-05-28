@@ -129,7 +129,7 @@ def codex_home() -> Path:
 
 
 def dikw_auth_dir(base: Path) -> Path:
-    """The ``.dikw/`` state directory inside a wiki base."""
+    """The ``.dikw/`` state directory inside a base base."""
     return base / ".dikw"
 
 

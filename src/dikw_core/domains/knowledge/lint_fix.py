@@ -1,4 +1,4 @@
-"""Wiki-lint fix-proposal subsystem.
+"""Knowledge-layer lint fix-proposal subsystem.
 
 `run_lint` (in :mod:`lint`) reports four classes of K-layer hygiene
 issues but never proposes how to fix them. This module adds a
@@ -17,8 +17,8 @@ The contract is:
 * :func:`run_lint_apply` — executor. Reads a :class:`FixProposalReport`
   produced earlier, optionally filters by ``pick`` / ``skip``, validates
   each :attr:`FixOperation.expected_hash` against the on-disk file
-  bytes (concurrent-edit guard), then mutates ``wiki/`` via
-  :func:`wiki.write_page` / unlink. Outgoing-link reconciliation rides
+  bytes (concurrent-edit guard), then mutates ``knowledge/`` via
+  :func:`page.write_page` / unlink. Outgoing-link reconciliation rides
   the existing ``storage.replace_links_from`` machinery (PR #66).
 """
 
@@ -157,7 +157,7 @@ class ApplyReport(BaseModel):
 
 @dataclass(frozen=True)
 class KnowledgePageMeta:
-    """Lightweight wiki-page descriptor handed to fixers.
+    """Lightweight knowledge-page descriptor handed to fixers.
 
     ``path`` + ``title`` is enough for the fuzzy-link matcher. The
     scorer for ``orphan_page`` also wants ``sources`` and ``tags`` so
@@ -499,7 +499,7 @@ async def run_lint_apply(
     reporter: Any,  # ProgressReporter
     cjk_tokenizer: CjkTokenizer = "none",
 ) -> ApplyReport:
-    """Mutate ``wiki/`` per a previously-produced :class:`FixProposalReport`.
+    """Mutate ``knowledge/`` per a previously-produced :class:`FixProposalReport`.
 
     PR1 scope: write/unlink files + reconcile outgoing wikilinks for
     updated/created pages + ``deactivate_document`` for deletes. We

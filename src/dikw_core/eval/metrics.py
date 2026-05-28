@@ -164,7 +164,7 @@ def _has_claim_substance(text: str) -> bool:
 
 
 def split_claims(body: str) -> list[str]:
-    """Tokenise a wiki-page body into claim-bearing sentences.
+    """Tokenise a knowledge-page body into claim-bearing sentences.
 
     Strips fenced code, headings, and wikilink markup (replaced by space
     so a body that's just ``[[Other]]`` yields zero claims and doesn't
@@ -430,7 +430,7 @@ async def fact_grounding_ratio(
     Pages whose source has zero chunks score 0.0 (we can't verify them).
 
     Each source's chunks are embedded once (not once per referencing page)
-    — for a 100-page wiki with 10 sources, that's 10 chunk-embed calls
+    — for a 100-page knowledge base with 10 sources, that's 10 chunk-embed calls
     instead of 100, the dominant cost in real-LLM runs.
     """
     claims = await compute_grounding_cosines(

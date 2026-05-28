@@ -153,7 +153,7 @@ def _corpus_cache_key(
     NOTE: ``RetrievalConfig`` (rrf_k, weights, fusion, graph_*, …) is
     NOT in the key. Re-running with a different retrieval config under
     ``cache_mode="read_write"`` silently reuses the first run's
-    ``dikw.yml`` — the snapshot's wiki carries the old block. Retrieval
+    ``dikw.yml`` — the snapshot's base carries the old block. Retrieval
     ablations must use ``cache_mode="off"`` until this is fixed.
     """
     h = hashlib.sha256()
@@ -400,16 +400,16 @@ async def run_eval(
       default). No network, no keys, <1s.
     * Both set → real-vector eval: the caller built an embedder from a
       wiki's ``ProviderConfig`` and hands both in. The runner serialises
-      that config into the temp wiki's ``dikw.yml`` so ``api.ingest`` picks
+      that config into the temp base's ``dikw.yml`` so ``api.ingest`` picks
       up vendor-specific ``embedding_batch_size`` / ``embedding_dim``
-      exactly as the source wiki has them. Without this, a Gitee-configured
+      exactly as the source base has them. Without this, a Gitee-configured
       provider would ingest at ``batch_size=64`` and get HTTP 400.
 
     ``assets_config`` + ``multimodal_embedder`` activate the asset
     retrieval leg end-to-end:
 
     * Pass an ``AssetsConfig`` whose ``.multimodal`` is populated to
-      have the temp wiki's ``dikw.yml`` carry the same block — without
+      have the temp base's ``dikw.yml`` carry the same block — without
       this, ``cfg.assets.multimodal`` is ``None`` inside the eval and
       ``vec_search_assets`` never runs even for image-targeted queries.
     * Pass a ``MultimodalEmbeddingProvider`` so ``api.ingest`` can
@@ -588,7 +588,7 @@ def _materialise_base(
     assets_cfg: AssetsConfig,
     schema_cfg: SchemaConfig | None = None,
 ) -> Path:
-    """Scaffold a throwaway wiki + dikw.yml that matches ``spec``.
+    """Scaffold a throwaway base + dikw.yml that matches ``spec``.
 
     ``provider_cfg`` / ``retrieval_cfg`` / ``assets_cfg`` are copied
     verbatim into the written ``dikw.yml``. Downstream ``api.ingest``
@@ -599,7 +599,7 @@ def _materialise_base(
 
     ``schema_cfg`` is optional and only used by ``run_synth_eval`` so a
     synth-mode dataset can pin its own ``page_types`` whitelist into the
-    throwaway wiki (separate from the user's production page_types).
+    throwaway base (separate from the user's production page_types).
     """
     base = tmp_root / "base"
     api.init_base(base, description=f"eval/{spec.name}")
@@ -748,7 +748,7 @@ async def _resolve_chunk_targets(
     if missing:
         raise EvalError(
             f"chunk targets reference unknown doc stems {sorted(missing)}; "
-            f"ingested wiki has {sorted(docs_by_stem)}"
+            f"ingested base has {sorted(docs_by_stem)}"
         )
 
     # Read each unique doc body + load its chunks once. Storage calls
@@ -810,7 +810,7 @@ async def _build_multimodal_search(
 ) -> MultimodalSearch | None:
     """Mirror ``api.query``'s multimodal wiring for the eval runner.
 
-    Activates the asset retrieval leg only when the wiki has
+    Activates the asset retrieval leg only when the knowledge base has
     ``assets.multimodal`` configured AND the storage backend has an
     active multimodal embed version. Returns ``None`` (text-only) when
     either prerequisite is missing — including hermetic eval against
@@ -924,7 +924,7 @@ async def _run_queries(
         }
 
         # Wire the multimodal leg the same way ``api.query`` does so eval
-        # actually exercises ``vec_search_assets`` when the wiki has
+        # actually exercises ``vec_search_assets`` when the knowledge base has
         # ``assets.multimodal`` configured. Without this, asset metrics
         # would silently collapse to whatever the text-ranked chunks
         # happened to carry in ``Hit.asset_refs``.
@@ -1101,12 +1101,12 @@ async def run_synth_eval(
 ) -> SynthEvalReport:
     """End-to-end K-layer eval: ingest → synth → metrics + optional judge.
 
-    Materialises a throwaway wiki under ``tempfile.TemporaryDirectory``,
+    Materialises a throwaway base under ``tempfile.TemporaryDirectory``,
     ingests the dataset's corpus, runs ``api.synthesize`` with the
     provided LLM, then computes the seven K-layer metrics off the
     resulting pages and source chunks. ``spec.synth.page_types`` is
-    written through to the throwaway wiki's ``dikw.yml`` so the
-    dataset's whitelist (rather than the production wiki's) gates which
+    written through to the throwaway base's ``dikw.yml`` so the
+    dataset's whitelist (rather than the production base's) gates which
     page types ``parse_synthesis_response`` accepts.
 
     Empty page output raises ``SynthEvalError`` so a ``0 / 0`` metric

@@ -10,7 +10,7 @@ Phase 1 surface:
 Phase 2 surface:
   * ``synthesize`` — turn source docs into K-layer knowledge pages via the LLM,
     persist them to disk + storage, maintain the link graph, and refresh
-    ``wiki/index.md`` + ``wiki/log.md``.
+    ``knowledge/index.md`` + ``knowledge/log.md``.
   * ``lint`` — report broken wikilinks, orphans, and duplicate titles.
 
 W layer (wisdom) is being refactored to first-class documents under
@@ -1641,7 +1641,7 @@ async def ingest(
 def _to_document(
     parsed: ParsedDocument, *, doc_id: str, layer: Layer = Layer.SOURCE
 ) -> DocumentRecord:
-    # ``status`` is wisdom-only — wiki/source rows always store NULL
+    # ``status`` is wisdom-only — knowledge/source rows always store NULL
     # even if the user pasted ``status:`` into the wrong frontmatter.
     # The CHECK constraint allows NULL anywhere, so this clamp is the
     # invariant guard. See ``WisdomStatus`` docstring and
@@ -2275,7 +2275,7 @@ async def read_provenance(
         # ``storage.provenance_to`` is layer-agnostic and keyed by
         # ``source_path_key``, so a WIKI path whose key happens to match
         # a malformed K-page's frontmatter entry (e.g., a K-page that
-        # accidentally lists ``wiki/...`` in its ``sources:``) would
+        # accidentally lists ``knowledge/...`` in its ``sources:``) would
         # otherwise come back as a ``derived_pages`` entry — violating
         # the documented "WIKI paths have empty reverse provenance"
         # contract and letting agents treat a K-page as a D-source.
@@ -2618,7 +2618,7 @@ async def retrieve(
     multimodal_embedder: MultimodalEmbeddingProvider | None = None,
     reporter: ProgressReporter | None = None,
 ) -> RetrieveResult:
-    """Hybrid-search the wiki and return chunks + page-level refs only.
+    """Hybrid-search the knowledge base and return chunks + page-level refs only.
 
     Companion to ``query`` for retrieval-only consumers (typically AI
     agents that intend to assemble their own answer using their own
@@ -2679,7 +2679,7 @@ async def synthesize(
         text_embed_model = cfg.provider.embedding_model
         if embedder is not None:
             # Synthesize must NOT register a new embed version: it only
-            # writes wiki-page chunks, so flipping active here would strand
+            # writes knowledge-page chunks, so flipping active here would strand
             # source-chunk vectors in the now-inactive table and gut dense
             # retrieval. Re-embedding the full corpus belongs to ingest.
             try:
@@ -2968,7 +2968,7 @@ async def synthesize(
             )
 
         # Refresh the human-readable views after the batch so a partial run
-        # still leaves the wiki internally consistent.
+        # still leaves the knowledge base internally consistent.
         if persisted_any or not (root / "knowledge" / "index.md").exists():
             regenerate_index(root, updated=now_iso())
         entries = await storage.list_knowledge_log()
@@ -3086,7 +3086,7 @@ async def lint_apply(
     skip: list[int] | None = None,
     reporter: ProgressReporter | None = None,
 ) -> ApplyReport:
-    """Mutate ``wiki/`` per a previously-produced proposal report.
+    """Mutate ``knowledge/`` per a previously-produced proposal report.
 
     ``pick`` / ``skip`` filter the proposal list by index. Both may be
     set; pick is applied first, then skip removes from that subset.
@@ -3179,8 +3179,8 @@ async def write_wisdom_page(
     ``created=True`` against an empty document row.
 
     Cross-file ``[[wikilink]]`` resolution uses a freshly built
-    cross-layer title index (wiki + wisdom), so a wisdom page linking
-    an existing wiki or wisdom title resolves on this single write. A
+    cross-layer title index (knowledge + wisdom), so a wisdom page linking
+    an existing knowledge or wisdom title resolves on this single write. A
     forward reference to a wisdom page that hasn't been written yet
     surfaces on ``WisdomWriteReport.unresolved_wikilinks`` and is
     reconciled on the next ``dikw client ingest``.
@@ -3453,7 +3453,7 @@ _BATCH_SECTION_HEADER = (
 _EXISTING_SECTION_HEADER = (
     "Existing knowledge pages (reference via [[Title]] when relevant)"
 )
-_NO_EXISTING_PAGES_SENTINEL = "(no existing pages — this is a fresh wiki)"
+_NO_EXISTING_PAGES_SENTINEL = "(no existing pages — this is a fresh knowledge base)"
 
 
 @dataclass(frozen=True)
@@ -3503,11 +3503,11 @@ async def _existing_pages_for_prompt(
     bullets; above the threshold, switches to a vec_search-gated top-K
     driven by the group's chunk embeddings (per-chunk vec_search →
     union by doc_id → score sort → top-K). The retrieval branch keeps
-    the prompt size bounded as the wiki grows; without it a base with
+    the prompt size bounded as the knowledge base grows; without it a base with
     thousands of pages would eventually overflow the model's context
     window.
 
-    Returns ``[]`` (empty section) for a fresh wiki or a base with no
+    Returns ``[]`` (empty section) for a fresh knowledge base or a base with no
     embedded source chunks — the caller renders the falsy section as
     ``(no existing pages …)`` so the LLM sees a clear signal rather
     than a missing block.
@@ -3525,10 +3525,10 @@ async def _existing_pages_for_prompt(
     # ``_truncated_fallback`` is the safety net for "many pages but the
     # WIKI layer has no vectors" (``--no-embed`` wikis, version mismatch,
     # or chunks the source-side embedder hasn't reached). Returning ``[]``
-    # would render the "(no existing pages — fresh wiki)" sentinel and
-    # drop ALL duplicate-avoidance context exactly when the wiki has
+    # would render the "(no existing pages — fresh knowledge base)" sentinel and
+    # drop ALL duplicate-avoidance context exactly when the knowledge base has
     # the most to offer it. Bounded prefix is a worse signal than
-    # vec-ranked top-K but a better one than "fresh wiki, generate
+    # vec-ranked top-K but a better one than "fresh knowledge base, generate
     # freely". Order matches the snapshot, which mirrors
     # ``list_documents`` order — stable across runs.
     def _truncated_fallback() -> list[tuple[str, str]]:
@@ -3626,7 +3626,7 @@ async def _synth_pages_from_source(
     plus a ``## Existing knowledge pages`` snapshot of the base K-layer
     (full list under ``synth.existing_pages_max_bytes``, retrieval-gated
     top-K above). Without this awareness the LLM regenerates pages it
-    cannot see, polluting the wiki with semantic duplicates that PR1's
+    cannot see, polluting the knowledge base with semantic duplicates that PR1's
     fuzzy resolver cannot absorb.
     """
     _reporter: ProgressReporter = reporter or NoopReporter()

@@ -9,7 +9,7 @@ pipeline deterministically at <1ms per doc.
 
 **Not** a replacement for a real embedder — quality is far below any
 production model. Use ``--embedder provider`` on ``dikw client eval`` to switch
-to the wiki's configured provider for real-vector evaluation.
+to the knowledge base's configured provider for real-vector evaluation.
 """
 
 from __future__ import annotations

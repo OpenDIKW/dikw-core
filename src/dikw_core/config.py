@@ -290,7 +290,7 @@ class DikwConfig(BaseModel):
     @field_validator("sources")
     @classmethod
     def _require_at_least_one_source_path(cls, v: list[SourceConfig]) -> list[SourceConfig]:
-        # allow an empty list at init time (newly scaffolded wiki); engine-level
+        # allow an empty list at init time (newly scaffolded base); engine-level
         # operations that need sources can validate at call time.
         return v
 
@@ -326,7 +326,7 @@ def default_config(description: str = "A dikw-core knowledge base") -> DikwConfi
     """Return a DikwConfig populated with sensible defaults for `dikw init`.
 
     Ships one source entry covering markdown — the only built-in backend — so
-    a fresh wiki picks up `sources/**/*.md` without extra config.
+    a fresh knowledge base picks up `sources/**/*.md` without extra config.
     """
     return DikwConfig(
         provider=ProviderConfig(

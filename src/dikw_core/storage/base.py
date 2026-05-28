@@ -44,7 +44,7 @@ class StorageError(RuntimeError):
 class NotSupported(StorageError):
     """Raised by an adapter when an operation isn't supported in its current state.
 
-    For example, ``vec_search`` raises this on a fresh wiki where no text
+    For example, ``vec_search`` raises this on a fresh knowledge base where no text
     embeddings have been indexed yet (no ``embed_versions`` row, or the
     per-version vec table hasn't been created), so ``info/search.py``
     can fall back to FTS-only ranking.

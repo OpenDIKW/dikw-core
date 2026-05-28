@@ -1,6 +1,6 @@
 """``dikw client serve-and-run`` — one-shot server + command lifecycle.
 
-Useful for "I just want to query my wiki without running ``dikw serve``
+Useful for "I just want to query my base without running ``dikw serve``
 in another terminal".
 
 Why two subprocesses instead of re-entering Typer in-process:
@@ -45,7 +45,7 @@ _READY_POLL_INTERVAL = 0.1
 # booting and we should re-poll rather than wait it out on one request.
 _READY_HTTP_TIMEOUT = 1.0
 # How long to give the server after SIGTERM before we resort to SIGKILL.
-# Uvicorn's graceful shutdown is sub-second on a wiki with no in-flight
+# Uvicorn's graceful shutdown is sub-second on a base with no in-flight
 # requests; 5s leaves headroom for slow lifespan teardown (storage
 # adapter close, etc.) without wedging the CLI.
 _TERMINATE_GRACE_SECONDS = 5.0
@@ -84,7 +84,7 @@ class ServerExitedEarly(RuntimeError):
 
     Surfaces a clearer failure than the readiness timeout for the
     common misconfigurations — bad ``--host``/``--token`` combo,
-    wiki without ``dikw.yml``, port conflict, or any other startup
+    base without ``dikw.yml``, port conflict, or any other startup
     error that exits the subprocess before the bind completes.
     """
 

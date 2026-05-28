@@ -382,7 +382,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
 
     # orphans — no inbound wikilinks AND not referenced from index.md/log.md.
     # Both K and W layer pages are now scanned for orphans; the
-    # exclusions are wiki-only because ``wiki/index.md`` + ``wiki/log.md``
+    # exclusions are wiki-only because ``knowledge/index.md`` + ``knowledge/log.md``
     # are the K-layer scaffolds synth always writes. Wisdom has no
     # equivalent built-in scaffold — every author's choice.
     orphan_exclusions = {"knowledge/index.md", "knowledge/log.md"}

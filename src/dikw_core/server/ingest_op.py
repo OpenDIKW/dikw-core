@@ -45,7 +45,7 @@ def make_ingest_runner(
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
         # The lock is held for the whole runner — concurrent ingests on
-        # the same wiki would race on the storage row writes, so single-
+        # the same base would race on the storage row writes, so single-
         # threading the entire op is the only safe story.
         guard = lock if lock is not None else asyncio.Lock()
         async with guard:

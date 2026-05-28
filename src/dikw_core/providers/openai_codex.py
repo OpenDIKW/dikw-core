@@ -191,8 +191,8 @@ class OpenAICodexLLM:
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
-        # ``base_root`` is the wiki root that owns the OAuth token store
-        # at ``<base_root>/.dikw/auth.json``. Multiple wikis on the same
+        # ``base_root`` is the base root that owns the OAuth token store
+        # at ``<base_root>/.dikw/auth.json``. Multiple bases on the same
         # machine each carry their own credentials so a refresh in one
         # doesn't invalidate the other.
         self._base_url = base_url

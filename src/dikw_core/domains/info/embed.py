@@ -93,7 +93,7 @@ async def embed_chunks(
     around the provider. Misses are sent to the provider; their vectors
     are written to the cache after success. ``storage=None`` skips the
     cache entirely (no-op fast path for callers that don't have a wiki
-    handy). Adapters that raise ``NotSupported`` (e.g. fresh wiki with
+    handy). Adapters that raise ``NotSupported`` (e.g. fresh knowledge base with
     no embed cache yet) silently degrade to no-cache.
     """
     if batch_size <= 0:

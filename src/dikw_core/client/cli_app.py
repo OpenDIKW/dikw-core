@@ -685,7 +685,7 @@ def lint_apply_cmd(
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
-    """Apply a previously-proposed fix to the wiki.
+    """Apply a previously-proposed fix to the knowledge base.
 
     Default is async — submit + print JSON task handle. Use ``--wait``
     to block + render the apply report."""
@@ -1180,7 +1180,7 @@ def synth_cmd(
         bool,
         typer.Option(
             "--all",
-            help="Re-synthesise every source, even ones already wiki-ified.",
+            help="Re-synthesise every source, even ones already synthesised.",
         ),
     ] = False,
     no_embed: Annotated[
