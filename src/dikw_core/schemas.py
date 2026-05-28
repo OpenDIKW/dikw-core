@@ -727,6 +727,23 @@ class EmbeddingVersion(BaseModel):
 # ---- Wisdom write API (0.3.1) -------------------------------------------
 
 
+class SourcePersistResult(BaseModel):
+    """Outcome of ``persist_source`` for one D-layer source file.
+
+    The D-layer persist path differs from K/W: embedding is deferred
+    to the ingest-wide bulk pass at the end of the scan loop (so the
+    embedder batches across all source files for throughput), and
+    asset materialize for image refs is the caller's responsibility
+    (it crosses storage AND filesystem). This result carries the
+    (chunk_id, text) pairs the caller feeds into its shared
+    ``to_embed`` queue.
+    """
+
+    chunk_ids: list[int]
+    chunk_texts: list[str]
+    chunks_count: int
+
+
 class KnowledgePersistResult(BaseModel):
     """Outcome of ``persist_knowledge`` for one K-layer page.
 

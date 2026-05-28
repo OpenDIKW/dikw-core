@@ -1141,9 +1141,21 @@ def ingest_cmd(
 ) -> None:
     """Run ingest against the server's ``<base>/sources/`` tree.
 
-    Sources are imported separately via ``dikw client import``. Default
-    is async — the command submits the task and prints a JSON handle
-    so agents can move on; pass ``--wait`` to block until terminal.
+    Indexes D-layer (sources) chunks + FTS + embeddings, then runs the
+    cross-layer ``list_chunks_missing_embedding`` resume scan that
+    backfills D/K/W chunks landed without vectors (e.g. ``lint apply``
+    without an embedder, ``wisdom write --no-embed``, or a flaky embed
+    batch that hit the per-batch retry-skip path).
+
+    W-layer pages are NOT scanned by ingest — they are indexed
+    exclusively when written via ``dikw client wisdom write``.
+    Similarly, K-layer pages are indexed only when written via
+    ``dikw client synth`` or ``dikw client lint apply``. Sources are
+    imported separately via ``dikw client import``.
+
+    Default is async — the command submits the task and prints a JSON
+    handle so agents can move on; pass ``--wait`` to block until
+    terminal.
     """
 
     async def _go() -> None:

@@ -68,8 +68,8 @@ from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
 from .domains.data.path_norm import doc_id_for as _doc_id_for
 from .domains.data.path_norm import normalize_path
+from .domains.data.persist import persist_source
 from .domains.data.sources import iter_source_files
-from .domains.info.chunk import chunk_markdown
 from .domains.info.embed import (
     ChunkToEmbed,
     consume_embedding_stream,
@@ -121,7 +121,6 @@ from .providers import (
 from .schemas import (
     ASSET_URL_TEMPLATE,
     AssetRecord,
-    ChunkAssetRef,
     ChunkRecord,
     DerivedPage,
     DocumentRecord,
@@ -241,57 +240,6 @@ KNOWLEDGE_INIT_FILES: dict[str, str] = {
     ".dikw/.gitkeep": "",
     ".gitignore": ".dikw/\n",
 }
-
-
-# Aggregate files the legacy 0.2.x wisdom workflow wrote next to
-# ``wisdom/_candidates/``. Upgrading bases may still carry them, and
-# they are drained queue artifacts — not first-class wisdom documents.
-# Hardcoded skip so an upgrading base doesn't accidentally index them.
-_WISDOM_LEGACY_AGGREGATE_FILES = frozenset(
-    {"principles.md", "lessons.md", "patterns.md"}
-)
-
-
-def _iter_wisdom_files(root: Path) -> Iterator[tuple[Path, str]]:
-    """Yield ``(abs_path, logical_path)`` for every wisdom markdown file.
-
-    Skips:
-
-    * Anything outside ``<root>/wisdom/`` (the directory is the contract).
-    * The legacy 0.2.x ``wisdom/_candidates/`` queue subdirectory.
-    * The legacy ``wisdom/{principles,lessons,patterns}.md`` aggregates
-      (drained on the upgrade, but a user may not have deleted them yet).
-    * Hidden / dotfiles and ``.gitkeep`` (not markdown content).
-
-    ``logical_path`` uses forward-slash separators so it stays portable
-    across platforms — same convention ``iter_source_files`` follows.
-    """
-    wisdom_root = root / "wisdom"
-    if not wisdom_root.is_dir():
-        return
-    for abs_path in sorted(wisdom_root.rglob("*.md")):
-        if not abs_path.is_file():
-            continue
-        try:
-            rel = abs_path.relative_to(root)
-        except ValueError:
-            continue
-        rel_parts = rel.parts
-        # rel_parts[0] is always "wisdom" because rglob is rooted there.
-        if len(rel_parts) >= 2 and rel_parts[1] == "_candidates":
-            continue
-        # Case-insensitive compare so NTFS / APFS / HFS+ users with a
-        # capitalized ``Principles.md`` on disk still skip the legacy
-        # aggregate (the skip-set is lowercase).
-        if (
-            len(rel_parts) == 2
-            and rel_parts[1].casefold() in _WISDOM_LEGACY_AGGREGATE_FILES
-        ):
-            continue
-        if any(p.startswith(".") for p in rel_parts):
-            continue
-        logical_path = "/".join(rel_parts)
-        yield abs_path, logical_path
 
 
 # One stderr Console for all embedding progress bars. Constructing one
@@ -1235,12 +1183,12 @@ async def ingest(
                 continue
 
             try:
-                await storage.upsert_document(_to_document(parsed, doc_id=doc_id))
-
                 # Materialize image references before chunking so asset_ids
                 # are available when chunk_asset_refs land. Decoupled from
                 # mm_cfg so eval rigs see the chunk ↔ asset bridge even
-                # without multimodal embedding configured.
+                # without multimodal embedding configured. ``persist_source``
+                # itself doesn't touch the filesystem — it consumes the
+                # already-resolved ``ref_assets`` dict.
                 ref_assets: dict[int, AssetRecord] = {}
                 if parsed.asset_refs:
                     by_original_path: dict[str, AssetRecord] = {}
@@ -1269,60 +1217,31 @@ async def ingest(
                     except NotSupported:
                         ref_assets = {}
 
-                atomic_spans = [(r.start, r.end) for r in parsed.asset_refs]
-                chunks = chunk_markdown(
-                    parsed.body,
-                    atomic_spans=atomic_spans,
+                persist_result = await persist_source(
+                    storage=storage,
+                    parsed=parsed,
+                    doc=_to_document(parsed, doc_id=doc_id),
+                    ref_assets=ref_assets,
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                 )
-                chunk_records = [
-                    ChunkRecord(
-                        doc_id=doc_id, seq=c.seq, start=c.start, end=c.end, text=c.text
-                    )
-                    for c in chunks
-                ]
-                chunk_ids = await storage.replace_chunks(doc_id, chunk_records)
-
-                # Project body-relative ref offsets into chunk-relative offsets
-                # and persist the chunk ↔ asset bridge rows.
-                for chunk_record, chunk_id in zip(chunk_records, chunk_ids, strict=True):
-                    chunk_refs: list[ChunkAssetRef] = []
-                    ord_counter = 0
-                    for ref_idx, ref in enumerate(parsed.asset_refs):
-                        if not (
-                            chunk_record.start <= ref.start
-                            and ref.end <= chunk_record.end
-                        ):
-                            continue
-                        asset = ref_assets.get(ref_idx)
-                        if asset is None:
-                            continue  # unresolved (remote URL, missing file) — already logged
-                        chunk_refs.append(
-                            ChunkAssetRef(
-                                chunk_id=chunk_id,
-                                asset_id=asset.asset_id,
-                                ord=ord_counter,
-                                alt=ref.alt,
-                                start_in_chunk=ref.start - chunk_record.start,
-                                end_in_chunk=ref.end - chunk_record.start,
-                            )
-                        )
-                        ord_counter += 1
-                    if chunk_refs:
-                        await storage.replace_chunk_asset_refs(chunk_id, chunk_refs)
 
                 # Queue chunks for embedding only when a text embedder + version
                 # is wired up. Chunk vectors live exclusively in the text
                 # channel (vec_chunks_v<text_id>); the multimodal channel
-                # owns assets, not chunks.
+                # owns assets, not chunks. ``persist_source`` defers embed
+                # to this end-of-scan bulk pass for throughput across files.
                 if (
                     embedder is not None
                     and text_version_id is not None
-                    and chunk_records
+                    and persist_result.chunks_count
                 ):
                     to_embed.extend(
-                        ChunkToEmbed(chunk_id=cid, text=r.text)
-                        for cid, r in zip(chunk_ids, chunk_records, strict=True)
+                        ChunkToEmbed(chunk_id=cid, text=text)
+                        for cid, text in zip(
+                            persist_result.chunk_ids,
+                            persist_result.chunk_texts,
+                            strict=True,
+                        )
                     )
 
                 await storage.append_knowledge_log(
@@ -1353,7 +1272,7 @@ async def ingest(
                 scanned=scanned,
                 added=report.added if existing is not None else report.added + 1,
                 updated=report.updated + 1 if existing is not None else report.updated,
-                chunks=report.chunks + len(chunk_records),
+                chunks=report.chunks + persist_result.chunks_count,
             )
             await _reporter.progress(
                 phase="scan",
@@ -1362,146 +1281,15 @@ async def ingest(
                 detail={"path": logical_path},
             )
 
-        # ---- W layer scan (0.3.0 PR2) ----
-        # Wisdom files under ``<root>/wisdom/<author>/**/*.md`` flow
-        # through the same ``persist_page`` pipeline as knowledge pages —
-        # ``documents`` row + chunks + outgoing wikilinks + provenance
-        # — and queue their chunks onto the shared ``to_embed`` list so
-        # the bulk embed pass below covers both layers in one batch.
-        # See ``docs/design.md`` "Wisdom Layer Design" for the contract.
-        from .domains.knowledge.links import build_title_indexes
-        from .domains.knowledge.page_index import persist_page as _persist_page
-
-        # Hoist the cross-layer title index ONCE before the loop so
-        # (a) ``persist_page`` doesn't issue 2N ``list_documents``
-        # round-trips on a wisdom-heavy base, and (b) wisdom pages
-        # added earlier in the same ingest are visible to wisdom pages
-        # added later — without pre-seeding, a forward ``[[wisdom B]]``
-        # from page A stays unresolved until a second ingest.
-        wisdom_title_docs: list[tuple[str, str]] = []
-        for _layer in (Layer.KNOWLEDGE, Layer.WISDOM):
-            for _d in await storage.list_documents(layer=_layer, active=True):
-                if _d.title:
-                    wisdom_title_docs.append((_d.title, _d.path))
-        for _abs_path, _logical_path in _iter_wisdom_files(root):
-            try:
-                _parsed_title_only = parse_any(_abs_path, rel_path=_logical_path)
-            except Exception:
-                continue
-            if _parsed_title_only.title:
-                wisdom_title_docs.append(
-                    (_parsed_title_only.title, _logical_path)
-                )
-        wisdom_title_to_path, wisdom_fuzzy_index = build_title_indexes(
-            wisdom_title_docs
-        )
-
-        for abs_path, logical_path in _iter_wisdom_files(root):
-            _reporter.cancel_token().raise_if_cancelled()
-            try:
-                parsed = parse_any(abs_path, rel_path=logical_path)
-            except (OSError, UnicodeError) as e:
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="read_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-            except Exception as e:
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="parse_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-
-            doc_id = _doc_id_for(Layer.WISDOM, logical_path)
-            existing = await storage.get_document(doc_id)
-            scanned = report.scanned + 1
-            # Hash-idempotent short-circuit, same shape as the source
-            # loop above. Wisdom pages do not currently carry asset
-            # refs (no chunk_asset_refs pipeline on wisdom), so we
-            # don't need the ``not parsed.asset_refs`` guard the
-            # source branch keeps.
-            #
-            # Status comparison is wisdom-specific: ``content_hash``
-            # hashes body bytes only, so editing ONLY the ``status:``
-            # frontmatter (draft → published) leaves the hash unchanged.
-            # Without this check the new ``documents.status`` column
-            # silently desyncs from the file the user authored — frontmatter
-            # is meant to be the source of truth (Obsidian-native vault).
-            if (
-                existing is not None
-                and existing.active
-                and existing.hash == parsed.hash
-                and existing.status == parsed.status
-            ):
-                report = _replace(
-                    report,
-                    scanned=scanned,
-                    unchanged=report.unchanged + 1,
-                )
-                continue
-
-            try:
-                # persist_page does upsert_document + replace_chunks +
-                # replace_links_from + replace_provenance_from.
-                # ``embedder=None`` keeps embedding out of the per-file
-                # critical path; the bulk pass below picks up the
-                # chunks via the shared ``to_embed`` queue.
-                await _persist_page(
-                    storage=storage,
-                    root=root,
-                    path=logical_path,
-                    layer=Layer.WISDOM,
-                    embedder=None,
-                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-                    title_to_path=wisdom_title_to_path,
-                    fuzzy_index=wisdom_fuzzy_index,
-                )
-                new_chunks = await storage.list_chunks(doc_id)
-                if (
-                    embedder is not None
-                    and text_version_id is not None
-                    and new_chunks
-                ):
-                    to_embed.extend(
-                        ChunkToEmbed(chunk_id=c.chunk_id, text=c.text)
-                        for c in new_chunks
-                        if c.chunk_id is not None
-                    )
-                await storage.append_knowledge_log(
-                    KnowledgeLogEntry(ts=time.time(), action="ingest", src=logical_path)
-                )
-            except Exception as e:
-                with contextlib.suppress(Exception):
-                    await storage.deactivate_document(doc_id)
-                report = await _record_ingest_error(
-                    report,
-                    _reporter,
-                    path=logical_path,
-                    kind="storage_error",
-                    message=f"{type(e).__name__}: {e}",
-                )
-                continue
-
-            report = _replace(
-                report,
-                scanned=scanned,
-                added=report.added if existing is not None else report.added + 1,
-                updated=report.updated + 1 if existing is not None else report.updated,
-                chunks=report.chunks + len(new_chunks),
-            )
-            await _reporter.progress(
-                phase="scan",
-                current=scanned,
-                total=0,
-                detail={"path": logical_path},
-            )
+        # W-layer scan was removed in 0.4.0 (#BREAKING). Wisdom pages
+        # are indexed exclusively by ``write_wisdom_page`` (the public
+        # ``dikw client wisdom write`` / ``POST /v1/wisdom/write`` entry
+        # point). A user editing a wisdom file in obsidian no longer
+        # gets it auto-reindexed by ``dikw client ingest``; the
+        # ``list_chunks_missing_embedding`` resume scan below still
+        # covers W-layer chunks that landed without vectors (e.g.,
+        # ``wisdom write --no-embed`` or a flaky embed batch that hit
+        # the retry-skip path in commit 1).
 
         # Resume scan: pick up chunks that landed in storage during a
         # prior crashed run but never got their embedding written. The

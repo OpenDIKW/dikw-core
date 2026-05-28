@@ -36,6 +36,7 @@ __all__ = [
     "FlakyEmbedder",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
+    "ingest_wisdom_files",
     "init_test_base",
     "make_codex_response",
     "make_jwt",
@@ -291,6 +292,70 @@ def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBE
     cfg = load_config(cfg_path)
     cfg.provider.embedding_dim = dim
     cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
+
+
+async def ingest_wisdom_files(
+    wiki: Path,
+    rel_paths: list[str],
+    *,
+    embedder: Any | None = None,
+) -> None:
+    """Drive one or more on-disk wisdom files through ``persist_wisdom``.
+
+    Replaces the 0.3.x ``api.ingest`` W-layer scan loop, which 0.4.0
+    removed: wisdom is now indexed exclusively via ``write_wisdom_page``
+    (typed input) or, for tests that need to author arbitrary file
+    contents (e.g. invalid frontmatter), via this helper.
+
+    The helper builds the same cross-layer title index that the public
+    write path uses, so ``[[wikilink]]`` resolution behaves the same.
+    Embeddings are inline-only when ``embedder`` is provided (mirrors
+    ``no_embed=False``).
+    """
+    from dikw_core.api import _register_text_version
+    from dikw_core.config import load_config
+    from dikw_core.domains.knowledge.links import build_title_indexes
+    from dikw_core.domains.wisdom import persist_wisdom
+    from dikw_core.schemas import Layer
+    from dikw_core.storage import build_storage
+
+    cfg = load_config(wiki / "dikw.yml")
+    storage = build_storage(
+        cfg.storage, root=wiki, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+    )
+    await storage.connect()
+    await storage.migrate()
+    try:
+        text_version_id: int | None = None
+        embedding_model = ""
+        if embedder is not None:
+            text_version_id = await _register_text_version(storage, cfg.provider)
+            embedding_model = cfg.provider.embedding_model
+
+        for rel in rel_paths:
+            title_docs: list[tuple[str, str]] = []
+            for layer_for_index in (Layer.KNOWLEDGE, Layer.WISDOM):
+                for d in await storage.list_documents(
+                    layer=layer_for_index, active=True
+                ):
+                    if d.path == rel:
+                        continue
+                    if d.title:
+                        title_docs.append((d.title, d.path))
+            title_to_path, fuzzy_index = build_title_indexes(title_docs)
+            await persist_wisdom(
+                storage=storage,
+                root=wiki,
+                path=rel,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                text_version_id=text_version_id,
+                cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                title_to_path=title_to_path,
+                fuzzy_index=fuzzy_index,
+            )
+    finally:
+        await storage.close()
 
 
 async def register_text_version(
