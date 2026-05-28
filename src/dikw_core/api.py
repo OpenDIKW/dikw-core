@@ -1939,18 +1939,22 @@ async def read_page(
     # failure (e.g. user broke the YAML front-matter externally) — the
     # natural hash-mismatch path then drops anchors instead of 500-ing
     # the route.
-    def _read_and_parse() -> tuple[str, str | None]:
+    def _read_and_parse() -> tuple[str, str | None, dict[str, Any]]:
         if not abs_path.is_file():
             # Document row exists but the file is gone (mid-flight
             # delete, or an inactive doc whose file was removed).
             raise PageNotFound(path)
         try:
             parsed = parse_any(abs_path, rel_path=match.path)
-            return parsed.body, parsed.hash
+            return parsed.body, parsed.hash, parsed.frontmatter
         except Exception:
-            return abs_path.read_text(encoding="utf-8"), None
+            # Parse failure (e.g. user broke the YAML front-matter
+            # externally) — degrade gracefully: serve the raw text, drop
+            # anchors via ``body_hash=None``, and surface ``{}`` for
+            # frontmatter so callers don't have to ``None``-check.
+            return abs_path.read_text(encoding="utf-8"), None, {}
 
-    body, body_hash = await asyncio.to_thread(_read_and_parse)
+    body, body_hash, page_frontmatter = await asyncio.to_thread(_read_and_parse)
 
     # If the file was edited (or its front-matter broken) since ingest,
     # the indexed chunk offsets no longer line up with the current
@@ -1975,6 +1979,7 @@ async def read_page(
         body=body,
         anchors=anchors,
         assets=page_assets,
+        frontmatter=page_frontmatter,
     )
 
 

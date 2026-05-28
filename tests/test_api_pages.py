@@ -166,6 +166,85 @@ async def test_read_page_returns_raw_body_on_parse_failure(
     page = await api.read_page(root, rel)
     assert "Body still readable" in page.body
     assert page.anchors == []
+    # Parse-failure fallback returns the same ``{}`` as a metadata-free
+    # file. Callers can disambiguate via the empty ``anchors`` signal.
+    assert page.frontmatter == {}
+
+
+@pytest.mark.asyncio
+async def test_read_page_returns_frontmatter(tmp_path: Path) -> None:
+    """``read_page`` must surface the parsed YAML front-matter so callers
+    can read ``tags`` / ``sources`` / ``status`` / custom keys without
+    re-reading the on-disk file themselves. Fixture ``dikw.md`` carries
+    ``title: DIKW pyramid`` + ``tags: [dikw, concept]`` — both must come
+    through verbatim."""
+    init_test_wiki(tmp_path)
+    src_dir = tmp_path / "sources" / "demo"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(FIXTURES / "dikw.md", src_dir / "dikw.md")
+    rel = "sources/demo/dikw.md"
+    await api.ingest(tmp_path, embedder=FakeEmbeddings())
+
+    page = await api.read_page(tmp_path, rel)
+    assert page.frontmatter.get("title") == "DIKW pyramid"
+    assert page.frontmatter.get("tags") == ["dikw", "concept"]
+
+
+@pytest.mark.asyncio
+async def test_read_page_frontmatter_empty_when_absent(tmp_path: Path) -> None:
+    """A markdown file with no ``---`` fence returns ``frontmatter == {}``
+    (not ``None``) so callers can ``page.frontmatter.get(k)`` unconditionally."""
+    init_test_wiki(tmp_path)
+    src_dir = tmp_path / "sources" / "demo"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    rel = "sources/demo/no-fm.md"
+    (tmp_path / rel).write_text(
+        "# Just a heading\n\nNo front-matter at all.\n",
+        encoding="utf-8",
+    )
+    await api.ingest(tmp_path, embedder=FakeEmbeddings())
+
+    page = await api.read_page(tmp_path, rel)
+    assert page.frontmatter == {}
+
+
+@pytest.mark.asyncio
+async def test_read_page_k_layer_frontmatter_roundtrip(tmp_path: Path) -> None:
+    """K-layer pages go through ``write_page`` (frontmatter.dumps) on the
+    way to disk and back through ``parse_any`` on read. ``tags`` /
+    ``sources`` must survive that roundtrip in the ``frontmatter`` dict
+    so agents that drive ``synth`` can inspect provenance + tags via the
+    same endpoint they already use for body."""
+    from dikw_core.api import _persist_wiki_page
+    from dikw_core.domains.knowledge.wiki import build_page, write_page
+
+    init_test_wiki(tmp_path)
+    page = build_page(
+        title="Frontmatter Roundtrip",
+        body="# Frontmatter Roundtrip\n\nBody.\n",
+        tags=["roundtrip", "test"],
+        sources=["sources/whatever.md"],
+    )
+    write_page(tmp_path, page)
+
+    cfg, _root, storage = await api._with_storage(tmp_path)
+    try:
+        await _persist_wiki_page(
+            storage=storage,
+            root=tmp_path,
+            page=page,
+            embedder=None,
+            embedding_model="fake",
+            text_version_id=None,
+            cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+        )
+    finally:
+        await storage.close()
+
+    result = await api.read_page(tmp_path, page.path)
+    assert result.layer == Layer.WIKI
+    assert result.frontmatter.get("tags") == ["roundtrip", "test"]
+    assert result.frontmatter.get("sources") == ["sources/whatever.md"]
 
 
 @pytest.mark.asyncio

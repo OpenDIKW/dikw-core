@@ -5,6 +5,20 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Added — `read_page` surfaces parsed frontmatter
+
+`api.read_page` and `GET /v1/base/pages/{path}` now return the parsed
+YAML front-matter as a `frontmatter: dict[str, Any]` on
+`PageReadResult`. Callers that previously had to re-read the file
+themselves to look up `tags`, `sources`, `status`, or custom keys can
+now read them off the same response. The field is `{}` when the file
+has no front-matter or when the YAML failed to parse externally
+(parse-failure also still emits `anchors=[]`, so the empty-anchors
+signal disambiguates "no metadata" from "broken file"). Backwards
+compatible: existing clients ignore the new field.
+
 ## 0.3.6 — 2026-05-28
 
 Bug-fix release. Restores the `openai_codex` provider against the
