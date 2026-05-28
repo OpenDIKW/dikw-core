@@ -322,13 +322,13 @@ uv run python evals/tools/convert_beir.py \
     --baseline-bm25-ndcg10 0.665    # BEIR paper, Thakur et al. 2021
 ```
 
-Run the full ablation and dump per-mode rankings for offline re-fusion:
+Run the full ablation (the served base's configured embedder is used
+automatically — no flag needed):
 
 ```bash
 uv run --env-file scratch-bench-base/.env \
     dikw client serve-and-run --base ./scratch-bench-base -- \
-    eval --dataset scifact --embedder provider --retrieval all \
-    --dump-raw /tmp/scifact-raw.jsonl
+    eval --dataset scifact --retrieval all
 ```
 
 Output is a 3-row × 5-metric table (bm25 / vector / hybrid × hit@3 /
@@ -340,20 +340,12 @@ single legs.
 ### Tuning RRF weights for your corpus
 
 The shipped defaults are calibrated on BEIR/SciFact (vector-heavy:
-`bm25_weight=0.3, vector_weight=1.5, rrf_k=60`). If your corpus has
+`bm25_weight=0.3, vector_weight=1.5, rrf_k=60`). If your corpus has a
 different BM25 / dense balance — keyword-heavy code bases want more
-BM25 influence, paraphrase-heavy prose wants more vector — tune via
-the offline sweep, which re-fuses the same `--dump-raw` JSONL at
-arbitrary weights in milliseconds:
-
-```bash
-uv run python evals/tools/sweep_rrf.py --raw-dump /tmp/scifact-raw.jsonl
-```
-
-The printed table shows the top-N (k, w_bm25, w_vec) combinations by
-nDCG@10 plus two reference rows — vanilla `(1, 1, 60)` RRF and the
-currently shipped defaults — so the absolute deltas are obvious. Pick
-a winning row and pin it in the wiki's `dikw.yml`:
+BM25 influence, paraphrase-heavy prose wants more vector — tune by
+editing the `retrieval:` block in the served base's `dikw.yml` and
+re-running `dikw client eval --dataset <name> --retrieval all` to
+compare:
 
 ```yaml
 retrieval:
@@ -364,6 +356,11 @@ retrieval:
 
 No code change needed — `api.retrieve` and the server's
 `POST /v1/doc/search` endpoint pick up the block on next call.
+`evals/tools/sweep_rrf.py` re-fuses cached rankings at arbitrary
+weights offline, but the raw dump it consumes is no longer emitted by
+`dikw client eval` — the `--dump-raw` flag was dropped in the
+client/server migration, so the offline sweep isn't reachable through
+the CLI today.
 
 ### Score-normalised fusion alternatives
 

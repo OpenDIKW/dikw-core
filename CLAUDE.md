@@ -40,7 +40,7 @@ uv run dikw <cmd>             # exercise the CLI against a scratch base
 
 CI (`.github/workflows/ci.yml`) gates PRs on ruff + mypy + pytest across
 Python 3.12 and 3.13, and runs the storage contract suite against a
-`pgvector/pgvector:pg16` Postgres service. Release tags (`vX.Y.Z`) publish
+`pgvector/pgvector:0.8.2-pg18` Postgres service. Release tags (`vX.Y.Z`) publish
 to PyPI via trusted publishing (`.github/workflows/release.yml`).
 
 Tooling config lives in `pyproject.toml`:
@@ -56,8 +56,8 @@ src/dikw_core/
 │                          list_pages, read_page, list_links, read_provenance,
 │                          list_graph, read_asset, status, health, check_providers
 ├── cli.py                 top-level Typer app: version, init, serve, auth subgroup, dikw client subgroup
-│                          (client commands are also spliced as top-level aliases — `dikw status`,
-│                          `dikw retrieve`, `dikw serve-and-run`, …)
+│                          (HTTP-bound commands live exclusively under `dikw client <verb>` —
+│                          there are no top-level short aliases)
 ├── auth_cli.py            `dikw auth {login,import,status,list,logout}` — local OAuth token store at <base>/.dikw/auth.json
 ├── logging.py             init_logging() — DIKW_LOG_LEVEL clamp; clamps httpx/httpcore/urllib3 to WARNING
 ├── md_inspect.py          standalone markdown preflight — frontmatter + image-ref extraction (no engine deps)
@@ -71,7 +71,7 @@ src/dikw_core/
 │   │                                  index.md, log.md, lint (incl. missing_provenance), lint_fix + lint_fixers/
 │   └── wisdom/            W layer — hand-written documents; `page.py::author_from_path`
 │                                    (`wisdom/<author>/<slug>.md` → author); indexed exclusively by
-│                                    `api.write_wisdom_page` (`dikw client wisdom write` / `POST /v1/wisdom/write`).
+│                                    `api.write_wisdom_page` (`dikw client wisdom write` / `POST /v1/base/wisdom`).
 │                                    `dikw client ingest` does NOT scan `<base>/wisdom/` (0.4.0 BREAKING).
 ├── providers/             LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │                          (anthropic_compat, openai_compat, openai_codex, gitee_multimodal)
@@ -156,4 +156,4 @@ Nitpicks, style preferences, and non-actionable suggestions are **not** block si
 - Don't implement search fusion inside a storage adapter — it belongs in `info/search.py`.
 - Don't add a new source format without registering a `SourceBackend`.
 - Don't change on-disk knowledge/wisdom layout without updating `docs/design.md` first — users open these trees in Obsidian.
-- Don't ship K-layer (`domains/knowledge/`) or Retrieval (`domains/info/`, `RetrievalConfig`) changes without an entry in `evals/BASELINES.md` showing real-data outcome. K-layer changes get an `elon-musk.md` baseline **plus** the seven `synth/*` metrics from `dikw eval mvp --eval synth`; retrieval gets an ablation across packaged datasets. See `docs/eval-plan.md` "Acceptance gates for K-layer and Retrieval changes".
+- Don't ship K-layer (`domains/knowledge/`) or Retrieval (`domains/info/`, `RetrievalConfig`) changes without an entry in `evals/BASELINES.md` showing real-data outcome. K-layer changes get an `elon-musk.md` baseline **plus** the seven `synth/*` metrics from `dikw client eval --dataset mvp --eval synth`; retrieval gets an ablation across packaged datasets. See `docs/eval-plan.md` "Acceptance gates for K-layer and Retrieval changes".

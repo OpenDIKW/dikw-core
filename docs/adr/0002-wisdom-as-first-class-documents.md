@@ -3,7 +3,7 @@
 **Status**: Accepted, 0.3.0 (PR1 #120, PR2 #121, PR3 #122, PR4 closes the arc).
 Amended in 0.4.0 — the W-layer trigger moved off the `dikw client ingest`
 scan and onto the dedicated `api.write_wisdom_page` entry (CLI
-`dikw client wisdom write` / HTTP `POST /v1/wisdom/write`). On-disk
+`dikw client wisdom write` / HTTP `POST /v1/base/wisdom`). On-disk
 shape, schema, retrieve / lint / read APIs, and the W↔K link
 symmetry are unchanged — only the entry point that drives the
 `persist_wisdom` (formerly `persist_page(layer=Layer.WISDOM)`)

@@ -4,8 +4,8 @@
 RAG stacks today:
 
 1. Knowledge should be a **compounding artifact**, not a query-time search
-   result. The wiki you can read in Obsidian is the product; the engine is
-   the scribe. (This is Karpathy's LLM-wiki framing.)
+   result. The knowledge tree you can read in Obsidian is the product; the
+   engine is the scribe. (This is Karpathy's LLM-wiki framing.)
 2. **All four DIKW layers deserve first-class treatment.** Data, Information,
    Knowledge, and Wisdom each have their own storage, schemas, and
    operations. The pipeline between them is explicit.
@@ -24,7 +24,7 @@ Everything else is plumbing.
 The W layer is hand-written first-class documents under
 `wisdom/<author>/<slug>.md`. Since 0.4.0, wisdom is indexed
 **exclusively through the dedicated write surface**
-(`api.write_wisdom_page` / `POST /v1/wisdom/write` /
+(`api.write_wisdom_page` / `POST /v1/base/wisdom` /
 `dikw client wisdom write`) — `dikw client ingest` no longer scans
 `<base>/wisdom/`. The write surface runs the same
 `persist_wisdom` pipeline as the previous ingest loop did (chunks
@@ -125,7 +125,7 @@ documents and their derived rows.
 |---|---|---|---|
 | **D** (source) | `persist_source` (`domains/data/persist.py`) | `api.ingest` (one call per scanned source file) | **Deferred** — `api.ingest` accumulates chunks across files and runs one bulk embed at end-of-scan for throughput |
 | **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize_for_source` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when `DIKW_EMBEDDING_API_KEY` is set, otherwise defers |
-| **W** (wisdom) | `persist_wisdom` (`domains/wisdom/persist.py`) | `api.write_wisdom_page` (CLI `dikw client wisdom write` / HTTP `POST /v1/wisdom/write`) | **Inline** unless the caller passes `no_embed=True` |
+| **W** (wisdom) | `persist_wisdom` (`domains/wisdom/persist.py`) | `api.write_wisdom_page` (CLI `dikw client wisdom write` / HTTP `POST /v1/base/wisdom`) | **Inline** unless the caller passes `no_embed=True` |
 
 **Cross-layer resume scan.** At the end of every `dikw client ingest`,
 the engine runs `storage.list_chunks_missing_embedding(version_id)`

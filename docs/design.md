@@ -44,7 +44,7 @@ Design decisions already locked in (via clarifying Q&A):
 | **D — Data** | Raw, immutable sources (markdown files the user curates) | filesystem + indexed `documents` table in SQLite (path, content hash, layer, active) | human |
 | **I — Information** | Parsed, chunked, embedded, indexed — enables fast lookup | SQLite FTS5 + sqlite-vec (`.dikw/index.sqlite`) | engine (deterministic) |
 | **K — Knowledge** | LLM-authored knowledge pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md`; each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `knowledge/` | LLM, human-editable |
-| **W — Wisdom** | Distilled principles, heuristics, lessons, patterns — transferable beyond a single source | markdown files in `wisdom/` with explicit provenance & review status | LLM proposes, human confirms |
+| **W — Wisdom** | Hand-written principles, lessons, patterns — transferable beyond a single source | markdown files in `wisdom/<author>/` with explicit provenance (frontmatter `sources:`) | human |
 
 The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.
 
@@ -244,7 +244,6 @@ storage:
 schema:
   description: "Personal research base on AI safety"
   page_types: [entity, concept, note]
-  wisdom_kinds: [principle, lesson, pattern]
 sources:
   - path: ./sources
     pattern: "**/*.md"
@@ -407,7 +406,7 @@ Wisdom pages share the K-page contract:
   `[[wisdom/elon-musk/be-relentless|Be Relentless]]`.
 - **Persistence:** since 0.4.0, wisdom is indexed exclusively through
   `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP
-  `POST /v1/wisdom/write`). The write surface runs the `persist_wisdom`
+  `POST /v1/base/wisdom`). The write surface runs the `persist_wisdom`
   pipeline (`documents` row + `chunks` + per-version embedding +
   `links` + `provenance`) — symmetric with `persist_knowledge` for
   the K layer. `dikw client ingest` no longer scans `<base>/wisdom/`;
@@ -420,7 +419,7 @@ Wisdom pages share the K-page contract:
 As of 0.4.0 the wisdom layer is fully wired end-to-end:
 
 - **write** (`api.write_wisdom_page` / `dikw client wisdom write` /
-  `POST /v1/wisdom/write`) is the sole engine entry that writes a
+  `POST /v1/base/wisdom`) is the sole engine entry that writes a
   wisdom row: chunks + FTS + embeddings + links + provenance in one
   call.
 - **retrieve** returns wisdom hits tagged `Hit.layer == "wisdom"`
@@ -524,7 +523,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw init [path]` — scaffold `dikw.yml`, `sources/`, `knowledge/`, `wisdom/`, `.dikw/`
 - `dikw serve --base <path>` — start the FastAPI + NDJSON server bound to one base
 
-**Remote CLI** (`dikw client *`, also reachable via top-level aliases):
+**Remote CLI** (`dikw client *` — no top-level aliases):
 - `dikw client status` — counts per layer (source / knowledge / wisdom)
 - `dikw client check [--llm-only|--embed-only]` — provider connectivity probe
 - `dikw client import <path>` — pre-flight + import markdown packages (md + referenced assets) into the server's `sources/`
@@ -534,10 +533,10 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
 - `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; some kinds have no fixer yet)
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
-- `dikw client tasks {list,show,follow,cancel}` — inspect the server's async task queue
+- `dikw client tasks {list,status,events,wait,cancel}` — inspect the server's async task queue
 
 **HTTP surface** (the server is the canonical wire contract):
-- Sync RPC under `/v1/` — `status`, `check`, `lint`, `init`, page list/read/links/provenance (`/v1/base/pages/...`), doc search, chunk fetch.
+- Sync RPC under `/v1/` — `status`, `check`, `lint`, page list/read/links/provenance (`/v1/base/pages/...`), doc search, chunk fetch.
 - Async tasks under `/v1/{ingest,synth,eval}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
 - Streaming retrieve — `POST /v1/retrieve` returns NDJSON: `retrieve_started → retrieval_done → final{succeeded|failed|cancelled}`. The final event payload carries ranked chunks (with full text + `layer`) plus page refs. **No LLM tokens stream from the server** — synthesis is the agent's job.
 - Sources import — `POST /v1/import` accepts a manifest + tar.gz (multipart upload at the transport layer), validates sha256, stages atomically, then commits per-package into `<base>/sources/` before ingest reads from disk.
@@ -547,7 +546,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty base.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
 - **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
-- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/wisdom/write`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
+- **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/base/wisdom`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
   - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `postgres:16`+`pgvector` container in CI. Packaged as `dikw-core[postgres]` optional extra.
