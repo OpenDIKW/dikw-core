@@ -20,7 +20,7 @@ from dikw_core import api
 def test_fresh_base_loads_without_upgrade_error(tmp_path: Path) -> None:
     """A base created by ``init_base`` (0.4.0 layout) must load cleanly."""
     api.init_base(tmp_path, description="fresh")
-    cfg, root = api.load_base(tmp_path)
+    _cfg, root = api.load_base(tmp_path)
     assert root == tmp_path.resolve()
     assert (tmp_path / "knowledge").is_dir()
 
@@ -71,7 +71,7 @@ def test_empty_legacy_wiki_dir_is_tolerated(tmp_path: Path) -> None:
     only when there is markdown content the user would lose."""
     api.init_base(tmp_path)
     (tmp_path / "wiki").mkdir()
-    cfg, root = api.load_base(tmp_path)
+    _cfg, root = api.load_base(tmp_path)
     assert root == tmp_path.resolve()
 
 
@@ -90,5 +90,5 @@ def test_migration_path_completes_end_to_end(tmp_path: Path) -> None:
     (tmp_path / "wiki").rename(tmp_path / "knowledge")
     shutil.rmtree(tmp_path / ".dikw", ignore_errors=True)
     # load_base should now succeed (dikw.yml is preserved).
-    cfg, root = api.load_base(tmp_path)
+    _cfg, root = api.load_base(tmp_path)
     assert root == tmp_path.resolve()
