@@ -30,16 +30,13 @@ import dataclasses
 import hashlib
 import logging
 import os
-import struct
 import time
-import zlib
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any
 
 from rich.console import Console
 from rich.progress import (
@@ -50,7 +47,6 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from . import __version__ as _pkg_version
 from . import prompts
 from .api_core import (
     _assert_base_upgraded as _assert_base_upgraded,
@@ -67,6 +63,16 @@ from .api_core import (
 )
 from .api_core import (
     _with_storage as _with_storage,
+)
+from .api_health import (
+    _PROBE_PNG_1X1 as _PROBE_PNG_1X1,
+)
+from .api_health import (
+    _sanitize_base_url as _sanitize_base_url,
+)
+from .api_health import (
+    check_providers,
+    health,
 )
 from .api_path_safety import _assert_within
 from .api_types import (
@@ -160,13 +166,11 @@ from .schemas import (
     GraphStats,
     GraphUnresolvedLink,
     Hit,
-    ImageContent,
     IncomingLink,
     KnowledgeLogEntry,
     Layer,
     LinkDirection,
     LinkType,
-    MultimodalInput,
     OutgoingLink,
     PageAnchor,
     PageAsset,
@@ -307,371 +311,6 @@ async def _collect_page_assets(
         )
         for r in (records_by_id[aid] for aid in ordered_ids if aid in records_by_id)
     ]
-
-
-def _sanitize_base_url(url: str | None) -> str | None:
-    """Strip userinfo / query / fragment from a ``base_url`` before
-    exposing it on /v1/health.
-
-    Defends against credential leakage when a user puts a token directly
-    in the URL — ``https://user:token@api.example/`` or
-    ``…?api_key=…`` — by keeping only ``scheme://host[:port]/path``.
-    Returns ``None`` when the input is empty, unparseable, or has no
-    scheme/host: leaving a malformed URL on a probe response is worse
-    than dropping it.
-    """
-    if not url:
-        return None
-    try:
-        parts = urlsplit(url)
-        # ``hostname`` and ``port`` are properties that can raise on
-        # malformed input (e.g. ``port`` raises ``ValueError`` for an
-        # out-of-range or non-numeric port); pull them inside the try.
-        host = parts.hostname
-        port = parts.port
-    except (ValueError, TypeError):
-        return None
-    if not parts.scheme or not host:
-        return None
-    # ``urlsplit.hostname`` strips IPv6 brackets — re-bracket so
-    # ``http://[::1]:8080/v1`` doesn't round-trip as ``http://::1:8080/v1``.
-    netloc = f"[{host}]" if ":" in host else host
-    if port is not None:
-        netloc = f"{netloc}:{port}"
-    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
-
-
-def _llm_credentials_present(
-    provider: Literal["anthropic_compat", "openai_compat", "openai_codex"],
-    *,
-    base_root: Path,
-) -> bool:
-    """Whether credentials for the given LLM provider are resolvable.
-
-    Env-keyed providers (anthropic_compat, openai_compat) check the
-    matching ``API_KEY_ENV`` constant; the codex protocol checks the
-    dikw-managed store at ``<base_root>/.dikw/auth.json``, falling back
-    to the codex CLI store iff lazy migration would succeed there
-    (fresh, non-expired tokens). That predicts what
-    ``resolve_access_token`` will do, so /v1/health agrees with the
-    runtime even right before the first LLM call triggers migration —
-    and a logged-out dikw store with a stale codex CLI file still
-    reports false rather than silently relying on the leftover.
-
-    Explicit per-provider branch (rather than ``else: openai_compat``)
-    so adding a new LLM provider surfaces as a typed mypy error here +
-    a runtime ``ValueError`` instead of silently reporting the wrong
-    credentials shape.
-    """
-    if provider == "anthropic_compat":
-        from .providers.anthropic_compat import API_KEY_ENV
-
-        return bool(os.environ.get(API_KEY_ENV))
-    if provider == "openai_compat":
-        from .providers.openai_compat import API_KEY_ENV
-
-        return bool(os.environ.get(API_KEY_ENV))
-    if provider == "openai_codex":
-        from .providers.codex_auth import (
-            _read_codex_cli_tokens_if_valid,
-            list_providers,
-        )
-
-        if "openai-codex" in list_providers(base_root):
-            return True
-        # Lazy migration: if the dikw store is empty but the codex CLI
-        # store has fresh tokens, the next ``resolve_access_token`` call
-        # will populate the dikw store automatically. Surface that as
-        # "credentials present" so /v1/health doesn't false-negative on
-        # upgraded users who haven't issued an LLM call yet.
-        return _read_codex_cli_tokens_if_valid() is not None
-    raise ValueError(f"unknown llm provider: {provider!r}")
-
-
-async def health(path: str | Path | None = None) -> HealthReport:
-    """Server self-description for agent bootstrap probes.
-
-    Opens storage briefly to read ``counts()``; never invokes the LLM /
-    embedding providers (so a misconfigured key does not 5xx the health
-    probe). Returned config is the *resolved* shape — what the server
-    actually uses — minus secrets (no API keys, no DSN, no SQLite path).
-    """
-    from .providers.openai_compat import EMBEDDING_API_KEY_ENV
-
-    cfg, root, storage = await _with_storage(path)
-    try:
-        counts = await storage.counts()
-    finally:
-        await storage.close()
-
-    by_layer = counts.documents_by_layer
-    # ``wisdom_items`` counts W-layer documents: wisdom pages are
-    # first-class documents indexed at ``Layer.WISDOM``, so this is a
-    # real count read off the ``documents`` table — not a legacy zero.
-    layer_counts = LayerCounts(
-        sources=int(by_layer.get(Layer.SOURCE.value, 0)),
-        knowledge_pages=int(by_layer.get(Layer.KNOWLEDGE.value, 0)),
-        wisdom_items=int(by_layer.get(Layer.WISDOM.value, 0)),
-        chunks=counts.chunks,
-    )
-
-    p = cfg.provider
-    llm_info = LlmInfo(
-        provider=p.llm,
-        model=p.llm_model,
-        base_url=_sanitize_base_url(p.llm_base_url),
-        max_retries=p.llm_max_retries,
-        max_tokens_synth=p.llm_max_tokens_synth,
-        timeout_seconds=p.llm_timeout_seconds,
-        api_key_present=_llm_credentials_present(p.llm, base_root=root),
-    )
-
-    mm_info: MultimodalInfo | None = None
-    mm_cfg = cfg.assets.multimodal
-    if mm_cfg is not None:
-        mm_dump = mm_cfg.model_dump()
-        mm_dump["base_url"] = _sanitize_base_url(mm_dump.get("base_url"))
-        mm_info = MultimodalInfo.model_validate(mm_dump)
-
-    embedding_info = EmbeddingInfo(
-        provider=p.embedding,
-        model=p.embedding_model,
-        base_url=_sanitize_base_url(p.embedding_base_url),
-        dim=p.embedding_dim,
-        revision=p.embedding_revision,
-        normalize=p.embedding_normalize,
-        distance=p.embedding_distance,
-        batch_size=p.embedding_batch_size,
-        max_retries=p.embedding_max_retries,
-        timeout_seconds=p.embedding_timeout_seconds,
-        provider_label=p.embedding_provider_label,
-        api_key_present=bool(os.environ.get(EMBEDDING_API_KEY_ENV)),
-        multimodal=mm_info,
-    )
-
-    return HealthReport(
-        version=_pkg_version,
-        base_root=str(Path(root).resolve()),
-        storage_engine=cfg.storage.backend,
-        layer_counts=layer_counts,
-        providers=ProvidersInfo(llm=llm_info, embedding=embedding_info),
-    )
-
-
-# ---- verifiable config tool ---------------------------------------------
-
-
-async def _probe_llm(
-    llm: LLMProvider, model: str, target: str
-) -> ProbeResult:
-    started = time.perf_counter()
-    try:
-        resp = await llm.complete(
-            system="You are a connectivity check. Reply with just: OK",
-            user="ping",
-            model=model,
-            max_tokens=4,
-            temperature=0.0,
-        )
-    except Exception as e:  # provider exceptions are intentionally heterogeneous
-        return ProbeResult(ok=False, target=target, detail=f"{type(e).__name__}: {e}")
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    input_tok = int((resp.usage or {}).get("input_tokens", 0))
-    return ProbeResult(
-        ok=True,
-        target=target,
-        detail=f"{elapsed_ms}ms, {input_tok} input tokens",
-    )
-
-
-async def _probe_embed(
-    embedder: EmbeddingProvider,
-    model: str,
-    target: str,
-    *,
-    provider_label: str | None = None,
-) -> ProbeResult:
-    started = time.perf_counter()
-    try:
-        vectors = await embedder.embed(["ping"], model=model)
-    except Exception as e:
-        return ProbeResult(ok=False, target=target, detail=f"{type(e).__name__}: {e}")
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    dim = len(vectors[0]) if vectors else 0
-    detail = f"{elapsed_ms}ms, dim={dim}"
-    if provider_label:
-        detail = f"{detail}, provider={provider_label}"
-    return ProbeResult(ok=True, target=target, detail=detail)
-
-
-def _build_probe_png_1x1() -> bytes:
-    """Smallest valid PNG (1x1 black RGB pixel, 69 bytes).
-
-    Built at module load via stdlib ``struct`` + ``zlib`` so the chunk
-    CRCs are guaranteed correct — a hand-written byte literal here was
-    truncated by one CRC byte once and Gitee's image decoder rejected
-    the whole multimodal probe with a misleading "Supported image
-    type:" error that hid the real cause.
-    """
-
-    def _chunk(tag: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
-
-    sig = b"\x89PNG\r\n\x1a\n"
-    # IHDR: width=1, height=1, bit_depth=8, color_type=2 (RGB), the rest 0.
-    ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-    # IDAT: one scanline of [filter=0, R=0, G=0, B=0], deflate-compressed.
-    idat = _chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00", 9))
-    iend = _chunk(b"IEND", b"")
-    return sig + ihdr + idat + iend
-
-
-_PROBE_PNG_1X1 = _build_probe_png_1x1()
-
-async def _probe_multimodal(
-    embedder: MultimodalEmbeddingProvider,
-    model: str,
-    target: str,
-    *,
-    provider_label: str | None = None,
-) -> ProbeResult:
-    """Probe a multimodal embedder with a single batched text+image request.
-
-    Sends two per-modality inputs (one text, one tiny PNG) in **one** HTTP
-    call so latency stays bounded by a single RTT — no sequential probes
-    that would double end-to-end time. Validation hinges on both vectors
-    coming back with a consistent dim; an empty or shape-mismatched
-    response surfaces as an error rather than a silent pass.
-    """
-    inputs = [
-        MultimodalInput(text="ping"),
-        MultimodalInput(images=[ImageContent(bytes=_PROBE_PNG_1X1, mime="image/png")]),
-    ]
-    started = time.perf_counter()
-    try:
-        vectors = await embedder.embed(inputs, model=model)
-    except Exception as e:
-        return ProbeResult(ok=False, target=target, detail=f"{type(e).__name__}: {e}")
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    if len(vectors) != 2:
-        return ProbeResult(
-            ok=False,
-            target=target,
-            detail=(
-                f"{elapsed_ms}ms, expected 2 vectors (text+image), got "
-                f"{len(vectors)} — provider returned a shape-mismatched batch"
-            ),
-        )
-    dim_text = len(vectors[0])
-    dim_image = len(vectors[1])
-    if dim_text != dim_image:
-        return ProbeResult(
-            ok=False,
-            target=target,
-            detail=(
-                f"{elapsed_ms}ms, dim mismatch text={dim_text} image={dim_image} — "
-                f"per-modality vectors must share one space"
-            ),
-        )
-    detail = f"{elapsed_ms}ms, dim={dim_text}, modalities=text+image"
-    if provider_label:
-        detail = f"{detail}, provider={provider_label}"
-    return ProbeResult(ok=True, target=target, detail=detail)
-
-
-async def check_providers(
-    path: str | Path | None = None,
-    *,
-    llm: LLMProvider | None = None,
-    embedder: EmbeddingProvider | None = None,
-    multimodal_embedder: MultimodalEmbeddingProvider | None = None,
-    llm_only: bool = False,
-    embed_only: bool = False,
-) -> CheckReport:
-    """Ping the configured LLM and embedding providers.
-
-    ``llm``, ``embedder``, and ``multimodal_embedder`` are injectable for
-    tests; production callers leave them ``None`` and the factory builds
-    them from ``provider:`` / ``assets.multimodal:`` in ``dikw.yml``. Two
-    legs run in parallel and each reports its own result — an LLM failure
-    does not short-circuit the embedding probe.
-
-    When ``cfg.assets.multimodal`` is configured, the embed leg routes
-    through ``_probe_multimodal`` (one batched text+image request) instead
-    of the text-only ``_probe_embed`` — the multimodal embedder is what
-    ingest actually uses for both chunks and assets, so the check must
-    follow that route to remain truthful.
-
-    ``llm_only`` / ``embed_only`` (mutually exclusive) verify a single leg.
-    The skipped leg is never built or called, so a misconfigured embedding
-    side cannot fail an ``--llm-only`` run.
-    """
-    if llm_only and embed_only:
-        raise ValueError("llm_only and embed_only are mutually exclusive")
-
-    cfg, _root = load_base(path)
-
-    llm_probe: ProbeResult | None = None
-    embed_probe: ProbeResult | None = None
-    llm_target = cfg.provider.llm_base_url or "(provider default)"
-    embed_label = cfg.provider.embedding_provider_label
-    mm_cfg = cfg.assets.multimodal
-    # Per-leg target. Multimodal probe hits ``assets.multimodal.base_url``
-    # (or the provider's default), which is independent of the text leg's
-    # ``embedding_base_url``; reporting the wrong one makes a green check
-    # misleading in split-vendor setups.
-    if mm_cfg is not None:
-        embed_target = mm_cfg.base_url or "(provider default)"
-    else:
-        embed_target = cfg.provider.embedding_base_url
-    # Track an internally-built multimodal embedder so we close its httpx
-    # client in ``finally`` — mirrors the ``owned_mm`` pattern in ingest/
-    # query. An *injected* embedder is the caller's lifetime to manage.
-    owned_mm: MultimodalEmbeddingProvider | None = None
-
-    if not embed_only:
-        llm_inst = llm if llm is not None else build_llm(cfg.provider, base_root=_root)
-    if not llm_only:
-        if mm_cfg is not None:
-            if multimodal_embedder is not None:
-                mm_inst = multimodal_embedder
-            else:
-                mm_inst = build_multimodal_embedder(
-                    mm_cfg.provider, base_url=mm_cfg.base_url, batch=mm_cfg.batch
-                )
-                owned_mm = mm_inst
-        else:
-            embed_inst = (
-                embedder if embedder is not None else build_embedder(cfg.provider)
-            )
-
-    async def _embed_leg() -> ProbeResult:
-        if mm_cfg is not None:
-            return await _probe_multimodal(
-                mm_inst, mm_cfg.model, embed_target, provider_label=embed_label
-            )
-        return await _probe_embed(
-            embed_inst,
-            cfg.provider.embedding_model,
-            embed_target,
-            provider_label=embed_label,
-        )
-
-    try:
-        if llm_only:
-            llm_probe = await _probe_llm(llm_inst, cfg.provider.llm_model, llm_target)
-        elif embed_only:
-            embed_probe = await _embed_leg()
-        else:
-            llm_probe, embed_probe = await asyncio.gather(
-                _probe_llm(llm_inst, cfg.provider.llm_model, llm_target),
-                _embed_leg(),
-            )
-    finally:
-        if owned_mm is not None and hasattr(owned_mm, "aclose"):
-            await owned_mm.aclose()
-    return CheckReport(llm=llm_probe, embed=embed_probe)
 
 
 # ---- Phase 1: ingest -----------------------------------------------------
