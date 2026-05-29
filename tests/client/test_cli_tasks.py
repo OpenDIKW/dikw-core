@@ -43,7 +43,9 @@ def test_tasks_status_returns_row_json(
     patch_transport_factory: Callable[[], None],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     submit = _run(["client", "ingest", "--no-embed"])
     assert submit.exit_code == 0, submit.stdout
@@ -88,7 +90,9 @@ def test_tasks_events_single_page_json(
     call, raw ``EventsPage`` JSON to stdout, exit 0 regardless of task
     state. Lets agents script a follow-up cursor advance themselves
     without committing to the blocking ``tasks wait`` shape."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     submit = _run(["client", "ingest", "--no-embed"])
     task_id = json.loads(submit.stdout)["task_id"]
@@ -123,7 +127,9 @@ def test_tasks_wait_exits_with_terminal_status(
     only assert the command exits in the success/cancelled band, not
     which one — because CliRunner's loop lifecycle can race the
     server-side runner."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     submit = _run(["client", "ingest", "--no-embed"])
     task_id = json.loads(submit.stdout)["task_id"]
@@ -158,7 +164,9 @@ def test_tasks_cancel_default_emits_json(
     """Agent-first default: ``tasks cancel`` writes the raw
     ``CancelResponse`` JSON (``{task_id, cancelled, already_terminal}``)
     to stdout so agents can parse it without stripping rich ANSI."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     submit = _run(["client", "ingest", "--no-embed"])
     task_id = json.loads(submit.stdout)["task_id"]
@@ -179,7 +187,9 @@ def test_tasks_cancel_pretty_emits_human_line(
     """``--pretty`` opts in to the colored human line — must not emit
     JSON, must mention the task id, and must distinguish the
     already-terminal no-op from a live cancel request."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     submit = _run(["client", "ingest", "--no-embed"])
     task_id = json.loads(submit.stdout)["task_id"]
