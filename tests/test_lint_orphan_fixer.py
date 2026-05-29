@@ -293,7 +293,7 @@ async def test_link_with_existing_backlink_emits_reconcile_update(
     """When the parent body already contains ``[[Orphan Title]]`` but
     the orphan is still flagged (storage ``links`` table is stale), the
     fixer must emit a no-content ``update_page`` so apply →
-    ``persist_knowledge_page`` → ``replace_links_from`` reconciles storage.
+    ``persist_knowledge`` → ``replace_links_from`` reconciles storage.
 
     Falling to ``mark_as_leaf`` would mask the real bug (the link
     index is out of sync) and silence the user's only signal."""
@@ -325,7 +325,7 @@ async def test_link_with_existing_backlink_emits_reconcile_update(
     op = proposal.operations[0]
     assert op.kind == "update_page"
     assert op.path == parent.path
-    # Body is unchanged — apply runs persist_knowledge_page solely to
+    # Body is unchanged — apply runs persist_knowledge solely to
     # reconcile the stale storage.links_from snapshot.
     assert "[[Orphan Detail]]" in (op.new_body or "")
     assert "reconcile_links" in proposal.rationale.lower()

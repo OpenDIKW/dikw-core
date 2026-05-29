@@ -28,7 +28,6 @@ keys in the report — same fused ranking, different identity projection.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import shutil
@@ -386,7 +385,6 @@ async def run_eval(
     assets_config: AssetsConfig | None = None,
     multimodal_embedder: MultimodalEmbeddingProvider | None = None,
     mode: EvalMode = "hybrid",
-    raw_dump_path: Path | None = None,
     cache_mode: CacheMode = "read_write",
     cache_root: Path | None = None,
     reporter: ProgressReporter | None = None,
@@ -399,7 +397,7 @@ async def run_eval(
       ``ProviderConfig`` with ``embedding_model="fake"`` (everything else
       default). No network, no keys, <1s.
     * Both set → real-vector eval: the caller built an embedder from a
-      wiki's ``ProviderConfig`` and hands both in. The runner serialises
+      base's ``ProviderConfig`` and hands both in. The runner serialises
       that config into the temp base's ``dikw.yml`` so ``api.ingest`` picks
       up vendor-specific ``embedding_batch_size`` / ``embedding_dim``
       exactly as the source base has them. Without this, a Gitee-configured
@@ -420,15 +418,6 @@ async def run_eval(
     ``mode`` selects which retrieval leg(s) to score: ``"hybrid"``
     (default, BM25+vec via RRF), ``"bm25"``, ``"vector"``, or ``"all"``
     (run all three sequentially against the same ingested corpus).
-
-    ``raw_dump_path`` — when set (and ``mode="all"``), appends one JSONL
-    row per (query, mode) capturing the top-``SEARCH_LIMIT`` ranked doc
-    stems plus ``expect_any`` / ``expect_none``. Callers supply a path
-    they've already truncated (or never existed); the runner only
-    appends. Downstream ``evals/tools/sweep_rrf.py`` reads this to
-    re-fuse offline at arbitrary ``(rrf_k, weights)`` — avoiding a
-    second expensive embedding pass. For single-mode runs the flag is
-    silently a no-op since sweep needs both legs' rankings.
     """
     if not spec.corpus_dir.is_dir():
         raise EvalError(f"corpus directory not found: {spec.corpus_dir}")
@@ -565,9 +554,6 @@ async def run_eval(
             metrics[f"{view}/{k}"] = v
         views_emitted.append(view)
 
-    if raw_dump_path is not None and len(modes) > 1:
-        _dump_raw_ranked(raw_dump_path, spec.name, per_mode)
-
     return EvalReport(
         dataset_name=spec.name,
         metrics=metrics,
@@ -628,59 +614,6 @@ def _multimodal_fingerprint(mm_cfg: MultimodalEmbedConfig | None) -> str | None:
         f"{mm_cfg.provider}@{mm_cfg.model}@{mm_cfg.revision or '0'}"
         f"@{mm_cfg.dim}@{mm_cfg.distance}"
     )
-
-
-def _dump_raw_ranked(
-    path: Path,
-    dataset_name: str,
-    per_mode: dict[RetrievalMode, tuple[list[PerQueryRow], list[NegativeRow]]],
-) -> None:
-    """Append per-mode ranked lists as JSONL.
-
-    One row per (query, mode). Positives carry ``expect_any`` and (when
-    present) ``expect_chunk_any`` / ``expect_asset_any`` plus their
-    matching ``ranked_chunks`` / ``ranked_assets`` lists; negatives carry
-    ``expect_none: true`` with empty positive fields. Consumers join on
-    ``q_id`` to get each query's bm25/vector/hybrid rankings side-by-side.
-    Positive and negative ``q_id``s are independent namespaces — any
-    joiner must filter by ``expect_none`` before keying.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        for mode, (positives, negatives) in per_mode.items():
-            for q_id, row in enumerate(positives):
-                payload: dict[str, Any] = {
-                    "dataset": dataset_name,
-                    "mode": mode,
-                    "q_id": q_id,
-                    "q": row.q,
-                    "expect_any": list(row.expect_doc_any),
-                    "expect_none": False,
-                    "ranked": list(row.ranked_docs),
-                }
-                if row.expect_chunk_any:
-                    payload["expect_chunk_any"] = list(row.expect_chunk_any)
-                    payload["ranked_chunks"] = list(row.ranked_chunks)
-                if row.expect_asset_any:
-                    payload["expect_asset_any"] = list(row.expect_asset_any)
-                    payload["ranked_assets"] = list(row.ranked_assets)
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            for q_id, neg in enumerate(negatives):
-                f.write(
-                    json.dumps(
-                        {
-                            "dataset": dataset_name,
-                            "mode": mode,
-                            "q_id": q_id,
-                            "q": neg.q,
-                            "expect_any": [],
-                            "expect_none": True,
-                            "ranked": list(neg.ranked),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
 
 
 def _copy_corpus(src: Path, dest: Path) -> None:

@@ -1,11 +1,17 @@
 """Offline RRF weight sweep for retrieval evals.
 
-Reads a JSONL dump produced by ``dikw eval --retrieval all --dump-raw``,
-re-fuses the bm25 and vector legs at arbitrary ``(rrf_k, bm25_weight,
+Reads a JSONL dump of per-(query, mode) ranked lists — one row per line
+with fields ``dataset``, ``mode`` (``bm25`` / ``vector`` / ``hybrid``),
+``q_id``, ``q``, ``expect_any``, ``expect_none``, ``ranked`` — re-fuses
+the bm25 and vector legs at arbitrary ``(rrf_k, bm25_weight,
 vector_weight)`` combinations, and re-scores every positive query with
 the existing metric helpers. This lets us find the fusion knobs that
 maximise a metric (e.g. nDCG@10) against a target dataset **without
 re-running embedding** — the expensive part of a real-vector eval.
+
+This dump is no longer auto-emitted by ``dikw client eval`` (the
+``--dump-raw`` flag was dropped in the client/server split); prepare it
+by hand from the retrieval primitives if you want to sweep.
 
 Usage::
 
@@ -73,7 +79,7 @@ class SweepResult:
 
 
 def load_raw_dump(path: Path) -> dict[str, list[QueryLegs]]:
-    """Parse a ``--dump-raw`` JSONL file into per-dataset query legs.
+    """Parse a ranked-list JSONL dump into per-dataset query legs.
 
     Drops negatives (no positive relevance set to score against). Keys
     by ``q_id`` so duplicate query texts don't collide. No back-compat
@@ -263,7 +269,7 @@ def _cli(argv: Sequence[str] | None = None) -> int:
         "--raw-dump",
         type=Path,
         required=True,
-        help="JSONL file produced by `dikw eval --retrieval all --dump-raw`.",
+        help="Per-(query, mode) ranked-list JSONL dump (see module docstring).",
     )
     p.add_argument(
         "--top-n", type=int, default=10, help="How many rows to show (default: 10)."

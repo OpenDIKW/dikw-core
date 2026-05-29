@@ -197,24 +197,6 @@ async def test_persist_knowledge_embed_retry_skip_falls_back_to_pending(
         await storage.close()
 
 
-async def test_persist_knowledge_back_compat_alias(tmp_path: Path) -> None:
-    """``persist_knowledge_page`` legacy alias still works (tuple return)."""
-    from dikw_core.domains.knowledge.page_index import persist_knowledge_page
-
-    root, storage = await _new_storage_in_base(tmp_path)
-    try:
-        _write_k_page(root, "knowledge/alias.md", title="Alias", body="echo foxtrot")
-        unresolved, resolved_title = await persist_knowledge_page(
-            storage=storage,
-            root=root,
-            path="knowledge/alias.md",
-        )
-        assert unresolved == 0
-        assert resolved_title == "Alias"
-    finally:
-        await storage.close()
-
-
 @pytest.mark.asyncio
 async def test_persist_knowledge_clamps_status_to_none(tmp_path: Path) -> None:
     """Even if a K page has a ``status:`` in frontmatter, it gets clamped.

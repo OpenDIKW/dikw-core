@@ -186,7 +186,7 @@ class PostgresStorage:
 
     async def upsert_document(self, doc: DocumentRecord) -> None:
         # Defensive: status is a wisdom-only column. ``api._to_document``
-        # and ``persist_page`` both clamp at the application layer, but a
+        # and ``_persist_layered_page`` both clamp at the application layer, but a
         # future Storage Protocol caller (a tool, a migration script)
         # could pass ``status`` on a non-wisdom doc. Clamping here makes
         # the wisdom-only invariant a property of the adapter, not just

@@ -5,6 +5,21 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Removed
+
+- **Deprecated persist aliases dropped.** `persist_page`,
+  `persist_knowledge_page`, and `wiki_doc_id` — the
+  `tuple[int, str]`-returning compatibility shims kept through 0.4.0 —
+  are gone. Call `persist_knowledge` / `persist_wisdom` /
+  `persist_source` and `doc_id_for(Layer.KNOWLEDGE, …)` directly.
+- **Orphaned eval `--dump-raw` plumbing removed.** `run_eval`'s
+  `raw_dump_path` parameter and its `_dump_raw_ranked` JSONL writer had
+  no CLI surface after the client/server split; both are deleted.
+  `evals/tools/sweep_rrf.py` stays as a manual offline RRF-sweep tool —
+  prepare its input JSONL by hand.
+
 ## 0.4.0 — chunk→FTS→embed pipeline governance + ingest scope narrowing
 
 ### ⚠️ Breaking

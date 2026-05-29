@@ -2423,11 +2423,11 @@ async def test_non_wisdom_layer_status_clamped_to_null(
     storage: Storage,
 ) -> None:
     """The ``status`` column is wisdom-only by contract. Even when a
-    caller upserts a SOURCE or WIKI document with ``status`` set, the
+    caller upserts a SOURCE or KNOWLEDGE document with ``status`` set, the
     adapter must clamp it to ``NULL`` so the wisdom-only invariant is
     enforced at the storage layer (defense in depth alongside the
     application-side clamp in ``api._to_document`` and
-    ``persist_page``). Symmetric across sqlite + postgres.
+    ``_persist_layered_page``). Symmetric across sqlite + postgres.
     """
     from dikw_core.schemas import WisdomStatus
 

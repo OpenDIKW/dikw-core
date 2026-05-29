@@ -64,7 +64,7 @@ class MissingProvenanceFixer:
         file_bytes = abs_path.read_bytes()
         post = frontmatter.loads(file_bytes.decode("utf-8"))
         # ``frontmatter_str_list`` is the shared malformed-shape guard
-        # — symmetric with ``persist_knowledge_page`` and ``run_lint``. A
+        # — symmetric with ``persist_knowledge`` and ``run_lint``. A
         # YAML scalar / dict / null collapses to ``[]`` rather than
         # being iterated character-by-character into apply.
         source_paths = frontmatter_str_list(post.metadata, "sources")

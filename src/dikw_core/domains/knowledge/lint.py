@@ -228,17 +228,17 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         paths.append(doc.path)
 
     # Share the same resolve semantics as engine persistence
-    # (``persist_page``): exact -> fuzzy normalize -> collision refusal.
+    # (``persist_knowledge``): exact -> fuzzy normalize -> collision refusal.
     # Without this lint reports ``broken_wikilink`` on plurals that
     # storage already resolved, and silently swallows fuzzy collisions
     # that storage refused to guess.
     #
     # ``build_title_indexes`` is the single source of truth for the
     # cross-layer collision policy — exact-title collisions across
-    # WIKI + WISDOM are dropped from ``title_to_path`` so the fuzzy
+    # KNOWLEDGE + WISDOM are dropped from ``title_to_path`` so the fuzzy
     # stage's ≥2-candidate refusal fires (Karpathy's wrong-merge rule).
     # The previous local ``{t: dup_paths[0]}`` shape silently let the
-    # first-iterated layer win, contradicting what ``persist_page``
+    # first-iterated layer win, contradicting what ``persist_knowledge``
     # actually wrote into storage and causing ``broken_wikilink`` and
     # ``duplicate_title`` lint to disagree with the persisted graph.
     title_to_path, fuzzy_index = build_title_indexes(
@@ -261,7 +261,7 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
         # ``lint_propose`` can build ``KnowledgePageMeta`` without a second
         # disk pass over the same K-layer pages. ``frontmatter_str_list``
         # is the shared malformed-shape guard (scalar / dict / null →
-        # ``[]``) — same one ``persist_knowledge_page`` and
+        # ``[]``) — same one ``persist_knowledge`` and
         # ``MissingProvenanceFixer`` use, so this lint pass's view of
         # ``sources:`` matches what storage actually stored.
         sources_tuple = tuple(frontmatter_str_list(post.metadata, "sources"))

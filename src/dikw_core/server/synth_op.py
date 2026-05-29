@@ -89,7 +89,7 @@ def make_eval_runner(
     and/or ``eval.run_synth_eval`` (K-layer) for one task.
 
     The runner builds an embedder + (optional) multimodal embedder from
-    the server's wiki cfg so eval scores against the same vector space
+    the server's base cfg so eval scores against the same vector space
     the live engine uses. ``dataset`` may be a registered name (resolved
     under the packaged datasets root), an explicit path, or ``None`` to
     run every packaged dataset back-to-back — preserving the

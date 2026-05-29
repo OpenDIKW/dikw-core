@@ -3,7 +3,7 @@
 The wisdom write API persists a single hand-authored wisdom page from
 structured input (slug + title + body + optional author/status/tags/
 sources/extras), writing the file to disk and indexing it through
-``persist_page(layer=Layer.WISDOM)``. Sister to ``api.ingest``'s
+``persist_wisdom``. Sister to ``api.ingest``'s
 wisdom branch but for a single page, so an agent caller can create or
 update one wisdom note and have it immediately retrievable.
 """
@@ -115,7 +115,7 @@ async def test_write_upsert_marks_updated(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_write_status_only_change_reindexes(tmp_path: Path) -> None:
     """Same body bytes + flipped status must still update the status
-    column. ``write_wisdom_page`` always calls ``persist_page`` (no
+    column. ``write_wisdom_page`` always calls ``persist_wisdom`` (no
     body-hash short-circuit) so an explicit write is the user's
     contract to refresh the row, even if only frontmatter changed.
     """
@@ -617,7 +617,7 @@ async def test_empty_body_rejected_by_schema(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
-    """A mid-pipeline failure inside ``_persist_page`` must
+    """A mid-pipeline failure inside ``persist_wisdom`` must
     deactivate the document row so the next ingest rebuilds it
     end-to-end, instead of leaving a partial doc with stale
     links/provenance. Mirrors the ingest wisdom branch recovery
@@ -689,6 +689,6 @@ async def test_persist_failure_deactivates_document(tmp_path: Path) -> None:
         await storage.close()
     assert doc is not None
     assert doc.active is False, (
-        "persist_page failure must deactivate the doc so the next "
+        "persist_wisdom failure must deactivate the doc so the next "
         "ingest resume scan can rebuild it"
     )

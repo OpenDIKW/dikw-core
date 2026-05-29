@@ -645,7 +645,7 @@ async def run_lint_apply(
                     touched_paths.add(op.path)
                     deleted_paths.add(op.path)
                 elif op.kind == "reconcile_provenance":
-                    # No file change → no Phase 1 ``persist_knowledge_page``
+                    # No file change → no Phase 1 ``persist_knowledge``
                     # re-chunk needed, no ``knowledge_paths_changed`` entry,
                     # and crucially no ``touched_paths`` entry either:
                     # the conflict gate at line 601 exists to stop a
@@ -992,7 +992,7 @@ async def _apply_one_op(
         # Sync storage to frontmatter snapshot. Frontmatter is the
         # source of truth (the knowledge tree is a user-editable Obsidian
         # vault); this op only re-runs the same reconcile that
-        # ``persist_knowledge_page`` does on every synth / lint-apply, but
+        # ``persist_knowledge`` does on every synth / lint-apply, but
         # without needing an embedder or re-chunking. Concurrent edit
         # check up front (above) catches the case where the user
         # edited ``sources:`` between scan and apply.

@@ -710,14 +710,14 @@ with `lint apply`.
 (`feat/wikilink-recall`, commit `669a826` after PG-parametrize +
 ranking-quality + fusion-compat tests). Confirms the leg is
 non-destructive on standard retrieval benchmarks (which never produce
-K-layer knowledgelinks). Ships **default-off**.
+K-layer wikilinks). Ships **default-off**.
 
 ### Why not "+0.01 nDCG@10 on scifact + cmteb"?
 
 The original plan's acceptance gate ("graph leg must lift nDCG@10 by
 ≥ 0.01 on SciFact + cmteb-t2-subset") is conceptually unmeasurable:
 
-- The graph leg walks the K-layer knowledgelink graph
+- The graph leg walks the K-layer wikilink graph
   (`Storage.neighbor_chunks_via_links`). Wikilinks are persisted to
   storage **only inside K-layer page persistence**
   (`api.py:_persist_knowledge_page` → `parse_links` → `storage.upsert_link`).

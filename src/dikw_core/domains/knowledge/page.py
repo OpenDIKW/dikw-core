@@ -133,7 +133,7 @@ def read_page(root: Path, path: str) -> KnowledgePage:
     post = frontmatter.load(str(abs_path))
     meta = dict(post.metadata)
     # ``tags`` and ``sources`` go through the shared malformed-shape
-    # guard for the same reason ``persist_knowledge_page`` / ``run_lint`` /
+    # guard for the same reason ``persist_knowledge`` / ``run_lint`` /
     # ``MissingProvenanceFixer`` do — a hand-written YAML scalar
     # (``sources: foo.md``) would otherwise become a character-per-row
     # list. The ``pop`` happens explicitly first so ``extras`` doesn't
