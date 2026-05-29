@@ -9,8 +9,8 @@ strips credentials from URLs before they reach a /v1/health response.
 rank2 module: imports ``api_core`` (``_with_storage`` / ``load_base``) and
 the leaf ``api_types`` DTOs, never the ``api`` facade. ``api`` re-exports
 ``health`` / ``check_providers`` (public) plus the underscore helpers the
-tests reach for (``_sanitize_base_url`` / ``_llm_credentials_present`` /
-``_PROBE_PNG_1X1``).
+tests reach for (``_sanitize_base_url`` / ``_PROBE_PNG_1X1``);
+``_llm_credentials_present`` stays module-internal (not re-exported).
 """
 
 from __future__ import annotations

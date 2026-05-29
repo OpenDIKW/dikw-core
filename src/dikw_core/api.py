@@ -12,6 +12,8 @@ needs, never this facade — so the import graph is acyclic):
   * ``api_core``     — base scaffold, storage open/migrate, embed-version
                        helpers (``init_base`` / ``load_base`` / ``status``).
   * ``api_types``    — cross-cutting DTOs + exceptions.
+  * ``api_path_safety`` — ``_assert_within`` base-escape guard (leaf helper;
+                       consumed by ``api_pages`` / ``api_graph``, surfaces no verb).
   * ``api_health``   — ``health`` / ``check_providers`` + provider probes.
   * ``api_ingest``   — ``ingest`` (D-layer write entry).
   * ``api_pages``    — ``list_pages`` / ``read_page`` / ``read_asset``.
