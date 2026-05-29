@@ -5,7 +5,7 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## Unreleased
+## 0.4.5 — api facade decomposition + dead-code cleanup
 
 ### Removed
 
@@ -33,6 +33,14 @@ on each entry call out exactly what shape changes break.
   its bare global names against the module it is *defined* in, so
   `monkeypatch.setattr` targets move with the verb (e.g. `ingest`'s
   `_with_storage` is now patched on `api_ingest`, not `api`).
+- **K/W persist leg enforces `title_to_path`/`fuzzy_index` pairing.** When
+  `_persist_layered_page` rebuilds `title_to_path` from storage (caller passed
+  `None`), it now rebuilds `fuzzy_index` from the same title set via
+  `build_title_indexes` and discards any caller-supplied `fuzzy_index`,
+  closing a latent footgun where a stale fuzzy index resolved wikilinks
+  against a different key space than the fresh exact index. Behavior-preserving
+  for every production caller (synth, `lint apply`, `write_wisdom_page`), which
+  already pass the two indexes as a matched pair.
 
 ## 0.4.0 — chunk→FTS→embed pipeline governance + ingest scope narrowing
 
