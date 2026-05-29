@@ -2,7 +2,7 @@
 
 Phase 5 collapses the in-process ``dikw client eval`` command into a thin
 client wrapper that submits ``POST /v1/eval`` and follows the task
-event stream. The previous CLI surface (``--dump-raw``, ``--embedder
+event stream. The previous CLI surface (``--embedder
 fake|provider``, ``--retrieval all``, no-arg auto-discovery) lived
 above the engine and is now exercised at the engine layer (see
 ``tests/test_eval_runner.py``); the CLI's job here is just argument

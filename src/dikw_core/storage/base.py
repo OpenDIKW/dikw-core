@@ -245,8 +245,8 @@ class Storage(Protocol):
         edges entirely; pass a fresh source's first link set to no-op
         the leading delete.
 
-        Used by ``_persist_knowledge_page`` to reconcile a knowledge page's
-        outgoing edges on every re-persist — removing a ``[[wikilink]]``
+        Used by ``_persist_layered_page`` (the shared K/W persist leg) to
+        reconcile a page's outgoing edges on every re-persist — removing a ``[[wikilink]]``
         from the body actually drops it from storage rather than
         leaving a ghost record that pollutes graph-leg retrieval and
         orphan/broken-link lint.
@@ -272,8 +272,8 @@ class Storage(Protocol):
         wipe the page's provenance edges entirely; pass a fresh page's
         first set to no-op the leading delete.
 
-        Used by ``persist_knowledge`` to reconcile a K-page's
-        provenance edges from its frontmatter ``sources:`` list on every
+        Used by ``_persist_layered_page`` (the shared K/W persist leg) to
+        reconcile a page's provenance edges from its frontmatter ``sources:`` list on every
         re-persist, so removing a source from frontmatter actually
         drops the edge rather than leaving a ghost row. Mirrors
         ``replace_links_from`` for the body-derived wikilink graph.

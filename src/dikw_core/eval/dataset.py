@@ -256,7 +256,7 @@ class JudgeSection(BaseModel):
     """LLM-judge override declared in ``dataset.yaml``'s ``judge:`` block.
 
     ``model`` lets a dataset pin a specific model id (handy when the
-    wiki's configured LLM is a small / fast model unsuitable for
+    base's configured LLM is a small / fast model unsuitable for
     judging); ``None`` falls back to ``cfg.provider.llm_model``. Judge
     runs use the knowledge base's configured provider — a separate provider per
     dataset would mean a separate auth / billing path and isn't needed
