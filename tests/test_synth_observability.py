@@ -240,7 +240,7 @@ async def test_synth_logs_per_group_at_debug(
 
     debug_msgs = [
         r.getMessage() for r in caplog.records
-        if r.levelno == logging.DEBUG and r.name == "dikw_core.api"
+        if r.levelno == logging.DEBUG and r.name == "dikw_core.api_synth"
     ]
     calling = [m for m in debug_msgs if "calling" in m and "group" in m]
     returned = [m for m in debug_msgs if "returned" in m and "group" in m]
@@ -267,7 +267,7 @@ async def test_synth_logs_group_failure_at_warning(
     survivors."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="dikw_core.api")
+    caplog.set_level(logging.WARNING, logger="dikw_core.api_synth")
     body, chunks = _three_chunk_body()
     cfg = _build_cfg()
 
@@ -283,6 +283,6 @@ async def test_synth_logs_group_failure_at_warning(
 
     warning_msgs = [
         r.getMessage() for r in caplog.records
-        if r.levelno == logging.WARNING and r.name == "dikw_core.api"
+        if r.levelno == logging.WARNING and r.name == "dikw_core.api_synth"
     ]
     assert any("group" in m and marker in m for m in warning_msgs), warning_msgs
