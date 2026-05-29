@@ -20,6 +20,20 @@ on each entry call out exactly what shape changes break.
   `evals/tools/sweep_rrf.py` stays as a manual offline RRF-sweep tool —
   prepare its input JSONL by hand.
 
+### Internal
+
+- **`api.py` decomposed into per-verb cluster modules.** The 3.9k-line
+  engine facade is now a ~170-line thin re-export surface; each verb lives
+  in a focused `api_*` module (`api_core`, `api_types`, `api_health`,
+  `api_ingest`, `api_pages`, `api_graph`, `api_retrieve`, `api_synth`,
+  `api_lint`, `api_wisdom`, `api_path_safety`). The public `api.X` surface
+  and `__all__` are byte-identical, so server routes and the eval runner
+  are unaffected. Contributors add a verb's body to its cluster module and
+  re-export it from `api.py`. Note for test authors: a function resolves
+  its bare global names against the module it is *defined* in, so
+  `monkeypatch.setattr` targets move with the verb (e.g. `ingest`'s
+  `_with_storage` is now patched on `api_ingest`, not `api`).
+
 ## 0.4.0 — chunk→FTS→embed pipeline governance + ingest scope narrowing
 
 ### ⚠️ Breaking

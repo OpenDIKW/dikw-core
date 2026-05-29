@@ -167,7 +167,9 @@ def test_ingest_default_treats_file_errors_as_warnings(
     """Without ``--strict``, a per-file failure should NOT fail the
     overall CLI invocation — the file shows in the warning summary
     but exit code stays 0 so a flaky markdown can't break CI."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     _, rt = asgi_client
     _drop_broken_markdown(rt)
     patch_transport_factory()
@@ -188,7 +190,9 @@ def test_ingest_strict_exits_one_when_any_file_errors(
 ) -> None:
     """``--strict`` flips the same per-file failure into a non-zero
     exit so CI can branch on it."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     _, rt = asgi_client
     _drop_broken_markdown(rt)
     patch_transport_factory()

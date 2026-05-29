@@ -13,8 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dikw_core import __version__
-from dikw_core import api as api_module
+from dikw_core import __version__, api_health
 
 
 @pytest.mark.asyncio
@@ -169,7 +168,7 @@ async def test_health_strips_credentials_from_base_url(
     Sanitisation lives in ``api._sanitize_base_url`` — this guards the
     seam by tweaking the resolved config and asserting on the wire.
     """
-    original_with_storage = api_module._with_storage
+    original_with_storage = api_health._with_storage
     sentinel_token = "sk-leak-IN-URL-AAA-BBB"
 
     async def _patched_with_storage(path: object) -> object:
@@ -182,7 +181,7 @@ async def test_health_strips_credentials_from_base_url(
         )
         return cfg, root, storage
 
-    monkeypatch.setattr(api_module, "_with_storage", _patched_with_storage)
+    monkeypatch.setattr(api_health, "_with_storage", _patched_with_storage)
 
     resp = await server_client.get("/v1/health")
     raw = resp.text

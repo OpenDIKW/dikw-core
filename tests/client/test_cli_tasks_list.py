@@ -70,7 +70,7 @@ def test_tasks_list_all_outputs_flat_array(
     of summary rows — matches the UX preview the user picked when
     approving the plan."""
     monkeypatch.setattr(
-        "dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings()
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
     )
     patch_transport_factory()
     ids = _seed_n_tasks(3)
@@ -93,7 +93,7 @@ def test_tasks_list_all_paginates_when_page_smaller_than_total(
     cursor-follow loop in ``_drain_task_list`` from a regression that
     only returns the first page."""
     monkeypatch.setattr(
-        "dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings()
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
     )
     patch_transport_factory()
     ids = _seed_n_tasks(5)

@@ -51,11 +51,23 @@ runs its own LLM.
 
 ```text
 src/dikw_core/
-├── api.py                 thin facade — init_base, ingest, retrieve,
-│                          synthesize, lint (+ lint_propose / lint_apply),
-│                          list_pages, read_page, list_links, read_provenance,
-│                          list_graph, read_asset, status, health,
-│                          check_providers
+├── api.py                 thin re-export facade — surfaces every verb so
+│                          the public `api.X` surface (+ `__all__`) stays
+│                          byte-stable; defines nothing. Each verb lives in
+│                          a focused `api_*` cluster module below.
+├── api_core.py            base scaffold (init_base / load_base / status),
+│                          storage open+migrate (`_with_storage`), embed-version helpers
+├── api_types.py           cross-cutting DTOs + exceptions (IngestReport,
+│                          SynthReport, HealthReport, PageNotFound, …)
+├── api_health.py          health, check_providers + provider probes
+├── api_ingest.py          ingest (D-layer write entry)
+├── api_pages.py           list_pages, read_page, read_asset
+├── api_graph.py           list_links, read_provenance, list_graph
+├── api_retrieve.py        retrieve (RRF-fused hybrid search; no LLM)
+├── api_synth.py           synthesize (K-layer authoring leg — only LLM entry)
+├── api_lint.py            lint, lint_propose, lint_apply
+├── api_wisdom.py          write_wisdom_page (W-layer write entry)
+├── api_path_safety.py     `_assert_within` base-escape guard
 ├── config.py              Pydantic config + YAML loader
 ├── schemas.py             cross-layer DTOs
 ├── domains/                 DIKW domain model (the four layers)
@@ -318,7 +330,7 @@ page body. Some duplicates never get a chance to be resolved because
 the LLM, generating new pages without seeing the existing knowledge base, simply
 **writes a fresh `<page>` block under a different title** — a true
 semantic duplicate that no string-distance trick can absorb.
-`_synth_pages_from_source` (in `api.py`) closes that loop by feeding
+`_synth_pages_from_source` (in `api_synth.py`) closes that loop by feeding
 two prompt sections to every group:
 
 1. **`## Already created in this batch`** — a per-source accumulator

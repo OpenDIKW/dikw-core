@@ -49,7 +49,9 @@ def test_ingest_default_async_prints_task_handle_exit_zero(
     """Without ``--wait``: submit, print the handle JSON, exit 0
     immediately. The task itself may still be running — we don't follow
     it."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     result = _run(["client", "ingest", "--no-embed"])
     assert result.exit_code == 0, result.stdout
@@ -99,7 +101,9 @@ def test_ingest_wait_renders_report_exits_zero(
 ) -> None:
     """``--wait`` follows the task to terminal, renders the
     ``IngestReport`` table, and maps ``succeeded`` to exit 0."""
-    monkeypatch.setattr("dikw_core.api.build_embedder", lambda _cfg: FakeEmbeddings())
+    monkeypatch.setattr(
+        "dikw_core.server.ingest_op.build_embedder", lambda _cfg: FakeEmbeddings()
+    )
     patch_transport_factory()
     result = _run(["client", "ingest", "--no-embed", "--wait", "--plain"])
     assert result.exit_code == 0, result.stdout

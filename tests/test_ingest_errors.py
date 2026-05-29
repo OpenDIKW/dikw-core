@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from dikw_core import api
+from dikw_core import api, api_ingest
 from dikw_core.config import dump_config_yaml, load_config
 
 from .fakes import FakeEmbeddings, init_test_base
@@ -127,7 +127,7 @@ async def test_ingest_records_storage_error_via_monkeypatch(
     src_dir = _seed_wiki(tmp_path)
     (src_dir / "boom.md").write_text("# Doom\n\nBody.\n", encoding="utf-8")
 
-    original = api._with_storage
+    original = api_ingest._with_storage
 
     async def patched(path: object) -> object:
         cfg, root, storage = await original(path)  # type: ignore[arg-type]
@@ -139,7 +139,7 @@ async def test_ingest_records_storage_error_via_monkeypatch(
         storage.replace_chunks = boom  # type: ignore[method-assign]
         return cfg, root, storage
 
-    monkeypatch.setattr(api, "_with_storage", patched)
+    monkeypatch.setattr(api_ingest, "_with_storage", patched)
 
     report = await api.ingest(tmp_path, embedder=FakeEmbeddings())
     assert len(report.errors) == 1
@@ -190,7 +190,7 @@ async def test_storage_error_deactivates_doc_so_retry_reprocesses(
     src_dir = _seed_wiki(tmp_path)
     (src_dir / "boom.md").write_text("# Doom\n\nbody.\n", encoding="utf-8")
 
-    original = api._with_storage
+    original = api_ingest._with_storage
     fail_chunks = True
 
     async def patched(path: object) -> object:
@@ -205,7 +205,7 @@ async def test_storage_error_deactivates_doc_so_retry_reprocesses(
         storage.replace_chunks = maybe_boom  # type: ignore[method-assign]
         return cfg, root, storage
 
-    monkeypatch.setattr(api, "_with_storage", patched)
+    monkeypatch.setattr(api_ingest, "_with_storage", patched)
 
     first = await api.ingest(tmp_path, embedder=FakeEmbeddings())
     assert len(first.errors) == 1
