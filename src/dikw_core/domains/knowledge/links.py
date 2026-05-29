@@ -295,7 +295,7 @@ def resolve_links(
 ) -> tuple[list[LinkRecord], list[UnresolvedLink]]:
     """Turn ``ParsedLink``s into storage records.
 
-    ``title_to_path`` maps a K/W page title to its wiki-relative path.
+    ``title_to_path`` maps a K/W page title to its base-relative path.
     Wikilink resolution falls through three deterministic stages:
     exact title match → fuzzy normalize match (NFKC + casefold +
     punctuation strip + ASCII trailing-plural stem) → collision refusal
@@ -304,8 +304,11 @@ def resolve_links(
 
     ``fuzzy_index`` is the output of ``build_fuzzy_index(title_to_path)``;
     callers persisting many pages against the same title set should hoist
-    that build to amortize it. ``None`` means "build it here", which is
-    fine for tests + one-shot callers.
+    that build to amortize it. **It must be built from the same
+    ``title_to_path`` passed here** — a fuzzy index keyed off a different
+    title set resolves wikilinks against a mismatched key space. ``None``
+    means "build it here from ``title_to_path``", which is fine for tests
+    + one-shot callers.
     """
     fuzzy_to_paths = fuzzy_index if fuzzy_index is not None else build_fuzzy_index(title_to_path)
 
@@ -318,6 +321,13 @@ def resolve_links(
             if target_path is None:
                 key = _normalize_for_match(link.target)
                 candidates = fuzzy_to_paths.get(key, []) if key else []
+                # Three deterministic cases on the normalized key:
+                #   0 candidates → no fuzzy match (stays unresolved below)
+                #   1 candidate  → unambiguous fuzzy resolve
+                #   ≥2 candidates → ambiguous: refuse to guess and leave the
+                #     link broken so lint surfaces it (Karpathy's wrong-merge
+                #     rule — a wrong merge is irreversible, a missed resolve
+                #     is a fixable lint warning).
                 if len(candidates) == 1:
                     target_path = candidates[0]
             if target_path is None:
