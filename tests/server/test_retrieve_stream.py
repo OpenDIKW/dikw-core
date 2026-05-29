@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from dikw_core import api as api_module
+from dikw_core import api_retrieve
 
 from ..fakes import FakeEmbeddings
 
@@ -30,7 +31,9 @@ def _patch_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
         _ = (cfg, dim_override)
         return FakeEmbeddings()
 
-    monkeypatch.setattr(api_module, "build_embedder", _embed_factory)
+    # ``_retrieve_inner`` resolves ``build_embedder`` from ``api_retrieve``'s
+    # namespace (the module it's defined in), so patch it there.
+    monkeypatch.setattr(api_retrieve, "build_embedder", _embed_factory)
 
 
 @pytest.mark.asyncio
@@ -114,7 +117,14 @@ async def test_retrieve_stream_works_without_llm_provider(
             "build_llm should not be called on the retrieve path"
         )
 
-    monkeypatch.setattr(api_module, "build_llm", _broken_llm_factory)
+    # ``api_retrieve`` (where ``retrieve`` is defined) deliberately does not
+    # import ``build_llm`` — proof-by-construction that the retrieve path
+    # can't build an LLM. ``raising=False`` tolerates that absence while
+    # forward-protecting: if someone later wires a ``build_llm`` call into
+    # the retrieve module, this broken factory fires.
+    monkeypatch.setattr(
+        api_retrieve, "build_llm", _broken_llm_factory, raising=False
+    )
     _patch_embedder(monkeypatch)
 
     async with server_client.stream(
