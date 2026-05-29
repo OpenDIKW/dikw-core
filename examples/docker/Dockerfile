@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # ``.github/workflows/reusable-ci.yml`` enforces the invariant
 # (DIKW_VERSION must equal pyproject.toml's version OR be published on
 # PyPI) so any drift introduced by hand fails CI.
-ARG DIKW_VERSION=0.4.0
+ARG DIKW_VERSION=0.4.5
 RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
 
 RUN useradd --create-home --uid 1000 dikw
