@@ -6,8 +6,6 @@ how they're discovered, and how `dikw client import` dispatches to them.
 Plugin authors looking for a tutorial-style walkthrough (with a working
 example and pyproject snippets) should read the
 [plugin-author-guide in the dikw-plugins repo](https://github.com/opendikw/dikw-plugins/blob/main/docs/plugin-author-guide.md).
-The decision context is captured in
-[ADR 0001](adr/0001-client-side-converter-plugins.md).
 
 ## What a converter does
 

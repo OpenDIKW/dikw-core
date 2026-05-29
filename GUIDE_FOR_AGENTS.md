@@ -13,7 +13,7 @@ server, and verify that the server is reachable.
 
 - `sources/` stores source markdown and imported source packages.
 - `knowledge/` stores generated K-layer knowledge pages.
-- `wisdom/` stores W-layer review artifacts.
+- `wisdom/` stores hand-written W-layer pages (principles, lessons, patterns).
 - `.dikw/` stores runtime state such as SQLite data and task history.
 - `dikw.yml` is the base configuration file.
 
@@ -163,9 +163,6 @@ Expected shape:
 }
 ```
 
-In 0.3.0 PR1 `wisdom_items` is always 0 — wisdom is not yet indexed.
-PR2 lands wisdom-as-documents and this counter starts moving.
-
 Provider connectivity:
 
 ```bash
@@ -203,10 +200,9 @@ Install and use `dikw-skills` for operational workflows:
   attribution), and assets
 - import local source material
 - ingest, synthesize, lint, and eval (lint includes `missing_provenance`
-  for backfilling the provenance table on legacy bases). 0.3.0 PR1
-  removed the prior `distill` + `review` verbs; the W layer is being
-  refactored into a hand-written first-class document layer
-  (PR2 wires `wisdom/` files into ingest)
+  for backfilling the provenance table on legacy bases)
+- author W-layer wisdom pages with `dikw client wisdom write` (hand-written
+  and indexed on write; `ingest` does not scan `wisdom/`)
 
 - follow async tasks with cursor events, status, wait, and cancel
 

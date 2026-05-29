@@ -27,8 +27,8 @@ my-base/
 │   ├── index.md
 │   ├── log.md
 │   └── {entities,concepts,notes}/
-├── wisdom/               # hand-written principles / lessons / patterns (you author these in
-│   └── .gitkeep          # Obsidian; PR2 of the 0.3.0 W refactor wires them into retrieve)
+├── wisdom/               # hand-written principles / lessons / patterns (you author these
+│   └── .gitkeep          # in Obsidian or via `dikw client wisdom write`)
 └── .dikw/                # engine state (gitignored)
     └── index.sqlite
 ```
@@ -37,27 +37,6 @@ The whole tree is the **dikw base**; the `knowledge/` subdirectory is just
 the K-layer slice. Open the folder in Obsidian and you'll see the knowledge +
 wisdom pages render natively thanks to the `[[wikilink]]` syntax and
 YAML front-matter the engine emits.
-
-## Upgrading from 0.3.x to 0.4.0
-
-0.4.0 renamed the K-layer directory from `wiki/` to `knowledge/` (and
-the corresponding `Layer` enum, SQL table, and engine API symbols).
-There is no in-place migration — opening an 0.3.x base with 0.4.0
-raises `BaseUpgradeRequired`. For each existing base run:
-
-```bash
-cd <base>
-mv wiki knowledge       # rename the K-layer directory
-rm -rf .dikw            # drop the SQLite + auth + task ledger
-# (dikw.yml stays — your existing config is reused)
-dikw serve --base . &   # start the server
-dikw client ingest      # reindex sources + knowledge pages
-```
-
-If you tracked `<base>/.dikw/auth.json` (OAuth tokens), re-run
-`dikw auth login <provider>` (or `dikw auth import <provider>`) after
-the rebuild — `rm -rf .dikw` wipes the credential store along with
-the SQLite index.
 
 ## 2. Start the server
 
@@ -271,7 +250,7 @@ the directory name is the author. A file directly under
 `author = None`.
 
 Since 0.4.0 the engine indexes wisdom **only when the page is written
-through `dikw client wisdom write`** (CLI) or `POST /v1/wisdom/write`
+through `dikw client wisdom write`** (CLI) or `POST /v1/base/wisdom`
 (HTTP) — `dikw client ingest` does NOT scan `<base>/wisdom/`. The
 write API takes structured input (slug + title + body + optional
 metadata) and runs the same `persist_wisdom` pipeline a manual edit
@@ -353,11 +332,6 @@ missing-embedding resume scan finishes the vector backfill.
 > pages get wisdom/<author>/<slug>.md`, then re-pass the values you
 > want kept. Empty body is rejected at the schema boundary (422) so
 > an accidental `--body ""` cannot wipe an existing page's content.
-
-Upgrading from 0.2.x: delete `wisdom/_candidates/` and the
-`wisdom/{principles,lessons,patterns}.md` aggregates (or leave them —
-ingest hard-skips both), then re-run `dikw client ingest` against the
-new SCHEMA_VERSION. See CHANGELOG `[0.3.0]` for the full migration log.
 
 ## 7. Check retrieval quality on your corpus
 

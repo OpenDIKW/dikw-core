@@ -65,17 +65,22 @@ dataset not found / no datasets to run.
 
 ### Real-vector mode
 
-Default is hermetic — `FakeEmbeddings` (deterministic bag-of-words, 64
-dim, <1s) with no network or API keys. For real-vector evaluation
-against a configured provider, point at a wiki:
+`dikw client eval` scores against the embedder the **server** is
+configured with: the eval runner builds `build_embedder(cfg.provider)`
+from the served base's `dikw.yml`, so eval uses the same vector space
+the live engine does. Point `dikw serve` (or `serve-and-run`) at a base
+whose `dikw.yml` carries a real provider, export
+`DIKW_EMBEDDING_API_KEY`, then run eval against it:
 
 ```bash
-uv run --env-file .env dikw client eval --dataset mvp --embedder provider --path ./my-wiki
+uv run --env-file .env dikw client serve-and-run --base ./my-base -- eval --dataset mvp
 ```
 
-The runner reads `provider.embedding_*` from the wiki's `dikw.yml` and
-uses `build_embedder(cfg.provider)`. Gotchas around batch size,
-dimensions, and dim-locking apply — see [`../docs/providers.md`](../docs/providers.md).
+Gotchas around batch size, dimensions, and dim-locking apply — see
+[`../docs/providers.md`](../docs/providers.md). (The hermetic
+`FakeEmbeddings` path — deterministic bag-of-words, 64 dim, no network —
+is the pytest gate's default in `tests/test_retrieval_quality.py`, not a
+client flag.)
 
 ## Adding a dataset
 
@@ -145,20 +150,19 @@ comparison against published BM25 baselines:
 
 ```bash
 uv run --env-file scratch-bench-base/.env \
-    dikw client eval --dataset scifact --embedder provider \
-    --path ./scratch-bench-base --retrieval all
+    dikw client serve-and-run --base ./scratch-bench-base -- \
+    eval --dataset scifact --retrieval all
 ```
 
 See [`docs/providers.md`](../docs/providers.md#public-benchmark-calibration-with-gitee-ai)
-for the donor-wiki setup against Gitee AI (the cheapest currently-tested
+for the donor-base setup against Gitee AI (the cheapest currently-tested
 embedder for benchmark-scale work).
 
 ### Tuning RRF for your corpus
 
-`dikw client eval --retrieval all --dump-raw path.jsonl` + `evals/tools/sweep_rrf.py`
-re-fuses the same ranked lists at arbitrary `(rrf_k, bm25_weight,
-vector_weight)` combinations offline — no re-embedding, milliseconds
-per sweep. Pin the winning row into your wiki's `dikw.yml`:
+Tune the fusion weights by editing the `retrieval:` block in your
+base's `dikw.yml`, then re-run `dikw client eval --dataset <name>
+--retrieval all` to compare. Pin the winning combination:
 
 ```yaml
 retrieval:
@@ -170,9 +174,12 @@ retrieval:
 
 See [`docs/providers.md`](../docs/providers.md#tuning-rrf-weights-for-your-corpus)
 for the step-by-step and [`BASELINES.md`](./BASELINES.md) for the
-SciFact sweep that picked the shipped defaults. The CMTEB v1 baseline
-lists the CJK tokenizer gap; re-runs under `cjk_tokenizer: jieba` are
-expected to lift BM25 from 0.03 toward the published 0.5 range.
+SciFact sweep that picked the shipped defaults. (`evals/tools/sweep_rrf.py`
+re-fuses cached rankings offline, but the raw dump it consumes is no
+longer emitted by `dikw client eval` — the `--dump-raw` flag was dropped
+in the client/server migration.) The CMTEB v1 baseline lists the CJK
+tokenizer gap; re-runs under `cjk_tokenizer: jieba` are expected to lift
+BM25 from 0.03 toward the published 0.5 range.
 
 ### Comparability caveats
 
@@ -188,5 +195,5 @@ does hybrid actually win — not the third decimal place.
 - [`docs/eval-plan.md`](../docs/eval-plan.md) — why retrieval-only Phase
   A, when to revisit LLM-as-judge.
 - [`docs/providers.md`](../docs/providers.md) — per-vendor config for
-  `--embedder provider` mode.
+  real-vector eval.
 - `src/dikw_core/eval/` — the runner, metrics, and dataset loader.

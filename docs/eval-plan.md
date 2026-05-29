@@ -106,7 +106,7 @@ or non-destructiveness. Two gates:
    broken down by issue kind, and (for atomicity tweaks) a 5+5 sample
    judgement of TP/FP rates.
 
-   **Also run** `dikw client eval mvp --eval synth --pretty` (and
+   **Also run** `dikw client eval --dataset mvp --eval synth --pretty` (and
    `--judge --judge-sample 5` once an LLM budget allows the soft layer)
    to capture the seven quantified K-layer metrics — `fact_grounding_ratio`,
    `atomicity_score`, `duplicate_ratio_max`, `wikilink_resolved_ratio`,
@@ -173,9 +173,10 @@ parity impossible (and not actually useful):
    original RRF paper, per-leg weights `(bm25=0.3, vector=1.5)` picked
    because equal-weight left hybrid 0.037 nDCG@10 behind vector-only
    on BEIR/SciFact — dragged down by a ~0.10-nDCG-weaker BM25 leg. The
-   sweep + tuning path is reproducible for any corpus:
-   `dikw client eval --retrieval all --dump-raw path.jsonl` +
-   `evals/tools/sweep_rrf.py --raw-dump path.jsonl`. Keyword-heavy
+   sweep + tuning path: edit the `retrieval:` weights in `dikw.yml`
+   and re-run `dikw client eval --retrieval all` to compare
+   (`evals/tools/sweep_rrf.py` re-fuses cached rankings offline, but the
+   raw dump it needs is no longer emitted by the client CLI). Keyword-heavy
    corpora (code, rare identifiers) likely want `bm25_weight ≥ 1.0` —
    override via `retrieval:` block in `dikw.yml`. Full sweep table:
    [`evals/BASELINES.md`](../evals/BASELINES.md).

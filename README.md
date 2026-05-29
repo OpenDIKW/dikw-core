@@ -22,7 +22,7 @@ Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6
   - **D**ata — raw sources you curate.
   - **I**nformation — parsed, chunked, embedded, indexed (FTS5 + vectors).
   - **K**nowledge — LLM-authored knowledge pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
-  - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`. (W layer is being refactored to first-class documents in 0.3.0; PR1 removed the 0.2.x LLM-distill + review workflow, PR2 will index wisdom pages and PR3 will surface them in retrieve. See CHANGELOG.)
+  - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`, indexed (chunked + embedded) so they surface in `retrieve` alongside K-layer pages.
 - Pluggable LLM providers (API-first): Anthropic + OpenAI-compatible (covers OpenAI, Azure, Ollama, DeepSeek, Gemini-compat).
 - Pluggable storage: SQLite+sqlite-vec (default), Postgres+pgvector (enterprise) — swap by config.
 - **Client / server architecture.** A long-lived `dikw serve` (FastAPI + NDJSON) hosts the engine; the `dikw client …` Typer CLI talks to it over HTTP, streams progress events for long ops, and supports cancel / resume.
@@ -97,11 +97,11 @@ keeps the local-vs-HTTP boundary unambiguous for both agents and humans:
 | `dikw client retrieve "<q>"` | hybrid search returning ranked chunks + page refs (no LLM call); agent supplies its own synthesis |
 | `dikw client synth [--all]` | LLM turns source docs into K-layer knowledge pages; maintains `index.md`+`log.md`  |
 | `dikw client lint [propose\|proposals\|apply]` | report broken wikilinks / orphan pages / duplicate titles; propose + apply structured fixes |
-| `dikw client pages {list,get,links}` | enumerate pages / read a page body + chunk anchors / walk the K-layer link graph |
+| `dikw client pages {list,get,links,provenance}` | enumerate pages / read a page body + chunk anchors / walk the K-layer link graph / walk the K↔D provenance edge |
 | `dikw client graph get`     | fetch the whole base graph (nodes + edges + unresolved wikilinks) in one read |
 | `dikw client assets get <id> --output <file>` | download a content-addressed asset by sha256 id              |
 | `dikw client eval [--dataset]` | run retrieval-quality evaluation against packaged or custom datasets       |
-| `dikw client tasks {list,show,follow,cancel}` | inspect running / past async tasks on the server               |
+| `dikw client tasks {list,status,events,wait,cancel}` | inspect running / past async tasks on the server         |
 | `dikw client serve-and-run -- <cmd>` | one-shot server + inner command + teardown (no long-lived `dikw serve` needed) |
 
 The `dikw auth {login,import,status,list,logout}` subgroup is **local** —
@@ -163,7 +163,7 @@ provider:
   embedding_normalize: true
   embedding_distance: cosine
   embedding_batch_size: 16          # required: Gitee rejects batches >25
-  embedding_provider_label: gitee-ai  # optional; shows up in `dikw check`
+  embedding_provider_label: gitee-ai  # optional; shows up in `dikw client check`
 ```
 
 A working reference copy lives at
@@ -221,7 +221,7 @@ storage:
 - **SQLite + `sqlite-vec` + FTS5** — the default. No extras required.
 - **Postgres + `pgvector`** — install via `uv pip install dikw-core[postgres]`.
   Requires the `pg_trgm` and `vector` extensions (standard on the
-  `pgvector/pgvector:pg16` Docker image). The adapter uses `tsvector`+GIN
+  `pgvector/pgvector:0.8.2-pg18` Docker image). The adapter uses `tsvector`+GIN
   for FTS and `vector(N)` for embeddings; the vector dimension is set at
   first insert.
 

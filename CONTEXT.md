@@ -67,7 +67,7 @@ _Avoid_: query, ask, search
 - **import** writes to `<base>/sources/`; **ingest** reads from it. Without import the user puts files there by hand; without ingest the files don't reach D/I.
 - A **source** becomes one or more **documents** after **ingest** (markdown front-matter splits, asset attachments, etc.).
 - A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple knowledge pages).
-- The user owns `<base>/sources/`, `<base>/knowledge/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written in 0.3.0; PR2 of the W refactor wires them into the documents table so they participate in retrieve/lint.
+- The user owns `<base>/sources/`, `<base>/knowledge/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written and indexed into the documents table, so they participate in retrieve/lint.
 - A K-layer **document** carries **provenance** edges back to the **source**(s) it was synth-authored from (`provenance` table, distinct from `links`). The reverse — "which K-pages derive from this source" — is the query this edge exists to answer.
 
 ## Example dialogue

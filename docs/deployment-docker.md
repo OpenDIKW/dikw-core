@@ -139,7 +139,7 @@ The compose stack reveals an asymmetry that's intentional:
 
 | Storage layer | Configured via | Why |
 | --- | --- | --- |
-| Wiki documents / chunks / embeddings | `storage.dsn` in `dikw.yml` | Wiki backend is per-base and tied to the on-disk format declared in `dikw.yml`. Cross-base coordination is impossible. |
+| Base documents / chunks / embeddings | `storage.dsn` in `dikw.yml` | Base storage is per-base and tied to the on-disk format declared in `dikw.yml`. Cross-base coordination is impossible. |
 | Server task store | `DIKW_SERVER_TASKS_DSN` env var | Task store is server-scoped (not per-base), and in production it's the operator's choice whether to share an instance with the base DB. Env var keeps it out of the on-disk format. |
 
 In the example compose, both point at the same Postgres instance (the
@@ -157,7 +157,7 @@ If you don't need Postgres, trim the stack:
    the task store falls back to `base/.dikw/server-tasks.db`.
 4. Drop the `volumes:` block at the bottom.
 
-Wiki data and task tape both land under `./base/.dikw/` then. This is
+Base data and task tape both land under `./base/.dikw/` then. This is
 the right setup for single-machine personal use.
 
 ## Upgrading
@@ -178,7 +178,7 @@ PR lands.
 
 Repeating the warning from [`server.md`](server.md): the server expects
 to own its bound base. **Don't** run two `dikw-core` containers against
-the same `./base` mount — `.dikw/wiki_id` and SQLite write locks both
+the same `./base` mount — `.dikw/base_id` and SQLite write locks both
 assume single-writer.
 
 The compose stack sets `DIKW_TASK_REAP_ON_START=1` for the same reason:

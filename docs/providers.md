@@ -322,13 +322,13 @@ uv run python evals/tools/convert_beir.py \
     --baseline-bm25-ndcg10 0.665    # BEIR paper, Thakur et al. 2021
 ```
 
-Run the full ablation and dump per-mode rankings for offline re-fusion:
+Run the full ablation (the served base's configured embedder is used
+automatically — no flag needed):
 
 ```bash
 uv run --env-file scratch-bench-base/.env \
     dikw client serve-and-run --base ./scratch-bench-base -- \
-    eval --dataset scifact --embedder provider --retrieval all \
-    --dump-raw /tmp/scifact-raw.jsonl
+    eval --dataset scifact --retrieval all
 ```
 
 Output is a 3-row × 5-metric table (bm25 / vector / hybrid × hit@3 /
@@ -340,20 +340,12 @@ single legs.
 ### Tuning RRF weights for your corpus
 
 The shipped defaults are calibrated on BEIR/SciFact (vector-heavy:
-`bm25_weight=0.3, vector_weight=1.5, rrf_k=60`). If your corpus has
+`bm25_weight=0.3, vector_weight=1.5, rrf_k=60`). If your corpus has a
 different BM25 / dense balance — keyword-heavy code bases want more
-BM25 influence, paraphrase-heavy prose wants more vector — tune via
-the offline sweep, which re-fuses the same `--dump-raw` JSONL at
-arbitrary weights in milliseconds:
-
-```bash
-uv run python evals/tools/sweep_rrf.py --raw-dump /tmp/scifact-raw.jsonl
-```
-
-The printed table shows the top-N (k, w_bm25, w_vec) combinations by
-nDCG@10 plus two reference rows — vanilla `(1, 1, 60)` RRF and the
-currently shipped defaults — so the absolute deltas are obvious. Pick
-a winning row and pin it in the wiki's `dikw.yml`:
+BM25 influence, paraphrase-heavy prose wants more vector — tune by
+editing the `retrieval:` block in the served base's `dikw.yml` and
+re-running `dikw client eval --dataset <name> --retrieval all` to
+compare:
 
 ```yaml
 retrieval:
@@ -364,6 +356,11 @@ retrieval:
 
 No code change needed — `api.retrieve` and the server's
 `POST /v1/doc/search` endpoint pick up the block on next call.
+`evals/tools/sweep_rrf.py` re-fuses cached rankings at arbitrary
+weights offline, but the raw dump it consumes is no longer emitted by
+`dikw client eval` — the `--dump-raw` flag was dropped in the
+client/server migration, so the offline sweep isn't reachable through
+the CLI today.
 
 ### Score-normalised fusion alternatives
 
@@ -406,7 +403,7 @@ For a Chinese benchmark, repeat with `convert_cmteb.py` against a
 HuggingFace download — same workflow, see
 [`evals/README.md`](../evals/README.md#public-benchmarks) for the
 full command. **Before running any CJK eval**, flip
-`retrieval.cjk_tokenizer: jieba` in the scratch wiki's `dikw.yml`
+`retrieval.cjk_tokenizer: jieba` in the scratch base's `dikw.yml`
 (gotcha #7) — otherwise the BM25 row in the ablation table will
 report 0.03 nDCG@10 regardless of fusion tuning, because FTS5's
 default tokenizer doesn't segment Chinese.
@@ -423,11 +420,11 @@ gotcha #8 for the why and how it differs from codex CLI's
 
 ```bash
 # Option A — full device-code OAuth flow inside dikw, no codex CLI needed.
-uv run dikw auth login openai-codex --wiki .
+uv run dikw auth login openai-codex --base .
 
 # Option B — copy tokens from an already-authenticated codex CLI session.
 codex                                           # one-time codex CLI login
-uv run dikw auth import openai-codex --wiki .   # one-shot copy
+uv run dikw auth import openai-codex --base .   # one-shot copy
 
 # Option C — do nothing; if you already have a non-expired
 # ~/.codex/auth.json, the first call to dikw will lazy-import on its own
@@ -460,7 +457,7 @@ DIKW_EMBEDDING_API_KEY=<your embedding-vendor key>
 Verify before running ingest:
 
 ```bash
-uv run --env-file .env dikw auth status openai-codex --wiki .
+uv run --env-file .env dikw auth status openai-codex --base .
 # provider     | status   | expires in | last refresh         | account
 # openai-codex | active   | 28m 12s    | 2026-05-06 03:14 UTC | acc-...
 
@@ -471,7 +468,7 @@ uv run --env-file .env dikw client serve-and-run --base . -- check --llm-only
 
 If `dikw client check` reports `relogin_required`, the OAuth refresh_token has
 been revoked or consumed elsewhere. Recover with
-`uv run dikw auth login openai-codex --wiki .` (the device-code flow
+`uv run dikw auth login openai-codex --base .` (the device-code flow
 mints a fresh pair).
 
 ## Pre-flight checklist for a new vendor
@@ -488,7 +485,7 @@ config:
 - [ ] Costs understood: if the LLM leg is `openai_compat`, you pay full
       input-token price on every synth call — no prompt caching.
 - [ ] If the LLM leg is `openai_codex`, you've authenticated via
-      `dikw auth login openai-codex --wiki .` (or `dikw auth import`)
+      `dikw auth login openai-codex --base .` (or `dikw auth import`)
       and `dikw auth status` reports `active` (gotcha #8).
 
 ## See also
