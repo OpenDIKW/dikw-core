@@ -857,11 +857,9 @@ async def health(path: str | Path | None = None) -> HealthReport:
         await storage.close()
 
     by_layer = counts.documents_by_layer
-    # PR1 of the 0.3.0 wisdom refactor: ``wisdom_items`` count is 0 here
-    # — the legacy ``wisdom_items`` table is removed and wisdom pages
-    # don't yet flow into ``documents`` (PR2 lands that). Keep the
-    # ``LayerCounts.wisdom_items`` field for wire compatibility so
-    # agents reading health responses can transition over two releases.
+    # ``wisdom_items`` counts W-layer documents: wisdom pages are
+    # first-class documents indexed at ``Layer.WISDOM``, so this is a
+    # real count read off the ``documents`` table — not a legacy zero.
     layer_counts = LayerCounts(
         sources=int(by_layer.get(Layer.SOURCE.value, 0)),
         knowledge_pages=int(by_layer.get(Layer.KNOWLEDGE.value, 0)),
@@ -3216,7 +3214,7 @@ async def write_wisdom_page(
             # lands at the next httpx ``await`` deep inside the embedder.
             used_reporter.cancel_token().raise_if_cancelled()
 
-            # Write the file to disk first. ``persist_page`` re-parses the
+            # Write the file to disk first. ``persist_wisdom`` re-parses the
             # written file so the stored hash and chunk offsets match what
             # ``read_page`` will compute — same contract as
             # ``_persist_knowledge_page``. ``frontmatter.dumps`` is not always

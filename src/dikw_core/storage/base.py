@@ -272,7 +272,7 @@ class Storage(Protocol):
         wipe the page's provenance edges entirely; pass a fresh page's
         first set to no-op the leading delete.
 
-        Used by ``persist_knowledge_page`` to reconcile a K-page's
+        Used by ``persist_knowledge`` to reconcile a K-page's
         provenance edges from its frontmatter ``sources:`` list on every
         re-persist, so removing a source from frontmatter actually
         drops the edge rather than leaving a ghost row. Mirrors

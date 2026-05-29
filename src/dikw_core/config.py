@@ -131,9 +131,9 @@ class RetrievalConfig(BaseModel):
     Users whose corpus is **keyword-heavy** (code, identifiers, rare
     terminology) should raise ``bm25_weight`` back toward 1.0 — the
     SciFact tuning over-favours dense semantics and will under-rank
-    exact-term matches. Tune per-corpus with
-    ``dikw client eval --retrieval all --dump-raw`` +
-    ``evals/tools/sweep_rrf.py``. See ``evals/BASELINES.md`` for the
+    exact-term matches. Tune per-corpus by editing the ``retrieval:``
+    weights in ``dikw.yml`` and re-running ``dikw client eval
+    --retrieval all`` to compare. See ``evals/BASELINES.md`` for the
     full sweep table.
     """
 
@@ -179,7 +179,7 @@ class RetrievalConfig(BaseModel):
     # Wikilink-graph retrieval leg. When ``graph_enabled`` is True, the
     # searcher takes the top ``graph_seed_top_k`` chunks from the
     # BM25+vector fused result, asks storage for chunks reachable via
-    # K-layer knowledgelinks, and folds them in as a fourth RRF leg with
+    # K-layer wikilinks, and folds them in as a fourth RRF leg with
     # ``graph_weight``. Default-off until eval evidence shows the leg
     # actually moves nDCG — wikilink graphs need to be dense enough for
     # one-hop neighbor expansion to be informative.

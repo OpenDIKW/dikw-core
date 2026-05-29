@@ -188,7 +188,7 @@ def test_synth_report_carries_unresolved_wikilinks_field() -> None:
 # ---- Provenance reconcile -------------------------------------------------
 #
 # Same invariant as the wikilink reconcile above but for the K-page →
-# D-source attribution edge: ``persist_knowledge_page`` must reconcile the
+# D-source attribution edge: ``_persist_knowledge_page`` must reconcile the
 # ``provenance`` table from the page's ``sources:`` frontmatter on every
 # call. Without this, hand-editing ``sources:`` (or re-synth that drops a
 # source) would leave ghost rows that ``api.read_provenance`` still
@@ -315,7 +315,7 @@ async def test_persist_knowledge_page_treats_scalar_sources_as_no_op(
     """A hand-edited frontmatter with a YAML *scalar* ``sources:`` value
     (e.g. ``sources: sources/a.md`` instead of ``sources: [sources/a.md]``)
     must NOT iterate the string character-by-character. Without the
-    isinstance(list) guard, ``persist_knowledge_page`` would insert one
+    isinstance(list) guard, ``_persist_knowledge_page`` would insert one
     provenance row per character — 14 ghost rows for ``sources/foo.md``.
 
     The fix mirrors ``run_lint``'s frontmatter-meta extraction

@@ -1487,7 +1487,7 @@ def pages_list_cmd(
     epilog=(
         "Examples:\n\n"
         "  dikw client pages get sources/notes/alpha.md\n\n"
-        "  dikw client pages get wiki/Some-Page.md\n\n"
+        "  dikw client pages get knowledge/Some-Page.md\n\n"
         "  dikw client pages get \"sources/has space.md\""
     ),
 )
@@ -1524,15 +1524,15 @@ def pages_get_cmd(
     "links",
     epilog=(
         "Examples:\n\n"
-        "  dikw client pages links wiki/Some-Page.md\n\n"
-        "  dikw client pages links wiki/Some-Page.md --direction out\n\n"
-        "  dikw client pages links wiki/Hub.md --limit 20 --format table"
+        "  dikw client pages links knowledge/Some-Page.md\n\n"
+        "  dikw client pages links knowledge/Some-Page.md --direction out\n\n"
+        "  dikw client pages links knowledge/Hub.md --limit 20 --format table"
     ),
 )
 def pages_links_cmd(
     path: Annotated[
         str,
-        typer.Argument(help="Page path under the base (e.g. wiki/foo.md)."),
+        typer.Argument(help="Page path under the base (e.g. knowledge/foo.md)."),
     ],
     direction: Annotated[
         str,
@@ -1634,7 +1634,7 @@ def pages_links_cmd(
     "provenance",
     epilog=(
         "Examples:\n\n"
-        "  dikw client pages provenance wiki/Some-Page.md\n\n"
+        "  dikw client pages provenance knowledge/Some-Page.md\n\n"
         "  dikw client pages provenance sources/notes/foo.md --direction in\n\n"
         "  dikw client pages provenance sources/notes/foo.md --limit 20 --format table"
     ),
@@ -1642,7 +1642,7 @@ def pages_links_cmd(
 def pages_provenance_cmd(
     path: Annotated[
         str,
-        typer.Argument(help="Page path under the base (e.g. wiki/foo.md)."),
+        typer.Argument(help="Page path under the base (e.g. knowledge/foo.md)."),
     ],
     direction: Annotated[
         str,

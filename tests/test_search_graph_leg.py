@@ -1,4 +1,4 @@
-"""HybridSearcher's optional 4th leg: K-layer knowledgelink graph expansion.
+"""HybridSearcher's optional 4th leg: K-layer wikilink graph expansion.
 
 Verifies that when ``graph_enabled=True`` the searcher walks one hop via
 ``Storage.neighbor_chunks_via_links`` from the BM25/vector top-K, folds

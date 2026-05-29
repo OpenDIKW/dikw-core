@@ -1,6 +1,6 @@
 """Fixer for ``orphan_page`` issues.
 
-An orphan page has no inbound K-layer knowledgelinks. The fixer triages
+An orphan page has no inbound K-layer wikilinks. The fixer triages
 each orphan into one of four reviewable strategies, picked in order
 from most conservative to most invasive:
 
@@ -515,7 +515,7 @@ def _build_link_proposal(
     # ``[[Title#Anchor]]``), the ``links`` table is out of sync
     # (typically: user hand-edited the body without re-ingest, or a
     # prior fix didn't re-trigger ``replace_links_from``). Emit a
-    # no-content update so apply → ``persist_knowledge_page`` →
+    # no-content update so apply → ``persist_knowledge`` →
     # ``replace_links_from`` reconciles storage. A substring
     # ``"[[Title]]" in body`` check would miss aliased / anchored
     # variants and double-append the backlink.

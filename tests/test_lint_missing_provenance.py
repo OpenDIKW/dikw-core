@@ -469,13 +469,13 @@ async def test_fixer_treats_scalar_sources_as_no_op(
     empty_wiki: Path,
 ) -> None:
     """``MissingProvenanceFixer`` reads the on-disk frontmatter directly,
-    so it needs the same ``isinstance(list)`` guard as ``persist_knowledge_page``
+    so it needs the same ``isinstance(list)`` guard as ``persist_knowledge``
     and ``run_lint``. A scalar ``sources: foo.md`` (user hand-edit) must
     NOT iterate per-character into the op's ``source_paths``; the apply
     would then write 14 garbage rows over the stale ones we were trying
     to clear, plus the apply could raise on truthy-non-iterable values.
 
-    Symmetric with the ``persist_knowledge_page`` test in
+    Symmetric with the ``persist_knowledge`` test in
     ``test_persist_knowledge_page.py`` — the fixer is the second place that
     parses frontmatter for this field; both must agree on the
     "malformed shape -> zero sources" contract.

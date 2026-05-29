@@ -624,7 +624,7 @@ class HybridSearcher:
         *,
         layer: Layer | None = None,
     ) -> list[ChunkNeighborRecord]:
-        """Optional 4th leg: K-layer knowledgelink graph.
+        """Optional 4th leg: K-layer wikilink graph.
 
         Seeds round-robin from vec + fts top-K so a BM25-only match
         still gets a chance even when the vector leg fills the budget.
