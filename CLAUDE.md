@@ -52,9 +52,17 @@ Tooling config lives in `pyproject.toml`:
 
 ```
 src/dikw_core/
-├── api.py                 engine facade — ingest, retrieve, synthesize, lint (+ propose/apply),
-│                          list_pages, read_page, list_links, read_provenance,
-│                          list_graph, read_asset, status, health, check_providers
+├── api.py                 thin re-export facade — surfaces every verb (ingest, retrieve,
+│                          synthesize, lint (+ propose/apply), list_pages, read_page,
+│                          list_links, read_provenance, list_graph, read_asset, status,
+│                          health, check_providers, write_wisdom_page) so the public
+│                          `api.X` surface + `__all__` stay byte-stable; defines nothing
+├── api_*.py               verb clusters the facade re-exports: api_core (scaffold +
+│                          `_with_storage` + embed-version helpers), api_types (DTOs +
+│                          exceptions), api_health, api_ingest, api_pages, api_graph,
+│                          api_retrieve, api_synth, api_lint, api_wisdom, api_path_safety.
+│                          Each imports api_core/api_types + its domains, never the facade
+│                          (acyclic). Move a verb's body here, not into api.py
 ├── cli.py                 top-level Typer app: version, init, serve, auth subgroup, dikw client subgroup
 │                          (HTTP-bound commands live exclusively under `dikw client <verb>` —
 │                          there are no top-level short aliases)
