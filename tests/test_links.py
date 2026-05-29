@@ -1,7 +1,31 @@
 from __future__ import annotations
 
-from dikw_core.domains.knowledge.links import parse_links, resolve_links
+from dikw_core.domains.knowledge.links import (
+    build_title_indexes,
+    parse_links,
+    resolve_links,
+)
 from dikw_core.schemas import LinkType
+
+
+def test_build_title_indexes_drops_cross_layer_collision_from_exact() -> None:
+    # Two pages share the title "Tesla" across K and W. The exact-match
+    # index must DROP the colliding title (so the first-iterated layer
+    # can't silently win), while the fuzzy index keeps BOTH paths under the
+    # normalized key. That pairing is what lets resolve_links' ≥2-candidate
+    # refusal fire on the collision (Karpathy's wrong-merge rule) rather
+    # than resolving to whichever page was iterated first.
+    exact, fuzzy = build_title_indexes(
+        [
+            ("Tesla", "knowledge/entities/tesla.md"),
+            ("Tesla", "wisdom/thoughts/tesla.md"),
+        ]
+    )
+    assert "Tesla" not in exact
+    assert sorted(fuzzy["tesla"]) == [
+        "knowledge/entities/tesla.md",
+        "wisdom/thoughts/tesla.md",
+    ]
 
 
 def test_parse_wikilink_with_anchor_and_alias() -> None:

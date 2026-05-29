@@ -150,13 +150,20 @@ async def _persist_layered_page(
         chunks_pending_embedding = len(records)
 
     if title_to_path is None:
-        # Cross-layer title index: a wisdom page may link to a wiki
+        # Cross-layer title index: a wisdom page may link to a knowledge
         # page and vice versa via title. ``build_title_indexes`` drops
         # exact-title collisions from the exact-match dict and pushes
         # both colliding paths into the fuzzy bucket — that way the
         # second-stage ≥2-candidate refusal in ``resolve_links``
-        # actually fires when a wiki and wisdom page share a title,
+        # actually fires when a knowledge and wisdom page share a title,
         # rather than the first-seen layer silently winning.
+        #
+        # Pairing contract: ``title_to_path`` and ``fuzzy_index`` must be
+        # built from the SAME title set. When we rebuild the exact index
+        # from storage here we ALSO rebuild the fuzzy index from it and
+        # discard any caller-supplied ``fuzzy_index`` — a fuzzy index keyed
+        # off a different title set would resolve wikilinks against a
+        # mismatched key space (fresh-exact + stale-fuzzy).
         docs_iter: list[tuple[str, str]] = []
         for layer_for_index in (Layer.KNOWLEDGE, Layer.WISDOM):
             for d in await storage.list_documents(
@@ -164,9 +171,7 @@ async def _persist_layered_page(
             ):
                 if d.title:
                     docs_iter.append((d.title, d.path))
-        title_to_path, derived_fuzzy = build_title_indexes(docs_iter)
-        if fuzzy_index is None:
-            fuzzy_index = derived_fuzzy
+        title_to_path, fuzzy_index = build_title_indexes(docs_iter)
 
     # Reconcile outgoing links atomically — removing a [[wikilink]]
     # from the body must drop the edge from storage, not leave a ghost

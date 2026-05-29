@@ -116,3 +116,49 @@ async def test_persist_knowledge_reports_unresolved_count(
     )
 
     assert result.unresolved_wikilinks == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_knowledge_rebuilds_fuzzy_when_title_index_none(
+    parametrized_storage: Storage, tmp_path: Path,
+) -> None:
+    """Pairing contract: when ``title_to_path`` is None the index is
+    rebuilt from storage, and any caller-supplied ``fuzzy_index`` must be
+    DISCARDED. Keeping a stale fuzzy index alongside a freshly-rebuilt
+    exact index resolves wikilinks against two mismatched key spaces. Here
+    a bogus fuzzy that lacks the real key would leave ``[[Neural Networks]]``
+    broken; the fresh rebuild must fuzzy-resolve it to the singular
+    ``Neural Network`` page instead.
+    """
+    storage = parametrized_storage
+
+    target = build_page(
+        title="Neural Network",
+        body="# Neural Network\nbody.\n",
+        type_="concept",
+        path="knowledge/concepts/neural-network.md",
+    )
+    write_page(tmp_path, target)
+    await persist_knowledge(
+        storage=storage, root=tmp_path, path=target.path, title=target.title,
+        embedder=None, embedding_model="", text_version_id=None,
+    )
+
+    src = build_page(
+        title="Source",
+        body="# Source\n\nSee [[Neural Networks]] for the architecture.\n",
+        type_="concept",
+        path="knowledge/concepts/source.md",
+    )
+    write_page(tmp_path, src)
+    result = await persist_knowledge(
+        storage=storage, root=tmp_path, path=src.path, title=src.title,
+        embedder=None, embedding_model="", text_version_id=None,
+        title_to_path=None,
+        fuzzy_index={"zzz-bogus-key": ["knowledge/wrong.md"]},
+    )
+
+    assert result.unresolved_wikilinks == 0
+    links = await storage.links_from(doc_id_for(Layer.KNOWLEDGE, src.path))
+    dst_paths = {lk.dst_path for lk in links if lk.link_type == LinkType.WIKILINK}
+    assert dst_paths == {target.path}
