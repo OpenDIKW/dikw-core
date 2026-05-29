@@ -403,7 +403,7 @@ For a Chinese benchmark, repeat with `convert_cmteb.py` against a
 HuggingFace download — same workflow, see
 [`evals/README.md`](../evals/README.md#public-benchmarks) for the
 full command. **Before running any CJK eval**, flip
-`retrieval.cjk_tokenizer: jieba` in the scratch wiki's `dikw.yml`
+`retrieval.cjk_tokenizer: jieba` in the scratch base's `dikw.yml`
 (gotcha #7) — otherwise the BM25 row in the ablation table will
 report 0.03 nDCG@10 regardless of fusion tuning, because FTS5's
 default tokenizer doesn't segment Chinese.
@@ -420,11 +420,11 @@ gotcha #8 for the why and how it differs from codex CLI's
 
 ```bash
 # Option A — full device-code OAuth flow inside dikw, no codex CLI needed.
-uv run dikw auth login openai-codex --wiki .
+uv run dikw auth login openai-codex --base .
 
 # Option B — copy tokens from an already-authenticated codex CLI session.
 codex                                           # one-time codex CLI login
-uv run dikw auth import openai-codex --wiki .   # one-shot copy
+uv run dikw auth import openai-codex --base .   # one-shot copy
 
 # Option C — do nothing; if you already have a non-expired
 # ~/.codex/auth.json, the first call to dikw will lazy-import on its own
@@ -457,7 +457,7 @@ DIKW_EMBEDDING_API_KEY=<your embedding-vendor key>
 Verify before running ingest:
 
 ```bash
-uv run --env-file .env dikw auth status openai-codex --wiki .
+uv run --env-file .env dikw auth status openai-codex --base .
 # provider     | status   | expires in | last refresh         | account
 # openai-codex | active   | 28m 12s    | 2026-05-06 03:14 UTC | acc-...
 
@@ -468,7 +468,7 @@ uv run --env-file .env dikw client serve-and-run --base . -- check --llm-only
 
 If `dikw client check` reports `relogin_required`, the OAuth refresh_token has
 been revoked or consumed elsewhere. Recover with
-`uv run dikw auth login openai-codex --wiki .` (the device-code flow
+`uv run dikw auth login openai-codex --base .` (the device-code flow
 mints a fresh pair).
 
 ## Pre-flight checklist for a new vendor
@@ -485,7 +485,7 @@ config:
 - [ ] Costs understood: if the LLM leg is `openai_compat`, you pay full
       input-token price on every synth call — no prompt caching.
 - [ ] If the LLM leg is `openai_codex`, you've authenticated via
-      `dikw auth login openai-codex --wiki .` (or `dikw auth import`)
+      `dikw auth login openai-codex --base .` (or `dikw auth import`)
       and `dikw auth status` reports `active` (gotcha #8).
 
 ## See also

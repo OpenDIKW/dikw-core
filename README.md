@@ -163,7 +163,7 @@ provider:
   embedding_normalize: true
   embedding_distance: cosine
   embedding_batch_size: 16          # required: Gitee rejects batches >25
-  embedding_provider_label: gitee-ai  # optional; shows up in `dikw check`
+  embedding_provider_label: gitee-ai  # optional; shows up in `dikw client check`
 ```
 
 A working reference copy lives at

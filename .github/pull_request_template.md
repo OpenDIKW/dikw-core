@@ -9,7 +9,7 @@
 - [ ] `uv run ruff check . && uv run mypy src && uv run pytest`
 - [ ] 涉及 `storage/` / `contract` / engine 改动？本地跑过 `pgvector/pgvector:pg16` 全量 contract
 - [ ] 涉及 K-layer (`domains/knowledge/`) 或 Retrieval (`domains/info/`) 改动？`evals/BASELINES.md` 已写**真实数据**（数字不是占位）
-- [ ] 改了 on-disk wiki/wisdom 格式？`docs/design.md` 已更新
+- [ ] 改了 on-disk knowledge/wisdom 格式？`docs/design.md` 已更新
 - [ ] 新增 `SourceBackend` / `Storage` 适配器？contract test 已扩展，不是只测自己的实现
 - [ ] CLI 命令 / flag / JSON 输出有变？同步检查 `OpenDIKW/dikw-skills` 是否需要升级（不阻塞本 PR）
 - [ ] 触动 `server/` HTTP 接口契约？同步检查 `OpenDIKW/dikw-web` 是否需要升级（不阻塞本 PR）

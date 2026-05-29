@@ -155,7 +155,7 @@ uv run --env-file scratch-bench-base/.env \
 ```
 
 See [`docs/providers.md`](../docs/providers.md#public-benchmark-calibration-with-gitee-ai)
-for the donor-wiki setup against Gitee AI (the cheapest currently-tested
+for the donor-base setup against Gitee AI (the cheapest currently-tested
 embedder for benchmark-scale work).
 
 ### Tuning RRF for your corpus

@@ -40,7 +40,7 @@ Reset W into a layer **structurally symmetric to K**:
 - **+** Schema slimmed: 4 dedicated wisdom tables removed (`wisdom_items` / `wisdom_evidence` / `wisdom_embed_meta` / `vec_wisdom_v<n>`), 8 Storage Protocol methods removed, 5 CLI subcommands removed (`distill`, `review {list,approve,reject}`), 4 HTTP routes removed (`POST /v1/distill`, `GET /v1/wisdom`, `POST /v1/wisdom/{id}/approve`, `POST /v1/wisdom/{id}/reject`), 6 schema DTOs removed (`WisdomKind`, `WisdomStatus`-old, `WisdomItem`, `WisdomEvidence`, `WisdomEmbeddingRow`, `WisdomVecHit`). `documents.status` adds one column.
 - **−** The "≥ 2 evidence" hard invariant is gone. Provenance is still tracked via the `sources:` frontmatter → `provenance` table edge, but the engine no longer enforces a minimum source count. Users (or agent layers) who need that invariant can implement it as a custom lint rule.
 - **−** No engine-side entry point for an agent to *propose* wisdom. An agent that wants to write wisdom does so by writing `wisdom/agent/<slug>.md` directly into the vault — same shape as a human author. This is intentional: wisdom proposals from an LLM are a downstream-tool concern, not core-engine concern.
-- **−** Schema break. Bases upgrading from 0.2.x must drop and rebuild (`SCHEMA_VERSION` bumped twice across PR1 + PR2). The migration guide in CHANGELOG `[0.3.0]` lists the manual cleanup steps.
+- **−** Schema break. Bases upgrading from 0.2.x must drop and rebuild (`SCHEMA_VERSION` bumped twice across PR1 + PR2).
 
 ## Alternatives considered
 
@@ -53,5 +53,5 @@ Reset W into a layer **structurally symmetric to K**:
 
 - PR1 #120 (destructive cleanup), PR2 #121 (wire wisdom into documents), PR3 #122 (read APIs + lint + retrieve coverage), PR4 (this docs/ADR pass).
 - `docs/design.md` "Wisdom Layer Design" section — current contract.
-- CHANGELOG `[0.3.0]` — full removed / added list, manual cleanup steps.
+- CHANGELOG `[0.3.0]` — the release entry.
 - ADR-0001 (provenance edges as separate table) — companion architectural decision; provenance is the shared edge wisdom uses for D-layer attribution.

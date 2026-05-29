@@ -5,8 +5,8 @@
 > it is a hand-written first-class document layer under
 > `wisdom/<author>/<slug>.md` with the same `documents` / `chunks` /
 > `embeddings` / `links` / `provenance` shape as the K layer. The
-> rationale is captured in `docs/adr/0002-wisdom-as-first-class-documents.md`;
-> the migration log lives in CHANGELOG `[0.3.0]`. Any references to
+> rationale is captured in `docs/adr/0002-wisdom-as-first-class-documents.md`.
+> Any references to
 > `distill` / `wisdom_items` / `WisdomItem` / `WisdomKind` / `review
 > approve` / `GET /v1/wisdom/applicable` in this document are
 > historical only — the current contract is the "Wisdom Layer Design"
@@ -195,7 +195,7 @@ dikw-core/
     └── personal-base/        # runnable demo base
 ```
 
-## On-Disk User Wiki Layout (convention, not code)
+## On-Disk Base Layout (convention, not code)
 
 ```
 my-base/
@@ -396,7 +396,7 @@ Wisdom pages share the K-page contract:
 - **YAML frontmatter:** optional `sources: [...]` list (same semantics as
   knowledge pages — populates the `provenance` table), optional
   `status: draft | published | favorite | archived` enum (omitted ≡
-  published), free-form additional keys. Wiki and Source layer documents
+  published), free-form additional keys. Knowledge and Source layer documents
   may carry `status:` in YAML but the engine forces
   `DocumentRecord.status = NULL` for them — status is wisdom-only.
 - **Body:** markdown with `[[wikilinks]]` that resolve across both knowledge
@@ -431,7 +431,7 @@ As of 0.4.0 the wisdom layer is fully wired end-to-end:
   knowledge→wisdom, wisdom→source) symmetrically.
 - **lint** (`broken_wikilink`, `orphan_page`, `missing_provenance`,
   `duplicate_title`, `invalid_wisdom_status`) scans the unified
-  WIKI + WISDOM page set; the orphan inbound counter credits
+  KNOWLEDGE + WISDOM page set; the orphan inbound counter credits
   cross-layer edges so a knowledge page cited only from wisdom is not
   falsely flagged.
 
@@ -482,7 +482,7 @@ class Storage(Protocol):
 
 The W layer shares the K-layer Storage surface — both flow through the
 `documents` row + `chunks` + `links` + `provenance` quartet, separated
-only by `documents.layer` (`WIKI` vs `WISDOM`) and the wisdom-only
+only by `documents.layer` (`KNOWLEDGE` vs `WISDOM`) and the wisdom-only
 `documents.status` column (CHECK-constrained to the four enum values;
 NULL for non-wisdom rows, enforced application-side at write time).
 
@@ -545,7 +545,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 
 - **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty base.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
-- **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, wiki HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
+- **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, knowledge HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
 - **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/base/wisdom`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
