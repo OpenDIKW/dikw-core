@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from dikw_core.domains.knowledge.page import (
     build_page,
@@ -68,3 +71,16 @@ def test_user_aliases_frontmatter_survives_roundtrip(tmp_path: Path) -> None:
     write_page(tmp_path, page)
     read_back = read_page(tmp_path, page.path)
     assert read_back.extras.get("aliases") == ["Musk", "Elon R. Musk"]
+
+
+@pytest.mark.parametrize("bad_path", ["../escaped.md", "knowledge/../../escaped.md"])
+def test_write_page_rejects_path_escape(tmp_path: Path, bad_path: str) -> None:
+    # A page.path that escapes the base must be refused before any disk
+    # write. The synth parser already rejects traversal paths (#146/#149),
+    # but write_page is a shared sink reachable by lint-apply and any future
+    # writer, so it guards its own input as defense in depth.
+    page = build_page(title="Escape", body="# Escape\n\nx", type_="concept")
+    escaping = replace(page, path=bad_path)
+    with pytest.raises(ValueError, match="outside base"):
+        write_page(tmp_path, escaping)
+    assert not (tmp_path.parent / "escaped.md").exists()

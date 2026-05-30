@@ -92,6 +92,15 @@ async def _persist_layered_page(
 
     doc_id = doc_id_for(layer, path)
     abs_path = (root / path).resolve()
+    # Defense in depth: refuse a path that escapes the base before parse_any
+    # reads it — a malformed caller must not index a file from outside the
+    # base into storage. Mirrors write_wisdom_file.
+    try:
+        abs_path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"{layer.value} page path {path!r} resolves outside base {root!s}"
+        ) from exc
     parsed = parse_any(abs_path, rel_path=path)
     resolved_title = title if title is not None else parsed.title
 
