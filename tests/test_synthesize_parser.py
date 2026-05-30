@@ -233,6 +233,10 @@ def test_parse_normalized_block_does_not_fail_group() -> None:
         # already ``knowledge/``-prefixed, so it skips the normalize branch
         # entirely — guard must still catch it
         "knowledge/../../etc/passwd.md",
+        # backslash is ALSO a path separator on Windows, so a `..` hidden
+        # behind backslashes bypasses a `/`-only split and still escapes on
+        # write_page().resolve() (codex review P1)
+        "entities/sub\\..\\..\\..\\evil.md",
     ],
 )
 def test_parse_rejects_path_traversal(bad_path: str) -> None:
@@ -240,8 +244,9 @@ def test_parse_rejects_path_traversal(bad_path: str) -> None:
     ``root / path`` (the K-layer write sink has no containment guard, unlike
     the read paths). The parser rejects traversal up-front for BOTH a
     recognized-folder path the normalize branch would prepend AND a
-    ``knowledge/``-prefixed path that skips it — a malicious source document
-    could prompt-inject the model into emitting either."""
+    ``knowledge/``-prefixed path that skips it — and rejects backslashes, which
+    Windows ``pathlib`` treats as separators. A malicious source document could
+    prompt-inject the model into emitting any of these."""
     raw = (
         f'<page path="{bad_path}" type="note">\n'
         "---\ntags: []\n---\n\n# Evil\n\nbody\n"

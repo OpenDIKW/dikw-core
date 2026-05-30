@@ -122,13 +122,17 @@ def _parse_one_page_block(
     # A ``..`` segment escapes the base when the persist leg resolves
     # ``root / path`` (the synth/K-layer write sink has no containment guard,
     # unlike the read paths' ``_assert_within``). Reject up-front — a malicious
-    # source document could prompt-inject the model into emitting one — and do
-    # it before the prefix normalization below so both an ``entities/../`` path
-    # and an already-``knowledge/``-prefixed ``knowledge/../`` one are caught.
-    if path is not None and ".." in path.split("/"):
+    # source document could prompt-inject the model into emitting one. Also
+    # reject any backslash: Windows ``pathlib`` treats ``\`` as a separator, so
+    # ``entities/foo\..\..\evil.md`` would hide a ``..`` escape from a ``/``-only
+    # split (a legitimate page path is always POSIX ASCII kebab-case, so a
+    # backslash is never valid). Do this before the prefix normalization below
+    # so every spelling — ``entities/../``, ``knowledge/../``, backslash — is
+    # caught.
+    if path is not None and ("\\" in path or ".." in path.split("/")):
         raise SynthesisError(
             f"LLM emitted a page with path={path!r}; a page path must stay "
-            "under the base (no `..` segments)."
+            "under the base (no `..` traversal or backslash separators)."
         )
     # The LLM is told (via prompts/synthesize.md) to emit paths under
     # ``knowledge/<folder>/<slug>.md``. Smaller / open-weight models reliably
