@@ -5,6 +5,26 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## 0.4.6 — source ingest mtime fallback
+
+### Fixed
+
+- **Source docs imported via a byte-stable tarball no longer store
+  `mtime=0`.** dikw-web zeroes the tar `mtime` field so identical bytes
+  dedup to one `package_sha256`; the extracted file landed with
+  `st_mtime == 0`, every client rendered it as `1970-01-01`, and the
+  constant `0` gave the graph change-hash (`api_graph.py`) no entropy
+  across re-imports.
+  `ingest` now falls back to ingest wall-clock (`time.time()`) when a
+  source file carries no usable mtime (`<= 0`); an unchanged re-persist
+  (e.g. an image-bearing doc, same body hash) keeps its already-stored
+  timestamp so it doesn't flap the change-hash, while a genuine content
+  change still advances it. Legacy rows already stored
+  with `mtime=0` self-heal on the next `dikw client ingest`: a broken
+  stored mtime now also forces one re-persist (alongside hash drift /
+  `active=False` / asset refs). D-layer only — knowledge / wisdom pages
+  are engine-written with a real mtime and were never affected. (#145)
+
 ## 0.4.5 — api facade decomposition + dead-code cleanup
 
 ### Removed

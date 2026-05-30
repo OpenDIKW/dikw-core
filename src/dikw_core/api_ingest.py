@@ -221,15 +221,19 @@ async def ingest(
             scanned = report.scanned + 1
             # Skip the chunk/embed pipeline only when the doc body is
             # unchanged AND the doc has no asset references AND the
-            # row is currently active. A row deactivated by a prior
-            # ``storage_error`` arm carries the same hash but a
-            # half-indexed state — falling through re-runs the whole
-            # pipeline and re-upserts ``active=True``.
+            # row is currently active AND its stored mtime is usable.
+            # A row deactivated by a prior ``storage_error`` arm carries
+            # the same hash but a half-indexed state — falling through
+            # re-runs the whole pipeline and re-upserts ``active=True``.
+            # A row whose stored ``mtime`` is broken (``<= 0``, a legacy
+            # byte-stable import) likewise falls through so it re-persists
+            # once and self-heals (#145).
             if (
                 existing is not None
                 and existing.active
                 and existing.hash == parsed.hash
                 and not parsed.asset_refs
+                and existing.mtime > 0
             ):
                 report = _replace(
                     report,
@@ -276,7 +280,11 @@ async def ingest(
                 persist_result = await persist_source(
                     storage=storage,
                     parsed=parsed,
-                    doc=_to_document(parsed, doc_id=doc_id),
+                    doc=_to_document(
+                        parsed,
+                        doc_id=doc_id,
+                        mtime=_resolve_ingest_mtime(parsed.mtime, parsed.hash, existing),
+                    ),
                     ref_assets=ref_assets,
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                 )
@@ -500,8 +508,28 @@ async def ingest(
         await storage.close()
 
 
+def _resolve_ingest_mtime(
+    parsed_mtime: float, parsed_hash: str, existing: DocumentRecord | None
+) -> float:
+    """Fall back to ingest wall-clock when the source file carries no usable
+    mtime. A byte-stable import tarball (dikw-web) zeroes the tar ``mtime``
+    field so identical bytes dedup, so the extracted file lands with
+    ``st_mtime == 0``; storing that renders as ``1970-01-01`` and feeds the
+    graph change-hash a constant. Preserve an already-stored positive mtime
+    only when the body is unchanged (same hash) — e.g. an image-bearing doc
+    that re-persists every ingest — so it doesn't flap. A genuine content
+    change (hash differs) still gets a fresh wall-clock so rendered dates and
+    ``since_ts`` sync cursors advance. See #145.
+    """
+    if parsed_mtime > 0:
+        return parsed_mtime
+    if existing is not None and existing.mtime > 0 and existing.hash == parsed_hash:
+        return existing.mtime
+    return time.time()
+
+
 def _to_document(
-    parsed: ParsedDocument, *, doc_id: str, layer: Layer = Layer.SOURCE
+    parsed: ParsedDocument, *, doc_id: str, layer: Layer = Layer.SOURCE, mtime: float | None = None
 ) -> DocumentRecord:
     # ``status`` is wisdom-only — knowledge/source rows always store NULL
     # even if the user pasted ``status:`` into the wrong frontmatter.
@@ -514,7 +542,7 @@ def _to_document(
         path=parsed.path,
         title=parsed.title,
         hash=parsed.hash,
-        mtime=parsed.mtime,
+        mtime=parsed.mtime if mtime is None else mtime,
         layer=layer,
         active=True,
         status=status,
