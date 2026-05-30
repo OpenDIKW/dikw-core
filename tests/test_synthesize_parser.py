@@ -224,6 +224,47 @@ def test_parse_normalized_block_does_not_fail_group() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        # valid head — the normalize branch would otherwise prepend
+        # ``knowledge/`` and produce ``knowledge/entities/../../...``
+        "entities/../../etc/passwd.md",
+        # already ``knowledge/``-prefixed, so it skips the normalize branch
+        # entirely — guard must still catch it
+        "knowledge/../../etc/passwd.md",
+    ],
+)
+def test_parse_rejects_path_traversal(bad_path: str) -> None:
+    """A ``..`` segment escapes the base when the persist leg resolves
+    ``root / path`` (the K-layer write sink has no containment guard, unlike
+    the read paths). The parser rejects traversal up-front for BOTH a
+    recognized-folder path the normalize branch would prepend AND a
+    ``knowledge/``-prefixed path that skips it — a malicious source document
+    could prompt-inject the model into emitting either."""
+    raw = (
+        f'<page path="{bad_path}" type="note">\n'
+        "---\ntags: []\n---\n\n# Evil\n\nbody\n"
+        "</page>"
+    )
+    with pytest.raises(SynthesisError) as excinfo:
+        parse_synthesis_response(raw, source_path="sources/x.md")
+    assert "base" in str(excinfo.value)
+
+
+def test_parse_rejects_folder_only_path() -> None:
+    """A bare type folder with no filename (``entities``) must NOT normalize to
+    ``knowledge/entities`` — that path collides with the type directory on
+    write. Normalization requires a ``<folder>/<file>`` shape."""
+    raw = (
+        '<page path="entities" type="entity">\n'
+        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
+        "</page>"
+    )
+    with pytest.raises(SynthesisError):
+        parse_synthesis_response(raw, source_path="sources/x.md")
+
+
 _TRUNCATED_AFTER_GOOD = """
 <page path="knowledge/entities/spacex.md" type="entity">
 ---

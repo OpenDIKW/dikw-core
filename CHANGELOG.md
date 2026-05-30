@@ -22,7 +22,11 @@ on each entry call out exactly what shape changes break.
   `knowledge/`, preserving the model's own slug — the pinyin/ASCII spelling
   the prompt asks for and `slugify` would otherwise collapse to `untitled`
   for CJK titles. A stale pre-0.4.0 `wiki/` prefix or a truly unrecognized
-  head still raises. (#146)
+  head still raises. The same parse-time guard now also rejects a `..`
+  traversal segment (`entities/../…` **and** an already-prefixed
+  `knowledge/../…`) and a bare type folder with no filename, so a
+  prompt-injected source document can't steer synth into writing a page
+  outside the base. (#146)
 - **Source docs imported via a byte-stable tarball no longer store
   `mtime=0`.** dikw-web zeroes the tar `mtime` field so identical bytes
   dedup to one `package_sha256`; the extracted file landed with

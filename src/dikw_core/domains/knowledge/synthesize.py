@@ -119,24 +119,36 @@ def _parse_one_page_block(
         tags = []
 
     path = attrs.get("path") or None
+    # A ``..`` segment escapes the base when the persist leg resolves
+    # ``root / path`` (the synth/K-layer write sink has no containment guard,
+    # unlike the read paths' ``_assert_within``). Reject up-front — a malicious
+    # source document could prompt-inject the model into emitting one — and do
+    # it before the prefix normalization below so both an ``entities/../`` path
+    # and an already-``knowledge/``-prefixed ``knowledge/../`` one are caught.
+    if path is not None and ".." in path.split("/"):
+        raise SynthesisError(
+            f"LLM emitted a page with path={path!r}; a page path must stay "
+            "under the base (no `..` segments)."
+        )
     # The LLM is told (via prompts/synthesize.md) to emit paths under
     # ``knowledge/<folder>/<slug>.md``. Smaller / open-weight models reliably
     # follow the type-folder convention but drop the ``knowledge/`` parent
     # (``entities/foo.md``); rejecting that dropped the whole page — and via
-    # per-group failure, the whole group (#146). When the first segment is a
-    # recognized type folder, recover by prepending the layer prefix. We keep
-    # the model's own slug rather than recomputing it from the title: the
-    # prompt deliberately has the model emit a pinyin/ASCII slug for non-ASCII
-    # titles (``神经网络`` → ``shen-jing-wang-luo``) precisely because
+    # per-group failure, the whole group (#146). When the path is a recognized
+    # ``<type-folder>/<file>`` missing only the prefix, recover by prepending
+    # it. We keep the model's own slug rather than recomputing from the title:
+    # the prompt deliberately has the model emit a pinyin/ASCII slug for
+    # non-ASCII titles (``神经网络`` → ``shen-jing-wang-luo``) precisely because
     # ``slugify`` collapses them to ``untitled``, so recomputing would collide
-    # every CJK page on one path. A stale pre-0.4.0 ``wiki/`` prefix or any
-    # unrecognized head still raises — genuinely broken output should surface
-    # rather than land under a directory the next ``dikw serve`` would refuse
-    # to load (``BaseUpgradeRequired`` flags any non-empty ``wiki/`` tree).
+    # every CJK page on one path. A bare folder with no filename, a stale
+    # pre-0.4.0 ``wiki/`` prefix, or any unrecognized head still raises —
+    # genuinely broken output should surface rather than land under a directory
+    # the next ``dikw serve`` would refuse to load (``BaseUpgradeRequired``
+    # flags any non-empty ``wiki/`` tree).
     if path is not None and not path.startswith("knowledge/"):
-        head = path.split("/", 1)[0]
+        head, _, tail = path.partition("/")
         valid_folders = {type_to_folder(t) for t in allowed_types}
-        if head in valid_folders:
+        if tail and head in valid_folders:
             path = f"knowledge/{path}"
         else:
             raise SynthesisError(
