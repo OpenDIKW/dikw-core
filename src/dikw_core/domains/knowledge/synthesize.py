@@ -18,7 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from ...providers.base import LLMProvider
-from .page import KnowledgePage, build_page, now_iso
+from .page import KnowledgePage, build_page, now_iso, type_to_folder
 
 _PAGE_BLOCK = re.compile(
     r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
@@ -119,18 +119,47 @@ def _parse_one_page_block(
         tags = []
 
     path = attrs.get("path") or None
-    # The LLM is told (via prompts/synthesize.md) to emit paths under
-    # ``knowledge/<folder>/<slug>.md``. A stale model that echoes the
-    # pre-0.4.0 ``wiki/`` prefix would otherwise create files under a
-    # directory that the next ``dikw serve`` would refuse to load
-    # (``BaseUpgradeRequired`` flags any non-empty ``wiki/`` tree).
-    # Reject up-front so the bad page never lands on disk.
-    if path is not None and not path.startswith("knowledge/"):
+    # A ``..`` segment escapes the base when the persist leg resolves
+    # ``root / path`` (the synth/K-layer write sink has no containment guard,
+    # unlike the read paths' ``_assert_within``). Reject up-front — a malicious
+    # source document could prompt-inject the model into emitting one. Also
+    # reject any backslash: Windows ``pathlib`` treats ``\`` as a separator, so
+    # ``entities/foo\..\..\evil.md`` would hide a ``..`` escape from a ``/``-only
+    # split (a legitimate page path is always POSIX ASCII kebab-case, so a
+    # backslash is never valid). Do this before the prefix normalization below
+    # so every spelling — ``entities/../``, ``knowledge/../``, backslash — is
+    # caught.
+    if path is not None and ("\\" in path or ".." in path.split("/")):
         raise SynthesisError(
-            f"LLM emitted a page with path={path!r}; paths must live "
-            "under `knowledge/` (the legacy `wiki/` prefix was renamed "
-            "in 0.4.0)."
+            f"LLM emitted a page with path={path!r}; a page path must stay "
+            "under the base (no `..` traversal or backslash separators)."
         )
+    # The LLM is told (via prompts/synthesize.md) to emit paths under
+    # ``knowledge/<folder>/<slug>.md``. Smaller / open-weight models reliably
+    # follow the type-folder convention but drop the ``knowledge/`` parent
+    # (``entities/foo.md``); rejecting that dropped the whole page — and via
+    # per-group failure, the whole group (#146). When the path is a recognized
+    # ``<type-folder>/<file>`` missing only the prefix, recover by prepending
+    # it. We keep the model's own slug rather than recomputing from the title:
+    # the prompt deliberately has the model emit a pinyin/ASCII slug for
+    # non-ASCII titles (``神经网络`` → ``shen-jing-wang-luo``) precisely because
+    # ``slugify`` collapses them to ``untitled``, so recomputing would collide
+    # every CJK page on one path. A bare folder with no filename, a stale
+    # pre-0.4.0 ``wiki/`` prefix, or any unrecognized head still raises —
+    # genuinely broken output should surface rather than land under a directory
+    # the next ``dikw serve`` would refuse to load (``BaseUpgradeRequired``
+    # flags any non-empty ``wiki/`` tree).
+    if path is not None and not path.startswith("knowledge/"):
+        head, _, tail = path.partition("/")
+        valid_folders = {type_to_folder(t) for t in allowed_types}
+        if tail and head in valid_folders:
+            path = f"knowledge/{path}"
+        else:
+            raise SynthesisError(
+                f"LLM emitted a page with path={path!r}; paths must live "
+                "under `knowledge/` (the legacy `wiki/` prefix was renamed "
+                "in 0.4.0)."
+            )
     return build_page(
         title=title,
         body=body.rstrip() + "\n",
