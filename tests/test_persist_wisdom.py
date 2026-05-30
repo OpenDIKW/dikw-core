@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from dikw_core.domains.wisdom import persist_wisdom
@@ -158,5 +159,25 @@ async def test_persist_wisdom_embed_retry_skip_falls_back_to_pending(
         assert any(
             h.doc_id == "wisdom:wisdom/dan/resilient.md" for h in fts_hits
         )
+    finally:
+        await storage.close()
+
+
+async def test_persist_wisdom_rejects_path_escape(tmp_path: Path) -> None:
+    """The shared persist leg refuses a logical path that escapes the base.
+
+    ``persist_wisdom`` delegates to ``_persist_layered_page``, which
+    resolves ``root / path`` and reads it via ``parse_any``. A path with a
+    ``..`` segment must be rejected before that read so a malformed caller
+    can't index a file from outside the base into storage.
+    """
+    root, storage = await _new_storage_in_base(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="outside base"):
+            await persist_wisdom(
+                storage=storage,
+                root=root,
+                path="wisdom/../../escaped.md",
+            )
     finally:
         await storage.close()

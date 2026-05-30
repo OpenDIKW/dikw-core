@@ -159,6 +159,16 @@ def read_page(root: Path, path: str) -> KnowledgePage:
 def write_page(root: Path, page: KnowledgePage) -> Path:
     """Serialize ``page`` to disk under ``root / page.path``. Returns the absolute path."""
     abs_path = (root / page.path).resolve()
+    # Defense in depth: refuse a page.path that escapes the base before any
+    # mkdir/write. The synth parser rejects traversal paths upstream
+    # (#146/#149), but write_page is a shared sink (lint-apply + future
+    # writers) so it guards its own input. Mirrors write_wisdom_file.
+    try:
+        abs_path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"knowledge page path {page.path!r} resolves outside base {root!s}"
+        ) from exc
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] = {
         "id": page.id,

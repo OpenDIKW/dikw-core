@@ -5,7 +5,7 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## 0.4.6 — ingest mtime fallback + synth path normalization
+## 0.4.6 — ingest mtime fallback + synth path normalization + write-sink containment
 
 ### Fixed
 
@@ -42,6 +42,21 @@ on each entry call out exactly what shape changes break.
   stored mtime now also forces one re-persist (alongside hash drift /
   `active=False` / asset refs). D-layer only — knowledge / wisdom pages
   are engine-written with a real mtime and were never affected. (#145)
+
+### Security
+
+- **K/W page writes now refuse a path that escapes the base.** The
+  knowledge write sink (`write_page`) and the shared persist leg behind
+  `persist_knowledge` / `persist_wisdom` (`_persist_layered_page`) now
+  resolve `root / path` and reject it — before any `mkdir` / `write_text`
+  or `parse_any` read — when it resolves outside the base (a `..`
+  traversal segment or an absolute path). Previously only the read leg
+  (`api_path_safety._assert_within`) and the wisdom file writer were
+  guarded; these two K-side sinks were not, so a caller that bypassed the
+  synth parser (#146/#149 closed that one vector) could steer a write — or
+  a read-into-index — outside the base. The guard uses `Path.relative_to`
+  on the *resolved* path, so it is platform-correct without a lexical
+  backslash special-case. Follow-up to #149.
 
 ## 0.4.5 — api facade decomposition + dead-code cleanup
 
