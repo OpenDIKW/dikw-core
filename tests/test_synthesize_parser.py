@@ -138,6 +138,92 @@ def test_parse_rejects_legacy_wiki_path_prefix() -> None:
     assert "wiki/" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    ("folder", "type_"),
+    [("entities", "entity"), ("concepts", "concept"), ("notes", "note")],
+)
+def test_parse_normalizes_missing_knowledge_prefix(folder: str, type_: str) -> None:
+    """A model that uses the right type folder but drops the ``knowledge/``
+    layer prefix (``entities/foo.md``) must be normalized, not dropped — the
+    common open-weight-model failure that discarded the whole page/group (#146)."""
+    raw = (
+        f'<page path="{folder}/foo.md" type="{type_}">\n'
+        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
+    assert len(pages) == 1
+    assert pages[0].path == f"knowledge/{folder}/foo.md"
+
+
+def test_parse_normalize_preserves_model_slug() -> None:
+    """Normalization prepends the prefix but keeps the model's own slug — it
+    must NOT recompute from the title. ``slugify`` collapses a CJK title to
+    ``untitled`` (the prompt tells the model to emit a pinyin slug instead),
+    so recomputing would collide every CJK page on ``knowledge/<type>s/untitled.md``
+    and trigger wrong-merges in ``dedup_pages_by_slug``."""
+    raw = (
+        '<page path="concepts/shen-jing-wang-luo.md" type="concept">\n'
+        "---\ntags: []\n---\n\n# 神经网络\n\n关于神经网络的说明。\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
+    assert len(pages) == 1
+    assert pages[0].path == "knowledge/concepts/shen-jing-wang-luo.md"
+    assert pages[0].title == "神经网络"
+
+
+def test_parse_normalizes_custom_type_folder_missing_prefix() -> None:
+    """The recognized-folder set derives from ``allowed_types``, so a custom
+    ``SchemaConfig.page_types`` folder (``topics/``) normalizes too, not just
+    the three built-ins."""
+    raw = (
+        '<page path="topics/spacex.md" type="topic">\n'
+        "---\ntags: []\n---\n\n# SpaceX\n\nbody\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(
+        raw,
+        source_path="sources/x.md",
+        allowed_types=("entity", "concept", "note", "topic"),
+    )
+    assert len(pages) == 1
+    assert pages[0].path == "knowledge/topics/spacex.md"
+
+
+def test_parse_rejects_unrecognized_path_head() -> None:
+    """A path whose first segment is neither ``knowledge/`` nor a recognized
+    type folder (e.g. ``sources/``) is genuinely malformed — still reject so
+    broken output surfaces instead of being silently relocated."""
+    raw = (
+        '<page path="sources/foo.md" type="note">\n'
+        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
+        "</page>"
+    )
+    with pytest.raises(SynthesisError) as excinfo:
+        parse_synthesis_response(raw, source_path="sources/x.md")
+    assert "knowledge/" in str(excinfo.value)
+
+
+def test_parse_normalized_block_does_not_fail_group() -> None:
+    """A response mixing one missing-prefix block and one well-formed block
+    must keep BOTH: the missing-prefix one is normalized, not dropped, so a
+    single sloppy path no longer discards the whole group (#146)."""
+    raw = (
+        '<page path="entities/foo.md" type="entity">\n'
+        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
+        "</page>\n"
+        '<page path="knowledge/concepts/bar.md" type="concept">\n'
+        "---\ntags: []\n---\n\n# Bar\n\nbody\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
+    assert [p.path for p in pages] == [
+        "knowledge/entities/foo.md",
+        "knowledge/concepts/bar.md",
+    ]
+
+
 _TRUNCATED_AFTER_GOOD = """
 <page path="knowledge/entities/spacex.md" type="entity">
 ---

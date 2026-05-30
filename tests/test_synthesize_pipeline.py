@@ -564,3 +564,56 @@ async def test_long_source_fans_out_across_groups(tmp_path: Path) -> None:
         text = p.read_text(encoding="utf-8")
         assert "sources:" in text
         assert "sources/notes/long.md" in text
+
+
+@pytest.mark.asyncio
+async def test_synth_normalizes_missing_knowledge_prefix_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """A weaker model that uses the correct type folder but drops the
+    ``knowledge/`` layer prefix (``entities/foo.md`` — the exact shape
+    MiniMax-M2 emitted) must NOT lose the page. Synth normalizes the path,
+    persists it under ``knowledge/entities/``, counts no error, and marks the
+    source done so the next run skips it instead of leaving a silently partial
+    knowledge base (#146).
+    """
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
+    sources_dir = wiki / "sources" / "notes"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    (sources_dir / "bioreactor.md").write_text(
+        "# AMBR15 bioreactor\n\nA small-scale automated bioreactor system.\n",
+        encoding="utf-8",
+    )
+
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    bad_prefix_response = (
+        '<page path="entities/ambr15-bioreactor-system.md" type="entity">\n'
+        "---\ntags: [bioprocess]\n---\n\n"
+        "# AMBR15 bioreactor system\n\n"
+        "A small-scale automated bioreactor used in CHO cultivation.\n"
+        "</page>"
+    )
+    llm = FakeLLM(response_text=bad_prefix_response)
+    report = await api.synthesize(wiki, llm=llm, embedder=embedder)
+
+    assert report.errors == 0
+    assert report.created == 1
+    # Normalized onto knowledge/entities/, preserving the model's slug.
+    landed = wiki / "knowledge" / "entities" / "ambr15-bioreactor-system.md"
+    assert landed.is_file()
+
+    # Source marked done → the partial-KB symptom is gone (next synth skips it).
+    _cfg, _root, storage = await api._with_storage(wiki)
+    try:
+        entries = await storage.list_knowledge_log()
+    finally:
+        await storage.close()
+    done = [
+        e
+        for e in entries
+        if e.action == "synth_source_done" and e.src == "sources/notes/bioreactor.md"
+    ]
+    assert len(done) == 1, "normalized page must let the source be marked done"

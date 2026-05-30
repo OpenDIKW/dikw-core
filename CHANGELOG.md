@@ -5,10 +5,24 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## 0.4.6 — source ingest mtime fallback
+## 0.4.6 — ingest mtime fallback + synth path normalization
 
 ### Fixed
 
+- **Synth no longer drops a knowledge page when the model omits the
+  `knowledge/` path prefix.** A `<page>` whose `path` uses a valid type
+  folder but forgets the layer prefix (`entities/foo.md` instead of
+  `knowledge/entities/foo.md` — common with smaller / open-weight models
+  that follow the type-folder convention but drop the parent) used to raise
+  `SynthesisError`; via per-group failure (#134) that discarded *every*
+  page in the group and left the source un-marked, so the task reported
+  success while the knowledge base was silently partial. The parser now
+  normalizes a recognized type folder (built-in `entities`/`concepts`/`notes`
+  **or** a custom `SchemaConfig.page_types` folder) by prepending
+  `knowledge/`, preserving the model's own slug — the pinyin/ASCII spelling
+  the prompt asks for and `slugify` would otherwise collapse to `untitled`
+  for CJK titles. A stale pre-0.4.0 `wiki/` prefix or a truly unrecognized
+  head still raises. (#146)
 - **Source docs imported via a byte-stable tarball no longer store
   `mtime=0`.** dikw-web zeroes the tar `mtime` field so identical bytes
   dedup to one `package_sha256`; the extracted file landed with

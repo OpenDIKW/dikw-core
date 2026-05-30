@@ -18,7 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from ...providers.base import LLMProvider
-from .page import KnowledgePage, build_page, now_iso
+from .page import KnowledgePage, build_page, now_iso, type_to_folder
 
 _PAGE_BLOCK = re.compile(
     r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
@@ -120,17 +120,30 @@ def _parse_one_page_block(
 
     path = attrs.get("path") or None
     # The LLM is told (via prompts/synthesize.md) to emit paths under
-    # ``knowledge/<folder>/<slug>.md``. A stale model that echoes the
-    # pre-0.4.0 ``wiki/`` prefix would otherwise create files under a
-    # directory that the next ``dikw serve`` would refuse to load
-    # (``BaseUpgradeRequired`` flags any non-empty ``wiki/`` tree).
-    # Reject up-front so the bad page never lands on disk.
+    # ``knowledge/<folder>/<slug>.md``. Smaller / open-weight models reliably
+    # follow the type-folder convention but drop the ``knowledge/`` parent
+    # (``entities/foo.md``); rejecting that dropped the whole page — and via
+    # per-group failure, the whole group (#146). When the first segment is a
+    # recognized type folder, recover by prepending the layer prefix. We keep
+    # the model's own slug rather than recomputing it from the title: the
+    # prompt deliberately has the model emit a pinyin/ASCII slug for non-ASCII
+    # titles (``神经网络`` → ``shen-jing-wang-luo``) precisely because
+    # ``slugify`` collapses them to ``untitled``, so recomputing would collide
+    # every CJK page on one path. A stale pre-0.4.0 ``wiki/`` prefix or any
+    # unrecognized head still raises — genuinely broken output should surface
+    # rather than land under a directory the next ``dikw serve`` would refuse
+    # to load (``BaseUpgradeRequired`` flags any non-empty ``wiki/`` tree).
     if path is not None and not path.startswith("knowledge/"):
-        raise SynthesisError(
-            f"LLM emitted a page with path={path!r}; paths must live "
-            "under `knowledge/` (the legacy `wiki/` prefix was renamed "
-            "in 0.4.0)."
-        )
+        head = path.split("/", 1)[0]
+        valid_folders = {type_to_folder(t) for t in allowed_types}
+        if head in valid_folders:
+            path = f"knowledge/{path}"
+        else:
+            raise SynthesisError(
+                f"LLM emitted a page with path={path!r}; paths must live "
+                "under `knowledge/` (the legacy `wiki/` prefix was renamed "
+                "in 0.4.0)."
+            )
     return build_page(
         title=title,
         body=body.rstrip() + "\n",
