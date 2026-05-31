@@ -220,6 +220,14 @@ class SchemaConfig(BaseModel):
 
 
 class SourceConfig(BaseModel):
+    """One ``sources`` entry in ``dikw.yml``.
+
+    ``path`` is resolved against the base root (a relative path is anchored
+    there; an absolute one is taken as-is) and **must stay under the base** —
+    ``sources`` is a managed tree, so an escaping ``../`` prefix or an external
+    absolute path is rejected at ingest time (``iter_source_files``).
+    """
+
     path: str
     pattern: str = "**/*.md"
     ignore: list[str] = Field(default_factory=list)
