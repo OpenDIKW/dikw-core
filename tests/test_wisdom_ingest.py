@@ -438,6 +438,30 @@ def test_iter_source_files_allows_absolute_path_inside_base(tmp_path: Path) -> N
     assert yielded[0][0].name == "ok.md"
 
 
+def test_iter_source_files_skips_pattern_escape(tmp_path: Path) -> None:
+    """A ``..``-bearing glob ``pattern`` must not let ``rglob`` surface files
+    outside the base, even when ``path`` itself is in-base. The source-root
+    check alone misses this — each candidate is resolved and out-of-base hits
+    are skipped (regression for the codex P1 review finding).
+    """
+    base = tmp_path / "base"
+    (base / "sources").mkdir(parents=True)
+    (base / "sources" / "ok.md").write_text("# ok\n", encoding="utf-8")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.md").write_text("# secret\n", encoding="utf-8")
+
+    from dikw_core.config import SourceConfig
+
+    yielded = list(
+        iter_source_files(
+            [SourceConfig(path="sources", pattern="../../outside/**/*.md")],
+            root=base,
+        )
+    )
+    # The pattern points outside the base — nothing outside is read.
+    assert yielded == [], yielded
+
+
 @pytest.mark.asyncio
 async def test_wisdom_sources_become_provenance(tmp_path: Path) -> None:
     """``sources:`` frontmatter on a wisdom page populates the

@@ -68,6 +68,14 @@ def iter_source_files(
         for path in sorted(base.rglob(src.pattern)):
             if not path.is_file():
                 continue
+            # The source root passed the check above, but ``rglob`` honours a
+            # ``..`` segment in the *pattern* and yields symlink targets —
+            # either can surface a file OUTSIDE the base. A lexical check is
+            # not enough (``base/sources/../../x`` is lexically "under" base),
+            # so resolve each candidate and skip escapes: ``sources`` reads
+            # stay under the managed tree.
+            if not path.resolve().is_relative_to(root_resolved):
+                continue
             rel = (
                 path.relative_to(root_resolved)
                 if path.is_relative_to(root_resolved)
