@@ -68,7 +68,11 @@ def iter_source_files(
         for path in sorted(base.rglob(src.pattern)):
             if not path.is_file():
                 continue
-            rel = path.relative_to(root) if path.is_relative_to(root) else path
+            rel = (
+                path.relative_to(root_resolved)
+                if path.is_relative_to(root_resolved)
+                else path
+            )
             rel_str = str(rel).replace("\\", "/")
             if rel_str == "wisdom" or rel_str.startswith("wisdom/"):
                 continue
