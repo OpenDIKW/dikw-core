@@ -58,6 +58,17 @@ def iter_source_files(
                 f"source path {src.path!r} resolves to {base}, outside the "
                 f"base root {root_resolved}; sources must live under the base."
             )
+        # A ``..`` segment in the glob pattern makes ``rglob`` walk OUTSIDE
+        # the base (scanning ancestor trees, possibly hanging) before any
+        # per-file containment check fires — reject it here so the escape
+        # never reaches the filesystem walk. There is no legitimate use: a
+        # source glob is relative to and under its ``path`` root.
+        if ".." in src.pattern.replace("\\", "/").split("/"):
+            raise ValueError(
+                f"source pattern {src.pattern!r} contains a '..' segment that "
+                f"would read outside the base root {root_resolved}; sources "
+                "must live under the base."
+            )
 
     for src in sources:
         base = _resolve_source_root(src, root)

@@ -438,11 +438,10 @@ def test_iter_source_files_allows_absolute_path_inside_base(tmp_path: Path) -> N
     assert yielded[0][0].name == "ok.md"
 
 
-def test_iter_source_files_skips_pattern_escape(tmp_path: Path) -> None:
-    """A ``..``-bearing glob ``pattern`` must not let ``rglob`` surface files
-    outside the base, even when ``path`` itself is in-base. The source-root
-    check alone misses this — each candidate is resolved and out-of-base hits
-    are skipped (regression for the codex P1 review finding).
+def test_iter_source_files_rejects_pattern_escape(tmp_path: Path) -> None:
+    """A ``..``-bearing glob ``pattern`` is rejected up front — before ``rglob``
+    can walk outside the base — even when ``path`` itself is in-base (codex P1:
+    the source-root check alone doesn't cover the pattern).
     """
     base = tmp_path / "base"
     (base / "sources").mkdir(parents=True)
@@ -452,14 +451,42 @@ def test_iter_source_files_skips_pattern_escape(tmp_path: Path) -> None:
 
     from dikw_core.config import SourceConfig
 
-    yielded = list(
-        iter_source_files(
-            [SourceConfig(path="sources", pattern="../../outside/**/*.md")],
-            root=base,
+    with pytest.raises(ValueError, match="outside the base"):
+        list(
+            iter_source_files(
+                [SourceConfig(path="sources", pattern="../../outside/**/*.md")],
+                root=base,
+            )
         )
+
+
+def test_iter_source_files_skips_symlink_escape(tmp_path: Path) -> None:
+    """An in-tree symlink whose target is outside the base must not be read.
+    The pattern is clean (no ``..``), so the up-front check passes; the
+    per-candidate resolve catches the escaping target at the read point.
+    """
+    base = tmp_path / "base"
+    (base / "sources").mkdir(parents=True)
+    (base / "sources" / "ok.md").write_text("# ok\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.md"
+    secret.write_text("# secret\n", encoding="utf-8")
+    try:
+        (base / "sources" / "link.md").symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform")
+
+    from dikw_core.config import SourceConfig
+
+    yielded = list(
+        iter_source_files([SourceConfig(path="sources", pattern="**/*.md")], root=base)
     )
-    # The pattern points outside the base — nothing outside is read.
-    assert yielded == [], yielded
+    logical = [lp for _, lp in yielded]
+    assert "sources/ok.md" in logical
+    assert all(
+        "secret" not in lp and "secret" not in str(p) for p, lp in yielded
+    ), yielded
 
 
 @pytest.mark.asyncio
