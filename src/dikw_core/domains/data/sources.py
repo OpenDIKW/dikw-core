@@ -62,7 +62,9 @@ def iter_source_files(
         # the base (scanning ancestor trees, possibly hanging) before any
         # per-file containment check fires — reject it here so the escape
         # never reaches the filesystem walk. There is no legitimate use: a
-        # source glob is relative to and under its ``path`` root.
+        # source glob is relative to and under its ``path`` root. (An
+        # absolute pattern is rejected natively by ``rglob`` —
+        # "Non-relative patterns are unsupported".)
         if ".." in src.pattern.replace("\\", "/").split("/"):
             raise ValueError(
                 f"source pattern {src.pattern!r} contains a '..' segment that "
@@ -79,12 +81,12 @@ def iter_source_files(
         for path in sorted(base.rglob(src.pattern)):
             if not path.is_file():
                 continue
-            # The source root passed the check above, but ``rglob`` honours a
-            # ``..`` segment in the *pattern* and yields symlink targets —
-            # either can surface a file OUTSIDE the base. A lexical check is
-            # not enough (``base/sources/../../x`` is lexically "under" base),
-            # so resolve each candidate and skip escapes: ``sources`` reads
-            # stay under the managed tree.
+            # The up-front checks reject escaping paths + ``..`` patterns, but
+            # an in-tree symlink (or, on Windows, a directory junction that
+            # ``rglob`` walks into) can still surface a file whose target
+            # resolves OUTSIDE the base. A lexical check passes such a link
+            # (it sits under the base), so resolve each candidate and skip
+            # escapes: ``sources`` reads stay under the managed tree.
             if not path.resolve().is_relative_to(root_resolved):
                 continue
             rel = (
