@@ -5,6 +5,21 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## 0.4.7 — ingest source-path containment
+
+### Security
+
+- **Source discovery refuses a `sources[].path` that escapes the base.**
+  `iter_source_files` (the D-layer ingest scan entry) now validates every
+  configured source root up front and raises if one resolves outside the base
+  — a `../` prefix or an absolute path elsewhere. `sources` is a managed tree
+  under the base, so an escaping entry is a config error, not a license to read
+  + index arbitrary files into the `Layer.SOURCE` index (whose doc-ids would
+  also degrade to absolute paths). Fails the whole ingest with a clear message
+  before any file is read (no partial index). Completes the K/W write-sink
+  containment shipped in 0.4.6 — the last guarded-vs-unguarded asymmetry in the
+  path-handling surface.
+
 ## 0.4.6 — ingest mtime fallback + synth path normalization + write-sink containment
 
 ### Fixed

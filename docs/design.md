@@ -245,7 +245,7 @@ schema:
   description: "Personal research base on AI safety"
   page_types: [entity, concept, note]
 sources:
-  - path: ./sources
+  - path: ./sources       # resolved against the base; must stay under it
     pattern: "**/*.md"
     ignore: ["drafts/**"]
 ```

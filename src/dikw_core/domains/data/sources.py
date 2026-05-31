@@ -15,6 +15,19 @@ from pathlib import Path
 from ...config import SourceConfig
 
 
+def _resolve_source_root(src: SourceConfig, base_root: Path) -> Path:
+    """Absolute, resolved root directory for one ``sources`` entry.
+
+    A relative ``path`` is anchored at the base root; an absolute one is
+    taken as-is. Both are ``resolve()``d so the containment check in
+    :func:`iter_source_files` sees a normalized path.
+    """
+    p = Path(src.path)
+    if not p.is_absolute():
+        p = base_root / p
+    return p.resolve()
+
+
 def iter_source_files(
     sources: list[SourceConfig], *, root: Path
 ) -> Iterator[tuple[Path, str]]:
@@ -27,11 +40,27 @@ def iter_source_files(
     file ingests twice (once at ``source:wisdom/...``, once at
     ``wisdom:wisdom/...``), producing duplicate chunks + double embed
     spend for one on-disk page.
+
+    ``sources`` is a managed tree under the base. A configured ``path``
+    that resolves outside the base root (a ``../`` prefix or an absolute
+    path elsewhere) is a config error, not a license to read + index
+    arbitrary files into the ``Layer.SOURCE`` index (their doc-ids would
+    also degrade to absolute paths). Validate every entry UP FRONT and
+    raise: the generator is lazy, so a per-iteration check would let
+    earlier sources index before a later bad entry aborts — we want
+    all-or-nothing.
     """
+    root_resolved = root.resolve()
     for src in sources:
-        base = Path(src.path)
-        if not base.is_absolute():
-            base = (root / base).resolve()
+        base = _resolve_source_root(src, root)
+        if not base.is_relative_to(root_resolved):
+            raise ValueError(
+                f"source path {src.path!r} resolves to {base}, outside the "
+                f"base root {root_resolved}; sources must live under the base."
+            )
+
+    for src in sources:
+        base = _resolve_source_root(src, root)
         if not base.exists():
             continue
         ignore_spec = src.ignore

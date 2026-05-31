@@ -378,6 +378,66 @@ def test_iter_source_files_excludes_wisdom_prefix(tmp_path: Path) -> None:
     assert not any(p.startswith("wisdom/") for p in logical_paths), logical_paths
 
 
+def test_iter_source_files_rejects_relative_escape(tmp_path: Path) -> None:
+    """A ``sources[].path`` that escapes the base via ``../`` is a config
+    error — ``sources`` is a managed tree under the base, not a license to
+    read + index arbitrary files. The whole scan fails before any yield.
+    """
+    base = tmp_path / "base"
+    (base / "sources").mkdir(parents=True)
+    (base / "sources" / "ok.md").write_text("# ok\n", encoding="utf-8")
+    # A real file OUTSIDE the base that a `../` config would otherwise slurp.
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.md").write_text("# secret\n", encoding="utf-8")
+
+    from dikw_core.config import SourceConfig
+
+    with pytest.raises(ValueError, match="outside the base"):
+        list(
+            iter_source_files(
+                [SourceConfig(path="../outside", pattern="**/*.md")], root=base
+            )
+        )
+
+
+def test_iter_source_files_rejects_absolute_escape(tmp_path: Path) -> None:
+    """An absolute ``sources[].path`` pointing outside the base is rejected too."""
+    base = tmp_path / "base"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("# secret\n", encoding="utf-8")
+
+    from dikw_core.config import SourceConfig
+
+    with pytest.raises(ValueError, match="outside the base"):
+        list(
+            iter_source_files(
+                [SourceConfig(path=str(outside), pattern="**/*.md")], root=base
+            )
+        )
+
+
+def test_iter_source_files_allows_absolute_path_inside_base(tmp_path: Path) -> None:
+    """An absolute path that stays UNDER the base is fine — locks the boundary
+    so the containment guard doesn't reject a legitimate absolute config.
+    """
+    base = tmp_path / "base"
+    (base / "sources").mkdir(parents=True)
+    (base / "sources" / "ok.md").write_text("# ok\n", encoding="utf-8")
+
+    from dikw_core.config import SourceConfig
+
+    yielded = list(
+        iter_source_files(
+            [SourceConfig(path=str((base / "sources").resolve()), pattern="**/*.md")],
+            root=base,
+        )
+    )
+    assert len(yielded) == 1
+    assert yielded[0][0].name == "ok.md"
+
+
 @pytest.mark.asyncio
 async def test_wisdom_sources_become_provenance(tmp_path: Path) -> None:
     """``sources:`` frontmatter on a wisdom page populates the
