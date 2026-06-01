@@ -35,7 +35,7 @@ async def _seed_page(
     page = build_page(
         title=title,
         body=body,
-        type_="concept",
+        category="concept",
         tags=[],
         sources=[],
         extras=extras or {},

@@ -25,6 +25,7 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from . import __version__ as _pkg_version
+from . import prompts as _prompts
 from .api_core import _with_storage, load_base
 from .api_types import (
     CheckReport,
@@ -36,6 +37,7 @@ from .api_types import (
     ProbeResult,
     ProvidersInfo,
 )
+from .config import DikwConfig
 from .providers import (
     EmbeddingProvider,
     LLMProvider,
@@ -318,6 +320,44 @@ async def _probe_multimodal(
     return ProbeResult(ok=True, target=target, detail=detail)
 
 
+# Maps a ``lint.fixer_prompts`` config key to the packaged prompt name it
+# overrides. ``non_atomic_page`` is absent — it reuses the ``synthesize``
+# template, overridden via ``synth.prompt_path`` (see ADR-0003).
+_FIXER_PROMPT_NAMES = {
+    "orphan_merge": "lint_fix_orphan_merge",
+    "broken_wikilink": "lint_fix_broken_wikilink_grounded",
+}
+
+
+def _check_prompt_overrides(cfg: DikwConfig, base_root: Path) -> list[ProbeResult]:
+    """Validate every *configured* per-base prompt override against its contract.
+
+    One ``ProbeResult`` per configured override (containment + placeholder /
+    output-marker contract); unset overrides produce no entry. Surfaces the
+    same ``PromptOverrideError`` synth / lint would raise, but at
+    ``dikw client check`` time so misconfig is caught before a run.
+    """
+    configured: list[tuple[str, str]] = []
+    if cfg.synth.prompt_path:
+        configured.append(("synthesize", cfg.synth.prompt_path))
+    for key, override in cfg.lint.fixer_prompts.items():
+        name = _FIXER_PROMPT_NAMES.get(key)
+        if name and override:
+            configured.append((name, override))
+
+    results: list[ProbeResult] = []
+    for name, override in configured:
+        try:
+            _prompts.resolve(name, override_path=override, base_root=base_root)
+        except _prompts.PromptOverrideError as e:
+            results.append(ProbeResult(ok=False, target=override, detail=str(e)))
+        else:
+            results.append(
+                ProbeResult(ok=True, target=override, detail=f"{name} override valid")
+            )
+    return results
+
+
 async def check_providers(
     path: str | Path | None = None,
     *,
@@ -409,4 +449,7 @@ async def check_providers(
     finally:
         if owned_mm is not None and hasattr(owned_mm, "aclose"):
             await owned_mm.aclose()
-    return CheckReport(llm=llm_probe, embed=embed_probe)
+    # Prompt-override validation is local + cheap, so it runs on every check
+    # regardless of llm_only / embed_only — it never hits a provider.
+    prompt_checks = _check_prompt_overrides(cfg, Path(_root))
+    return CheckReport(llm=llm_probe, embed=embed_probe, prompts=prompt_checks)

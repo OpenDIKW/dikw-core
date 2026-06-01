@@ -57,7 +57,7 @@ from ..lint_fix import (
     page_to_op_frontmatter,
     safe_synthesize_pages,
 )
-from ..synthesize import DEFAULT_ALLOWED_TYPES
+from ..synthesize import DEFAULT_ALLOWED_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -247,14 +247,18 @@ async def _propose_llm_grounded(
     if (reason := _evidence_is_sufficient(hits)) is not None:
         await _skip(reporter, issue.path, reason)
 
-    allowed_types = tuple(ctx.cfg.schema_.page_types) or DEFAULT_ALLOWED_TYPES
+    allowed_categories = tuple(ctx.cfg.schema_.category_paths()) or DEFAULT_ALLOWED_CATEGORIES
     evidence_block = _render_evidence_block(hits)
-    user_prompt = prompts.load("lint_fix_broken_wikilink_grounded").format(
+    user_prompt = prompts.resolve(
+        "lint_fix_broken_wikilink_grounded",
+        override_path=ctx.cfg.lint.fixer_prompts.get("broken_wikilink"),
+        base_root=ctx.base_root,
+    ).format(
         broken_target=canonical_target,
         source_path=issue.path,
         source_context=excerpt,
         evidence_block=evidence_block,
-        allowed_types=" | ".join(allowed_types),
+        categories=ctx.cfg.schema_.categories_prompt_block(),
     )
     pages = await safe_synthesize_pages(
         user_prompt=user_prompt,
@@ -263,7 +267,8 @@ async def _propose_llm_grounded(
         model=ctx.cfg.provider.llm_model,
         max_tokens=_GROUNDED_MAX_TOKENS,
         temperature=0.2,
-        allowed_types=allowed_types,
+        allowed_categories=allowed_categories,
+        fallback=ctx.cfg.schema_.fallback,
         system=_GROUNDED_SYSTEM,
         log_label=f"broken_wikilink grounded [[{target}]]",
     )

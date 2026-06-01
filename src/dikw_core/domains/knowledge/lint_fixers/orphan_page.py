@@ -27,6 +27,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import frontmatter
@@ -44,7 +45,8 @@ from ..lint_fix import (
     bytes_sha256,
     safe_synthesize_pages,
 )
-from ..synthesize import DEFAULT_ALLOWED_TYPES
+from ..page import category_from_path
+from ..synthesize import DEFAULT_ALLOWED_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -598,17 +600,31 @@ async def _propose_merge_into_existing(
 
     parent_meta = dict(parent_post.metadata)
     orphan_meta_fm = dict(orphan_post.metadata)
-    target_type = str(parent_meta.get("type") or "note")
+    # The merged page must overwrite the parent at its EXACT path. The engine
+    # builds ``knowledge/<category>/<slug>.md`` from the category + slug the
+    # LLM echoes, so we derive both from the parent's path (authoritative for
+    # location) and tell the model to emit them verbatim.
+    target_category = category_from_path(parent_path)
+    target_slug = Path(parent_path).stem
     target_title = str(
         parent_meta.get("title") or best.page.title or ""
     ).strip()
     if not target_title:
         return None
 
-    allowed_types = tuple(cfg.schema_.page_types) or DEFAULT_ALLOWED_TYPES
-    user_prompt = prompts.load("lint_fix_orphan_merge").format(
+    # The parent's own category is always accepted even if the operator has
+    # since changed the taxonomy — otherwise the parser would coerce it to the
+    # fallback and the merge would land at the wrong path (and be refused).
+    base_categories = tuple(cfg.schema_.category_paths()) or DEFAULT_ALLOWED_CATEGORIES
+    allowed_categories = (*base_categories, target_category)
+    user_prompt = prompts.resolve(
+        "lint_fix_orphan_merge",
+        override_path=cfg.lint.fixer_prompts.get("orphan_merge"),
+        base_root=ctx.base_root,
+    ).format(
         target_path=parent_path,
-        target_type=target_type,
+        target_category=target_category,
+        target_slug=target_slug,
         target_title=target_title,
         target_body=parent_post.content,
         orphan_path=orphan_meta.path,
@@ -627,7 +643,8 @@ async def _propose_merge_into_existing(
         model=cfg.provider.llm_model,
         max_tokens=_MERGE_MAX_TOKENS,
         temperature=0.2,
-        allowed_types=allowed_types,
+        allowed_categories=allowed_categories,
+        fallback=cfg.schema_.fallback,
         system=_MERGE_SYSTEM,
         log_label=f"orphan_page merge {orphan_meta.path}",
         strict=True,

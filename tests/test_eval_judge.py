@@ -34,7 +34,7 @@ def _page(title: str, body: str = "# T\n\nbody.\n", source: str = "sources/a.md"
     return build_page(
         title=title,
         body=body,
-        type_="concept",
+        category="concept",
         tags=[],
         sources=[source],
         path=None,

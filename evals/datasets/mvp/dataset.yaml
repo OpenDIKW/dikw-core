@@ -43,4 +43,4 @@ synth:
   # 0.55+; paraphrased / fragment claims at < 0.40. 0.50 is the gap.
   grounding_threshold: 0.50
   duplicate_threshold: 0.85
-  page_types: [entity, concept, note]
+  categories: [entity, concept, note]

@@ -18,7 +18,7 @@ from typing import Any, Literal
 import yaml
 
 from ...providers.base import LLMProvider
-from .page import KnowledgePage, build_page, now_iso, type_to_folder
+from .page import KnowledgePage, build_page, default_page_path, now_iso
 
 _PAGE_BLOCK = re.compile(
     r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
@@ -73,10 +73,8 @@ class SynthesisOutcome:
     source_path: str
 
 
-DEFAULT_ALLOWED_TYPES: tuple[str, ...] = ("entity", "concept", "note")
-# Backwards-compat alias for the few internal call sites still using
-# the underscore-prefixed name; new code should import the public one.
-_DEFAULT_ALLOWED_TYPES = DEFAULT_ALLOWED_TYPES
+DEFAULT_ALLOWED_CATEGORIES: tuple[str, ...] = ("entity", "concept", "note")
+DEFAULT_FALLBACK: str = "未分类"
 
 
 def _parse_one_page_block(
@@ -84,16 +82,18 @@ def _parse_one_page_block(
     inner: str,
     *,
     source_path: str,
-    allowed_types: tuple[str, ...],
+    allowed_categories: tuple[str, ...],
+    fallback: str,
 ) -> KnowledgePage:
     attrs = dict(_ATTR.findall(attrs_str))
 
-    type_ = attrs.get("type", "note").strip().lower()
-    if type_ not in allowed_types:
-        # Fall back to ``note`` if it's allowed (preserves the historical
-        # "anything weird becomes a note" behaviour); otherwise pick the
-        # first declared type so we don't synthesise an unallowed value.
-        type_ = "note" if "note" in allowed_types else allowed_types[0]
+    # The LLM picks a category from the declared (closed) taxonomy; anything
+    # it can't confidently place — including an unrecognised / hallucinated
+    # value — lands in the ``fallback`` bucket. Karpathy's rule: a wrong
+    # category is a cheap re-file, an invented folder is irreversible drift.
+    category = attrs.get("category", "").strip()
+    if category not in allowed_categories:
+        category = fallback
 
     fm_match = _FRONTMATTER.match(inner)
     if fm_match is None:
@@ -118,52 +118,19 @@ def _parse_one_page_block(
     if not isinstance(tags, list):
         tags = []
 
-    path = attrs.get("path") or None
-    # A ``..`` segment escapes the base when the persist leg resolves
-    # ``root / path`` (the synth/K-layer write sink has no containment guard,
-    # unlike the read paths' ``_assert_within``). Reject up-front — a malicious
-    # source document could prompt-inject the model into emitting one. Also
-    # reject any backslash: Windows ``pathlib`` treats ``\`` as a separator, so
-    # ``entities/foo\..\..\evil.md`` would hide a ``..`` escape from a ``/``-only
-    # split (a legitimate page path is always POSIX ASCII kebab-case, so a
-    # backslash is never valid). Do this before the prefix normalization below
-    # so every spelling — ``entities/../``, ``knowledge/../``, backslash — is
-    # caught.
-    if path is not None and ("\\" in path or ".." in path.split("/")):
-        raise SynthesisError(
-            f"LLM emitted a page with path={path!r}; a page path must stay "
-            "under the base (no `..` traversal or backslash separators)."
-        )
-    # The LLM is told (via prompts/synthesize.md) to emit paths under
-    # ``knowledge/<folder>/<slug>.md``. Smaller / open-weight models reliably
-    # follow the type-folder convention but drop the ``knowledge/`` parent
-    # (``entities/foo.md``); rejecting that dropped the whole page — and via
-    # per-group failure, the whole group (#146). When the path is a recognized
-    # ``<type-folder>/<file>`` missing only the prefix, recover by prepending
-    # it. We keep the model's own slug rather than recomputing from the title:
-    # the prompt deliberately has the model emit a pinyin/ASCII slug for
-    # non-ASCII titles (``神经网络`` → ``shen-jing-wang-luo``) precisely because
-    # ``slugify`` collapses them to ``untitled``, so recomputing would collide
-    # every CJK page on one path. A bare folder with no filename, a stale
-    # pre-0.4.0 ``wiki/`` prefix, or any unrecognized head still raises —
-    # genuinely broken output should surface rather than land under a directory
-    # the next ``dikw serve`` would refuse to load (``BaseUpgradeRequired``
-    # flags any non-empty ``wiki/`` tree).
-    if path is not None and not path.startswith("knowledge/"):
-        head, _, tail = path.partition("/")
-        valid_folders = {type_to_folder(t) for t in allowed_types}
-        if tail and head in valid_folders:
-            path = f"knowledge/{path}"
-        else:
-            raise SynthesisError(
-                f"LLM emitted a page with path={path!r}; paths must live "
-                "under `knowledge/` (the legacy `wiki/` prefix was renamed "
-                "in 0.4.0)."
-            )
+    # The engine owns path construction: ``knowledge/<category>/<slug>.md``.
+    # ``category`` is a config-validated closed-set value (or the validated
+    # ``fallback``) so it is filesystem-safe by construction; ``slug`` is run
+    # through ``slugify`` (inside ``default_page_path``) which strips it to
+    # ASCII kebab-case, so no ``..``/backslash traversal can survive. The LLM
+    # is told to emit an ASCII slug for non-ASCII titles (``神经网络`` →
+    # ``shen-jing-wang-luo``); we slugify whichever of ``slug`` / title it gave.
+    slug = attrs.get("slug", "").strip()
+    path = default_page_path(category, slug or title)
     return build_page(
         title=title,
         body=body.rstrip() + "\n",
-        type_=type_,
+        category=category,
         tags=[str(t) for t in tags],
         sources=[source_path],
         path=path,
@@ -175,7 +142,8 @@ def parse_synthesis_response(
     raw: str,
     *,
     source_path: str,
-    allowed_types: tuple[str, ...] | None = None,
+    allowed_categories: tuple[str, ...] | None = None,
+    fallback: str = DEFAULT_FALLBACK,
 ) -> list[KnowledgePage]:
     """Extract one or more ``KnowledgePage`` objects from the LLM's output.
 
@@ -186,9 +154,10 @@ def parse_synthesis_response(
     ``SynthesisPartialError`` carries the surviving pages plus the error
     list when *some* blocks failed.
 
-    ``allowed_types`` mirrors ``SchemaConfig.page_types`` and gates which
-    ``type=`` values the parser accepts. ``None`` falls back to the
-    default ``(entity, concept, note)`` so direct callers (tests, quick
+    ``allowed_categories`` mirrors ``SchemaConfig.category_paths()`` and gates
+    which ``category=`` values the parser accepts; an unrecognised value is
+    filed under ``fallback`` (``SchemaConfig.fallback``). ``None`` falls back
+    to the default ``(entity, concept, note)`` so direct callers (tests, quick
     scripts) don't have to thread config through.
     """
     blocks = list(_PAGE_BLOCK.finditer(raw))
@@ -204,7 +173,7 @@ def parse_synthesis_response(
             )
         return []
 
-    types = allowed_types or _DEFAULT_ALLOWED_TYPES
+    categories = allowed_categories or DEFAULT_ALLOWED_CATEGORIES
     pages: list[KnowledgePage] = []
     errors: list[str] = []
     for m in blocks:
@@ -214,7 +183,8 @@ def parse_synthesis_response(
                     m.group(1),
                     m.group(2),
                     source_path=source_path,
-                    allowed_types=types,
+                    allowed_categories=categories,
+                    fallback=fallback,
                 )
             )
         except SynthesisError as e:
@@ -250,7 +220,7 @@ def dedup_pages_by_slug(
     *,
     strategy: SlugDedupStrategy = "merge_body",
 ) -> list[KnowledgePage]:
-    """Collapse pages that resolve to the same wiki path.
+    """Collapse pages that resolve to the same knowledge-page path.
 
     Stage A fan-out lets the same entity surface in multiple
     ``ChunkGroup`` LLM calls (e.g. "Elon Musk" mentioned across ten
@@ -310,7 +280,8 @@ async def synthesize_pages_from_text(
     model: str,
     max_tokens: int,
     temperature: float = 0.3,
-    allowed_types: tuple[str, ...] | None = None,
+    allowed_categories: tuple[str, ...] | None = None,
+    fallback: str = DEFAULT_FALLBACK,
     system: str = DEFAULT_SYNTH_SYSTEM,
 ) -> list[KnowledgePage]:
     """One LLM call + parse — the shared "text to N pages" primitive.
@@ -343,5 +314,6 @@ async def synthesize_pages_from_text(
     return parse_synthesis_response(
         response.text,
         source_path=source_path,
-        allowed_types=allowed_types,
+        allowed_categories=allowed_categories,
+        fallback=fallback,
     )

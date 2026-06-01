@@ -94,11 +94,11 @@ def _three_groups() -> tuple[str, list[ChunkRecord]]:
     return body, chunks
 
 
-_VALID_PAGE = '<page path="knowledge/x.md" type="concept">\n# X\n\nbody\n</page>'
+_VALID_PAGE = '<page category="concept" slug="x">\n# X\n\nbody\n</page>'
 _TEMPLATE = (
     "src={source_path} body={source_body} idx={group_index}/"
     "{group_total} headings={group_outline} max={max_pages} "
-    "types={allowed_types}"
+    "categories={categories}"
 )
 
 

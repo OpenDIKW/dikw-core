@@ -457,7 +457,7 @@ def _write_synth_dataset(root: Path, *, name: str = "synth-toy") -> Path:
         "synth:\n"
         "  grounding_threshold: 0.7\n"
         "  duplicate_threshold: 0.9\n"
-        "  page_types: [entity, concept]\n"
+        "  categories: [entity, concept]\n"
         "judge:\n"
         "  model: claude-sonnet\n",
         encoding="utf-8",
@@ -498,7 +498,7 @@ def test_load_dataset_synth_section_parsed(tmp_path: Path) -> None:
     spec = load_dataset(ds)
     assert spec.synth.grounding_threshold == 0.7
     assert spec.synth.duplicate_threshold == 0.9
-    assert spec.synth.page_types == ["entity", "concept"]
+    assert spec.synth.categories == ["entity", "concept"]
 
 
 def test_load_dataset_judge_section_parsed(tmp_path: Path) -> None:
@@ -532,7 +532,7 @@ def test_load_dataset_synth_section_defaults(tmp_path: Path) -> None:
     # scale supports for natural-language claims.
     assert spec.synth.grounding_threshold == 0.50
     assert spec.synth.duplicate_threshold == 0.85
-    assert spec.synth.page_types == ["entity", "concept", "note"]
+    assert spec.synth.categories == ["entity", "concept", "note"]
 
 
 def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:
@@ -576,7 +576,7 @@ def test_load_dataset_rejects_unknown_mode(tmp_path: Path) -> None:
         load_dataset(ds)
 
 
-def test_load_dataset_rejects_empty_synth_page_types(tmp_path: Path) -> None:
+def test_load_dataset_rejects_empty_synth_categories(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
     (ds / "dataset.yaml").write_text(
         "name: synth-toy\n"
@@ -584,14 +584,14 @@ def test_load_dataset_rejects_empty_synth_page_types(tmp_path: Path) -> None:
         "thresholds:\n"
         "  synth/atomicity_score: 0.9\n"
         "synth:\n"
-        "  page_types: []\n",
+        "  categories: []\n",
         encoding="utf-8",
     )
-    with pytest.raises(DatasetError, match="page_types"):
+    with pytest.raises(DatasetError, match="categories"):
         load_dataset(ds)
 
 
-def test_load_dataset_rejects_synth_page_type_blank(tmp_path: Path) -> None:
+def test_load_dataset_rejects_synth_category_blank(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
     (ds / "dataset.yaml").write_text(
         "name: synth-toy\n"
@@ -599,10 +599,10 @@ def test_load_dataset_rejects_synth_page_type_blank(tmp_path: Path) -> None:
         "thresholds:\n"
         "  synth/atomicity_score: 0.9\n"
         "synth:\n"
-        "  page_types: ['  ', 'concept']\n",
+        "  categories: ['  ', 'concept']\n",
         encoding="utf-8",
     )
-    with pytest.raises(DatasetError, match="page_types"):
+    with pytest.raises(DatasetError, match="categories"):
         load_dataset(ds)
 
 

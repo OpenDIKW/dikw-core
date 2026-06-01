@@ -21,7 +21,7 @@ Inspired by [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6
 - Four explicit DIKW layers with their own operations:
   - **D**ata — raw sources you curate.
   - **I**nformation — parsed, chunked, embedded, indexed (FTS5 + vectors).
-  - **K**nowledge — LLM-authored knowledge pages with `[[wikilinks]]`, `index.md`, and an append-only `log.md`.
+  - **K**nowledge — LLM-authored knowledge pages with `[[wikilinks]]`, filed under a configurable `category` tree (`knowledge/<category>/<slug>.md`).
   - **W**isdom — hand-written markdown principles / lessons / patterns authored under `wisdom/<author>/`, indexed (chunked + embedded) so they surface in `retrieve` alongside K-layer pages.
 - Pluggable LLM providers (API-first): Anthropic + OpenAI-compatible (covers OpenAI, Azure, Ollama, DeepSeek, Gemini-compat).
 - Pluggable storage: SQLite+sqlite-vec (default), Postgres+pgvector (enterprise) — swap by config.
@@ -95,7 +95,7 @@ keeps the local-vs-HTTP boundary unambiguous for both agents and humans:
 | `dikw client import <path>` | pre-flight + import local md packages (md + referenced assets) into the server's `sources/` |
 | `dikw client ingest [--no-embed]` | parse + chunk + FTS-index + embed the server's `sources/` tree           |
 | `dikw client retrieve "<q>"` | hybrid search returning ranked chunks + page refs (no LLM call); agent supplies its own synthesis |
-| `dikw client synth [--all]` | LLM turns source docs into K-layer knowledge pages; maintains `index.md`+`log.md`  |
+| `dikw client synth [--all]` | LLM turns source docs into K-layer knowledge pages, filed under the configured `category` tree |
 | `dikw client lint [propose\|proposals\|apply]` | report broken wikilinks / orphan pages / duplicate titles; propose + apply structured fixes |
 | `dikw client pages {list,get,links,provenance}` | enumerate pages / read a page body + chunk anchors / walk the K-layer link graph / walk the K↔D provenance edge |
 | `dikw client graph get`     | fetch the whole base graph (nodes + edges + unresolved wikilinks) in one read |

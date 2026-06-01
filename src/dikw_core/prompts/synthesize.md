@@ -12,13 +12,14 @@ This call sees only **section {group_index} of {group_total}** of the source. Id
 - Emit **at most {max_pages}** blocks. If the section has fewer distinct topics, emit fewer.
 - Reuse the section's heading structure as a hint for natural page boundaries, but do not feel bound by it — merge two H2 sections into one page when they cover the same atomic subject, or split one H2 into multiple pages when it conflates topics.
 
-## Page types
+## Category
 
-Choose exactly one `type` for each page from `{allowed_types}`:
+File each page under exactly one **category** — a folder path from this knowledge base's configured taxonomy. Choose the single best-fitting path from the list below:
 
-- **concept** — an idea, framework, or pattern (e.g. "DIKW pyramid").
-- **entity** — a named thing: person, tool, product, organization.
-- **note** — an observation, lesson, or material card focused on a single subject; it **must** reference at least one entity or concept via a `[[Wikilink]]`. Do not use `note` as a catch-all for anything that does not fit elsewhere.
+{categories}
+
+- Emit the chosen path **verbatim** in the `category` attribute (e.g. `category="技术/架构"`).
+- If none of the listed categories genuinely fits the page, **omit the `category` attribute entirely** — the engine files the page under its fallback bucket for a human to reclassify. Do **not** invent a new category path.
 
 ## Faithfulness and links
 
@@ -35,7 +36,7 @@ Detect the dominant language of the SOURCE DOCUMENT (and the current section). E
 - If the source is primarily English, emit pages in English.
 - For mixed-language sources, follow the language of the chunk you are summarising; a single page should not switch languages mid-paragraph.
 - When linking to a page that already exists in the knowledge base (see the existing-pages section below, when present), use that page's title **verbatim** — never translate or paraphrase it.
-- `path` and `slug` must remain lowercase ASCII kebab-case regardless of title language. For non-ASCII titles, use a short pinyin or English-equivalent slug (e.g. title `神经网络` → slug `neural-network` or `shen-jing-wang-luo`); the page title itself stays in the source language.
+- The `slug` must be lowercase ASCII kebab-case regardless of title language. For non-ASCII titles, use a short pinyin or English-equivalent slug (e.g. title `神经网络` → slug `neural-network` or `shen-jing-wang-luo`); the page title itself stays in the source language. The `category` path may be non-ASCII — copy it verbatim from the list above.
 
 ## Existing pages
 
@@ -52,7 +53,7 @@ This applies to BOTH:
 For each page, emit exactly one `<page>` block, wrapped verbatim. Do **not** emit prose outside the blocks.
 
 ```
-<page path="knowledge/<folder>/<slug>.md" type="concept|entity|note">
+<page category="<category-path>" slug="<slug>">
 ---
 tags: [tag1, tag2]
 ---
@@ -63,10 +64,10 @@ Body paragraphs here. Use [[Wikilinks]] for references.
 </page>
 ```
 
-- `path` must live under `knowledge/` and match the type's default folder (`concepts/`, `entities/`, `notes/`).
-- `slug` is lowercase, kebab-case, ASCII-only.
+- `category` is one path copied **verbatim** from the category list above (or omit the attribute entirely if none fits).
+- `slug` is lowercase, kebab-case, ASCII-only. The engine files the page at `knowledge/<category>/<slug>.md`.
 - The first line of the body must be an ATX `# Page Title` matching the page title you choose.
-- Do **not** include `title`, `id`, `created`, or `updated` in the front-matter — the engine manages those.
+- Do **not** include `title`, `id`, `category`, `created`, or `updated` in the front-matter — the engine manages those.
 
 SOURCE DOCUMENT — path: {source_path}
 

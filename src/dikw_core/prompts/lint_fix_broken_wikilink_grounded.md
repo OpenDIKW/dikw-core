@@ -16,13 +16,15 @@ wikilink resolves, AND it adds genuine knowledge — not a TODO stub.
   `placeholder` (case-insensitive). These markers defeat the purpose
   of the repair — they make `broken_wikilink: 0` pass while leaving
   the K-layer hollow.
-- Pick the page `type` from `{allowed_types}`. When the broken target
-  reads like a person / company / product name choose `entity`; when
-  it reads like an idea / framework / pattern choose `concept`;
-  otherwise `note` (only if `note` is allowed).
-- Path must live under `knowledge/<folder>/<slug>.md` where `<folder>`
-  matches the chosen type's plural (`entities/`, `concepts/`,
-  `notes/`) and `<slug>` is lowercase kebab-case ASCII.
+- File the page under the single best-fitting **category** path from the
+  configured taxonomy below; copy the path **verbatim** into the `category`
+  attribute. If none genuinely fits, omit the `category` attribute and the
+  engine files it under the fallback bucket. Do not invent a category.
+
+{categories}
+
+- Emit a `slug` that is lowercase kebab-case ASCII; the engine files the page
+  at `knowledge/<category>/<slug>.md`.
 - Frontmatter `sources:` SHOULD list the source paths the evidence
   chunks came from (e.g. `sources: ["sources/foo.md", "sources/bar.md"]`).
 
@@ -55,7 +57,7 @@ real page.
 ## Output format (verbatim)
 
 ```
-<page path="knowledge/<folder>/<slug>.md" type="concept|entity|note">
+<page category="<category-path>" slug="<slug>">
 ---
 tags: [<one-or-two-topical-tags>]
 sources: ["<source path 1>", "<source path 2>"]

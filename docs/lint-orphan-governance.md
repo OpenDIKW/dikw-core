@@ -36,9 +36,9 @@ Example proposal:
 ```jsonc
 {
   "issue_kind": "orphan_page",
-  "issue_path": "knowledge/notes/half-written.md",
+  "issue_path": "knowledge/note/half-written.md",
   "operations": [
-    { "kind": "delete_page", "path": "knowledge/notes/half-written.md" }
+    { "kind": "delete_page", "path": "knowledge/note/half-written.md" }
   ],
   "rationale": "delete stub — body is 14 bytes (TODO/FIXME/WIP marker); soft-delete to trash",
   "source": "heuristic"
@@ -57,9 +57,9 @@ proposal:
 ```jsonc
 {
   "operations": [
-    { "kind": "update_page", "path": "knowledge/concepts/parent.md",
+    { "kind": "update_page", "path": "knowledge/concept/parent.md",
       "new_body": "<merged body>", "new_frontmatter": "<unioned sources+tags>" },
-    { "kind": "delete_page", "path": "knowledge/concepts/orphan.md" }
+    { "kind": "delete_page", "path": "knowledge/concept/orphan.md" }
   ],
   "source": "llm"
 }

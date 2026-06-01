@@ -184,12 +184,12 @@ def _page(
     title: str,
     body: str,
     tags: list[str] | None = None,
-    type_: str = "concept",
+    category: str = "concept",
 ) -> KnowledgePage:
     return build_page(
         title=title,
         body=body,
-        type_=type_,
+        category=category,
         tags=tags or [],
         sources=[],
         path=None,

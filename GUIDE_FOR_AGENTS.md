@@ -199,8 +199,10 @@ Install and use `dikw-skills` for operational workflows:
 - retrieve chunks, pages, graph links, provenance edges (page ↔ source
   attribution), and assets
 - import local source material
-- ingest, synthesize, lint, and eval (lint includes `missing_provenance`
-  for backfilling the provenance table on legacy bases)
+- ingest, synthesize (LLM files each page under the configured `category`
+  taxonomy), lint, and eval (lint includes `missing_provenance` for backfilling
+  the provenance table on legacy bases, and `uncategorized` for pages synth
+  filed under the fallback bucket)
 - author W-layer wisdom pages with `dikw client wisdom write` (hand-written
   and indexed on write; `ingest` does not scan `wisdom/`)
 

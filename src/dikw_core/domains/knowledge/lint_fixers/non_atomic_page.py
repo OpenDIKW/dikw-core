@@ -41,7 +41,7 @@ from ..lint_fix import (
     safe_synthesize_pages,
 )
 from ..synthesize import (
-    DEFAULT_ALLOWED_TYPES,
+    DEFAULT_ALLOWED_CATEGORIES,
     DEFAULT_SYNTH_SYSTEM,
     dedup_pages_by_slug,
 )
@@ -103,16 +103,18 @@ class NonAtomicPageFixer:
             return None
 
         cfg = ctx.cfg
-        allowed_types = tuple(cfg.schema_.page_types) or DEFAULT_ALLOWED_TYPES
+        allowed_categories = tuple(cfg.schema_.category_paths()) or DEFAULT_ALLOWED_CATEGORIES
 
-        user_prompt = prompts.load("synthesize").format(
+        user_prompt = prompts.resolve(
+            "synthesize", override_path=cfg.synth.prompt_path, base_root=ctx.base_root
+        ).format(
             source_path=issue.path,
             source_body=body,
             group_outline="(whole page — split into atomic children)",
             group_index=1,
             group_total=1,
             max_pages=_MAX_CHILDREN_CEILING,
-            allowed_types=" | ".join(allowed_types),
+            categories=cfg.schema_.categories_prompt_block(),
             # Mirrors api.py:_NO_EXISTING_PAGES_SENTINEL. The split fixer
             # operates on a single page in isolation; the existing-pages
             # awareness contract from PR #69 is for ingestion fan-out where
@@ -120,7 +122,7 @@ class NonAtomicPageFixer:
             # groups. A future enhancement could surface ctx.all_pages here
             # to discourage children that duplicate existing K-pages, but
             # the immediate post-collision filter already catches that.
-            existing_pages_section="(no existing pages — this is a fresh wiki)",
+            existing_pages_section="(no existing pages — this is a fresh knowledge base)",
         )
 
         pages = await safe_synthesize_pages(
@@ -129,7 +131,8 @@ class NonAtomicPageFixer:
             llm=ctx.llm,
             model=cfg.provider.llm_model,
             max_tokens=cfg.provider.llm_max_tokens_synth,
-            allowed_types=allowed_types,
+            allowed_categories=allowed_categories,
+            fallback=cfg.schema_.fallback,
             system=DEFAULT_SYNTH_SYSTEM,
             log_label="non_atomic_page split",
             strict=True,

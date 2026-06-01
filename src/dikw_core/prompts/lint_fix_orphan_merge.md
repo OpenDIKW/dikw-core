@@ -8,8 +8,7 @@ on one page; the apply step will then soft-delete the orphan.
 ## Hard rules
 
 - Emit **exactly one** `<page>` block. Never zero, never two.
-- The `path` attribute must be exactly the parent's path: `{target_path}`.
-- The `type` attribute must be exactly: `{target_type}`.
+- Emit `category="{target_category}"` and `slug="{target_slug}"` exactly as given — the engine files the merged page at the parent's path `{target_path}`.
 - Body must start with `# {target_title}` (the parent's existing title).
 - Preserve every meaningful fact from BOTH pages. Do not invent
   biographical claims, dates, or definitions absent from the inputs.
@@ -36,7 +35,7 @@ says Y."). Never silently pick a winner.
 ## Output format (verbatim)
 
 ```
-<page path="{target_path}" type="{target_type}">
+<page category="{target_category}" slug="{target_slug}">
 # {target_title}
 
 <merged body — full content here, integrating both inputs>

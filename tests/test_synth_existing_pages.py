@@ -76,7 +76,7 @@ class GroupKeyedLLM:
         idx = len(self.calls)
         self.calls.append(user)
         text = (
-            f'<page path="knowledge/concepts/group-{idx}-page.md" type="concept">\n'
+            f'<page category="concept" slug="group-{idx}-page">\n'
             f"---\ntags: [synthetic]\n---\n\n"
             f"# Group {idx} page\n\n"
             f"Synthetic page emitted by group {idx}.\n"
@@ -101,7 +101,7 @@ def _override_synth_cfg(wiki: Path, **kwargs: Any) -> None:
 
 
 async def _seed_wiki_page(
-    wiki: Path, *, title: str, type_: str, body: str | None = None
+    wiki: Path, *, title: str, category: str, body: str | None = None
 ) -> None:
     """Create one K-layer page directly via ``_persist_knowledge_page`` so a
     later synth invocation sees it as an "existing" page in storage.
@@ -111,7 +111,7 @@ async def _seed_wiki_page(
         page = build_page(
             title=title,
             body=body or f"# {title}\n\nSeeded fixture page.\n",
-            type_=type_,
+            category=category,
         )
         write_page(root, page)
         await api._persist_knowledge_page(
@@ -129,10 +129,10 @@ async def _seed_wiki_page(
 @pytest.mark.asyncio
 async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> None:
     """An existing K-layer page renders into the prompt's
-    ``## Existing knowledge pages`` section as ``- Title (type)``."""
+    ``## Existing knowledge pages`` section as ``- Title (category)``."""
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
-    await _seed_wiki_page(wiki, title="Tesla", type_="entity")
+    await _seed_wiki_page(wiki, title="Tesla", category="entity")
 
     _write_source(
         wiki,
@@ -152,7 +152,7 @@ async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> N
         "fresh-base synth must render the existing-pages section header"
     )
     assert "- Tesla (entity)" in prompt, (
-        "the seeded page must appear as a 'Title (type)' bullet"
+        "the seeded page must appear as a 'Title (category)' bullet"
     )
 
 
@@ -219,11 +219,11 @@ async def test_synth_existing_pages_truncates_to_retrieval_top_k(
         wiki, existing_pages_max_bytes=200, existing_pages_top_k=3
     )
 
-    # Seed enough pages that the full Title (type) render exceeds 200 B.
+    # Seed enough pages that the full Title (category) render exceeds 200 B.
     # ~30 bytes per line, 12 pages -> ~360 bytes > 200.
     for i in range(12):
         await _seed_wiki_page(
-            wiki, title=f"Seeded page {i}", type_="concept"
+            wiki, title=f"Seeded page {i}", category="concept"
         )
 
     _write_source(
@@ -263,7 +263,7 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
     same source coordinate.)"""
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
-    await _seed_wiki_page(wiki, title="Tesla", type_="entity")
+    await _seed_wiki_page(wiki, title="Tesla", category="entity")
 
     _write_source(
         wiki,
@@ -307,7 +307,7 @@ async def test_synth_existing_pages_falls_back_when_knowledge_unembedded(
     # in ``_seed_wiki_page`` means these pages have NO WIKI vectors.
     for i in range(12):
         await _seed_wiki_page(
-            wiki, title=f"Seeded page {i}", type_="concept"
+            wiki, title=f"Seeded page {i}", category="concept"
         )
 
     _write_source(wiki, "fresh.md", "# Fresh\n\nSource body.\n")

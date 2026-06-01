@@ -30,7 +30,7 @@ Design decisions already locked in (via clarifying Q&A):
 
 1. **DIKW as first-class layers** — each layer has its own storage, schemas, and operations. The pipeline between layers is explicit (not an implicit by-product of retrieval).
 2. **Knowledge-as-artifact** — Knowledge & Wisdom layers are plain markdown on disk, versioned with git by the user, editable by humans and LLMs. The engine is a tool; the knowledge base is the product.
-3. **Scoping deterministic, reasoning probabilistic** (Karpathy) — navigation uses deterministic structure (index.md, link graph, FTS); LLM calls are reserved for K-layer synthesis. W layer is hand-written, not LLM-authored.
+3. **Scoping deterministic, reasoning probabilistic** (Karpathy) — navigation uses deterministic structure (the configured category folder tree, link graph, FTS); LLM calls are reserved for K-layer synthesis. W layer is hand-written, not LLM-authored. (We diverge from Karpathy's pattern in not materialising a generated `index.md`/`log.md` — the folder tree is the catalogue and the `knowledge_log` table is the authoritative history; see [ADR-0004](adr/0004-drop-generated-index-and-log.md).)
 4. **Server-as-the-engine, CLI-as-the-client** — the engine is a long-lived `dikw serve` (FastAPI + NDJSON streaming) process that owns storage and provider connections; humans drive it through `dikw client *`, agents through HTTP. There is no in-process import path for end-user operations.
 5. **Local-first data, pluggable compute** — the base lives on the user's filesystem; the default index is a local SQLite DB; only LLM calls leave the machine (and are provider-abstracted).
 6. **Pluggable storage** — the engine talks to an abstract **Storage** interface, not to SQL directly. Two backends ship: **SQLite+sqlite-vec** (default, single-user local) and **Postgres+pgvector** (enterprise, multi-user). Swapping backends is a config change.
@@ -43,7 +43,7 @@ Design decisions already locked in (via clarifying Q&A):
 |---|---|---|---|
 | **D — Data** | Raw, immutable sources (markdown files the user curates) | filesystem + indexed `documents` table in SQLite (path, content hash, layer, active) | human |
 | **I — Information** | Parsed, chunked, embedded, indexed — enables fast lookup | SQLite FTS5 + sqlite-vec (`.dikw/index.sqlite`) | engine (deterministic) |
-| **K — Knowledge** | LLM-authored knowledge pages: summaries, entities, concepts, cross-refs, `index.md`, `log.md`; each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `knowledge/` | LLM, human-editable |
+| **K — Knowledge** | LLM-authored knowledge pages filed under a configurable **category** taxonomy (`schema.categories`; default `entity`/`concept`/`note`, see [ADR-0003](adr/0003-configurable-knowledge-taxonomy.md)); body cross-refs via `[[wikilinks]]`; engine activity recorded in the `knowledge_log` table (no generated `index.md`/`log.md`); each page's `sources:` frontmatter is reconciled into a dedicated **provenance** edge (page → D-source attribution, separate from body `[[wikilinks]]` — see [ADR-0001](adr/0001-provenance-as-separate-edge.md)) | markdown files in `knowledge/` | LLM, human-editable |
 | **W — Wisdom** | Hand-written principles, lessons, patterns — transferable beyond a single source | markdown files in `wisdom/<author>/` with explicit provenance (frontmatter `sources:`) | human |
 
 The W layer is the novel bit and is spelled out in "Wisdom Layer Design" below.
@@ -160,11 +160,11 @@ dikw-core/
 │   │   │
 │   │   ├── knowledge/        # K layer
 │   │   │   ├── page.py       # page read/write, front-matter conventions
-│   │   │   ├── synthesize.py # ingest → knowledge pages (LLM-driven)
+│   │   │   ├── synthesize.py # ingest → knowledge pages (LLM-driven), category-filed
 │   │   │   ├── links.py      # wikilink/markdown/URL link graph
-│   │   │   ├── indexgen.py   # regenerate index.md from knowledge/
-│   │   │   └── log.py        # append-only knowledge_log + log.md renderer
-│   │   │
+│   │   │   ├── lint.py       # broken wikilinks, orphans, uncategorized, missing_provenance
+│   │   │   └── lint_fix.py   # Fixer Protocol + apply orchestrator (+ lint_fixers/)
+│   │   │                     # (history → knowledge_log table; no generated index.md/log.md, ADR-0004)
 │   │   └── wisdom/           # W layer — hand-written first-class documents
 │   │       └── page.py       # author_from_path(wisdom/<author>/<slug>.md) → "<author>"
 │   │
@@ -201,12 +201,11 @@ dikw-core/
 my-base/
 ├── dikw.yml                  # config: sources, provider, schema
 ├── sources/                  # user-curated raw markdown (D layer)
-├── knowledge/                     # K layer (LLM-authored, human-editable)
-│   ├── index.md              # auto-generated catalog
-│   ├── log.md                # append-only chronology
-│   ├── entities/
-│   ├── concepts/
-│   └── notes/
+├── knowledge/                # K layer (LLM-authored, human-editable)
+│   ├── <category>/…/         # folders mirror the configured category taxonomy
+│   │   └── <slug>.md         #   default tree: entity/ concept/ note/
+│   └── 未分类/                # fallback bucket for pages synth can't classify
+├── prompts/                  # optional: per-base prompt overrides (synth, lint fixers)
 ├── wisdom/                   # W layer — hand-written, directory = author
 │   ├── elon-musk/            # one folder per author
 │   │   ├── first-principles.md
@@ -219,9 +218,9 @@ my-base/
 
 **Obsidian vault compatibility** — `my-base/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
 - `[[Wikilinks]]` — the canonical link form in `knowledge/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
-- **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `type`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
-- **Folder = category** — `knowledge/entities/`, `knowledge/concepts/`, `knowledge/notes/`, `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior.
-- **Daily-note style log** — `knowledge/log.md` keeps Karpathy's chronological format; optionally daily files under `knowledge/log/YYYY/MM/YYYY-MM-DD.md` for vaults that already use Obsidian's daily-notes plugin (opt-in via `schema.log_style: daily`).
+- **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `category`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
+- **Folder = category** — every knowledge page is filed under a folder path drawn from the configured **category taxonomy** (`schema.categories` in `dikw.yml`; default `entity`/`concept`/`note`, arbitrary depth e.g. `产品/移动端/`), plus `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior. The category folder tree *is* the catalogue — there is no generated `index.md` (see [ADR-0004](adr/0004-drop-generated-index-and-log.md)).
+- **History lives in the index, not the vault** — engine activity is recorded in the `knowledge_log` storage table; dikw-core no longer renders a `knowledge/log.md` chronology into the vault.
 - **Engine state stays out of the vault** — the `.dikw/` sidecar directory is gitignored and Obsidian-ignored (`.obsidian/app.json` `userIgnoreFilters` receives a `.dikw/` entry on `dikw init`).
 - **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing in Obsidian never sees engine-only constructs that would get stripped on round-trip.
 
@@ -243,12 +242,27 @@ storage:
   # pool_size: 10
 schema:
   description: "Personal research base on AI safety"
-  page_types: [entity, concept, note]
+  categories:               # configurable taxonomy; arbitrary depth; default below
+    - path: entity
+    - path: concept
+    - path: note
+  fallback: 未分类           # bucket for pages synth can't confidently classify
 sources:
   - path: ./sources       # resolved against the base; must stay under it
     pattern: "**/*.md"
     ignore: ["drafts/**"]
+synth:
+  prompt_path: ./prompts/my_synth.md   # optional: override the packaged synth prompt
+lint:
+  fixer_prompts:                       # optional: override packaged lint-fixer prompts
+    orphan_merge: ./prompts/orphan.md
+    broken_wikilink: ./prompts/bw.md
 ```
+
+Prompt overrides (`synth.prompt_path`, `lint.fixer_prompts`) point at markdown templates
+under the base; the engine validates that each carries the required `{placeholders}` and
+output-format markers at load (`dikw client check` surfaces the result) and falls back to
+the packaged default when unset. See [ADR-0003](adr/0003-configurable-knowledge-taxonomy.md).
 
 ## Data Model
 
@@ -545,7 +559,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 
 - **Phase 0 — Scaffold (small):** repo layout, `uv` init, CI, ruff/mypy, typer CLI with `init`/`status`, config loader, **`Storage` Protocol + DTOs in `storage/base.py`**, SQLite bootstrap in `storage/sqlite.py`, `storage/__init__.py` factory, contract-test skeleton, minimal `providers/base.py` + Anthropic stub, a golden-path test that runs end-to-end on an empty base.
 - **Phase 1 — D + I (foundation):** markdown backend, content-hash store, heading-aware chunker, embedding batch pipeline via OpenAI-compat, FTS5 index and sqlite-vec index implemented on the SQLite adapter, RRF hybrid `search` (fusion lives in `info/search.py`, calling `storage.fts_search` + `storage.vec_search`), `ingest` + `retrieve` CLI + HTTP routes. Acceptance: ingest a 50-file corpus, `retrieve` returns ranked chunks in <2s warm.
-- **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer, link graph, `index.md` regenerator, `log.md` append, `lint`, knowledge HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors.
+- **Phase 2 — K (knowledge):** `synthesize` prompt + worker, knowledge page writer (filed under the configured category taxonomy), link graph, `knowledge_log` table append, `lint`, knowledge HTTP routes. Acceptance: running `synth` on the Phase-1 corpus produces a non-empty `knowledge/` with valid cross-links; `lint` reports 0 errors. (0.5.0 dropped the originally-planned `index.md`/`log.md` renderers — see ADR-0004.)
 - **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/base/wisdom`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
@@ -576,7 +590,7 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 2. `uv run dikw init examples/personal-base && cd examples/personal-base` scaffolds the expected tree.
 3. Populate `sources/` with ~20 markdown notes (fixtures); `uv run dikw client ingest`; confirm FTS and vec rows via a diagnostic `dikw client status`.
 4. `uv run dikw client retrieve "what is DIKW?" --format json` returns at least one chunk hit with `path`, `text`, and `score`; LLM synthesis on top of these chunks is the agent's responsibility.
-5. `uv run dikw client synth`; check `knowledge/index.md` and `knowledge/log.md` updated, at least one `entities/`/`concepts/` page created, all wikilinks resolve in `lint`.
+5. `uv run dikw client synth`; check at least one page created under a configured category folder (e.g. `knowledge/entity/`, `knowledge/concept/`), a `knowledge_log` row appended (no `index.md`/`log.md` is generated), all wikilinks resolve in `lint`.
 6. Write a wisdom page via `uv run dikw client wisdom write --slug <s> --author <a> --title "<t>" --body "<b>" --source <real-source-path>`; `uv run dikw client pages list --layer wisdom` returns it; `uv run dikw client pages get wisdom/<a>/<s>.md` returns its body + chunk anchors.
 7. `uv run dikw client retrieve "<query that matches the wisdom body>" --format json` returns at least one hit with `layer: wisdom`; the agent groups by layer and assembles its own wisdom-grounded answer.
 8. `uv run dikw serve --base .` launches; a `GET /v1/base/pages/wisdom/<author>/<slug>.md` round-trip from any HTTP client returns the same page as step 6, and a `POST /v1/retrieve` round-trip returns chunks (including wisdom chunks) consumable by any HTTP agent.

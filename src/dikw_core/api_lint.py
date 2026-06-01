@@ -41,9 +41,9 @@ from .schemas import Layer
 
 async def lint(path: str | Path | None = None) -> LintReport:
     """Run the K-layer hygiene checker."""
-    _cfg, root, storage = await _with_storage(path)
+    cfg, root, storage = await _with_storage(path)
     try:
-        return await run_lint(storage, root=root)
+        return await run_lint(storage, root=root, fallback=cfg.schema_.fallback)
     finally:
         await storage.close()
 
@@ -82,7 +82,7 @@ async def lint_propose(
     """
     cfg, root, storage = await _with_storage(path)
     try:
-        report = await run_lint(storage, root=root)
+        report = await run_lint(storage, root=root, fallback=cfg.schema_.fallback)
         # Build KnowledgePageMeta + path→doc_id index in one pass over the
         # WIKI listing. ``report.page_meta`` already carries the
         # frontmatter slice ``run_lint`` parsed, so the orphan scorer's

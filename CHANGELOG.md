@@ -5,6 +5,70 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## 0.5.0 — configurable knowledge taxonomy + overridable prompts; drop index.md/log.md
+
+This release generalizes the fixed K-layer classification into a
+user-configurable taxonomy, opens the K-layer authoring prompts to per-base
+overrides, and removes the generated `knowledge/index.md` / `knowledge/log.md`.
+All three are **breaking** for any base built on ≤0.4.7 — there is no in-place
+migration (rebuild-on-incompatibility policy); a base carrying the old shape
+trips `BaseUpgradeRequired` with the exact rebuild command. See
+[ADR-0003](docs/adr/0003-configurable-knowledge-taxonomy.md) and
+[ADR-0004](docs/adr/0004-drop-generated-index-and-log.md).
+
+### Breaking
+
+- **K-page classification is now a configurable, hierarchical `category` tree.**
+  The fixed single-axis `type` (`entity`/`concept`/`note`) filed pages under
+  pluralized folders (`knowledge/concepts/foo.md`). It is replaced by
+  `schema.categories` in `dikw.yml` — a **closed set** of declared `path`
+  (+ optional `desc`) entries of arbitrary depth, e.g. `产品/移动端`,
+  `技术/架构`. A page filed under `技术/架构` lands at
+  `knowledge/技术/架构/<slug>.md` with `category: 技术/架构` in its frontmatter.
+  `entity`/`concept`/`note` is now merely the *default* taxonomy a fresh base
+  ships with (folders are **singular**: `knowledge/entity/`, not `entities/`).
+  Synth's LLM emits `<page category="…" slug="…">` (no `path=`/`type=`) and may
+  only file under a declared `path`; anything it can't place lands in
+  `schema.fallback` (default `未分类/`) and is flagged by the new
+  `uncategorized` lint kind. Karpathy's rule: a wrong category is a cheap
+  re-file, an invented folder is irreversible drift — the parser refuses an
+  out-of-set category, and the brittle 0.4.6 "missing `knowledge/` prefix"
+  path-recovery normalizer is **removed** (the engine now owns path
+  construction entirely, so there is no model-supplied path to recover).
+  Removed: `type:` frontmatter key, `SchemaConfig.page_types`,
+  `SchemaConfig.log_style`, `type_to_folder`/`type_from_path` (→
+  `category_from_path`).
+- **K-layer authoring prompts are overridable per base.** `synthesize` (via
+  `synth.prompt_path`; also used by the `non_atomic_page` fixer),
+  `lint_fix_orphan_merge` and `lint_fix_broken_wikilink_grounded` (via
+  `lint.fixer_prompts.{orphan_merge,broken_wikilink}`) can point at your own
+  markdown under `<base>/prompts/`. `prompts.resolve` enforces that the override
+  stays inside the base and carries the engine's required `{placeholders}` +
+  `<page …>` output markers (declared in `prompts/_contract.py`), failing fast
+  at load **and** surfacing via `dikw client check` (new `prompts` leg on the
+  check report). New config: `synth.prompt_path`, the `lint:` block with
+  `lint.fixer_prompts`.
+- **`knowledge/index.md` and `knowledge/log.md` are no longer generated.** The
+  category folder tree is the catalogue (browse it in Obsidian + `retrieve`),
+  and the `knowledge_log` storage table (readable via `list_knowledge_log`)
+  remains the authoritative history — only the markdown render views are gone.
+  `dikw init` no longer scaffolds them (nor the pluralized type folders); it
+  now creates `knowledge/<category>/.gitkeep` for the default taxonomy plus a
+  `prompts/.gitkeep`. The `indexgen.py` and `log.py` modules are deleted.
+
+### Migration
+
+- Rebuild on upgrade: write your `schema.categories` into `dikw.yml`, move the
+  old `knowledge/` (and `.dikw/`) tree aside, and re-run `dikw client synth` to
+  re-author pages under the new taxonomy. `BaseUpgradeRequired` fires on a base
+  that still carries `schema.page_types` (or the legacy `wiki/` layout) and
+  prints the command.
+- If you have a local `evals/.cache` snapshot built before this release, clear
+  it (or run evals with `cache_mode="rebuild"`): a cached snapshot's `dikw.yml`
+  carries the old `page_types` shape and would otherwise trip
+  `BaseUpgradeRequired` on reuse. CI builds snapshots cold, so this only affects
+  local dev caches.
+
 ## 0.4.7 — ingest source-path containment
 
 ### Security

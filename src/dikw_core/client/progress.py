@@ -666,6 +666,21 @@ def render_check_report(console: Console, report: Mapping[str, Any]) -> None:
             status,
             str(probe.get("detail") or ""),
         )
+    # One row per configured prompt override (``synth.prompt_path`` /
+    # ``lint.fixer_prompts``); absent when none are configured.
+    prompt_probes = report.get("prompts")
+    if isinstance(prompt_probes, list):
+        for probe in prompt_probes:
+            if not isinstance(probe, dict):
+                continue
+            ok = bool(probe.get("ok"))
+            status = "[green]✓ OK[/green]" if ok else "[red]✗ FAIL[/red]"
+            table.add_row(
+                "Prompt",
+                str(probe.get("target") or ""),
+                status,
+                str(probe.get("detail") or ""),
+            )
     console.print(table)
 
 

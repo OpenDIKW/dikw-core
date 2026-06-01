@@ -53,8 +53,8 @@ async def test_persist_knowledge_page_drops_removed_wikilinks(tmp_path: Path) ->
     init_test_base(base_root)
     _cfg, root, storage = await api._with_storage(base_root)
     try:
-        target_a = build_page(title="Target A", body="A body.\n", type_="concept")
-        target_b = build_page(title="Target B", body="B body.\n", type_="concept")
+        target_a = build_page(title="Target A", body="A body.\n", category="concept")
+        target_b = build_page(title="Target B", body="B body.\n", category="concept")
         for p in (target_a, target_b):
             write_page(root, p)
             await _persist(storage, root, p)
@@ -62,7 +62,7 @@ async def test_persist_knowledge_page_drops_removed_wikilinks(tmp_path: Path) ->
         src_v1 = build_page(
             title="Src",
             body="See [[Target A]] for details.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
         )
         write_page(root, src_v1)
@@ -79,7 +79,7 @@ async def test_persist_knowledge_page_drops_removed_wikilinks(tmp_path: Path) ->
         src_v2 = build_page(
             title="Src",
             body="See [[Target B]] instead.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
         )
         write_page(root, src_v2)
@@ -109,14 +109,14 @@ async def test_persist_knowledge_page_drops_all_wikilinks_when_body_loses_them(
     init_test_base(base_root)
     _cfg, root, storage = await api._with_storage(base_root)
     try:
-        target = build_page(title="Target", body="t body.\n", type_="concept")
+        target = build_page(title="Target", body="t body.\n", category="concept")
         write_page(root, target)
         await _persist(storage, root, target)
 
         src_v1 = build_page(
             title="Src",
             body="See [[Target]] for context.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
         )
         write_page(root, src_v1)
@@ -132,7 +132,7 @@ async def test_persist_knowledge_page_drops_all_wikilinks_when_body_loses_them(
         src_v2 = build_page(
             title="Src",
             body="Plain prose with no links anymore.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
         )
         write_page(root, src_v2)
@@ -166,7 +166,7 @@ async def test_persist_knowledge_page_returns_unresolved_wikilink_count(
         page = build_page(
             title="Src",
             body="See [[Unknown One]] and [[Unknown Two]] and [[Unknown Three]].\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
         )
         write_page(root, page)
@@ -210,7 +210,7 @@ async def test_persist_knowledge_page_writes_provenance_from_frontmatter(
         page = build_page(
             title="Src",
             body="Body.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
             sources=["sources/foo.md", "sources/bar.md"],
         )
@@ -247,7 +247,7 @@ async def test_persist_knowledge_page_removes_stale_provenance_when_frontmatter_
         page_v1 = build_page(
             title="Src",
             body="Body.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
             sources=["sources/old.md"],
         )
@@ -262,7 +262,7 @@ async def test_persist_knowledge_page_removes_stale_provenance_when_frontmatter_
         page_v2 = build_page(
             title="Src",
             body="Body.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
             sources=["sources/new.md"],
         )
@@ -294,7 +294,7 @@ async def test_persist_knowledge_page_with_no_sources_frontmatter_leaves_provena
         page = build_page(
             title="Src",
             body="Body.\n",
-            type_="concept",
+            category="concept",
             path="knowledge/src.md",
             # No sources= argument → page.sources == [] → write_page
             # omits the frontmatter key entirely (see wiki.py:140).
@@ -335,7 +335,7 @@ async def test_persist_knowledge_page_treats_scalar_sources_as_no_op(
     page_path.write_text(
         "---\n"
         "id: src-id\n"
-        "type: concept\n"
+        "category: concept\n"
         "title: Src\n"
         "sources: sources/foo.md\n"  # scalar, not list
         "---\n\n"
@@ -349,7 +349,7 @@ async def test_persist_knowledge_page_treats_scalar_sources_as_no_op(
     page = build_page(
         title="Src",
         body="Body.\n",
-        type_="concept",
+        category="concept",
         path="knowledge/src.md",
     )
 

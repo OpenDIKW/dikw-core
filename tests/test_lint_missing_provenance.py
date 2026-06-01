@@ -48,7 +48,7 @@ async def _seed_wiki_page(
     page = build_page(
         title=title,
         body=f"# {title}\n\nBody.\n",
-        type_="concept",
+        category="concept",
         sources=sources,
         extras={"lint": extras_lint} if extras_lint else {},
     )
@@ -488,7 +488,7 @@ async def test_fixer_treats_scalar_sources_as_no_op(
     abs_path.write_text(
         "---\n"
         "id: scalar-id\n"
-        "type: concept\n"
+        "category: concept\n"
         "title: Scalar\n"
         "sources: sources/foo.md\n"
         "---\n\n"
@@ -725,7 +725,7 @@ async def test_apply_skips_reconcile_op_when_doc_id_unknown(
     file_path = empty_wiki / phantom_path
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(
-        "---\nid: x\ntype: concept\ntitle: P\nsources:\n  - sources/a.md\n"
+        "---\nid: x\ncategory: concept\ntitle: P\nsources:\n  - sources/a.md\n"
         "---\n\n# P\n\nBody.\n",
         encoding="utf-8",
     )

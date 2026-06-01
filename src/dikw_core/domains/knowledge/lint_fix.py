@@ -46,7 +46,13 @@ from ..data.hashing import hash_bytes, hash_file
 from ..info.tokenize import CjkTokenizer
 from .links import build_fuzzy_index, parse_links, resolve_links
 from .lint import LintKind
-from .page import KnowledgePage, build_page, path_slug_title, write_page
+from .page import (
+    KnowledgePage,
+    build_page,
+    category_from_path,
+    path_slug_title,
+    write_page,
+)
 from .page_index import persist_knowledge
 from .synthesize import (
     SynthesisError,
@@ -261,7 +267,7 @@ def page_to_op_frontmatter(page: KnowledgePage) -> dict[str, Any]:
     """
     fm: dict[str, Any] = {
         "id": page.id,
-        "type": page.type,
+        "category": page.category,
         "title": page.title,
         "tags": list(page.tags),
         "sources": list(page.sources),
@@ -279,7 +285,8 @@ async def safe_synthesize_pages(
     llm: LLMProvider,
     model: str,
     max_tokens: int,
-    allowed_types: tuple[str, ...],
+    allowed_categories: tuple[str, ...],
+    fallback: str,
     system: str,
     temperature: float = 0.3,
     log_label: str,
@@ -323,7 +330,8 @@ async def safe_synthesize_pages(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            allowed_types=allowed_types,
+            allowed_categories=allowed_categories,
+            fallback=fallback,
             system=system,
         )
     except SynthesisPartialError as pe:
@@ -474,7 +482,7 @@ def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     fm = dict(op.new_frontmatter or {})
     title = _op_title(op)
     fm.pop("title", None)
-    type_ = str(fm.pop("type", "note"))
+    category = str(fm.pop("category", None) or category_from_path(op.path))
     tags = list(fm.pop("tags", []) or [])
     sources = list(fm.pop("sources", []) or [])
     page_id = fm.pop("id", None)
@@ -483,7 +491,7 @@ def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     page = build_page(
         title=title,
         body=op.new_body,
-        type_=type_,
+        category=category,
         tags=tags,
         sources=sources,
         path=op.path,

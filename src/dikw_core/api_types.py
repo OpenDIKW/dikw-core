@@ -116,19 +116,28 @@ class ProbeResult(BaseModel):
 
 
 class CheckReport(BaseModel):
-    """Result of ``check_providers`` — per-leg connectivity probes.
+    """Result of ``check_providers`` — per-leg connectivity probes plus
+    per-base prompt-override validation.
 
-    Either leg may be ``None`` when skipped via ``llm_only`` / ``embed_only``.
-    ``ok`` is True when every *present* leg is ok (and at least one is present).
+    Either provider leg may be ``None`` when skipped via ``llm_only`` /
+    ``embed_only``. ``prompts`` holds one entry per *configured* prompt
+    override (``synth.prompt_path`` / ``lint.fixer_prompts``); empty when none
+    are configured. ``ok`` is True when every *present* provider leg is ok (and
+    at least one is present) and every configured prompt override is valid.
     """
 
     llm: ProbeResult | None = None
     embed: ProbeResult | None = None
+    prompts: list[ProbeResult] = Field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         legs = [p for p in (self.llm, self.embed) if p is not None]
-        return bool(legs) and all(p.ok for p in legs)
+        return (
+            bool(legs)
+            and all(p.ok for p in legs)
+            and all(p.ok for p in self.prompts)
+        )
 
 
 # ---- /v1/health DTOs ----------------------------------------------------

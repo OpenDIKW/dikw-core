@@ -30,8 +30,13 @@ def test_legacy_wiki_with_content_raises(tmp_path: Path) -> None:
     must be refused with the exact migration command."""
     api.init_base(tmp_path)
     # Simulate the pre-0.4.0 on-disk shape: rename knowledge/ back to
-    # wiki/ so the gate sees the legacy directory carrying markdown.
+    # wiki/ so the gate sees the legacy directory carrying markdown. The
+    # 0.4.0 scaffold only seeds empty `.gitkeep` folders, so seed an actual
+    # markdown page — the gate fires only on `wiki/**/*.md` content.
     (tmp_path / "knowledge").rename(tmp_path / "wiki")
+    (tmp_path / "wiki" / "legacy.md").write_text(
+        "# Legacy\n\npre-0.4.0 page\n", encoding="utf-8"
+    )
     with pytest.raises(api.BaseUpgradeRequired) as exc_info:
         api.load_base(tmp_path)
     msg = str(exc_info.value)
@@ -56,8 +61,8 @@ def test_partial_migration_bypass_is_caught(tmp_path: Path) -> None:
     api.init_base(tmp_path)
     # Re-create a populated wiki/ alongside the fresh knowledge/.
     legacy = tmp_path / "wiki"
-    (legacy / "concepts").mkdir(parents=True)
-    (legacy / "concepts" / "stranded.md").write_text(
+    (legacy / "concept").mkdir(parents=True)
+    (legacy / "concept" / "stranded.md").write_text(
         "# Stranded\n\nleftover from 0.3.x\n", encoding="utf-8"
     )
     with pytest.raises(api.BaseUpgradeRequired) as exc_info:
@@ -83,6 +88,9 @@ def test_migration_path_completes_end_to_end(tmp_path: Path) -> None:
 
     api.init_base(tmp_path)
     (tmp_path / "knowledge").rename(tmp_path / "wiki")
+    (tmp_path / "wiki" / "legacy.md").write_text(
+        "# Legacy\n\npre-0.4.0 page\n", encoding="utf-8"
+    )
     # Initial guard raises on the legacy layout.
     with pytest.raises(api.BaseUpgradeRequired):
         api.load_base(tmp_path)
@@ -92,3 +100,26 @@ def test_migration_path_completes_end_to_end(tmp_path: Path) -> None:
     # load_base should now succeed (dikw.yml is preserved).
     _cfg, root = api.load_base(tmp_path)
     assert root == tmp_path.resolve()
+
+
+def test_legacy_schema_page_types_raises(tmp_path: Path) -> None:
+    """A ``dikw.yml`` carrying the pre-0.5.0 ``schema.page_types`` key must
+    be refused: the K layer now classifies pages with a configurable
+    ``schema.categories`` taxonomy stored in ``category:`` frontmatter, so
+    the base has to be rebuilt rather than silently reinterpreted under the
+    old ``type:`` layout.
+
+    ``_assert_base_upgraded`` raw-parses the YAML and fires on the bare
+    presence of ``schema.page_types`` — it runs before ``load_config``, so a
+    minimal legacy file is enough to trip the gate.
+    """
+    (tmp_path / "dikw.yml").write_text(
+        "schema:\n  description: legacy\n  page_types:\n  - entity\n  - concept\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(api.BaseUpgradeRequired) as exc_info:
+        api.load_base(tmp_path)
+    msg = str(exc_info.value)
+    # Pin the user-facing taxonomy-upgrade contract.
+    assert "schema.page_types" in msg
+    assert "schema.categories" in msg

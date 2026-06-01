@@ -1,19 +1,20 @@
 """Knowledge page I/O for the K (Knowledge) layer.
 
-Pages are plain markdown files under ``wiki/`` with YAML front-matter. They
-follow Obsidian-friendly conventions so the same folder can be opened in
+Pages are plain markdown files under ``knowledge/`` with YAML front-matter.
+They follow Obsidian-friendly conventions so the same folder can be opened in
 Obsidian alongside the engine:
 
 * ``id`` — stable K-page identifier (``K-<hash12>``).
-* ``type`` — one of ``entity`` / ``concept`` / ``note`` (configurable).
+* ``category`` — the page's node in the configured ``schema.categories``
+  taxonomy (e.g. ``concept`` or ``技术/架构``); also the on-disk folder path.
 * ``created`` / ``updated`` — ISO-8601 timestamps.
 * ``tags`` — list of freeform tags.
 * ``sources`` — list of D-layer paths this page summarises.
 
-Page slugs are derived from the title (kebab-case, ASCII-safe). Folders
-match the ``type`` by default: ``wiki/<type>s/<slug>.md`` (the on-disk
-``wiki/`` directory prefix is renamed to ``knowledge/`` in a later
-refactor step).
+A page is filed at ``knowledge/<category>/<slug>.md``: the ``category`` is a
+slash-separated, arbitrary-depth folder path used verbatim (validated as a
+closed set at config load, see ``config.CategoryNode``), and ``<slug>`` is an
+ASCII-kebab slug derived from the title.
 """
 
 from __future__ import annotations
@@ -27,56 +28,32 @@ from typing import Any
 
 import frontmatter
 
-_DEFAULT_TYPES: tuple[str, ...] = ("entity", "concept", "note")
-# Explicit folder map for the irregular built-in plurals (``entity`` →
-# ``entities``, not ``entitys``). Custom page types added via
-# ``SchemaConfig.page_types`` (e.g. ``topic`` → ``topics``) get a simple
-# ``<type>s`` fallback so the Obsidian vault layout stays predictable.
-_TYPE_FOLDERS: dict[str, str] = {
-    "entity": "entities",
-    "concept": "concepts",
-    "note": "notes",
-}
 _SLUG_ILLEGAL = re.compile(r"[^a-z0-9]+")
 
 
-def type_to_folder(type_: str) -> str:
-    """Resolve a page ``type`` to its directory under ``wiki/``."""
-    return _TYPE_FOLDERS.get(type_, f"{type_}s")
+def category_from_path(path: str) -> str:
+    """Reverse-derive a page's ``category`` (folder path) from its base-relative path.
 
-
-_FOLDER_TYPES: dict[str, str] = {v: k for k, v in _TYPE_FOLDERS.items()}
-
-
-def type_from_path(path: str) -> str:
-    """Reverse-derive a page ``type`` from its wiki-relative ``path``.
-
-    Used by callers (e.g. the synth existing-pages section) that have a
-    ``DocumentRecord`` — which doesn't carry ``type`` — and need the
-    type label without paying frontmatter I/O. Irregular folders
-    declared in ``_TYPE_FOLDERS`` (``entities`` → ``entity``) come from
-    the inverse table; custom types declared via ``SchemaConfig.page_types``
-    use the regular plural rule (``topics`` → ``topic``); anything not
-    recognised collapses to ``"page"``.
+    The category is everything between the ``knowledge/`` root and the
+    filename, joined by ``/`` — arbitrary depth (``knowledge/技术/架构/rrf.md``
+    → ``技术/架构``). Used by callers (e.g. the synth existing-pages section)
+    that have a ``DocumentRecord`` — which doesn't carry ``category`` — and need
+    the label without paying frontmatter I/O. Returns ``""`` for a file
+    directly under ``knowledge/`` (no category folder) or a non-knowledge path.
     """
     parts = path.split("/")
     if len(parts) >= 3 and parts[0] == "knowledge":
-        bucket = parts[1]
-        if bucket in _FOLDER_TYPES:
-            return _FOLDER_TYPES[bucket]
-        if bucket.endswith("s") and not bucket.endswith("ss") and len(bucket) > 1:
-            return bucket[:-1]
-        return bucket
-    return "page"
+        return "/".join(parts[1:-1])
+    return ""
 
 
 @dataclass(frozen=True)
 class KnowledgePage:
     """In-memory representation of a K-layer knowledge page."""
 
-    path: str                 # base-relative, e.g. ``wiki/concepts/dikw.md``
+    path: str                 # base-relative, e.g. ``knowledge/技术/架构/rrf.md``
     id: str
-    type: str
+    category: str             # taxonomy node / folder path, e.g. ``concept`` or ``技术/架构``
     title: str
     body: str
     tags: list[str]
@@ -110,8 +87,8 @@ def frontmatter_str_list(metadata: dict[str, Any], key: str) -> list[str]:
     return [item for item in raw if isinstance(item, str)]
 
 
-def make_page_id(title: str, type_: str) -> str:
-    digest = hashlib.blake2b(f"{type_}:{title}".encode(), digest_size=6).hexdigest()
+def make_page_id(title: str, category: str) -> str:
+    digest = hashlib.blake2b(f"{category}:{title}".encode(), digest_size=6).hexdigest()
     return f"K-{digest}"
 
 
@@ -121,9 +98,13 @@ def slugify(title: str) -> str:
     return slug or "untitled"
 
 
-def default_page_path(type_: str, title: str) -> str:
-    """Return the base-relative path the engine writes a new page to."""
-    return f"knowledge/{type_to_folder(type_)}/{slugify(title)}.md"
+def default_page_path(category: str, title: str) -> str:
+    """Return the base-relative path the engine writes a new page to.
+
+    The ``category`` path is the on-disk folder, used verbatim (it is a
+    config-validated closed-set value); only the filename is slugified.
+    """
+    return f"knowledge/{category}/{slugify(title)}.md"
 
 
 def read_page(root: Path, path: str) -> KnowledgePage:
@@ -142,10 +123,13 @@ def read_page(root: Path, path: str) -> KnowledgePage:
     sources = frontmatter_str_list(meta, "sources")
     meta.pop("tags", None)
     meta.pop("sources", None)
+    # ``category`` defaults to the page's folder path when frontmatter omits it
+    # (a hand-edited page) — the folder is the category by construction.
+    category = str(meta.pop("category", None) or category_from_path(path))
     return KnowledgePage(
         path=path,
-        id=str(meta.pop("id", make_page_id(str(meta.get("title", path)), str(meta.get("type", "note"))))),
-        type=str(meta.pop("type", "note")),
+        id=str(meta.pop("id", make_page_id(str(meta.get("title", path)), category))),
+        category=category,
         title=str(meta.pop("title", _fallback_title(post.content, path))),
         body=post.content,
         tags=tags,
@@ -172,7 +156,7 @@ def write_page(root: Path, page: KnowledgePage) -> Path:
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] = {
         "id": page.id,
-        "type": page.type,
+        "category": page.category,
         "title": page.title,
         "created": page.created,
         "updated": page.updated,
@@ -192,7 +176,7 @@ def build_page(
     *,
     title: str,
     body: str,
-    type_: str = "note",
+    category: str = "note",
     tags: list[str] | None = None,
     sources: list[str] | None = None,
     path: str | None = None,
@@ -201,9 +185,9 @@ def build_page(
     """Construct a fresh ``KnowledgePage`` with engine defaults filled in."""
     now = now_iso()
     return KnowledgePage(
-        path=path or default_page_path(type_, title),
-        id=make_page_id(title, type_),
-        type=type_,
+        path=path or default_page_path(category, title),
+        id=make_page_id(title, category),
+        category=category,
         title=title,
         body=body,
         tags=list(tags or []),
@@ -217,11 +201,10 @@ def build_page(
 def path_slug_title(path: str) -> str:
     """Derive a human-readable title from a knowledge page's path stem.
 
-    The convention across the K layer: ``wiki/concepts/topic-a.md`` →
-    ``"Topic A"``. Centralised here so ``_fallback_title``,
-    ``indexgen``, and ``lint_fix._op_title`` agree on the same rule —
-    if we ever change it (NFKC, CJK handling, etc.), one edit covers
-    every caller.
+    The convention across the K layer: ``knowledge/concept/topic-a.md`` →
+    ``"Topic A"``. Centralised here so ``_fallback_title`` and
+    ``lint_fix._op_title`` agree on the same rule — if we ever change it
+    (NFKC, CJK handling, etc.), one edit covers every caller.
     """
     return Path(path).stem.replace("-", " ").title()
 

@@ -16,12 +16,12 @@ from dikw_core.schemas import ChunkRecord
 from .fakes import FakeLLM, make_provider_cfg
 from .test_progress_reporter import ListReporter
 
-_VALID_PAGE = '<page path="knowledge/x.md" type="concept">\n# X\n\nbody\n</page>'
+_VALID_PAGE = '<page category="concept" slug="x">\n# X\n\nbody\n</page>'
 _UNPARSEABLE = "not a <page> block"
 # One closed page + one truncated opener → SynthesisPartialError.
 _PARTIAL_PAGE = (
-    '<page path="knowledge/x.md" type="concept">\n# X\n\nbody\n</page>\n'
-    '<page path="knowledge/y.md" type="concept">\n# Y'
+    '<page category="concept" slug="x">\n# X\n\nbody\n</page>\n'
+    '<page category="concept" slug="y">\n# Y'
 )
 
 
@@ -63,7 +63,7 @@ def _three_chunk_body() -> tuple[str, list[ChunkRecord]]:
 _TEMPLATE = (
     "src={source_path} body={source_body} idx={group_index}/"
     "{group_total} headings={group_outline} max={max_pages} "
-    "types={allowed_types}"
+    "categories={categories}"
 )
 
 

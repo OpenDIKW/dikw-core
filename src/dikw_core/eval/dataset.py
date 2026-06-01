@@ -227,27 +227,28 @@ class SynthSection(BaseModel):
     cluster of paraphrased / fragment claims below 0.40),
     ``duplicate_threshold=0.85``. Retrieval-only datasets that don't
     declare synth still parse and ``run_synth_eval`` (if invoked) gets
-    sensible numbers. ``page_types`` is dataset-local and written into
-    the throwaway base's ``dikw.yml`` at eval time, so a synth-eval
-    dataset can pin a tighter type set than the user's production base.
+    sensible numbers. ``categories`` is dataset-local (a list of category
+    path strings) and written into the throwaway base's ``dikw.yml`` at eval
+    time, so a synth-eval dataset can pin a tighter taxonomy than the user's
+    production base.
     """
 
     model_config = ConfigDict(frozen=True)
 
     grounding_threshold: float = 0.50
     duplicate_threshold: float = 0.85
-    page_types: list[str] = Field(
+    categories: list[str] = Field(
         default_factory=lambda: ["entity", "concept", "note"]
     )
 
     @model_validator(mode="after")
-    def _validate_page_types(self) -> Self:
-        if not self.page_types:
-            raise ValueError("synth.page_types must not be empty")
-        for t in self.page_types:
-            if not isinstance(t, str) or not t.strip():
+    def _validate_categories(self) -> Self:
+        if not self.categories:
+            raise ValueError("synth.categories must not be empty")
+        for c in self.categories:
+            if not isinstance(c, str) or not c.strip():
                 raise ValueError(
-                    f"synth.page_types entries must be non-empty strings, got {t!r}"
+                    f"synth.categories entries must be non-empty strings, got {c!r}"
                 )
         return self
 

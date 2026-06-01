@@ -30,13 +30,17 @@ from dikw_core.domains.knowledge.lint_fix import (
     KnowledgePageMeta,
 )
 from dikw_core.domains.knowledge.lint_fixers import FIXER_REGISTRY
-from dikw_core.domains.knowledge.page import build_page, write_page
+from dikw_core.domains.knowledge.page import (
+    build_page,
+    category_from_path,
+    write_page,
+)
 
 from .fakes import FakeLLM
 
 
 def _make_page(title: str, body: str, **kw: Any) -> Any:
-    return build_page(title=title, body=body, type_="concept", **kw)
+    return build_page(title=title, body=body, category="concept", **kw)
 
 
 #: Filler paragraph long enough that ``_propose_delete_stub`` (40-byte
@@ -173,7 +177,7 @@ async def test_mark_as_leaf_preserves_existing_frontmatter(
     fm = op.new_frontmatter or {}
     # Original frontmatter survives.
     assert fm.get("title") == "Lone Topic"
-    assert fm.get("type") == "concept"
+    assert fm.get("category") == "concept"
     assert fm.get("tags") == ["topic/lone"]
     assert fm.get("sources") == ["sources/doc.md"]
     assert fm.get("custom_field") == "preserved"
@@ -590,13 +594,13 @@ async def test_link_skipped_when_orphan_title_is_duplicated(
         "Phenomenon",
         f"# Phenomenon\n\n{_NON_STUB_FILLER}",
         sources=["sources/p.md"],
-        path="knowledge/concepts/phenomenon-a.md",
+        path="knowledge/concept/phenomenon-a.md",
     )
     twin = _make_page(
         "Phenomenon",
         f"# Phenomenon\n\n{_NON_STUB_FILLER}",
         sources=["sources/p.md"],
-        path="knowledge/concepts/phenomenon-b.md",
+        path="knowledge/concept/phenomenon-b.md",
     )
     # A shared-source candidate that WOULD be picked as parent if we
     # didn't short-circuit on the duplicate-title condition.
@@ -963,7 +967,7 @@ async def test_mark_as_leaf_apply_makes_next_lint_pass_suppress(
 
 def _default_cfg() -> Any:
     """Minimal ``DikwConfig`` so LLM-gated branches can read
-    ``ctx.cfg.provider.llm_model`` / ``ctx.cfg.schema_.page_types``.
+    ``ctx.cfg.provider.llm_model`` / ``ctx.cfg.schema_.category_paths()``.
     Heuristic-only tests above keep ``cfg=None``.
     """
     from dikw_core.config import DikwConfig
@@ -995,13 +999,19 @@ def _ctx_llm(
 
 
 def _merge_response(
-    *, parent_path: str, parent_type: str, parent_title: str,
+    *, parent_category: str, parent_slug: str, parent_title: str,
     merged_body: str, tags: list[str],
 ) -> str:
-    """Build a ``<page>`` block string the synth parser will accept."""
+    """Build a ``<page>`` block string the synth parser will accept.
+
+    The engine builds the path from ``category`` + ``slug`` itself —
+    there is no ``path=`` / ``type=`` attribute. The fixer derives the
+    expected category/slug from the parent's path, so callers echo
+    ``category_from_path(parent.path)`` and ``Path(parent.path).stem``.
+    """
     tags_yaml = ", ".join(tags) if tags else ""
     return (
-        f'<page path="{parent_path}" type="{parent_type}">\n'
+        f'<page category="{parent_category}" slug="{parent_slug}">\n'
         "---\n"
         f"tags: [{tags_yaml}]\n"
         "---\n\n"
@@ -1079,7 +1089,8 @@ async def test_merge_strategy_generates_two_op_proposal(
         "Unique orphan fact. Unique parent fact.\n"
     )
     fake = FakeLLM(response_text=_merge_response(
-        parent_path=parent.path, parent_type="concept",
+        parent_category=category_from_path(parent.path),
+        parent_slug=Path(parent.path).stem,
         parent_title="Main Topic", merged_body=merged_body,
         tags=["topic/main", "topic/aux"],
     ))
@@ -1142,7 +1153,8 @@ async def test_merge_unions_sources_preserving_parent_order(
     write_page(base_root, parent)
 
     fake = FakeLLM(response_text=_merge_response(
-        parent_path=parent.path, parent_type="concept",
+        parent_category=category_from_path(parent.path),
+        parent_slug=Path(parent.path).stem,
         parent_title="Main Topic", merged_body="merged.\n", tags=[],
     ))
     fixer = FIXER_REGISTRY["orphan_page"]
@@ -1203,8 +1215,9 @@ async def test_merge_falls_through_to_link_when_llm_returns_no_pages(
 async def test_merge_rejects_llm_response_with_wrong_target_path(
     tmp_path: Path,
 ) -> None:
-    """The prompt requires the LLM to emit ``path={target_path}``.
-    If the LLM returns a block targeting a different path, the merge
+    """The prompt requires the LLM to echo the parent's ``category`` +
+    ``slug`` so the engine rebuilds the parent's exact path. If the LLM
+    returns a block whose category/slug builds a different path, the merge
     proposal would silently rewrite the parent with foreign content
     while still deleting the orphan — a destructive misroute. Refuse."""
     base_root = tmp_path
@@ -1221,10 +1234,11 @@ async def test_merge_rejects_llm_response_with_wrong_target_path(
     write_page(base_root, orphan)
     write_page(base_root, parent)
 
-    # LLM emits a valid block but targets a different path.
+    # LLM emits a valid block but a slug that builds a different path
+    # (knowledge/concept/something-else.md != the parent's path).
     bogus = _merge_response(
-        parent_path="knowledge/concepts/something-else.md",
-        parent_type="concept", parent_title="Main Topic",
+        parent_category="concept", parent_slug="something-else",
+        parent_title="Main Topic",
         merged_body="merged.\n", tags=[],
     )
     fake = FakeLLM(response_text=bogus)
@@ -1266,7 +1280,8 @@ async def test_merge_rejects_llm_response_with_wrong_title(
 
     # LLM emits the right path but a different title in the body.
     bogus = _merge_response(
-        parent_path=parent.path, parent_type="concept",
+        parent_category=category_from_path(parent.path),
+        parent_slug=Path(parent.path).stem,
         parent_title="Different Title",  # wrong
         merged_body="merged.\n", tags=[],
     )
@@ -1311,7 +1326,8 @@ async def test_merge_rejects_body_with_title_not_at_start(
     # it (synth extracts the first ATX heading anywhere), but the
     # contract says it must be at the start.
     bogus = (
-        f'<page path="{parent.path}" type="concept">\n'
+        f'<page category="{category_from_path(parent.path)}" '
+        f'slug="{Path(parent.path).stem}">\n'
         "Merged below.\n\n# Main Topic\n\nbody.\n"
         "</page>\n"
     )
@@ -1354,11 +1370,12 @@ async def test_merge_uses_strict_mode_refuses_multi_block_partial(
     # One valid block + one malformed (no ATX title) — parser raises
     # SynthesisPartialError(retry=False); strict mode rejects it.
     valid = _merge_response(
-        parent_path=parent.path, parent_type="concept",
+        parent_category=category_from_path(parent.path),
+        parent_slug=Path(parent.path).stem,
         parent_title="Main Topic", merged_body="merged.\n", tags=[],
     )
     malformed = (
-        '<page path="knowledge/concepts/bad.md" type="concept">\n'
+        '<page category="concept" slug="bad">\n'
         "no ATX title in this block\n</page>\n"
     )
     fake = FakeLLM(response_text=valid + malformed)
