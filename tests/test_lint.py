@@ -25,7 +25,7 @@ async def _seed_page(
     base_root: Path,
     title: str,
     body: str,
-    type_: str = "concept",
+    category: str = "concept",
     tags: list[str] | None = None,
     path: str | None = None,
 ) -> str:
@@ -33,7 +33,7 @@ async def _seed_page(
     page = build_page(
         title=title,
         body=body,
-        type_=type_,
+        category=category,
         tags=list(tags or []),
         sources=[],
         path=path,
@@ -155,19 +155,19 @@ async def test_scalar_tags_value_does_not_crash(empty_wiki: Path) -> None:
     """Knowledge pages are user-editable; a hand-written ``tags: 2024``
     parses as a scalar int, not a list. Lint must tolerate the drift
     instead of raising TypeError on iteration."""
-    page_path = empty_wiki / "knowledge" / "concepts" / "scalar-tag.md"
+    page_path = empty_wiki / "knowledge" / "concept" / "scalar-tag.md"
     page_path.parent.mkdir(parents=True, exist_ok=True)
     page_path.write_text(
         "---\n"
         "id: K-scalar-tag\n"
-        "type: concept\n"
+        "category: concept\n"
         "title: Scalar Tag\n"
         "tags: 2024\n"
         "---\n\n"
         "# Scalar Tag\n\nA page with a scalar tags field.\n",
         encoding="utf-8",
     )
-    rel_path = "knowledge/concepts/scalar-tag.md"
+    rel_path = "knowledge/concept/scalar-tag.md"
     _cfg, _root, storage = await api._with_storage(empty_wiki)
     try:
         await storage.upsert_document(
@@ -393,13 +393,13 @@ async def test_lint_broken_wikilink_reports_fuzzy_collision(
         base_root=empty_wiki,
         title="Tesla",
         body="# Tesla\n\nCar company.\n",
-        path="knowledge/entities/tesla-company.md",
+        path="knowledge/entity/tesla-company.md",
     )
     await _seed_page(
         base_root=empty_wiki,
         title="tesla",
         body="# tesla\n\nSI unit of magnetic flux density.\n",
-        path="knowledge/concepts/tesla-unit.md",
+        path="knowledge/concept/tesla-unit.md",
     )
     await _seed_page(
         base_root=empty_wiki,

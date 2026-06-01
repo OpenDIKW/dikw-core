@@ -488,6 +488,59 @@ config:
       `dikw auth login openai-codex --base .` (or `dikw auth import`)
       and `dikw auth status` reports `active` (gotcha #8).
 
+## Overriding the K-layer authoring prompts
+
+Swapping the *model* changes how well pages are written; overriding the
+*prompt* changes what you ask it to write. A base can replace the packaged
+K-layer authoring prompts with its own markdown — useful when an enterprise
+wants house style, domain vocabulary, or a different page structure without
+forking the engine.
+
+Three prompts are overridable, each via an explicit config key:
+
+| Prompt (packaged name)              | Config key                          | Used by                                   |
+| ----------------------------------- | ----------------------------------- | ----------------------------------------- |
+| `synthesize`                        | `synth.prompt_path`                 | `dikw client synth` **and** the `non_atomic_page` lint fixer (it reuses the synth template) |
+| `lint_fix_orphan_merge`             | `lint.fixer_prompts.orphan_merge`   | `orphan_page` fixer's merge strategy      |
+| `lint_fix_broken_wikilink_grounded` | `lint.fixer_prompts.broken_wikilink`| `broken_wikilink` fixer's grounded rewrite |
+
+```yaml
+synth:
+  prompt_path: ./prompts/my_synth.md     # relative to the base root
+lint:
+  fixer_prompts:
+    orphan_merge: ./prompts/orphan.md
+    broken_wikilink: ./prompts/bw.md
+```
+
+Rules the engine enforces (`PromptOverrideError` on any violation, surfaced at
+load **and** by `dikw client check`):
+
+- **Inside the base.** The path resolves against the base root and must stay
+  within it — a `../` escape or absolute path elsewhere is rejected. Keep
+  overrides in the user-owned `<base>/prompts/` tree (committed with the base);
+  do **not** put them in the gitignored `.dikw/`.
+- **Exact placeholder set.** The override must reference *exactly* the
+  `{placeholders}` the engine fills via `str.format` — no missing ones (the LLM
+  would be starved of content) and no stray ones (`KeyError` at format time):
+
+  | Prompt | Required `{placeholders}` |
+  | ------ | ------------------------- |
+  | `synthesize` | `categories`, `existing_pages_section`, `source_path`, `source_body`, `group_outline`, `group_index`, `group_total`, `max_pages` |
+  | `lint_fix_orphan_merge` | `target_path`, `target_category`, `target_slug`, `target_title`, `target_body`, `orphan_path`, `orphan_body`, `score_reason` |
+  | `lint_fix_broken_wikilink_grounded` | `broken_target`, `source_path`, `source_context`, `evidence_block`, `categories` |
+
+- **Output-format markers.** All three must instruct the `<page category="…"
+  slug="…">…</page>` block format — the literal substrings `<page`, `category=`,
+  `slug=`, and `</page>` must all appear, or the synth parser can't read the
+  response.
+
+The placeholder/marker contract is only a *structural* check — it guarantees the
+engine can fill and parse your template, not that the wording produces good
+pages. Validate quality by running `dikw client synth` on a representative source
+and inspecting the output. A long-lived `dikw serve` re-reads the override file
+on each call, so prompt edits take effect without a restart.
+
 ## See also
 
 - [`README.md`](../README.md#providers) — quick config snippets.
@@ -495,6 +548,8 @@ config:
   end-to-end walkthrough.
 - [`docs/architecture.md`](./architecture.md) — where the provider
   seam sits in the module map.
+- [`docs/adr/0003-configurable-knowledge-taxonomy.md`](./adr/0003-configurable-knowledge-taxonomy.md) —
+  why the taxonomy and prompts are configurable.
 
 
 ## Multimodal embedding (v1: Gitee)

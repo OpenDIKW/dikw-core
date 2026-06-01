@@ -3,9 +3,9 @@
 ``synthesize`` is the only place an LLM enters the engine: it turns D-layer
 source docs into K-layer knowledge pages (Stage A 1:N fan-out per source),
 persists each page (document + chunks + inline embed + links + provenance
-via ``_persist_knowledge_page``), maintains the link graph, and refreshes
-``knowledge/index.md`` + ``knowledge/log.md``. The ``_existing_pages_*``
-helpers feed the synth prompt its duplicate-avoidance awareness.
+via ``_persist_knowledge_page``), maintains the link graph, and records
+activity in the ``knowledge_log`` table. The ``_existing_pages_*`` helpers
+feed the synth prompt its duplicate-avoidance awareness.
 
 rank3 cluster: imports ``api_core`` (``_with_storage``), providers, the
 K-layer authoring primitives, and the leaf ``api_types.SynthReport`` —
@@ -36,10 +36,8 @@ from .domains.knowledge.grouping import (
     derive_sections_from_chunks,
     group_sections,
 )
-from .domains.knowledge.indexgen import regenerate_index
 from .domains.knowledge.links import build_fuzzy_index
-from .domains.knowledge.log import render_log
-from .domains.knowledge.page import KnowledgePage, now_iso, type_from_path, write_page
+from .domains.knowledge.page import KnowledgePage, category_from_path, write_page
 from .domains.knowledge.synthesize import (
     DEFAULT_SYNTH_SYSTEM,
     SynthesisError,
@@ -160,8 +158,9 @@ async def synthesize(
                 already |= legacy_dst_sources
 
         report = SynthReport()
-        tmpl = prompts.load("synthesize")
-        persisted_any = False
+        tmpl = prompts.resolve(
+            "synthesize", override_path=cfg.synth.prompt_path, base_root=root
+        )
         total_sources = len(sources)
 
         for idx, src in enumerate(sources, start=1):
@@ -336,7 +335,6 @@ async def synthesize(
                         dst=page.path,
                     )
                 )
-                persisted_any = True
                 if pre_existing is None:
                     created_for_src += 1
                     report = _sr_replace(report, created=report.created + 1)
@@ -383,13 +381,11 @@ async def synthesize(
                 },
             )
 
-        # Refresh the human-readable views after the batch so a partial run
-        # still leaves the knowledge base internally consistent.
-        if persisted_any or not (root / "knowledge" / "index.md").exists():
-            regenerate_index(root, updated=now_iso())
-        entries = await storage.list_knowledge_log()
-        render_log(root, entries, updated=now_iso())
-
+        # Activity history lives in the ``knowledge_log`` storage table
+        # (appended throughout this run). dikw-core no longer materialises a
+        # ``knowledge/index.md`` catalogue or ``knowledge/log.md`` chronology
+        # into the vault — the category folder tree is the catalogue and the
+        # table is the authoritative history (see ADR-0004).
         return report
     finally:
         await storage.close()
@@ -509,13 +505,13 @@ class _ExistingPagesSnapshot:
             if d.title
         ]
         full_render_bytes = sum(
-            len(f"- {d.title} ({type_from_path(d.path)})\n".encode())
+            len(f"- {d.title} ({category_from_path(d.path)})\n".encode())
             for d in pages
         )
         return cls(pages=pages, full_render_bytes=full_render_bytes)
 
     def full_pages(self) -> list[tuple[str, str]]:
-        return [(t, type_from_path(d.path)) for d in self.pages if (t := d.title)]
+        return [(t, category_from_path(d.path)) for d in self.pages if (t := d.title)]
 
 
 async def _existing_pages_for_prompt(
@@ -527,9 +523,9 @@ async def _existing_pages_for_prompt(
     top_k: int,
     version_id: int | None,
 ) -> list[tuple[str, str]]:
-    """Return ``[(title, type), ...]`` for the synth prompt's existing-pages section.
+    """Return ``[(title, category), ...]`` for the synth prompt's existing-pages section.
 
-    Full render up to ``max_bytes`` of the rendered ``- Title (type)``
+    Full render up to ``max_bytes`` of the rendered ``- Title (category)``
     bullets; above the threshold, switches to a vec_search-gated top-K
     driven by the group's chunk embeddings (per-chunk vec_search →
     union by doc_id → score sort → top-K). The retrieval branch keeps
@@ -599,14 +595,14 @@ async def _existing_pages_for_prompt(
     for doc_id in ordered_doc_ids:
         d = by_id.get(doc_id)
         if d is not None and d.title:
-            out.append((d.title, type_from_path(d.path)))
+            out.append((d.title, category_from_path(d.path)))
     return out
 
 
 def _render_existing_section(
     pages: list[tuple[str, str]], header: str
 ) -> str:
-    """Render a list of ``(title, type)`` tuples as a markdown section.
+    """Render a list of ``(title, category)`` tuples as a markdown section.
 
     Empty input returns ``""`` so callers can concatenate two sections
     (batch accumulator + base snapshot) and fall back to a single
@@ -671,8 +667,11 @@ async def _synth_pages_from_source(
             pages=[], groups_processed=0, parse_errors=0, log_notes=[]
         )
 
-    page_types = tuple(cfg.schema_.page_types)
-    allowed_types_str = " | ".join(page_types)
+    allowed_categories = tuple(cfg.schema_.category_paths())
+    fallback = cfg.schema_.fallback
+    # Rendered ``- `path` — desc`` bullets injected into the prompt's
+    # ``{categories}`` slot so the LLM sees the full declared taxonomy.
+    categories_block = cfg.schema_.categories_prompt_block()
     pages: list[KnowledgePage] = []
     notes: list[str] = []
     errors = 0
@@ -739,7 +738,7 @@ async def _synth_pages_from_source(
             group_index=group_pos,
             group_total=total_groups,
             max_pages=cfg.synth.max_pages_per_group,
-            allowed_types=allowed_types_str,
+            categories=categories_block,
             existing_pages_section=existing_pages_section,
         )
         # `current` reports groups COMPLETED — Rich's TaskProgressRenderer
@@ -884,7 +883,8 @@ async def _synth_pages_from_source(
             new_pages = parse_synthesis_response(
                 response.text,
                 source_path=source_path,
-                allowed_types=page_types,
+                allowed_categories=allowed_categories,
+                fallback=fallback,
             )
         except SynthesisPartialError as pe:
             notes.append(
@@ -947,7 +947,7 @@ async def _synth_pages_from_source(
         # without rebuilding a set every group.
         for p in new_pages:
             if p.title and p.title not in seen_titles:
-                batch_accumulator.append((p.title, p.type or "page"))
+                batch_accumulator.append((p.title, p.category or "page"))
                 seen_titles.add(p.title)
 
     return _SourceSynthOutcome(

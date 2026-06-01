@@ -43,4 +43,17 @@ synth:
   # 0.55+; paraphrased / fragment claims at < 0.40. 0.50 is the gap.
   grounding_threshold: 0.50
   duplicate_threshold: 0.85
-  page_types: [entity, concept, note]
+  # Categories carry the production-default descriptions (mirrors
+  # config._default_categories) so the synth eval feeds the LLM the same
+  # per-category guidance a default-config base gets — the K-layer gate
+  # stays representative of default synth (0.5.0 review finding).
+  categories:
+    - path: entity
+      desc: "A named thing: person, tool, product, organization."
+    - path: concept
+      desc: 'An idea, framework, or pattern (e.g. "DIKW pyramid").'
+    - path: note
+      desc: >-
+        An observation, lesson, or material card focused on a single
+        subject; must reference at least one entity or concept via a
+        [[Wikilink]].

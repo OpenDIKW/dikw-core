@@ -7,6 +7,7 @@ and are validated per backend via a discriminated union.
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -14,6 +15,66 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .domains.info.tokenize import CjkTokenizer
+
+# Characters that are illegal in a path segment on at least one supported
+# filesystem (Windows is the strictest). ``/`` is the taxonomy separator and
+# is handled by splitting, so it is intentionally absent here.
+_CATEGORY_RESERVED_CHARS = set('<>:"\\|?*')
+
+
+def _validate_category_path(raw: str) -> str:
+    """Validate + NFC-normalize a category folder path.
+
+    A category path is a ``/``-separated, arbitrary-depth, base-relative
+    folder path used verbatim as the on-disk directory under ``knowledge/``
+    (e.g. ``产品/移动端``). Because the taxonomy is a *closed set* declared by
+    the operator, this is the one place a folder-name string enters the
+    engine — so it carries the full guard here rather than trusting LLM
+    output downstream. Unicode is allowed; traversal / absolute / backslash /
+    filesystem-reserved characters are not.
+    """
+    norm = unicodedata.normalize("NFC", raw).strip()
+    if not norm:
+        raise ValueError("category path must not be empty")
+    if norm.startswith(("/", "\\")):
+        raise ValueError(f"category path {raw!r} must be base-relative (no leading separator)")
+    if "\\" in norm:
+        raise ValueError(f"category path {raw!r} must use '/' separators, not backslash")
+    segments = norm.split("/")
+    for seg in segments:
+        if not seg.strip():
+            raise ValueError(f"category path {raw!r} has an empty segment")
+        if seg.strip() != seg:
+            raise ValueError(
+                f"category path {raw!r} segment {seg!r} has leading/trailing whitespace"
+            )
+        if seg in (".", ".."):
+            raise ValueError(f"category path {raw!r} must not contain '.' or '..' segments")
+        if seg.endswith((".", " ")):
+            raise ValueError(f"category path {raw!r} segment {seg!r} must not end with '.' or space")
+        if any(ch in _CATEGORY_RESERVED_CHARS for ch in seg):
+            raise ValueError(f"category path {raw!r} segment {seg!r} contains a reserved character")
+        if any(ord(ch) < 32 for ch in seg):
+            raise ValueError(f"category path {raw!r} segment {seg!r} contains a control character")
+    return "/".join(segments)
+
+
+class CategoryNode(BaseModel):
+    """One node in the knowledge ``category`` taxonomy.
+
+    ``path`` is the base-relative folder path under ``knowledge/`` (slash-
+    separated, arbitrary depth); ``desc`` is optional guidance shown to the
+    synth LLM so it can pick the right category. See
+    ``docs/adr/0003-configurable-knowledge-taxonomy.md``.
+    """
+
+    path: str
+    desc: str = ""
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v: str) -> str:
+        return _validate_category_path(v)
 
 
 class ProviderConfig(BaseModel):
@@ -213,10 +274,81 @@ StorageConfig = Annotated[
 ]
 
 
+def _default_categories() -> list[CategoryNode]:
+    """The out-of-the-box taxonomy — the historic ``entity``/``concept``/``note``
+    page types as depth-1 categories, carrying the synth-prompt semantics as
+    ``desc`` so default synth quality is preserved."""
+    return [
+        CategoryNode(path="entity", desc="A named thing: person, tool, product, organization."),
+        CategoryNode(path="concept", desc='An idea, framework, or pattern (e.g. "DIKW pyramid").'),
+        CategoryNode(
+            path="note",
+            desc=(
+                "An observation, lesson, or material card focused on a single subject; "
+                "must reference at least one entity or concept via a [[Wikilink]]."
+            ),
+        ),
+    ]
+
+
 class SchemaConfig(BaseModel):
     description: str = ""
-    page_types: list[str] = Field(default_factory=lambda: ["entity", "concept", "note"])
-    log_style: Literal["append", "daily"] = "append"
+    # The knowledge classification taxonomy (replaces the pre-0.5.0
+    # ``page_types`` flat list). A closed set of arbitrary-depth category
+    # paths; synth files each page under one of them and falls back to
+    # ``fallback`` when it can't confidently classify. See
+    # ``docs/adr/0003-configurable-knowledge-taxonomy.md``.
+    categories: list[CategoryNode] = Field(default_factory=_default_categories)
+    # Bucket folder for pages synth cannot place in a declared category.
+    fallback: str = "未分类"
+
+    @field_validator("categories")
+    @classmethod
+    def _validate_categories(cls, v: list[CategoryNode]) -> list[CategoryNode]:
+        if not v:
+            raise ValueError("schema.categories must declare at least one category")
+        seen: set[str] = set()
+        for c in v:
+            if c.path in seen:
+                raise ValueError(f"schema.categories has a duplicate path: {c.path!r}")
+            seen.add(c.path)
+        return v
+
+    @field_validator("fallback")
+    @classmethod
+    def _validate_fallback(cls, v: str) -> str:
+        return _validate_category_path(v)
+
+    @model_validator(mode="after")
+    def _fallback_distinct_from_categories(self) -> SchemaConfig:
+        # Closed-set invariant: the fallback bucket must be its own folder. If
+        # it coincided with a declared category path, synth would file
+        # correctly-classified and unplaceable pages into the same folder, and
+        # ``run_lint``'s uncategorized detector (``category_from_path(path) ==
+        # fallback``) would flag every legitimately-filed page there. Both
+        # ``fallback`` and ``categories[].path`` are NFC-normalized by the field
+        # validators above, so a direct comparison is sufficient.
+        if self.fallback in self.category_paths():
+            raise ValueError(
+                f"schema.fallback {self.fallback!r} must differ from every "
+                "declared category path — the fallback is a distinct bucket for "
+                "pages synth cannot place; sharing a folder with a declared "
+                "category breaks the closed-set / uncategorized-lint contract "
+                "(ADR-0003)."
+            )
+        return self
+
+    def category_paths(self) -> list[str]:
+        """Declared category paths, in config order (excludes ``fallback``)."""
+        return [c.path for c in self.categories]
+
+    def categories_prompt_block(self) -> str:
+        """Render the taxonomy as ``- `path` — desc`` bullets for the synth /
+        lint-fixer prompts' ``{categories}`` slot (single source of truth so
+        the LLM sees identical category guidance across all authoring paths)."""
+        return "\n".join(
+            f"- `{c.path}`" + (f" — {c.desc}" if c.desc else "") for c in self.categories
+        )
 
 
 class SourceConfig(BaseModel):
@@ -239,14 +371,21 @@ class SynthConfig(BaseModel):
     Synth consumes the D-layer chunks already produced by ``ingest`` —
     ``target_tokens_per_group`` controls how many adjacent chunks the engine
     bundles into one LLM call (heading-aware), and ``max_pages_per_group``
-    caps how many ``<page>`` blocks the LLM may emit per call. The page-type
-    whitelist lives on ``SchemaConfig.page_types`` to avoid a second source
+    caps how many ``<page>`` blocks the LLM may emit per call. The category
+    taxonomy lives on ``SchemaConfig.categories`` to avoid a second source
     of truth.
     """
 
     target_tokens_per_group: int = 3600
     max_pages_per_group: int = 4
     slug_dedup: Literal["merge_body", "keep_first"] = "merge_body"
+    # Optional base-relative path to a markdown file that overrides the
+    # packaged ``synthesize`` prompt template. Resolved against the base root
+    # and validated (required ``{placeholders}`` + output markers) at load /
+    # ``dikw client check``; ``None`` uses the packaged default. Also overrides
+    # the prompt used by the ``non_atomic_page`` lint fixer, which shares the
+    # synth template. See ``docs/adr/0003-configurable-knowledge-taxonomy.md``.
+    prompt_path: str | None = None
     # Per-group prompt awareness of existing K-layer pages. Below the
     # byte threshold the prompt enumerates every page; above it,
     # truncation switches to a vec_search-gated top-K driven by the
@@ -306,6 +445,35 @@ def _default_provider_config() -> ProviderConfig:
     )
 
 
+# Lint fixers whose prompt template a base may override via
+# ``lint.fixer_prompts``. ``non_atomic_page`` is intentionally absent — it
+# reuses the ``synthesize`` template, so it is overridden via
+# ``synth.prompt_path`` instead.
+_KNOWN_FIXER_PROMPTS = frozenset({"orphan_merge", "broken_wikilink"})
+
+
+class LintConfig(BaseModel):
+    """Knobs for the K-layer ``dikw client lint`` pipeline.
+
+    ``fixer_prompts`` maps a lint-fixer key to a base-relative markdown path
+    that overrides that fixer's packaged prompt template (validated like
+    ``synth.prompt_path``). Unset keys use the packaged default.
+    """
+
+    fixer_prompts: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("fixer_prompts")
+    @classmethod
+    def _validate_fixer_prompt_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        unknown = set(v) - _KNOWN_FIXER_PROMPTS
+        if unknown:
+            raise ValueError(
+                f"lint.fixer_prompts has unknown key(s) {sorted(unknown)}; "
+                f"overridable fixers are {sorted(_KNOWN_FIXER_PROMPTS)}"
+            )
+        return v
+
+
 class DikwConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=_default_provider_config)
     storage: StorageConfig = Field(default_factory=SQLiteStorageConfig)
@@ -314,6 +482,7 @@ class DikwConfig(BaseModel):
     sources: list[SourceConfig] = Field(default_factory=list)
     assets: AssetsConfig = Field(default_factory=AssetsConfig)
     synth: SynthConfig = Field(default_factory=SynthConfig)
+    lint: LintConfig = Field(default_factory=LintConfig)
 
     model_config = {"populate_by_name": True}
 

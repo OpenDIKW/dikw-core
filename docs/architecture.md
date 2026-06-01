@@ -18,7 +18,7 @@ Everything else is plumbing.
 | -------------------- | ------------------------------------------------ | ------------------------------ |
 | **D** — Data         | raw source files (markdown)                      | human                          |
 | **I** — Information  | parsed, chunked, FTS-indexed, embedded           | engine (deterministic)         |
-| **K** — Knowledge    | LLM-authored knowledge pages, link graph, `index.md`  | LLM, human-editable            |
+| **K** — Knowledge    | LLM-authored knowledge pages (filed under a configurable `category` tree), link graph  | LLM, human-editable            |
 | **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
 
 The W layer is hand-written first-class documents under
@@ -90,9 +90,7 @@ src/dikw_core/
 │   │   ├── page_index.py    persist_knowledge — K-layer write entry (synth + lint apply); also defines the private _persist_layered_page shared with W
 │   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
-│   │   ├── indexgen.py      regenerate knowledge/index.md
-│   │   ├── log.py           render knowledge/log.md from knowledge_log rows
-│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance; lint.skip frontmatter suppression
+│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, missing_provenance, uncategorized; lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
 │   └── wisdom/
@@ -113,7 +111,8 @@ src/dikw_core/
 │   └── migrations/
 │       ├── sqlite/          schema SQL
 │       └── postgres/        schema SQL (vector extension)
-├── prompts/               versioned LLM prompts loaded via importlib.resources
+├── prompts/               versioned LLM prompts (importlib.resources); `resolve()` honours per-base
+│                          overrides (`synth.prompt_path` / `lint.fixer_prompts`) validated against `_contract.py`
 ├── server/                FastAPI app + auth + sync/task/import/retrieve/pages/assets/graph routes + task subsystem
 ├── client/                Remote Typer CLI + httpx transport + NDJSON progress + sources importer + converter dispatch
 ├── auth_cli.py            local `dikw auth {login,import,status,list,logout}` for the per-base OAuth store

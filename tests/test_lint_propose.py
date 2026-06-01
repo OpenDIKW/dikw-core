@@ -278,11 +278,11 @@ async def test_propose_kind_is_kept_in_sync(tmp_path: Path) -> None:
     # Construct a minimal real fix scenario so the registry's actual
     # fixer is exercised end-to-end inside the orchestrator (not just
     # the registry lookup).
-    target_page = build_page(title="Existing Page", body="# Existing Page\n", type_="concept")
+    target_page = build_page(title="Existing Page", body="# Existing Page\n", category="concept")
     src_page = build_page(
         title="Source",
         body="# Source\n\nLink: [[existing page]]\n",
-        type_="concept",
+        category="concept",
     )
     src_abs = tmp_path / src_page.path
     src_abs.parent.mkdir(parents=True, exist_ok=True)

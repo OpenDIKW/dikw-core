@@ -44,6 +44,7 @@ from .. import api
 from ..config import (
     CONFIG_FILENAME,
     AssetsConfig,
+    CategoryNode,
     MultimodalEmbedConfig,
     ProviderConfig,
     RetrievalConfig,
@@ -584,8 +585,8 @@ def _materialise_base(
     fusion knobs the caller passed, including the asset-vector leg.
 
     ``schema_cfg`` is optional and only used by ``run_synth_eval`` so a
-    synth-mode dataset can pin its own ``page_types`` whitelist into the
-    throwaway base (separate from the user's production page_types).
+    synth-mode dataset can pin its own ``categories`` taxonomy into the
+    throwaway base (separate from the user's production categories).
     """
     base = tmp_root / "base"
     api.init_base(base, description=f"eval/{spec.name}")
@@ -926,8 +927,8 @@ class SynthEvalError(EvalError):
     """``run_synth_eval`` couldn't produce a valid report.
 
     Distinct subclass of ``EvalError`` so the CLI / server can present a
-    K-layer-specific diagnostic (e.g. ``allowed page_types: X, observed
-    types in raw responses: Y`` when zero pages came back)."""
+    K-layer-specific diagnostic (e.g. ``declared categories: X, observed
+    categories in raw responses: Y`` when zero pages came back)."""
 
 
 def _threshold_direction(metric_name: str) -> Literal["min", "max"]:
@@ -1037,7 +1038,7 @@ async def run_synth_eval(
     Materialises a throwaway base under ``tempfile.TemporaryDirectory``,
     ingests the dataset's corpus, runs ``api.synthesize`` with the
     provided LLM, then computes the seven K-layer metrics off the
-    resulting pages and source chunks. ``spec.synth.page_types`` is
+    resulting pages and source chunks. ``spec.synth.categories`` is
     written through to the throwaway base's ``dikw.yml`` so the
     dataset's whitelist (rather than the production base's) gates which
     page types ``parse_synthesis_response`` accepts.
@@ -1064,7 +1065,11 @@ async def run_synth_eval(
         embedding_distance="cosine",
     )
     effective_retrieval_cfg = retrieval_config or RetrievalConfig()
-    schema_cfg = SchemaConfig(page_types=list(spec.synth.page_types))
+    schema_cfg = SchemaConfig(
+        categories=[
+            CategoryNode(path=c.path, desc=c.desc) for c in spec.synth.categories
+        ]
+    )
 
     warnings: list[str] = []
     if spec.expected is None:
@@ -1196,8 +1201,9 @@ async def _collect_metrics_bundle(
         if not pages:
             raise SynthEvalError(
                 f"synth produced zero pages from {len(source_docs)} "
-                f"sources (allowed page_types: {list(spec.synth.page_types)})"
-                f"; check LLM responses and dataset.yaml synth.page_types"
+                f"sources (declared categories: "
+                f"{[c.path for c in spec.synth.categories]})"
+                f"; check LLM responses and dataset.yaml synth.categories"
             )
 
         chunks_by_source: dict[str, list[ChunkRecord]] = {}

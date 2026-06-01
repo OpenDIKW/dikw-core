@@ -457,7 +457,7 @@ def _write_synth_dataset(root: Path, *, name: str = "synth-toy") -> Path:
         "synth:\n"
         "  grounding_threshold: 0.7\n"
         "  duplicate_threshold: 0.9\n"
-        "  page_types: [entity, concept]\n"
+        "  categories: [entity, concept]\n"
         "judge:\n"
         "  model: claude-sonnet\n",
         encoding="utf-8",
@@ -498,7 +498,29 @@ def test_load_dataset_synth_section_parsed(tmp_path: Path) -> None:
     spec = load_dataset(ds)
     assert spec.synth.grounding_threshold == 0.7
     assert spec.synth.duplicate_threshold == 0.9
-    assert spec.synth.page_types == ["entity", "concept"]
+    # Bare-string categories stay back-compatible (coerced to path-only nodes).
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept"]
+    assert all(c.desc == "" for c in spec.synth.categories)
+
+
+def test_load_dataset_synth_categories_mapping_carries_desc(tmp_path: Path) -> None:
+    """A dataset may declare ``categories`` as ``{path, desc}`` mappings so the
+    synth eval feeds the LLM the same per-category guidance a production base
+    gets (keeps the K-layer gate representative — review finding)."""
+    ds = _write_synth_dataset(tmp_path)
+    (ds / "dataset.yaml").write_text(
+        (ds / "dataset.yaml").read_text(encoding="utf-8").replace(
+            "  categories: [entity, concept]\n",
+            "  categories:\n"
+            "    - {path: entity, desc: A named thing.}\n"
+            "    - {path: concept, desc: An idea or framework.}\n",
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept"]
+    assert spec.synth.categories[0].desc == "A named thing."
+    assert spec.synth.categories[1].desc == "An idea or framework."
 
 
 def test_load_dataset_judge_section_parsed(tmp_path: Path) -> None:
@@ -532,7 +554,11 @@ def test_load_dataset_synth_section_defaults(tmp_path: Path) -> None:
     # scale supports for natural-language claims.
     assert spec.synth.grounding_threshold == 0.50
     assert spec.synth.duplicate_threshold == 0.85
-    assert spec.synth.page_types == ["entity", "concept", "note"]
+    # The default taxonomy mirrors config._default_categories — entity/concept/
+    # note WITH their descriptions — so an omitted ``categories:`` still feeds
+    # the synth LLM the production-default guidance (review finding).
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept", "note"]
+    assert all(c.desc for c in spec.synth.categories)
 
 
 def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:
@@ -576,7 +602,7 @@ def test_load_dataset_rejects_unknown_mode(tmp_path: Path) -> None:
         load_dataset(ds)
 
 
-def test_load_dataset_rejects_empty_synth_page_types(tmp_path: Path) -> None:
+def test_load_dataset_rejects_empty_synth_categories(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
     (ds / "dataset.yaml").write_text(
         "name: synth-toy\n"
@@ -584,14 +610,14 @@ def test_load_dataset_rejects_empty_synth_page_types(tmp_path: Path) -> None:
         "thresholds:\n"
         "  synth/atomicity_score: 0.9\n"
         "synth:\n"
-        "  page_types: []\n",
+        "  categories: []\n",
         encoding="utf-8",
     )
-    with pytest.raises(DatasetError, match="page_types"):
+    with pytest.raises(DatasetError, match="categories"):
         load_dataset(ds)
 
 
-def test_load_dataset_rejects_synth_page_type_blank(tmp_path: Path) -> None:
+def test_load_dataset_rejects_synth_category_blank(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
     (ds / "dataset.yaml").write_text(
         "name: synth-toy\n"
@@ -599,10 +625,10 @@ def test_load_dataset_rejects_synth_page_type_blank(tmp_path: Path) -> None:
         "thresholds:\n"
         "  synth/atomicity_score: 0.9\n"
         "synth:\n"
-        "  page_types: ['  ', 'concept']\n",
+        "  categories: ['  ', 'concept']\n",
         encoding="utf-8",
     )
-    with pytest.raises(DatasetError, match="page_types"):
+    with pytest.raises(DatasetError, match="categories"):
         load_dataset(ds)
 
 

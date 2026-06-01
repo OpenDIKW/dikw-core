@@ -37,7 +37,7 @@ from .fakes import FakeLLM
 def _make_page(title: str, body: str) -> Any:
     """Build a real ``KnowledgePage`` so tests can write the same path layout
     on disk that production synth would produce."""
-    return build_page(title=title, body=body, type_="concept")
+    return build_page(title=title, body=body, category="concept")
 
 
 def _meta_from(page: Any) -> KnowledgePageMeta:
@@ -370,7 +370,7 @@ def _make_broken_link_setup(
 # contains no _FORBIDDEN_BODY_TOKENS. Used by happy-path + canonicalization
 # tests where we want the grounded path to succeed end-to-end.
 _GROUNDED_LLM_RESPONSE = (
-    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"whole-new-topic\">\n"
     "---\n"
     "tags: [grounded]\n"
     "sources: [\"sources/foo.md\"]\n"
@@ -390,7 +390,7 @@ _GROUNDED_LLM_RESPONSE = (
 # Same shell, but the body still carries a TODO marker — the post-generation
 # guard must reject this even when evidence was sufficient.
 _TODO_LLM_RESPONSE = (
-    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"whole-new-topic\">\n"
     "---\n"
     "tags: [stub]\n"
     "---\n"
@@ -407,7 +407,7 @@ _TODO_LLM_RESPONSE = (
 # Body too short — passes the TODO-token check but fails the body length
 # floor. Guards against the LLM producing "Topic A is a topic." filler.
 _SHORT_LLM_RESPONSE = (
-    "<page path=\"knowledge/concepts/whole-new-topic.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"whole-new-topic\">\n"
     "---\n"
     "tags: [grounded]\n"
     "---\n"
@@ -618,7 +618,7 @@ async def test_broken_wikilink_llm_rejects_title_mismatch(
     base_root, src_page, issue = _make_broken_link_setup(tmp_path)
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     mismatched_response = (
-        "<page path=\"knowledge/concepts/related-topic.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"related-topic\">\n"
         "---\n"
         "tags: [grounded]\n"
         "---\n"
@@ -742,7 +742,7 @@ async def test_broken_wikilink_llm_rejects_singular_target_plural_title(
     )
     _patch_evidence(monkeypatch, _grounded_evidence_hits())
     plural_response = (
-        "<page path=\"knowledge/concepts/networks.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"networks\">\n"
         "---\n"
         "tags: [grounded]\n"
         "---\n"
@@ -976,7 +976,7 @@ async def test_broken_wikilink_llm_unparseable_returns_none(
 
 
 _NON_ATOMIC_LLM_RESPONSE = (
-    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-a\">\n"
     "---\n"
     "tags: [child]\n"
     "---\n"
@@ -986,7 +986,7 @@ _NON_ATOMIC_LLM_RESPONSE = (
     "First atomic child page.\n"
     "</page>\n"
     "\n"
-    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-b\">\n"
     "---\n"
     "tags: [child]\n"
     "---\n"
@@ -1001,13 +1001,13 @@ _NON_ATOMIC_LLM_RESPONSE = (
 def _make_fat_page_on_disk(tmp_path: Path) -> tuple[Path, Any, Any]:
     """Write a non-atomic K-page to disk + the matching ``LintIssue``."""
     base_root = tmp_path
-    page_path = "knowledge/concepts/grab-bag.md"
+    page_path = "knowledge/concept/grab-bag.md"
     abs_path = base_root / page_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     body = (
         "---\n"
         "id: K-grab\n"
-        "type: concept\n"
+        "category: concept\n"
         "title: Grab Bag\n"
         "---\n"
         "\n"
@@ -1065,7 +1065,7 @@ async def test_non_atomic_page_splits_into_n_create_plus_one_delete(
     # leaves [[Grab Bag]] in other pages to be fixed by a follow-up
     # broken_wikilink propose run (decision A in the plan).
     paths = {op.path for op in creates}
-    assert "knowledge/concepts/grab-bag.md" not in paths
+    assert "knowledge/concept/grab-bag.md" not in paths
     assert all(p.startswith("knowledge/") and p.endswith(".md") for p in paths)
 
 
@@ -1079,7 +1079,7 @@ async def test_non_atomic_page_skips_when_synth_returns_one(tmp_path: Path) -> N
 
     base_root, page, issue = _make_fat_page_on_disk(tmp_path)
     one_page_response = (
-        "<page path=\"knowledge/concepts/single-atomic.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"single-atomic\">\n"
         "---\ntags: [single]\n---\n\n# Single Atomic\n\nOnly one.\n"
         "</page>\n"
     )
@@ -1125,14 +1125,14 @@ async def test_non_atomic_page_skips_on_synth_error(tmp_path: Path) -> None:
 
 
 _TRUNCATED_NON_ATOMIC_RESPONSE = (
-    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-a\">\n"
     "---\ntags: [child]\n---\n\n# Topic A\n\nFirst child.\n"
     "</page>\n\n"
-    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-b\">\n"
     "---\ntags: [child]\n---\n\n# Topic B\n\nSecond child.\n"
     "</page>\n\n"
     # Third <page> opener with no </page> — synth marks this retry=True.
-    "<page path=\"knowledge/concepts/topic-c.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-c\">\n"
     "---\ntags: [child]\n---\n\n# Topic C\n\nThird child body keeps "
     "going but max_tokens cut it off here."
 )
@@ -1169,16 +1169,16 @@ async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
 
 
 _DETERMINISTIC_PARTIAL_RESPONSE = (
-    "<page path=\"knowledge/concepts/topic-a.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-a\">\n"
     "---\ntags: [child]\n---\n\n# Topic A\n\nFirst child.\n"
     "</page>\n\n"
-    "<page path=\"knowledge/concepts/topic-b.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-b\">\n"
     "---\ntags: [child]\n---\n\n# Topic B\n\nSecond child.\n"
     "</page>\n\n"
     # A third complete <page> block whose body is missing the required
     # ATX `# Title` line — parse_synthesis_response treats it as a
     # deterministic partial (retry=False).
-    "<page path=\"knowledge/concepts/topic-c.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"topic-c\">\n"
     "---\ntags: [child]\n---\n\nNo title heading here, just prose.\n"
     "</page>\n"
 )
@@ -1287,7 +1287,7 @@ async def test_non_atomic_page_skips_when_llm_disabled(tmp_path: Path) -> None:
 # evidence-backed path stays gated by ``enable_llm`` alone.
 
 _CJK_GROUNDED_LLM_RESPONSE = (
-    "<page path=\"knowledge/concepts/qin-dynasty.md\" type=\"concept\">\n"
+    "<page category=\"concept\" slug=\"qin-dynasty\">\n"
     "---\n"
     "tags: [history]\n"
     "sources: [\"sources/foo.md\"]\n"

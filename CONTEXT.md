@@ -24,6 +24,15 @@ _Avoid_: input file, raw doc, document (which is the indexed-row type, not the f
 A `documents` table row — the indexed handle for a source (or K-layer page). Has `doc_id`, `path`, `layer`, `hash`. Crosses the Storage Protocol.
 _Avoid_: source (which is the file on disk before it has been indexed)
 
+### Classifying pages
+
+**category**:
+A node in the configurable, hierarchical classification tree declared in `dikw.yml` under `schema.categories` (each entry a `path` like `产品/移动端` plus an optional `desc`). It is both the page's frontmatter `category:` value and its on-disk folder: a page filed under `技术/架构` lives at `<base>/knowledge/技术/架构/<slug>.md`. The taxonomy is a **closed set** — synth's LLM may only file a page under a declared `path`; anything it can't place lands in `schema.fallback` (default `未分类/`) and is flagged by the `uncategorized` lint (ADR-0003). `category_from_path` recovers a page's category from its path at any depth.
+_Avoid_: type, kind, tag (tags are an orthogonal multi-value frontmatter list, not the filing axis), folder.
+
+**type** *(deprecated 0.5.0)*:
+The old single-axis classification (`entity` / `concept` / `note`) that filed pages under fixed pluralized folders (`knowledge/concepts/…`). Generalized into the configurable **category** tree — `entity`/`concept`/`note` is now merely the *default* taxonomy a fresh base ships with. No `type:` frontmatter key, no plural folders, no `SchemaConfig.page_types` remain; a base carrying any of them trips `BaseUpgradeRequired`.
+
 ### Edges between pages
 
 Two distinct, deliberately separated relationships connect pages. Conflating them pollutes graph-leg retrieval.
@@ -51,7 +60,7 @@ _HTTP_: `POST /v1/ingest`
 _Avoid_: index (verb), process
 
 **synth**:
-LLM-author K-layer knowledge pages from D-layer sources. Writes `<base>/knowledge/*.md`, updates `index.md` + `log.md`.
+LLM-author K-layer knowledge pages from D-layer sources. Files each page under its **category** path (`<base>/knowledge/<category>/<slug>.md`) and appends a row to the `knowledge_log` table. Does **not** generate `index.md` / `log.md` — navigation is the Obsidian file tree + `retrieve` (0.5.0, see [`docs/adr/0004-drop-generated-index-and-log.md`](docs/adr/0004-drop-generated-index-and-log.md)).
 _CLI_: `dikw client synth`
 _HTTP_: `POST /v1/synth`
 _Avoid_: summarize, build wiki (the term "wiki" is reserved for wikilink syntax)

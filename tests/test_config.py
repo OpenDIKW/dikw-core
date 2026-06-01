@@ -6,9 +6,12 @@ import pytest
 
 from dikw_core.config import (
     CONFIG_FILENAME,
+    CategoryNode,
     DikwConfig,
+    LintConfig,
     PostgresStorageConfig,
     RetrievalConfig,
+    SchemaConfig,
     SQLiteStorageConfig,
     default_config,
     dump_config_yaml,
@@ -264,3 +267,121 @@ sources: []
     )
     with pytest.raises(Exception, match="cjk_tokenizer"):
         load_config(path)
+
+
+# ---- knowledge taxonomy (categories) -----------------------------------
+
+
+def test_schema_config_default_categories_are_entity_concept_note() -> None:
+    """The default taxonomy preserves the historic page-type set so a fresh
+    ``dikw init`` behaves as before — entity/concept/note as depth-1 categories.
+    """
+    cfg = SchemaConfig()
+    assert [c.path for c in cfg.categories] == ["entity", "concept", "note"]
+    # descriptions carry the synth-prompt semantics so default synth quality holds
+    assert all(c.desc for c in cfg.categories)
+    assert cfg.fallback == "未分类"
+    # page_types / log_style are gone (clean break, no alias)
+    assert not hasattr(cfg, "page_types")
+    assert not hasattr(cfg, "log_style")
+
+
+def test_schema_config_hierarchical_categories_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+schema:
+  categories:
+    - path: 产品/移动端
+      desc: 移动端 App 产品
+    - path: 技术/架构
+  fallback: 待归档
+sources: []
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert [c.path for c in cfg.schema_.categories] == ["产品/移动端", "技术/架构"]
+    assert cfg.schema_.categories[0].desc == "移动端 App 产品"
+    assert cfg.schema_.fallback == "待归档"
+    # dump → reload is stable
+    path.write_text(dump_config_yaml(cfg), encoding="utf-8")
+    cfg2 = load_config(path)
+    assert [c.path for c in cfg2.schema_.categories] == ["产品/移动端", "技术/架构"]
+    assert cfg2.schema_.fallback == "待归档"
+
+
+def test_schema_config_category_path_segments_validated(tmp_path: Path) -> None:
+    """Each path segment must be filesystem-safe — traversal / absolute /
+    backslash / reserved chars are rejected at config load (closed-set ⇒ this
+    is the only place untrusted-ish path strings enter)."""
+    for bad in ("产品/../etc", "/abs/path", "a\\b", "tech/da:ta", "a/ /b"):
+        with pytest.raises(Exception, match="category path"):
+            SchemaConfig(categories=[CategoryNode(path=bad)])
+
+
+def test_schema_config_fallback_validated() -> None:
+    with pytest.raises(Exception, match="category path"):
+        SchemaConfig(fallback="../escape")
+
+
+def test_schema_config_fallback_must_differ_from_declared_category() -> None:
+    """The fallback bucket must be its own folder. If it coincides with a
+    declared category path, synth files real and unplaceable pages into the
+    same folder and the ``uncategorized`` lint flags every legitimately-filed
+    page there — so reject the collision at config load (closed-set contract)."""
+    with pytest.raises(Exception, match="must differ from every declared category"):
+        SchemaConfig(categories=[CategoryNode(path="note")], fallback="note")
+
+
+def test_synth_config_prompt_path_defaults_none_and_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+synth:
+  prompt_path: ./prompts/my_synth.md
+sources: []
+""",
+        encoding="utf-8",
+    )
+    assert DikwConfig().synth.prompt_path is None
+    cfg = load_config(path)
+    assert cfg.synth.prompt_path == "./prompts/my_synth.md"
+
+
+def test_lint_config_fixer_prompts_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+lint:
+  fixer_prompts:
+    orphan_merge: ./prompts/orphan.md
+    broken_wikilink: ./prompts/bw.md
+sources: []
+""",
+        encoding="utf-8",
+    )
+    assert DikwConfig().lint.fixer_prompts == {}
+    cfg = load_config(path)
+    assert cfg.lint.fixer_prompts["orphan_merge"] == "./prompts/orphan.md"
+    assert cfg.lint.fixer_prompts["broken_wikilink"] == "./prompts/bw.md"
+
+
+def test_lint_config_rejects_unknown_fixer_prompt_key() -> None:
+    with pytest.raises(Exception, match="fixer_prompts"):
+        LintConfig(fixer_prompts={"not_a_fixer": "./x.md"})

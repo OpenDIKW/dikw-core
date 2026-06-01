@@ -14,7 +14,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
 _SCRIPT = {
     "sources/notes/dikw.md": (
-        "<page path=\"knowledge/concepts/dikw-pyramid.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"dikw-pyramid\">\n"
         "---\ntags: [dikw, pyramid]\n---\n\n"
         "# DIKW pyramid\n\n"
         "The DIKW pyramid organises raw data into four layers. "
@@ -22,7 +22,7 @@ _SCRIPT = {
         "</page>"
     ),
     "sources/notes/karpathy-wiki.md": (
-        "<page path=\"knowledge/concepts/karpathy-llm-wiki.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"karpathy-llm-wiki\">\n"
         "---\ntags: [pattern, llm]\n---\n\n"
         "# Karpathy LLM Wiki\n\n"
         "Karpathy's pattern defines a wiki built from source documents. "
@@ -30,7 +30,7 @@ _SCRIPT = {
         "</page>"
     ),
     "sources/notes/retrieval.md": (
-        "<page path=\"knowledge/concepts/hybrid-retrieval.md\" type=\"concept\">\n"
+        "<page category=\"concept\" slug=\"hybrid-retrieval\">\n"
         "---\ntags: [search]\n---\n\n"
         "# Hybrid retrieval\n\n"
         "BM25 + dense vectors fused with RRF. Useful background for the "
@@ -93,14 +93,14 @@ async def test_synth_creates_linked_knowledge_pages_and_clean_lint(
     assert report.errors == 0
 
     # on-disk artefacts
-    assert (wiki_with_fixtures / "knowledge" / "concepts" / "dikw-pyramid.md").is_file()
-    assert (wiki_with_fixtures / "knowledge" / "concepts" / "karpathy-llm-wiki.md").is_file()
-    assert (wiki_with_fixtures / "knowledge" / "concepts" / "hybrid-retrieval.md").is_file()
-    index_text = (wiki_with_fixtures / "knowledge" / "index.md").read_text(encoding="utf-8")
-    assert "DIKW pyramid" in index_text
-    assert "Karpathy LLM Wiki" in index_text
-    log_text = (wiki_with_fixtures / "knowledge" / "log.md").read_text(encoding="utf-8")
-    assert "synth" in log_text
+    assert (wiki_with_fixtures / "knowledge" / "concept" / "dikw-pyramid.md").is_file()
+    assert (wiki_with_fixtures / "knowledge" / "concept" / "karpathy-llm-wiki.md").is_file()
+    assert (wiki_with_fixtures / "knowledge" / "concept" / "hybrid-retrieval.md").is_file()
+    # dikw-core no longer materialises knowledge/index.md or knowledge/log.md —
+    # the category folder tree is the catalogue and the knowledge_log table is
+    # the authoritative history.
+    assert not (wiki_with_fixtures / "knowledge" / "index.md").exists()
+    assert not (wiki_with_fixtures / "knowledge" / "log.md").exists()
 
     # Lint expectations:
     # - Each page references [[DIKW pyramid]] or [[Karpathy LLM Wiki]] which exist
@@ -157,7 +157,7 @@ async def test_synth_counts_parse_failure_as_error(
     await api.ingest(wiki_with_fixtures, embedder=embedder)
 
     bad_block = (
-        '<page path="knowledge/notes/x.md" type="note">\n'
+        '<page category="note" slug="x">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here, parser will reject\n"
         "</page>"
@@ -238,7 +238,7 @@ class GroupAwareLLM:
         idx = self.calls
         self.calls += 1
         text = (
-            f'<page path="knowledge/concepts/group-{idx}.md" type="concept">\n'
+            f'<page category="concept" slug="group-{idx}">\n'
             f"---\ntags: [synthetic]\n---\n\n"
             f"# Group {idx} concept\n\n"
             f"Synthetic page emitted by the GroupAwareLLM on call {idx}.\n"
@@ -261,7 +261,7 @@ async def test_synth_retries_source_with_failed_groups(
     # First pass: every source returns a malformed <page> block → all
     # three groups raise SynthesisError → no source_done marker written.
     bad_block = (
-        '<page path="knowledge/notes/x.md" type="note">\n'
+        '<page category="note" slug="x">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here\n"
         "</page>"
@@ -304,18 +304,23 @@ async def test_synth_skips_zero_page_source_on_second_run(
 
 
 @pytest.mark.asyncio
-async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
-    """``SchemaConfig.page_types`` propagates through prompt + parser +
-    folder selection; an LLM emitting ``type="topic"`` lands under
-    ``knowledge/topics/`` when the schema declares ``topic`` as allowed.
+async def test_synth_uses_custom_categories_end_to_end(tmp_path: Path) -> None:
+    """``SchemaConfig.categories`` propagates through prompt + parser +
+    folder selection; an LLM emitting ``category="topic"`` lands under
+    ``knowledge/topic/`` when the schema declares ``topic`` as allowed.
     """
-    from dikw_core.config import dump_config_yaml, load_config
+    from dikw_core.config import CategoryNode, dump_config_yaml, load_config
 
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
     cfg_path = wiki / "dikw.yml"
     cfg = load_config(cfg_path)
-    cfg.schema_.page_types = ["entity", "concept", "note", "topic"]
+    cfg.schema_.categories = [
+        CategoryNode(path="entity"),
+        CategoryNode(path="concept"),
+        CategoryNode(path="note"),
+        CategoryNode(path="topic"),
+    ]
     cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
 
     sources_dir = wiki / "sources" / "notes"
@@ -329,7 +334,7 @@ async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
     await api.ingest(wiki, embedder=embedder)
 
     topic_response = (
-        '<page path="knowledge/topics/spacex.md" type="topic">\n'
+        '<page category="topic" slug="spacex">\n'
         "---\ntags: [aerospace]\n---\n\n"
         "# SpaceX topic\n\n"
         "Aggregator page for [[Elon Musk]] and related rocket projects.\n"
@@ -339,10 +344,10 @@ async def test_synth_uses_custom_page_types_end_to_end(tmp_path: Path) -> None:
     report = await api.synthesize(wiki, llm=llm, embedder=embedder)
 
     assert report.created == 1
-    topic_path = wiki / "knowledge" / "topics" / "spacex.md"
-    assert topic_path.is_file(), "custom page type 'topic' should land in knowledge/topics/"
+    topic_path = wiki / "knowledge" / "topic" / "spacex.md"
+    assert topic_path.is_file(), "custom category 'topic' should land in knowledge/topic/"
     body = topic_path.read_text(encoding="utf-8")
-    assert "type: topic" in body
+    assert "category: topic" in body
 
 
 @pytest.mark.asyncio
@@ -557,7 +562,7 @@ async def test_long_source_fans_out_across_groups(tmp_path: Path) -> None:
 
     # All produced knowledge pages must point back to the same source — the
     # fan-out invariant: 1 source → N pages, all sourced from it.
-    concepts_dir = wiki / "knowledge" / "concepts"
+    concepts_dir = wiki / "knowledge" / "concept"
     produced = list(concepts_dir.glob("group-*.md"))
     assert len(produced) >= 2
     for p in produced:
@@ -567,15 +572,16 @@ async def test_long_source_fans_out_across_groups(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_synth_normalizes_missing_knowledge_prefix_end_to_end(
+async def test_synth_invalid_category_falls_back_to_fallback_bucket_end_to_end(
     tmp_path: Path,
 ) -> None:
-    """A weaker model that uses the correct type folder but drops the
-    ``knowledge/`` layer prefix (``entities/foo.md`` — the exact shape
-    MiniMax-M2 emitted) must NOT lose the page. Synth normalizes the path,
-    persists it under ``knowledge/entities/``, counts no error, and marks the
-    source done so the next run skips it instead of leaving a silently partial
-    knowledge base (#146).
+    """A model that emits a category outside the declared closed set
+    (``category="invented"`` — a hallucinated taxonomy node) must NOT lose
+    the page and must NOT invent the folder. Synth files it under the
+    ``fallback`` bucket (default ``未分类``), counts no error, and marks the
+    source done so the next run skips it. There is no path recovery — the
+    engine always builds ``knowledge/<category>/<slug>.md`` from the
+    category + slug.
     """
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
@@ -589,20 +595,20 @@ async def test_synth_normalizes_missing_knowledge_prefix_end_to_end(
     embedder = FakeEmbeddings()
     await api.ingest(wiki, embedder=embedder)
 
-    bad_prefix_response = (
-        '<page path="entities/ambr15-bioreactor-system.md" type="entity">\n'
+    invalid_category_response = (
+        '<page category="invented" slug="ambr15-bioreactor-system">\n'
         "---\ntags: [bioprocess]\n---\n\n"
         "# AMBR15 bioreactor system\n\n"
         "A small-scale automated bioreactor used in CHO cultivation.\n"
         "</page>"
     )
-    llm = FakeLLM(response_text=bad_prefix_response)
+    llm = FakeLLM(response_text=invalid_category_response)
     report = await api.synthesize(wiki, llm=llm, embedder=embedder)
 
     assert report.errors == 0
     assert report.created == 1
-    # Normalized onto knowledge/entities/, preserving the model's slug.
-    landed = wiki / "knowledge" / "entities" / "ambr15-bioreactor-system.md"
+    # Filed under the fallback bucket (default 未分类), preserving the slug.
+    landed = wiki / "knowledge" / "未分类" / "ambr15-bioreactor-system.md"
     assert landed.is_file()
 
     # Source marked done → the partial-KB symptom is gone (next synth skips it).
@@ -616,4 +622,4 @@ async def test_synth_normalizes_missing_knowledge_prefix_end_to_end(
         for e in entries
         if e.action == "synth_source_done" and e.src == "sources/notes/bioreactor.md"
     ]
-    assert len(done) == 1, "normalized page must let the source be marked done"
+    assert len(done) == 1, "fallback-filed page must let the source be marked done"

@@ -23,10 +23,10 @@ The init command creates this tree:
 my-base/
 ├── dikw.yml              # the config the engine reads on every command
 ├── sources/              # your raw documents go here (Data layer)
-├── knowledge/            # LLM-authored knowledge pages, regenerated on synth
-│   ├── index.md
-│   ├── log.md
-│   └── {entities,concepts,notes}/
+├── knowledge/            # LLM-authored knowledge pages, filed under the category tree
+│   └── {entity,concept,note}/   # the default taxonomy — redeclare via schema.categories
+├── prompts/              # optional per-base prompt overrides (synth.prompt_path / lint.fixer_prompts)
+│   └── .gitkeep
 ├── wisdom/               # hand-written principles / lessons / patterns (you author these
 │   └── .gitkeep          # in Obsidian or via `dikw client wisdom write`)
 └── .dikw/                # engine state (gitignored)
@@ -182,7 +182,7 @@ it answers cheaply:
 
 ```bash
 # Forward: which D-layer sources was this K-page synth-authored from?
-uv run dikw client pages provenance knowledge/concepts/topic.md \
+uv run dikw client pages provenance knowledge/concept/topic.md \
   --direction out
 
 # Reverse: which K-pages claim this source in their `sources:`?
@@ -207,12 +207,57 @@ uv run dikw client synth
 uv run dikw client synth --wait
 ```
 
-The LLM reads each source doc and produces a `knowledge/<folder>/<slug>.md`
-page, cross-linked via `[[wikilinks]]`. `knowledge/index.md` and `knowledge/log.md`
-regenerate automatically. Re-running is a no-op until you add new sources
-(or pass `--all` to resynthesise everything).
+The LLM reads each source doc and produces a `knowledge/<category>/<slug>.md`
+page, cross-linked via `[[wikilinks]]`. The `<category>` is chosen from the closed
+taxonomy you declared in `schema.categories` (default `entity`/`concept`/`note`); a
+page the model can't confidently place lands in `schema.fallback` (default
+`未分类/`). No `index.md` / `log.md` is generated — the category folder tree is the
+catalogue and the `knowledge_log` table is the history (see ADR-0004). Re-running
+is a no-op until you add new sources (or pass `--all` to resynthesise everything).
 
-Run `dikw client lint --format table` to check the K-layer for broken wikilinks, orphans, duplicate titles, non-atomic pages, and missing provenance edges (the default output is agent-facing JSON; add `--format table` for the human view). For `missing_provenance` issues on a legacy base, backfill in one shot via `dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>` — heuristic-only, no LLM required.
+Run `dikw client lint --format table` to check the K-layer for broken wikilinks, orphans, duplicate titles, non-atomic pages, missing provenance edges, and pages stranded in the `uncategorized` fallback bucket (the default output is agent-facing JSON; add `--format table` for the human view). For `missing_provenance` issues on a legacy base, backfill in one shot via `dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>` — heuristic-only, no LLM required.
+
+### Customizing the knowledge taxonomy
+
+The default `entity`/`concept`/`note` split is just the taxonomy a fresh base
+ships with. Declare your own closed-set, hierarchical tree under
+`schema.categories` in `dikw.yml` — paths may use any Unicode (Chinese folder
+names land on disk verbatim):
+
+```yaml
+schema:
+  description: Acme internal knowledge base
+  categories:
+    - path: 产品/移动端
+      desc: 移动端 App 产品相关
+    - path: 技术/架构
+      desc: 架构与系统设计
+    - path: 技术/数据
+  fallback: 未分类          # where synth files a page it can't confidently place
+```
+
+Synth's LLM may only file a page under a declared `path`; a page filed under
+`技术/架构` lands at `knowledge/技术/架构/<slug>.md` with `category: 技术/架构`
+in its frontmatter. Anything unplaceable goes to `knowledge/未分类/` and is
+flagged by the `uncategorized` lint so a human can re-file it.
+
+You can also override the K-layer authoring prompts per base — point
+`synth.prompt_path` (and optionally `lint.fixer_prompts.{orphan_merge,broken_wikilink}`)
+at your own markdown under `<base>/prompts/`. Overrides must stay inside the base
+and carry the engine's required `{placeholders}` + `<page …>` output markers;
+`dikw client check` validates them up front:
+
+```yaml
+synth:
+  prompt_path: ./prompts/my_synth.md
+lint:
+  fixer_prompts:
+    orphan_merge: ./prompts/orphan.md
+```
+
+Changing the taxonomy or prompts of a base that already has synthesized pages
+means re-running `dikw client synth --all` to rebuild under the new rules — the
+K layer has no scan-based reindex of hand-moved files.
 
 ### Watching synth progress on large sources
 

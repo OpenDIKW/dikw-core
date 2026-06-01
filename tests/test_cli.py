@@ -39,8 +39,16 @@ def test_init_scaffolds_expected_tree(tmp_path: Path) -> None:
 
     assert (wiki / "dikw.yml").is_file()
     assert (wiki / "sources").is_dir()
-    assert (wiki / "knowledge" / "index.md").is_file()
-    assert (wiki / "knowledge" / "log.md").is_file()
+    # The default taxonomy scaffolds one folder per declared category, SINGULAR
+    # (entity / concept / note) — no more plural type folders and no generated
+    # knowledge/index.md or knowledge/log.md (the category tree is the catalogue;
+    # the knowledge_log table is the history). See ADR-0004.
+    assert (wiki / "knowledge" / "entity" / ".gitkeep").is_file()
+    assert (wiki / "knowledge" / "concept" / ".gitkeep").is_file()
+    assert (wiki / "knowledge" / "note" / ".gitkeep").is_file()
+    assert not (wiki / "knowledge" / "index.md").exists()
+    assert not (wiki / "knowledge" / "log.md").exists()
+    assert (wiki / "prompts" / ".gitkeep").is_file()
     assert (wiki / "wisdom" / ".gitkeep").is_file()
     assert (wiki / ".dikw").is_dir()
     assert (wiki / ".gitignore").read_text().strip() == ".dikw/"

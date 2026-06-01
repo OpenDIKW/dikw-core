@@ -28,7 +28,7 @@ from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
 from .links import build_title_indexes, parse_links, resolve_links
-from .page import frontmatter_str_list
+from .page import category_from_path, frontmatter_str_list
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
@@ -62,6 +62,7 @@ LintKind = Literal[
     "non_atomic_page",
     "missing_provenance",
     "invalid_wisdom_status",
+    "uncategorized",
 ]
 
 # 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
@@ -195,8 +196,15 @@ def check_atomicity(*, body: str, tags: list[str]) -> AtomicityVerdict:
     return AtomicityVerdict(atomic=not violations, violations=tuple(violations))
 
 
-async def run_lint(storage: Storage, *, root: Path) -> LintReport:
-    """Scan K-layer pages and return a structured report."""
+async def run_lint(
+    storage: Storage, *, root: Path, fallback: str = "未分类"
+) -> LintReport:
+    """Scan K-layer pages and return a structured report.
+
+    ``fallback`` is ``SchemaConfig.fallback`` — knowledge pages filed under it
+    are flagged ``uncategorized`` so a human can re-file them into a declared
+    category (closed-set taxonomy contract, ADR-0003).
+    """
     issues: list[LintIssue] = []
     # path → set of LintKind the page opted out of via frontmatter.
     # Populated below in the same per-page frontmatter-load loop; consulted
@@ -380,15 +388,10 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                     )
                 )
 
-    # orphans — no inbound wikilinks AND not referenced from index.md/log.md.
-    # Both K and W layer pages are now scanned for orphans; the
-    # exclusions are wiki-only because ``knowledge/index.md`` + ``knowledge/log.md``
-    # are the K-layer scaffolds synth always writes. Wisdom has no
-    # equivalent built-in scaffold — every author's choice.
-    orphan_exclusions = {"knowledge/index.md", "knowledge/log.md"}
+    # orphans — no inbound wikilinks. Both K and W layer pages are scanned;
+    # dikw-core no longer generates ``knowledge/index.md`` / ``knowledge/log.md``
+    # scaffolds (ADR-0004), so there are no built-in pages to exclude.
     for doc in page_docs:
-        if doc.path in orphan_exclusions:
-            continue
         if "orphan_page" in suppressions.get(doc.path, set()):
             continue
         if inbound[doc.path] == 0:
@@ -397,6 +400,24 @@ async def run_lint(storage: Storage, *, root: Path) -> LintReport:
                     kind="orphan_page",
                     path=doc.path,
                     detail="no inbound wikilinks from other K- or W-layer pages",
+                )
+            )
+
+    # uncategorized — pages synth filed under the fallback bucket because it
+    # couldn't place them in a declared category. ``category_from_path`` only
+    # matches ``knowledge/`` paths, so wisdom pages never trip this.
+    for doc in page_docs:
+        if "uncategorized" in suppressions.get(doc.path, set()):
+            continue
+        if category_from_path(doc.path) == fallback:
+            issues.append(
+                LintIssue(
+                    kind="uncategorized",
+                    path=doc.path,
+                    detail=(
+                        f"page is in the fallback category {fallback!r} — "
+                        "re-file it under a declared category"
+                    ),
                 )
             )
 

@@ -4,6 +4,7 @@ import pytest
 
 from dikw_core.domains.knowledge.page import build_page
 from dikw_core.domains.knowledge.synthesize import (
+    DEFAULT_FALLBACK,
     SynthesisError,
     SynthesisPartialError,
     dedup_pages_by_slug,
@@ -16,7 +17,7 @@ from .fakes import FakeLLM
 _SINGLE_PAGE_RESPONSE = """
 Here's the page:
 
-<page path="knowledge/concepts/dikw-pyramid.md" type="concept">
+<page category="concept" slug="dikw-pyramid">
 ---
 tags: [dikw, model]
 ---
@@ -36,8 +37,9 @@ def test_parse_single_page_returns_one_element_list() -> None:
     )
     assert len(pages) == 1
     page = pages[0]
-    assert page.path == "knowledge/concepts/dikw-pyramid.md"
-    assert page.type == "concept"
+    # Engine builds the path from category + slug — no LLM-supplied path.
+    assert page.path == "knowledge/concept/dikw-pyramid.md"
+    assert page.category == "concept"
     assert page.title == "DIKW pyramid"
     assert "Karpathy LLM Wiki" in page.body
     assert page.tags == ["dikw", "model"]
@@ -51,55 +53,109 @@ def test_parse_no_block_returns_empty_list() -> None:
     assert parse_synthesis_response("no page here", source_path="x") == []
 
 
-def test_parse_bad_type_falls_back_to_note() -> None:
+def test_parse_unknown_category_falls_back_to_fallback_bucket() -> None:
+    # Closed-set taxonomy: a category the LLM invents (or that isn't declared)
+    # is filed under the fallback bucket, not silently coerced to a sibling.
     raw = (
-        '<page path="knowledge/notes/x.md" type="random">\n'
-        "---\ntags: []\n---\n\n"
-        "# Random\n\nbody\n"
+        '<page category="made-up" slug="x">\n'
+        "---\ntags: []\n---\n\n# Random\n\nbody\n"
         "</page>"
     )
     pages = parse_synthesis_response(raw, source_path="sources/x.md")
     assert len(pages) == 1
-    assert pages[0].type == "note"
+    assert pages[0].category == DEFAULT_FALLBACK
+    assert pages[0].path == f"knowledge/{DEFAULT_FALLBACK}/x.md"
 
 
-def test_parse_accepts_custom_allowed_types() -> None:
+def test_parse_omitted_category_falls_back() -> None:
+    # The prompt tells the model to omit `category` when none fits → fallback.
+    raw = "<page slug=\"x\">\n---\ntags: []\n---\n\n# X\n\nbody\n</page>"
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
+    assert pages[0].category == DEFAULT_FALLBACK
+
+
+def test_parse_accepts_declared_hierarchical_category() -> None:
     raw = (
-        '<page path="knowledge/topics/spacex.md" type="topic">\n'
-        "---\ntags: []\n---\n\n"
-        "# SpaceX topic\n\nbody\n"
+        '<page category="技术/架构" slug="rrf-fusion">\n'
+        "---\ntags: []\n---\n\n# RRF Fusion\n\nbody\n"
         "</page>"
     )
     pages = parse_synthesis_response(
         raw,
         source_path="sources/x.md",
-        allowed_types=("entity", "concept", "note", "topic"),
+        allowed_categories=("技术/架构", "产品/移动端"),
     )
     assert len(pages) == 1
-    assert pages[0].type == "topic"
-    # default_page_path picks the right folder from the custom type.
-    assert pages[0].path == "knowledge/topics/spacex.md"
+    assert pages[0].category == "技术/架构"
+    assert pages[0].path == "knowledge/技术/架构/rrf-fusion.md"
 
 
-def test_parse_unknown_type_falls_back_within_custom_allowed_types() -> None:
+def test_parse_custom_fallback_is_honored() -> None:
+    raw = '<page category="nope" slug="x">\n---\n---\n\n# X\n\nb\n</page>'
+    pages = parse_synthesis_response(
+        raw, source_path="s.md", allowed_categories=("entity",), fallback="待归档"
+    )
+    assert pages[0].category == "待归档"
+    assert pages[0].path == "knowledge/待归档/x.md"
+
+
+def test_parse_category_nfc_normalized_before_membership() -> None:
+    # ``config._validate_category_path`` NFC-normalizes every declared category,
+    # so ``allowed_categories`` holds NFC forms. If the LLM emits a decomposed
+    # (NFD) spelling of the same name, the parser must still accept it instead of
+    # silently bucketing a validly-declared category into the fallback.
+    import unicodedata
+
+    declared = unicodedata.normalize("NFC", "café")
+    nfd = unicodedata.normalize("NFD", "café")
+    assert declared != nfd  # genuinely different code-point sequences
+    raw = f'<page category="{nfd}" slug="x">\n---\n---\n\n# X\n\nb\n</page>'
+    pages = parse_synthesis_response(
+        raw, source_path="s.md", allowed_categories=(declared,), fallback="未分类"
+    )
+    assert pages[0].category == declared
+    assert pages[0].path == f"knowledge/{declared}/x.md"
+
+
+def test_parse_slug_defaults_to_slugified_title_when_omitted() -> None:
+    raw = '<page category="concept">\n---\n---\n\n# DIKW Pyramid\n\nbody\n</page>'
+    pages = parse_synthesis_response(raw, source_path="s.md")
+    assert pages[0].path == "knowledge/concept/dikw-pyramid.md"
+
+
+def test_parse_preserves_explicit_ascii_slug_for_cjk_title() -> None:
+    """The model emits a pinyin/ASCII slug for a non-ASCII title (``slugify``
+    would collapse the CJK title to ``untitled`` and collide every CJK page),
+    while the title itself stays in the source language."""
     raw = (
-        '<page path="knowledge/notes/x.md" type="bogus">\n'
-        "---\ntags: []\n---\n\n"
-        "# Bogus\n\nbody\n"
+        '<page category="concept" slug="shen-jing-wang-luo">\n'
+        "---\ntags: []\n---\n\n# 神经网络\n\n关于神经网络的说明。\n"
         "</page>"
     )
-    pages = parse_synthesis_response(
-        raw,
-        source_path="sources/x.md",
-        allowed_types=("entity", "concept", "note", "topic"),
-    )
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
     assert len(pages) == 1
-    # "note" is in allowed_types → fall back to note (historical behaviour).
-    assert pages[0].type == "note"
+    assert pages[0].path == "knowledge/concept/shen-jing-wang-luo.md"
+    assert pages[0].title == "神经网络"
+
+
+def test_parse_llm_slug_cannot_escape_base() -> None:
+    """The slug is run through ``slugify`` (ASCII-kebab), so a prompt-injected
+    traversal slug can't produce a ``..`` path segment. The category is a
+    closed-set value (here it falls to the fallback), so neither leg of the
+    path is attacker-controlled raw text."""
+    raw = (
+        '<page category="concept" slug="../../etc/passwd">\n'
+        "---\n---\n\n# Evil\n\nbody\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(raw, source_path="sources/x.md")
+    assert len(pages) == 1
+    assert ".." not in pages[0].path.split("/")
+    assert pages[0].path.startswith("knowledge/concept/")
 
 
 _TRUNCATED_LONE = """
-<page path="knowledge/entities/spacex.md" type="entity">
+<page category="entity" slug="spacex">
 ---
 tags: [aerospace]
 ---
@@ -121,157 +177,8 @@ def test_parse_truncated_only_block_raises_synthesis_error() -> None:
     assert "truncated" in str(excinfo.value)
 
 
-def test_parse_rejects_legacy_wiki_path_prefix() -> None:
-    """A stale LLM emitting the pre-0.4.0 ``wiki/`` prefix must be
-    rejected — otherwise synth would write a file under
-    ``<base>/wiki/...`` and the next ``dikw serve`` would refuse to
-    load the base because ``BaseUpgradeRequired`` flags non-empty
-    ``wiki/`` trees."""
-    raw = (
-        '<page path="wiki/concepts/legacy.md" type="concept">\n'
-        "---\ntags: []\n---\n\n# Legacy\n\nbody\n"
-        "</page>"
-    )
-    with pytest.raises(SynthesisError) as excinfo:
-        parse_synthesis_response(raw, source_path="sources/x.md")
-    assert "knowledge/" in str(excinfo.value)
-    assert "wiki/" in str(excinfo.value)
-
-
-@pytest.mark.parametrize(
-    ("folder", "type_"),
-    [("entities", "entity"), ("concepts", "concept"), ("notes", "note")],
-)
-def test_parse_normalizes_missing_knowledge_prefix(folder: str, type_: str) -> None:
-    """A model that uses the right type folder but drops the ``knowledge/``
-    layer prefix (``entities/foo.md``) must be normalized, not dropped — the
-    common open-weight-model failure that discarded the whole page/group (#146)."""
-    raw = (
-        f'<page path="{folder}/foo.md" type="{type_}">\n'
-        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
-        "</page>"
-    )
-    pages = parse_synthesis_response(raw, source_path="sources/x.md")
-    assert len(pages) == 1
-    assert pages[0].path == f"knowledge/{folder}/foo.md"
-
-
-def test_parse_normalize_preserves_model_slug() -> None:
-    """Normalization prepends the prefix but keeps the model's own slug — it
-    must NOT recompute from the title. ``slugify`` collapses a CJK title to
-    ``untitled`` (the prompt tells the model to emit a pinyin slug instead),
-    so recomputing would collide every CJK page on ``knowledge/<type>s/untitled.md``
-    and trigger wrong-merges in ``dedup_pages_by_slug``."""
-    raw = (
-        '<page path="concepts/shen-jing-wang-luo.md" type="concept">\n'
-        "---\ntags: []\n---\n\n# 神经网络\n\n关于神经网络的说明。\n"
-        "</page>"
-    )
-    pages = parse_synthesis_response(raw, source_path="sources/x.md")
-    assert len(pages) == 1
-    assert pages[0].path == "knowledge/concepts/shen-jing-wang-luo.md"
-    assert pages[0].title == "神经网络"
-
-
-def test_parse_normalizes_custom_type_folder_missing_prefix() -> None:
-    """The recognized-folder set derives from ``allowed_types``, so a custom
-    ``SchemaConfig.page_types`` folder (``topics/``) normalizes too, not just
-    the three built-ins."""
-    raw = (
-        '<page path="topics/spacex.md" type="topic">\n'
-        "---\ntags: []\n---\n\n# SpaceX\n\nbody\n"
-        "</page>"
-    )
-    pages = parse_synthesis_response(
-        raw,
-        source_path="sources/x.md",
-        allowed_types=("entity", "concept", "note", "topic"),
-    )
-    assert len(pages) == 1
-    assert pages[0].path == "knowledge/topics/spacex.md"
-
-
-def test_parse_rejects_unrecognized_path_head() -> None:
-    """A path whose first segment is neither ``knowledge/`` nor a recognized
-    type folder (e.g. ``sources/``) is genuinely malformed — still reject so
-    broken output surfaces instead of being silently relocated."""
-    raw = (
-        '<page path="sources/foo.md" type="note">\n'
-        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
-        "</page>"
-    )
-    with pytest.raises(SynthesisError) as excinfo:
-        parse_synthesis_response(raw, source_path="sources/x.md")
-    assert "knowledge/" in str(excinfo.value)
-
-
-def test_parse_normalized_block_does_not_fail_group() -> None:
-    """A response mixing one missing-prefix block and one well-formed block
-    must keep BOTH: the missing-prefix one is normalized, not dropped, so a
-    single sloppy path no longer discards the whole group (#146)."""
-    raw = (
-        '<page path="entities/foo.md" type="entity">\n'
-        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
-        "</page>\n"
-        '<page path="knowledge/concepts/bar.md" type="concept">\n'
-        "---\ntags: []\n---\n\n# Bar\n\nbody\n"
-        "</page>"
-    )
-    pages = parse_synthesis_response(raw, source_path="sources/x.md")
-    assert [p.path for p in pages] == [
-        "knowledge/entities/foo.md",
-        "knowledge/concepts/bar.md",
-    ]
-
-
-@pytest.mark.parametrize(
-    "bad_path",
-    [
-        # valid head — the normalize branch would otherwise prepend
-        # ``knowledge/`` and produce ``knowledge/entities/../../...``
-        "entities/../../etc/passwd.md",
-        # already ``knowledge/``-prefixed, so it skips the normalize branch
-        # entirely — guard must still catch it
-        "knowledge/../../etc/passwd.md",
-        # backslash is ALSO a path separator on Windows, so a `..` hidden
-        # behind backslashes bypasses a `/`-only split and still escapes on
-        # write_page().resolve() (codex review P1)
-        "entities/sub\\..\\..\\..\\evil.md",
-    ],
-)
-def test_parse_rejects_path_traversal(bad_path: str) -> None:
-    """A ``..`` segment escapes the base when the persist leg resolves
-    ``root / path`` (the K-layer write sink has no containment guard, unlike
-    the read paths). The parser rejects traversal up-front for BOTH a
-    recognized-folder path the normalize branch would prepend AND a
-    ``knowledge/``-prefixed path that skips it — and rejects backslashes, which
-    Windows ``pathlib`` treats as separators. A malicious source document could
-    prompt-inject the model into emitting any of these."""
-    raw = (
-        f'<page path="{bad_path}" type="note">\n'
-        "---\ntags: []\n---\n\n# Evil\n\nbody\n"
-        "</page>"
-    )
-    with pytest.raises(SynthesisError) as excinfo:
-        parse_synthesis_response(raw, source_path="sources/x.md")
-    assert "base" in str(excinfo.value)
-
-
-def test_parse_rejects_folder_only_path() -> None:
-    """A bare type folder with no filename (``entities``) must NOT normalize to
-    ``knowledge/entities`` — that path collides with the type directory on
-    write. Normalization requires a ``<folder>/<file>`` shape."""
-    raw = (
-        '<page path="entities" type="entity">\n'
-        "---\ntags: []\n---\n\n# Foo\n\nbody\n"
-        "</page>"
-    )
-    with pytest.raises(SynthesisError):
-        parse_synthesis_response(raw, source_path="sources/x.md")
-
-
 _TRUNCATED_AFTER_GOOD = """
-<page path="knowledge/entities/spacex.md" type="entity">
+<page category="entity" slug="spacex">
 ---
 tags: [aerospace]
 ---
@@ -281,7 +188,7 @@ tags: [aerospace]
 Aerospace firm.
 </page>
 
-<page path="knowledge/entities/tesla.md" type="entity">
+<page category="entity" slug="tesla">
 ---
 tags: [automotive]
 ---
@@ -313,25 +220,8 @@ def test_parse_partial_block_failure_does_not_request_retry() -> None:
     assert excinfo.value.retry is False
 
 
-def test_parse_unknown_type_without_note_falls_back_to_first_allowed() -> None:
-    raw = (
-        '<page path="knowledge/x/x.md" type="bogus">\n'
-        "---\ntags: []\n---\n\n"
-        "# X\n\nbody\n"
-        "</page>"
-    )
-    pages = parse_synthesis_response(
-        raw,
-        source_path="sources/x.md",
-        # "note" NOT in allowed_types → fall back to first allowed.
-        allowed_types=("entity", "concept", "topic"),
-    )
-    assert len(pages) == 1
-    assert pages[0].type == "entity"
-
-
 _MULTI_PAGE_RESPONSE = """
-<page path="knowledge/entities/elon-musk.md" type="entity">
+<page category="entity" slug="elon-musk">
 ---
 tags: [person]
 ---
@@ -341,7 +231,7 @@ tags: [person]
 Founder of [[SpaceX]] and [[Tesla]].
 </page>
 
-<page path="knowledge/entities/spacex.md" type="entity">
+<page category="entity" slug="spacex">
 ---
 tags: [company, space]
 ---
@@ -351,7 +241,7 @@ tags: [company, space]
 Aerospace manufacturer led by [[埃隆·马斯克]].
 </page>
 
-<page path="knowledge/concepts/falcon-1.md" type="concept">
+<page category="concept" slug="falcon-1">
 ---
 tags: [rocket]
 ---
@@ -368,12 +258,12 @@ def test_parse_multiple_blocks_returns_all_pages() -> None:
     assert len(pages) == 3
     titles = [p.title for p in pages]
     assert titles == ["埃隆·马斯克", "SpaceX", "Falcon 1"]
-    types = {p.type for p in pages}
-    assert types == {"entity", "concept"}
+    categories = {p.category for p in pages}
+    assert categories == {"entity", "concept"}
 
 
 _PARTIAL_RESPONSE = """
-<page path="knowledge/entities/ok.md" type="entity">
+<page category="entity" slug="ok">
 ---
 tags: []
 ---
@@ -383,7 +273,7 @@ tags: []
 Body.
 </page>
 
-<page path="knowledge/concepts/no-title.md" type="concept">
+<page category="concept" slug="no-title">
 ---
 tags: []
 ---
@@ -405,11 +295,11 @@ def test_parse_partial_failure_keeps_good_pages() -> None:
 
 def test_parse_all_blocks_fail_raises_synthesis_error() -> None:
     raw = (
-        '<page path="knowledge/notes/a.md" type="note">\n'
+        '<page category="note" slug="a">\n'
         "---\ntags: []\n---\n\n"
         "no atx title here\n"
         "</page>\n"
-        '<page path="knowledge/notes/b.md" type="note">\n'
+        '<page category="note" slug="b">\n'
         "---\ntags: []\n---\n\n"
         "still no title\n"
         "</page>"
@@ -428,7 +318,7 @@ def _page(title: str, body: str, *, tags: list[str], sources: list[str]):
     return build_page(
         title=title,
         body=body,
-        type_="entity",
+        category="entity",
         tags=tags,
         sources=sources,
         path=None,
@@ -478,15 +368,9 @@ def test_dedup_keep_first_drops_subsequent() -> None:
 
 
 def test_dedup_preserves_input_order_for_distinct_paths() -> None:
-    p1 = _page(
-        "B Entity", "# B Entity\n\nb.\n", tags=[], sources=["src.md"]
-    )
-    p2 = _page(
-        "A Entity", "# A Entity\n\na.\n", tags=[], sources=["src.md"]
-    )
-    p3 = _page(
-        "C Entity", "# C Entity\n\nc.\n", tags=[], sources=["src.md"]
-    )
+    p1 = _page("B Entity", "# B Entity\n\nb.\n", tags=[], sources=["src.md"])
+    p2 = _page("A Entity", "# A Entity\n\na.\n", tags=[], sources=["src.md"])
+    p3 = _page("C Entity", "# C Entity\n\nc.\n", tags=[], sources=["src.md"])
 
     out = dedup_pages_by_slug([p1, p2, p3], strategy="merge_body")
 

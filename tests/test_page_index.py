@@ -30,7 +30,7 @@ async def test_persist_knowledge_writes_document_chunks_and_links(
     in storage. ``embedder=None`` exercises the lint-apply path."""
     storage = parametrized_storage
 
-    target = build_page(title="Foo", body="# Foo\nbody.\n", type_="concept")
+    target = build_page(title="Foo", body="# Foo\nbody.\n", category="concept")
     write_page(tmp_path, target)
     await persist_knowledge(
         storage=storage, root=tmp_path, path=target.path, title=target.title,
@@ -40,8 +40,8 @@ async def test_persist_knowledge_writes_document_chunks_and_links(
     src = build_page(
         title="Source",
         body="# Source\n\nSee [[Foo]] here.\n",
-        type_="concept",
-        path="knowledge/concepts/source.md",
+        category="concept",
+        path="knowledge/concept/source.md",
     )
     write_page(tmp_path, src)
     result = await persist_knowledge(
@@ -73,7 +73,7 @@ async def test_persist_knowledge_skips_embedding_when_embedder_none(
     Document + chunks must still land; the next ``dikw client ingest`` will
     reconcile embeddings via ``doc.hash`` drift."""
     storage = parametrized_storage
-    page = build_page(title="X", body="body\n", type_="concept")
+    page = build_page(title="X", body="body\n", category="concept")
     write_page(tmp_path, page)
 
     await persist_knowledge(
@@ -96,8 +96,8 @@ async def test_persist_knowledge_reports_unresolved_count(
     page = build_page(
         title="Source",
         body="See [[Missing]] which has no target.\n",
-        type_="concept",
-        path="knowledge/concepts/src.md",
+        category="concept",
+        path="knowledge/concept/src.md",
     )
     write_page(tmp_path, page)
     # Seed a placeholder document row so resolve_links can self-exclude.
@@ -135,8 +135,8 @@ async def test_persist_knowledge_rebuilds_fuzzy_when_title_index_none(
     target = build_page(
         title="Neural Network",
         body="# Neural Network\nbody.\n",
-        type_="concept",
-        path="knowledge/concepts/neural-network.md",
+        category="concept",
+        path="knowledge/concept/neural-network.md",
     )
     write_page(tmp_path, target)
     await persist_knowledge(
@@ -147,8 +147,8 @@ async def test_persist_knowledge_rebuilds_fuzzy_when_title_index_none(
     src = build_page(
         title="Source",
         body="# Source\n\nSee [[Neural Networks]] for the architecture.\n",
-        type_="concept",
-        path="knowledge/concepts/source.md",
+        category="concept",
+        path="knowledge/concept/source.md",
     )
     write_page(tmp_path, src)
     result = await persist_knowledge(
