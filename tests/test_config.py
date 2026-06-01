@@ -330,6 +330,15 @@ def test_schema_config_fallback_validated() -> None:
         SchemaConfig(fallback="../escape")
 
 
+def test_schema_config_fallback_must_differ_from_declared_category() -> None:
+    """The fallback bucket must be its own folder. If it coincides with a
+    declared category path, synth files real and unplaceable pages into the
+    same folder and the ``uncategorized`` lint flags every legitimately-filed
+    page there — so reject the collision at config load (closed-set contract)."""
+    with pytest.raises(Exception, match="must differ from every declared category"):
+        SchemaConfig(categories=[CategoryNode(path="note")], fallback="note")
+
+
 def test_synth_config_prompt_path_defaults_none_and_round_trips(tmp_path: Path) -> None:
     path = tmp_path / CONFIG_FILENAME
     path.write_text(

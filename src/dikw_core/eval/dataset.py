@@ -218,6 +218,29 @@ class Query(BaseModel):
         return list(self.expect_any) + list(self.expect_doc_any)
 
 
+class SynthCategory(BaseModel):
+    """One category in a synth-eval dataset's taxonomy: a folder ``path`` plus
+    optional ``desc`` guidance fed to the synth LLM (mirrors
+    ``config.CategoryNode``). A bare string in ``dataset.yaml`` is coerced to
+    ``{path: <string>}`` for back-compat — see ``SynthSection``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    desc: str = ""
+
+
+def _default_synth_categories() -> list[SynthCategory]:
+    """Mirror the production-default taxonomy (``config._default_categories``)
+    so a dataset that omits ``categories:`` still feeds the synth LLM the same
+    per-category guidance a default-config base gets — keeping the K-layer eval
+    gate representative of default synth rather than feeding a desc-stripped
+    prompt."""
+    from ..config import _default_categories
+
+    return [SynthCategory(path=c.path, desc=c.desc) for c in _default_categories()]
+
+
 class SynthSection(BaseModel):
     """K-layer eval knobs declared in ``dataset.yaml``'s ``synth:`` block.
 
@@ -227,28 +250,45 @@ class SynthSection(BaseModel):
     cluster of paraphrased / fragment claims below 0.40),
     ``duplicate_threshold=0.85``. Retrieval-only datasets that don't
     declare synth still parse and ``run_synth_eval`` (if invoked) gets
-    sensible numbers. ``categories`` is dataset-local (a list of category
-    path strings) and written into the throwaway base's ``dikw.yml`` at eval
-    time, so a synth-eval dataset can pin a tighter taxonomy than the user's
-    production base.
+    sensible numbers. ``categories`` is dataset-local and written into the
+    throwaway base's ``dikw.yml`` at eval time, so a synth-eval dataset can pin
+    a tighter taxonomy than the user's production base. Each entry is a
+    ``{path, desc}`` mapping (or a bare ``path`` string, coerced for
+    back-compat); the optional ``desc`` mirrors ``config.CategoryNode.desc`` so
+    the eval prompt's ``{categories}`` block carries the same guidance a
+    production base would.
     """
 
     model_config = ConfigDict(frozen=True)
 
     grounding_threshold: float = 0.50
     duplicate_threshold: float = 0.85
-    categories: list[str] = Field(
-        default_factory=lambda: ["entity", "concept", "note"]
-    )
+    categories: list[SynthCategory] = Field(default_factory=_default_synth_categories)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_bare_string_categories(cls, data: Any) -> Any:
+        # Back-compat: ``categories: [entity, concept]`` (bare strings) is the
+        # historic shape. Promote each bare string to ``{path: <string>}`` so
+        # both the legacy list and the richer ``{path, desc}`` mapping parse.
+        if isinstance(data, dict) and isinstance(data.get("categories"), list):
+            data = {
+                **data,
+                "categories": [
+                    {"path": c} if isinstance(c, str) else c
+                    for c in data["categories"]
+                ],
+            }
+        return data
 
     @model_validator(mode="after")
     def _validate_categories(self) -> Self:
         if not self.categories:
             raise ValueError("synth.categories must not be empty")
         for c in self.categories:
-            if not isinstance(c, str) or not c.strip():
+            if not c.path.strip():
                 raise ValueError(
-                    f"synth.categories entries must be non-empty strings, got {c!r}"
+                    f"synth.categories entries must have a non-empty path, got {c!r}"
                 )
         return self
 

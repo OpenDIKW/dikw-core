@@ -11,6 +11,7 @@ surfaced from multiple calls collapses into one page.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -91,7 +92,11 @@ def _parse_one_page_block(
     # it can't confidently place — including an unrecognised / hallucinated
     # value — lands in the ``fallback`` bucket. Karpathy's rule: a wrong
     # category is a cheap re-file, an invented folder is irreversible drift.
-    category = attrs.get("category", "").strip()
+    # NFC-normalize first so the membership test shares the config's comparison
+    # space — ``config._validate_category_path`` stores ``allowed_categories``
+    # in NFC, so a decomposed (NFD) spelling the LLM might emit would otherwise
+    # miss a validly-declared accented / Hangul category and fall to fallback.
+    category = unicodedata.normalize("NFC", attrs.get("category", "")).strip()
     if category not in allowed_categories:
         category = fallback
 

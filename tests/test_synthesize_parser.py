@@ -99,6 +99,24 @@ def test_parse_custom_fallback_is_honored() -> None:
     assert pages[0].path == "knowledge/待归档/x.md"
 
 
+def test_parse_category_nfc_normalized_before_membership() -> None:
+    # ``config._validate_category_path`` NFC-normalizes every declared category,
+    # so ``allowed_categories`` holds NFC forms. If the LLM emits a decomposed
+    # (NFD) spelling of the same name, the parser must still accept it instead of
+    # silently bucketing a validly-declared category into the fallback.
+    import unicodedata
+
+    declared = unicodedata.normalize("NFC", "café")
+    nfd = unicodedata.normalize("NFD", "café")
+    assert declared != nfd  # genuinely different code-point sequences
+    raw = f'<page category="{nfd}" slug="x">\n---\n---\n\n# X\n\nb\n</page>'
+    pages = parse_synthesis_response(
+        raw, source_path="s.md", allowed_categories=(declared,), fallback="未分类"
+    )
+    assert pages[0].category == declared
+    assert pages[0].path == f"knowledge/{declared}/x.md"
+
+
 def test_parse_slug_defaults_to_slugified_title_when_omitted() -> None:
     raw = '<page category="concept">\n---\n---\n\n# DIKW Pyramid\n\nbody\n</page>'
     pages = parse_synthesis_response(raw, source_path="s.md")

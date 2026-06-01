@@ -1066,7 +1066,9 @@ async def run_synth_eval(
     )
     effective_retrieval_cfg = retrieval_config or RetrievalConfig()
     schema_cfg = SchemaConfig(
-        categories=[CategoryNode(path=c) for c in spec.synth.categories]
+        categories=[
+            CategoryNode(path=c.path, desc=c.desc) for c in spec.synth.categories
+        ]
     )
 
     warnings: list[str] = []
@@ -1199,7 +1201,8 @@ async def _collect_metrics_bundle(
         if not pages:
             raise SynthEvalError(
                 f"synth produced zero pages from {len(source_docs)} "
-                f"sources (declared categories: {list(spec.synth.categories)})"
+                f"sources (declared categories: "
+                f"{[c.path for c in spec.synth.categories]})"
                 f"; check LLM responses and dataset.yaml synth.categories"
             )
 

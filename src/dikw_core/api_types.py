@@ -34,13 +34,19 @@ class AssetNotFound(LookupError):
 
 
 class BaseUpgradeRequired(RuntimeError):
-    """Raised when a base from ≤0.3.6 is opened by 0.4.0+.
+    """Raised when a base predates a breaking on-disk / config change.
 
-    0.4.0 renamed the K-layer on-disk directory from ``wiki/`` to
-    ``knowledge/`` and the ``wiki_log`` SQL table to ``knowledge_log``.
-    There is no in-place migration — the breaking-change policy is
-    rebuild on incompatibility. The exception's message carries the
-    exact command the user needs to run.
+    Two shapes are flagged, both under the alpha rebuild-over-migrate
+    policy (there is no in-place migration; the message carries the exact
+    recipe). See ADR-0004 / ADR-0003.
+
+    1. A base from dikw-core ≤0.3.6 whose K layer still lives under
+       ``wiki/`` — the ``wiki/`` → ``knowledge/`` directory rename and the
+       ``wiki_log`` → ``knowledge_log`` SQL-table rename.
+    2. A pre-0.5.0 base whose ``dikw.yml`` carries ``schema.page_types``
+       (replaced by the configurable ``schema.categories`` taxonomy; the
+       K-layer frontmatter changed ``type:`` → ``category:``), so the base
+       must be rebuilt under the new taxonomy.
     """
 
 

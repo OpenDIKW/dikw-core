@@ -50,6 +50,17 @@ def test_category_from_path_arbitrary_depth() -> None:
     assert category_from_path("knowledge/x.md") == ""
 
 
+def test_default_page_path_empty_category_collapses_to_knowledge_root() -> None:
+    # A root-level page (no category folder, e.g. a hand-created knowledge/foo.md)
+    # has category == "". ``default_page_path`` must collapse the empty segment
+    # to ``knowledge/<slug>.md`` — NOT ``knowledge//<slug>.md`` — so it
+    # round-trips with ``category_from_path`` and the orphan-merge guard, which
+    # rebuilds the path from (category, slug), can still match the parent.
+    assert default_page_path("", "My Title") == "knowledge/my-title.md"
+    # round-trip: the rebuilt path reports the same (empty) category back
+    assert category_from_path(default_page_path("", "My Title")) == ""
+
+
 def test_write_then_read_roundtrip(tmp_path: Path) -> None:
     page = build_page(
         title="DIKW pyramid",

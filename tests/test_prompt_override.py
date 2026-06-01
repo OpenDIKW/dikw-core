@@ -116,6 +116,29 @@ def test_resolve_non_overridable_prompt_rejected(tmp_path: Path) -> None:
         prompts.resolve("eval_judge_synth", override_path=rel, base_root=tmp_path)
 
 
+def test_resolve_malformed_template_raises_prompt_override_error(tmp_path: Path) -> None:
+    # A syntactically malformed format token (a lone unescaped ``{``) makes
+    # ``string.Formatter().parse`` raise a bare ``ValueError``. ``resolve``
+    # must surface it as a ``PromptOverrideError`` (its documented failure
+    # type) so synth/lint and ``dikw client check`` get a typed, catchable
+    # error instead of a raw crash.
+    rel = _write(tmp_path, "prompts/malformed.md", SYNTH_OK + "lone { brace\n")
+    with pytest.raises(PromptOverrideError, match="not a valid template"):
+        prompts.resolve("synthesize", override_path=rel, base_root=tmp_path)
+
+
+def test_check_malformed_template_returns_failure_not_raises(tmp_path: Path) -> None:
+    # The ``dikw client check`` leg must report a malformed override as a
+    # failed ProbeResult, never let a bare ValueError escape and crash the
+    # whole check command.
+    rel = _write(tmp_path, "prompts/malformed.md", SYNTH_OK + "lone { brace\n")
+    cfg = DikwConfig(synth=SynthConfig(prompt_path=rel))
+    results = _check_prompt_overrides(cfg, tmp_path)
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "not a valid template" in results[0].detail
+
+
 # ---- dikw check leg: _check_prompt_overrides ------------------------------
 
 

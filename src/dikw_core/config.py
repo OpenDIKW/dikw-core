@@ -319,6 +319,25 @@ class SchemaConfig(BaseModel):
     def _validate_fallback(cls, v: str) -> str:
         return _validate_category_path(v)
 
+    @model_validator(mode="after")
+    def _fallback_distinct_from_categories(self) -> SchemaConfig:
+        # Closed-set invariant: the fallback bucket must be its own folder. If
+        # it coincided with a declared category path, synth would file
+        # correctly-classified and unplaceable pages into the same folder, and
+        # ``run_lint``'s uncategorized detector (``category_from_path(path) ==
+        # fallback``) would flag every legitimately-filed page there. Both
+        # ``fallback`` and ``categories[].path`` are NFC-normalized by the field
+        # validators above, so a direct comparison is sufficient.
+        if self.fallback in self.category_paths():
+            raise ValueError(
+                f"schema.fallback {self.fallback!r} must differ from every "
+                "declared category path — the fallback is a distinct bucket for "
+                "pages synth cannot place; sharing a folder with a declared "
+                "category breaks the closed-set / uncategorized-lint contract "
+                "(ADR-0003)."
+            )
+        return self
+
     def category_paths(self) -> list[str]:
         """Declared category paths, in config order (excludes ``fallback``)."""
         return [c.path for c in self.categories]

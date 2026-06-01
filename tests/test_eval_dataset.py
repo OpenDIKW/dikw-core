@@ -498,7 +498,29 @@ def test_load_dataset_synth_section_parsed(tmp_path: Path) -> None:
     spec = load_dataset(ds)
     assert spec.synth.grounding_threshold == 0.7
     assert spec.synth.duplicate_threshold == 0.9
-    assert spec.synth.categories == ["entity", "concept"]
+    # Bare-string categories stay back-compatible (coerced to path-only nodes).
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept"]
+    assert all(c.desc == "" for c in spec.synth.categories)
+
+
+def test_load_dataset_synth_categories_mapping_carries_desc(tmp_path: Path) -> None:
+    """A dataset may declare ``categories`` as ``{path, desc}`` mappings so the
+    synth eval feeds the LLM the same per-category guidance a production base
+    gets (keeps the K-layer gate representative — review finding)."""
+    ds = _write_synth_dataset(tmp_path)
+    (ds / "dataset.yaml").write_text(
+        (ds / "dataset.yaml").read_text(encoding="utf-8").replace(
+            "  categories: [entity, concept]\n",
+            "  categories:\n"
+            "    - {path: entity, desc: A named thing.}\n"
+            "    - {path: concept, desc: An idea or framework.}\n",
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept"]
+    assert spec.synth.categories[0].desc == "A named thing."
+    assert spec.synth.categories[1].desc == "An idea or framework."
 
 
 def test_load_dataset_judge_section_parsed(tmp_path: Path) -> None:
@@ -532,7 +554,11 @@ def test_load_dataset_synth_section_defaults(tmp_path: Path) -> None:
     # scale supports for natural-language claims.
     assert spec.synth.grounding_threshold == 0.50
     assert spec.synth.duplicate_threshold == 0.85
-    assert spec.synth.categories == ["entity", "concept", "note"]
+    # The default taxonomy mirrors config._default_categories — entity/concept/
+    # note WITH their descriptions — so an omitted ``categories:`` still feeds
+    # the synth LLM the production-default guidance (review finding).
+    assert [c.path for c in spec.synth.categories] == ["entity", "concept", "note"]
+    assert all(c.desc for c in spec.synth.categories)
 
 
 def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:

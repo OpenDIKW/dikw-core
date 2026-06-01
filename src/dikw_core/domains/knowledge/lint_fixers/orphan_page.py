@@ -691,7 +691,7 @@ async def _propose_merge_into_existing(
         return None
 
     # LLM only emits the body — frontmatter is owned by the fixer so
-    # the parent's identity (id, type, title, created) survives intact
+    # the parent's identity (id, category, title, created) survives intact
     # and sources/tags merge deterministically.
     merged_fm = dict(parent_meta)
     for key in ("sources", "tags"):

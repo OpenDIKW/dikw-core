@@ -76,7 +76,19 @@ def _validate_override(name: str, text: str, override_path: str) -> None:
     contract = contract_for(name)
     if contract is None:  # not an overridable prompt — defensive, config gates this
         raise PromptOverrideError(f"prompt {name!r} is not overridable")
-    present = placeholders_in(text)
+    # ``placeholders_in`` runs ``string.Formatter().parse`` which raises a
+    # *bare* ``ValueError`` on a syntactically malformed token (a lone ``{``,
+    # an unclosed ``{field``). Surface it as the documented ``PromptOverrideError``
+    # so synth/lint and ``dikw client check`` get a typed, catchable failure
+    # instead of a raw crash (``PromptOverrideError`` subclasses ``ValueError``,
+    # so a bare ``ValueError`` would slip past callers' ``except`` clauses).
+    try:
+        present = placeholders_in(text)
+    except ValueError as exc:
+        raise PromptOverrideError(
+            f"prompt override {override_path!r} for {name!r} is not a valid "
+            f"template: {exc}"
+        ) from exc
     problems: list[str] = []
     if missing := contract.placeholders - present:
         problems.append(

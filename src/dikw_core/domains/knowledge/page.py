@@ -102,9 +102,14 @@ def default_page_path(category: str, title: str) -> str:
     """Return the base-relative path the engine writes a new page to.
 
     The ``category`` path is the on-disk folder, used verbatim (it is a
-    config-validated closed-set value); only the filename is slugified.
+    config-validated closed-set value); only the filename is slugified. An
+    empty ``category`` (a page directly under ``knowledge/`` — e.g. a
+    hand-created root-level page an orphan-merge targets) collapses to
+    ``knowledge/<slug>.md`` rather than emitting a ``knowledge//<slug>.md``
+    double slash, so it round-trips with :func:`category_from_path`.
     """
-    return f"knowledge/{category}/{slugify(title)}.md"
+    prefix = f"knowledge/{category}/" if category else "knowledge/"
+    return f"{prefix}{slugify(title)}.md"
 
 
 def read_page(root: Path, path: str) -> KnowledgePage:
