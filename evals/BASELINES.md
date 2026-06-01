@@ -7,6 +7,71 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 0.5.0 — configurable knowledge taxonomy + overridable prompts; drop index.md/log.md
+
+**Status:** K-layer breaking refactor (`domains/knowledge/`). The fixed
+single-axis `type` (entity/concept/note → pluralized folders) becomes a
+configurable closed-set hierarchical `category` taxonomy
+(`schema.categories` + `schema.fallback`); synth emits
+`<page category="…" slug="…">` and the engine owns path construction;
+`index.md`/`log.md` generation is removed (history stays in the
+`knowledge_log` table). K-layer authoring prompts are per-base overridable
+(`synth.prompt_path` / `lint.fixer_prompts`). Includes the 7 fixes from the
+adversarial review (`9b95ad2`). See ADR-0003 / ADR-0004.
+
+**Provider config:** `openai_codex` (gpt-5.5 via ChatGPT subscription) LLM +
+`Qwen3-Embedding-0.6B@1024` via Gitee AI (batch_size=16) — the **same** stack
+the 2026-05-13 synth baseline was calibrated against, so the gate thresholds
+remain directly comparable. (The `.env` `ANTHROPIC_API_KEY` was rejected
+401 against api.anthropic.com at run time; codex is both the working provider
+and the original calibration LLM, so it is the correct choice — not a
+downgrade.)
+
+### mvp synth gate — `dikw client eval --dataset mvp --eval synth`
+
+The K-layer acceptance gate. The mvp `dataset.yaml` now carries the
+production-default category **descriptions** (review finding: a desc-stripped
+eval prompt was weaker than default synth), so this run mirrors what a
+default-config base produces.
+
+```
+metric                          value   threshold  result
+synth/fact_grounding_ratio      0.787   0.550      ✓ pass
+synth/atomicity_score           1.000   0.850      ✓ pass
+synth/duplicate_ratio_max       0.000   0.050      ✓ pass
+synth/wikilink_resolved_ratio   0.588   0.550      ✓ pass
+synth/language_fidelity         1.000   0.950      ✓ pass
+synth/expected_coverage         0.333   (info, ungated)
+synth/page_density              0.571   (info)
+n_sources=3  n_pages=12  gated=True  passed=True
+```
+
+All five gated metrics pass. Numbers sit in the same band as the 2026-05-13
+post-cleanup baseline (3 Karpathy sources); the taxonomy refactor did not
+regress synth quality. `wikilink_resolved_ratio` at 0.588 carries less slack
+than the others but clears 0.55 — small-corpus cross-page links are sparse.
+
+### elon-musk.md baseline (1500-line subset) — real large-document synth
+
+Validates the new taxonomy end-to-end on a substantial real document. Full
+`elon-musk.md` still hangs codex SSE (the 2026-05-08 known limitation,
+unrelated to this PR), so the 1500-line / ~263 KB / 91-chunk subset is used,
+matching that precedent.
+
+- **Run:** ingest (1 source → 91 chunks/embeddings) + `dikw client synth`
+  (target_tokens_per_group=3600, max_pages_per_group=4, slug_dedup=merge_body)
+  → **19 chunk groups → 76 pages created, 0 errors**, 107 unresolved
+  wikilinks. (2026-05-08 on the same subset: 19 groups → 70+2 pages.)
+- **On-disk layout (the breaking change, verified live):** pages land under
+  **singular** category folders — `entity/` (19), `concept/` (3), `note/` (54)
+  = 76; frontmatter carries `category:` (no `type:`); `sources:` provenance
+  intact; **no** `knowledge/index.md` or `knowledge/log.md` generated.
+- **`dikw client lint`:** `broken_wikilink` 107 (cross-source refs from a
+  single-source subset — expected), `orphan_page` 51 (no second-pass linking
+  yet — same pattern as 2026-05-08's 53), and **`uncategorized` 0**. The zero
+  is the key signal: the closed-set parser placed every one of the 76 pages
+  under a *declared* category — none drifted to the `未分类` fallback bucket.
+
 ## 0.3.0 PR3 — wisdom as first-class retrieval layer (#122)
 
 **Status:** purely additive — wisdom files indexed by 0.3.0 PR2 now
