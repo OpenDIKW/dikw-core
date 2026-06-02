@@ -277,6 +277,53 @@ async def test_ingest_cancelled_mid_persist_deactivates_doc(
 
 
 @pytest.mark.asyncio
+async def test_ingest_failure_after_persist_keeps_doc_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure on the trailing ``append_knowledge_log`` (a post-persist
+    history marker) must NOT deactivate the doc: ``persist_source`` already
+    fully indexed it, so the row is complete. Deactivating here would hide a
+    successfully-indexed source until a later ingest reactivates it. The
+    deactivate arms only fire for a failure *inside* ``persist_source``, where
+    the row may be partial. (codex review P2.)"""
+    src_dir = _seed_wiki(tmp_path)
+    (src_dir / "good.md").write_text("# Good\n\nbody.\n", encoding="utf-8")
+
+    original = api_ingest._with_storage
+
+    async def patched(path: object) -> object:
+        cfg, root, storage = await original(path)  # type: ignore[arg-type]
+        orig_log = storage.append_knowledge_log
+
+        async def boom(entry: object) -> object:
+            if getattr(entry, "action", None) == "ingest":
+                raise RuntimeError("log append outage after a complete persist")
+            return await orig_log(entry)  # type: ignore[arg-type]
+
+        storage.append_knowledge_log = boom  # type: ignore[method-assign]
+        return cfg, root, storage
+
+    monkeypatch.setattr(api_ingest, "_with_storage", patched)
+
+    report = await api.ingest(tmp_path, embedder=FakeEmbeddings())
+    assert len(report.errors) == 1
+    assert report.errors[0].kind == "storage_error"
+
+    monkeypatch.undo()
+    cfg, _root, storage = await original(tmp_path)  # type: ignore[misc]
+    del cfg
+    try:
+        doc_id = api._doc_id_for(api.Layer.SOURCE, "sources/demo/good.md")
+        existing = await storage.get_document(doc_id)
+        assert existing is not None and existing.active is True, (
+            "a failure after persist_source completed must NOT deactivate the "
+            "fully-indexed doc"
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_ingest_idempotent_run_clears_errors(tmp_path: Path) -> None:
     """Errors are per-run, not persistent. A re-ingest after fixing the
     bad file should report zero errors — proves errors aren't leaking
