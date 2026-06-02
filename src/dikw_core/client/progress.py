@@ -307,6 +307,33 @@ def render_ingest_errors(
     console.print(table)
 
 
+def render_persist_errors(
+    console: Console, errors: list[Mapping[str, Any]]
+) -> None:
+    """Render the per-page persist failures emitted by synth / lint apply as
+    a ``path | message`` table. Each listed page raised mid-persist and was
+    deactivated (``active=False``) so it stays out of retrieval — re-run the
+    write entry (``synth`` / ``lint apply``) to rebuild it."""
+    if not errors:
+        return
+    table = Table(
+        title=f"persist errors ({len(errors)})",
+        show_header=True,
+        header_style="bold",
+        title_style="yellow",
+    )
+    table.add_column("path", style="red")
+    table.add_column("message", overflow="fold")
+    for err in errors:
+        if not isinstance(err, Mapping):
+            continue
+        table.add_row(
+            str(err.get("path") or "?"),
+            str(err.get("message") or ""),
+        )
+    console.print(table)
+
+
 def render_import_report(
     console: Console, report: Mapping[str, Any]
 ) -> None:
@@ -373,6 +400,7 @@ def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     ):
         table.add_row(key, str(int(report.get(key) or 0)))
     console.print(table)
+    render_persist_errors(console, report.get("persist_errors") or [])
 
 
 def render_lint_report(console: Console, report: Mapping[str, Any]) -> None:
@@ -538,6 +566,7 @@ def render_lint_apply_report(
             console.print(f"[cyan]embed[/cyan]: {embedded} chunk(s) embedded inline")
     if paths:
         console.print(f"[dim]paths changed:[/dim] {', '.join(paths)}")
+    render_persist_errors(console, report.get("persist_errors") or [])
     if skipped:
         table = Table(title="skipped ops", show_header=True, header_style="bold")
         table.add_column("op")

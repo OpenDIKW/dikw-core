@@ -150,14 +150,43 @@ without `DIKW_EMBEDDING_API_KEY` (K-layer chunks deferred), and
 `write_wisdom_page --no-embed` (W-layer chunks deferred).
 
 **Per-batch retry-skip.** Inside every persist path the embed leg
-runs through `consume_embedding_stream`, which catches `ProviderError`
-per batch, retries up to `cfg.provider.embedding_error_retries`
+runs through `consume_embedding_stream`, which catches
+`TransientProviderError` per batch (5xx, 408/429, timeout, connect
+drop, parse failure), retries up to `cfg.provider.embedding_error_retries`
 (default 2) with `embedding_error_retry_backoff_seconds` (default
-2.0s) linear backoff before skipping the batch and continuing.
-Skipped chunks remain in storage without vectors and the next
-ingest's resume scan picks them up. The persist function's return
-shape surfaces `chunks_embedded` and `chunks_pending_embedding` so
-the caller can warn the user (CLI `lint apply` prints both).
+2.0s) linear backoff before skipping the batch and continuing. A bare
+(permanent) `ProviderError` — 401/403/404, missing key, invalid model
+id — is **not** caught here: it propagates so misconfig fails fast
+instead of being silently retried-then-skipped. Skipped chunks remain
+in storage without vectors and the next ingest's resume scan picks
+them up. The persist function's return shape surfaces
+`chunks_embedded` and `chunks_pending_embedding` so the caller can
+warn the user (CLI `lint apply` prints both).
+
+**Persist failure → deactivate (`documents.active` as the commit
+marker).** A persist pipeline is five separately-committed Storage
+calls with no enclosing transaction, so a hard exception mid-pipeline
+(a permanent `ProviderError` from inline embed, or `replace_chunks` /
+`replace_links_from` / `replace_provenance_from` raising) would leave
+the `active=True` document row + chunks committed while later steps
+never ran — a half-written page that still surfaces in retrieval. The
+invariant that closes this: **a document is `active=True` only if its
+full pipeline completed; on any hard exception the caller
+`deactivate_document(doc_id)`s it** (`active=False`), which hides it
+from every retrieval leg (`fts_search` / `vec_search` /
+`neighbor_chunks_via_links`) and from `read_page` / `list_pages`. All
+four write entries enforce this at the call site: D in `api.ingest`'s
+`storage_error` arm, W in `write_wisdom_page`, and K in **both** synth's
+per-page loop and `lint_apply`'s Phase 1 loop (K was the last to gain
+it). A transient embed skip is *not* a failure — it leaves the page
+`active=True` with `chunks_pending_embedding > 0` for the resume scan.
+Recovery is layer-specific: D re-activates on the next ingest (it
+re-scans `sources/` and the early-skip arm falls through for
+`active=False` rows); K has no scan-based reindex, so synth withholds
+the source's `synth_source_done` marker when a page failed, letting the
+next default `synth` re-process and rebuild it. Synth surfaces failed
+pages as `SynthReport.persist_errors`; lint apply as
+`ApplyReport.persist_errors`.
 
 **FTS is always synchronous.** `replace_chunks` writes the FTS index
 inside the same storage transaction as the `chunks` rows — there is

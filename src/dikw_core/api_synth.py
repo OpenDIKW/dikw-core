@@ -18,15 +18,17 @@ never the ``api`` facade. ``api`` re-exports ``synthesize`` (public, in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import prompts
 from .api_core import _with_storage
-from .api_types import SynthReport
+from .api_types import PagePersistError, SynthReport
 from .config import DikwConfig
 from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
@@ -301,26 +303,61 @@ async def synthesize(
 
             created_for_src = 0
             updated_for_src = 0
+            src_persist_failed = False
             for page in deduped:
-                pre_existing = await storage.get_document(
-                    _doc_id_for(Layer.KNOWLEDGE, page.path)
-                )
+                doc_id = _doc_id_for(Layer.KNOWLEDGE, page.path)
+                pre_existing = await storage.get_document(doc_id)
                 write_page(root, page)
-                page_unresolved = await _persist_knowledge_page(
-                    storage=storage,
-                    root=root,
-                    page=page,
-                    embedder=embedder,
-                    embedding_model=text_embed_model,
-                    text_version_id=text_version_id,
-                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-                    title_to_path=title_to_path,
-                    fuzzy_index=fuzzy_index,
-                    embedding_error_retries=cfg.provider.embedding_error_retries,
-                    embedding_error_retry_backoff_seconds=(
-                        cfg.provider.embedding_error_retry_backoff_seconds
-                    ),
-                )
+                try:
+                    page_unresolved = await _persist_knowledge_page(
+                        storage=storage,
+                        root=root,
+                        page=page,
+                        embedder=embedder,
+                        embedding_model=text_embed_model,
+                        text_version_id=text_version_id,
+                        cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                        title_to_path=title_to_path,
+                        fuzzy_index=fuzzy_index,
+                        embedding_error_retries=cfg.provider.embedding_error_retries,
+                        embedding_error_retry_backoff_seconds=(
+                            cfg.provider.embedding_error_retry_backoff_seconds
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    # CancelledError inherits from BaseException, so the
+                    # ``except Exception`` below misses it. Still deactivate the
+                    # in-flight page so cancellation doesn't strand a
+                    # half-written-but-active doc, then re-raise to abort the
+                    # run (cancellation is not "continue with the next page").
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
+                    raise
+                except Exception as e:
+                    # A hard persist failure (replace_chunks / replace_links_from
+                    # / replace_provenance_from raising, or a permanent
+                    # ProviderError from inline embed) leaves the doc row +
+                    # chunks committed but later steps unreconciled. Deactivate
+                    # so the half-written page is hidden from every retrieval leg
+                    # + read_page, then record and continue with the remaining
+                    # pages — parity with D (api.ingest) and W (write_wisdom_page).
+                    # A transient embed retry-skip does NOT reach here: it
+                    # returns chunks_pending without raising.
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
+                    src_persist_failed = True
+                    msg = f"{type(e).__name__}: {e}"
+                    report = _sr_replace(
+                        report,
+                        persist_errors=(
+                            *report.persist_errors,
+                            PagePersistError(path=page.path, message=msg),
+                        ),
+                    )
+                    await _reporter.partial(
+                        "page_error", {"path": page.path, "message": msg}
+                    )
+                    continue
                 if page_unresolved:
                     report = _sr_replace(
                         report,
@@ -353,7 +390,11 @@ async def synthesize(
             # Partial-parse outcomes don't count: the surviving pages
             # were persisted, retrying would just hit the same partial
             # response and re-emit the warning to ``knowledge_log``.
-            if outcome.parse_errors == 0:
+            # Also skip it when a page's persist failed and was deactivated:
+            # K has no scan-based reindex, so re-running default synth is the
+            # only recovery path — marking the source done would strand the
+            # deactivated page forever.
+            if outcome.parse_errors == 0 and not src_persist_failed:
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(
                         ts=time.time(),
@@ -958,7 +999,7 @@ async def _synth_pages_from_source(
     )
 
 
-def _sr_replace(r: SynthReport, **kw: int) -> SynthReport:
+def _sr_replace(r: SynthReport, **kw: Any) -> SynthReport:
     return dataclasses.replace(r, **kw)
 
 

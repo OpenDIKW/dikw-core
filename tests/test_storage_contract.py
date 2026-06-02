@@ -1022,6 +1022,86 @@ async def test_vec_search_excludes_deactivated_doc(storage: Storage) -> None:
     assert [h.chunk_id for h in post] == [keep_ids[0]]
 
 
+async def test_fts_search_excludes_deactivated_doc(storage: Storage) -> None:
+    """``deactivate_document`` must hide a doc's chunks from fts_search too.
+
+    Both adapters gate FTS on ``documents.active`` (sqlite ``d.active = 1`` /
+    postgres ``d.active = TRUE``). The K-layer persist-failure path
+    deactivates a half-written page and relies on this filter to keep it out
+    of BM25 hits; a regression dropping the predicate would leak it. Companion
+    to ``test_vec_search_excludes_deactivated_doc`` (which only pinned the
+    dense leg).
+    """
+    keep_doc = _make_doc("sources/keep-fts.md", layer=Layer.SOURCE)
+    drop_doc = _make_doc("sources/drop-fts.md", layer=Layer.SOURCE)
+    for d in (keep_doc, drop_doc):
+        await storage.upsert_document(d)
+    await storage.replace_chunks(
+        keep_doc.doc_id,
+        [ChunkRecord(doc_id=keep_doc.doc_id, seq=0, start=0, end=18, text="alpha keepme bravo")],
+    )
+    await storage.replace_chunks(
+        drop_doc.doc_id,
+        [ChunkRecord(doc_id=drop_doc.doc_id, seq=0, start=0, end=20, text="alpha keepme charlie")],
+    )
+    # Both surface while active.
+    pre = await storage.fts_search("keepme", limit=10)
+    assert {h.doc_id for h in pre} == {keep_doc.doc_id, drop_doc.doc_id}
+
+    # Deactivate one — its chunk must vanish from fts_search results.
+    await storage.deactivate_document(drop_doc.doc_id)
+    post = await storage.fts_search("keepme", limit=10)
+    assert [h.doc_id for h in post] == [keep_doc.doc_id]
+
+
+async def test_neighbor_chunks_via_links_excludes_deactivated_neighbor(
+    storage: Storage,
+) -> None:
+    """The wikilink-graph leg gates the *neighbor* (destination) doc on
+    ``documents.active`` (sqlite ``d2.active = 1`` / postgres
+    ``d2.active = TRUE``). A neighbor parked inactive by a persist failure
+    must drop out of the fan-out so a half-written page can't leak via the
+    graph leg of HybridSearcher.
+    """
+    page_a = _make_doc("knowledge/seed.md", layer=Layer.KNOWLEDGE)
+    page_b = _make_doc("knowledge/nb-active.md", layer=Layer.KNOWLEDGE)
+    page_c = _make_doc("knowledge/nb-dropped.md", layer=Layer.KNOWLEDGE)
+    for d in (page_a, page_b, page_c):
+        await storage.upsert_document(d)
+    a_chunks = await storage.replace_chunks(
+        page_a.doc_id,
+        [ChunkRecord(doc_id=page_a.doc_id, seq=0, start=0, end=4, text="seed")],
+    )
+    b_chunks = await storage.replace_chunks(
+        page_b.doc_id,
+        [ChunkRecord(doc_id=page_b.doc_id, seq=0, start=0, end=4, text="bbbb")],
+    )
+    c_chunks = await storage.replace_chunks(
+        page_c.doc_id,
+        [ChunkRecord(doc_id=page_c.doc_id, seq=0, start=0, end=4, text="cccc")],
+    )
+    for dst in ("knowledge/nb-active.md", "knowledge/nb-dropped.md"):
+        await storage.upsert_link(
+            LinkRecord(
+                src_doc_id=page_a.doc_id,
+                dst_path=dst,
+                link_type=LinkType.WIKILINK,
+                anchor=None,
+                line=1,
+            )
+        )
+    seed_id = a_chunks[0]
+    assert seed_id is not None
+    # Both neighbors reachable while active.
+    pre = {n.chunk_id for n in await storage.neighbor_chunks_via_links([seed_id])}
+    assert pre == set(b_chunks) | set(c_chunks)
+
+    # Deactivate one neighbor — it must drop from the graph leg.
+    await storage.deactivate_document(page_c.doc_id)
+    post = {n.chunk_id for n in await storage.neighbor_chunks_via_links([seed_id])}
+    assert post == set(b_chunks)
+
+
 async def test_delete_document_purges_all_rows(storage: Storage) -> None:
     """``delete_document`` is the hard counterpart to ``deactivate_document``:
     the row plus every dependent (chunks, embeddings, links) must be

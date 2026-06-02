@@ -5,6 +5,36 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Fixed
+
+- **K-layer persist is now fault-tolerant via `documents.active`, matching D
+  and W.** A hard storage failure mid-`persist_knowledge` (a permanent
+  `ProviderError` from inline embed, or `replace_chunks` /
+  `replace_links_from` / `replace_provenance_from` raising) previously left a
+  half-written knowledge page with `active=True` that still surfaced in
+  retrieval, and aborted the whole synth / lint-apply run. Now both K write
+  paths — synth's per-page loop and `lint apply`'s Phase 1 loop — catch the
+  exception, `deactivate_document` the in-flight page (so it is hidden from
+  `fts_search` / `vec_search` / the wikilink graph leg / `read_page` /
+  `list_pages`), record it, and continue with the remaining pages. This is the
+  same deactivate-on-failure contract D (`api.ingest`) and W
+  (`write_wisdom_page`) already enforced. A transient embed retry-skip is
+  **not** treated as a failure — the page stays `active=True` with
+  `chunks_pending_embedding > 0` for the next ingest's resume scan.
+- **Synth withholds the `synth_source_done` marker when a page in that source
+  failed to persist.** Because K has no scan-based reindex, this lets the next
+  default `dikw client synth` re-process the source and rebuild the page that
+  was parked inactive — the recovery path for a transient failure.
+
+### Added
+
+- `SynthReport.persist_errors` (tuple of `PagePersistError{path, message}`) and
+  `ApplyReport.persist_errors` (list of `{path, message}`) surface pages
+  deactivated by a mid-pipeline persist failure. The CLI renders them as a
+  `path | message` table under the synth / lint-apply report.
+
 ## 0.5.0 — configurable knowledge taxonomy + overridable prompts; drop index.md/log.md
 
 This release generalizes the fixed K-layer classification into a

@@ -93,6 +93,23 @@ class IngestReport:
 
 
 @dataclass(frozen=True)
+class PagePersistError:
+    """One per-page K-layer persist failure surfaced on ``SynthReport``.
+
+    The synth-path analogue of :class:`IngestError`: a hard storage failure
+    mid-``persist_knowledge`` (``replace_chunks`` / ``replace_links_from`` /
+    ``replace_provenance_from`` raising, or a permanent ``ProviderError``
+    from inline embed) deactivates the page and records it here so the run
+    continues with the remaining pages instead of aborting — parity with D
+    (``api.ingest``) and W (``write_wisdom_page``). A transient embed
+    retry-skip is NOT a failure: it surfaces as pending chunks, not here.
+    """
+
+    path: str
+    message: str
+
+
+@dataclass(frozen=True)
 class SynthReport:
     # ``candidates`` and ``skipped`` count *sources* (the unit synth iterates
     # at the outer level); ``created`` / ``updated`` / ``errors`` count
@@ -111,6 +128,10 @@ class SynthReport:
     # refusal). High counts signal LLM-generated references that nobody
     # has authored yet — actionable signal even before ``dikw client lint`` runs.
     unresolved_wikilinks: int = 0
+    # Pages whose persist raised mid-pipeline; each was deactivated
+    # (``active=False``) so it stays out of retrieval. ``errors`` (above)
+    # counts LLM-parse failures per group; this is the storage-side analogue.
+    persist_errors: tuple[PagePersistError, ...] = ()
 
 
 class ProbeResult(BaseModel):
