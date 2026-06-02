@@ -125,6 +125,12 @@ async def synthesize(
             # exists, do not backfill" state.
             has_legacy_backfill_sentinel = False
             legacy_dst_sources: set[str] = set()
+            # Sources carrying a ``synth_source_failed`` marker. A failed
+            # marker is always newer than any legacy per-page ``synth`` row, so
+            # such a source must be excluded from the one-time legacy backfill
+            # below — otherwise the backfill would re-mark it done and strand
+            # the page its failure deactivated (codex review round 2).
+            failed_sources: set[str] = set()
             for entry in await storage.list_knowledge_log():
                 if entry.action == "synth_source_done":
                     if entry.src == _LEGACY_BACKFILL_SENTINEL:
@@ -143,6 +149,7 @@ async def synthesize(
                     # synth would skip the source, stranding the deactivated
                     # page (K has no scan-based reindex).
                     already.discard(entry.src)
+                    failed_sources.add(entry.src)
                 elif entry.action == "synth" and entry.src and entry.dst:
                     legacy_dst_sources.add(entry.src)
             if not has_legacy_backfill_sentinel:
@@ -160,7 +167,12 @@ async def synthesize(
                         ),
                     )
                 )
-                for src_path in sorted(legacy_dst_sources):
+                # Exclude sources with a ``synth_source_failed`` marker: that
+                # marker postdates the legacy synth rows and means the source
+                # has a deactivated page awaiting rebuild, so backfilling a
+                # done marker (and adding it to ``already``) would strand it.
+                backfill_sources = legacy_dst_sources - failed_sources
+                for src_path in sorted(backfill_sources):
                     await storage.append_knowledge_log(
                         KnowledgeLogEntry(
                             ts=ts,
@@ -169,7 +181,7 @@ async def synthesize(
                             note="backfilled from legacy per-page synth rows",
                         )
                     )
-                already |= legacy_dst_sources
+                already |= backfill_sources
 
         report = SynthReport()
         tmpl = prompts.resolve(
@@ -344,6 +356,19 @@ async def synthesize(
                     # run (cancellation is not "continue with the next page").
                     with contextlib.suppress(Exception):
                         await storage.deactivate_document(doc_id)
+                    # Invalidate the source's prior ``synth_source_done`` too,
+                    # or a cancelled ``--all`` re-synth would strand the
+                    # deactivated page behind the stale done marker. Mirrors
+                    # the Exception path's ``synth_source_failed`` marker
+                    # (codex review round 2).
+                    with contextlib.suppress(Exception):
+                        await storage.append_knowledge_log(
+                            KnowledgeLogEntry(
+                                ts=time.time(),
+                                action="synth_source_failed",
+                                src=src.path,
+                            )
+                        )
                     raise
                 except Exception as e:
                     # A hard persist failure (replace_chunks / replace_links_from

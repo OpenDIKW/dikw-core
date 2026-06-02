@@ -284,6 +284,100 @@ async def test_forced_resynth_persist_failure_invalidates_prior_done_marker(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_forced_resynth_invalidates_prior_done_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation mid-persist during a ``force_all`` re-synth must ALSO
+    invalidate the source's prior ``synth_source_done`` (write a
+    ``synth_source_failed`` marker before re-raising), so the deactivated page
+    is recoverable by the next default synth instead of stranded behind the
+    stale done marker. (codex review round 2 P1.)"""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+    llm = ScriptedLLM(_SCRIPT)
+
+    first = await api.synthesize(wiki, llm=llm, embedder=embedder)
+    assert first.created == 3
+
+    fail_doc_id = api._doc_id_for(api.Layer.KNOWLEDGE, _FAIL_PATH)
+    _patch_persist_failure(monkeypatch, fail_doc_id, asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await api.synthesize(wiki, llm=llm, embedder=embedder, force_all=True)
+
+    monkeypatch.undo()
+    await api.synthesize(wiki, llm=llm, embedder=embedder)
+
+    cfg, _root, storage = await api_synth._with_storage(wiki)
+    del cfg
+    try:
+        recovered = await storage.get_document(fail_doc_id)
+        assert recovered is not None and recovered.active is True, (
+            "a cancelled --all re-synth must not strand the deactivated page"
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_backfill_preserves_failed_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a legacy base (old per-page ``synth`` rows, no backfill sentinel), a
+    ``synth_source_failed`` marker must survive the one-time legacy backfill:
+    the backfill must NOT re-add the failed source to ``already`` via
+    ``legacy_dst_sources``, or the deactivated page is stranded. (codex review
+    round 2 P1.)"""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+    llm = ScriptedLLM(_SCRIPT)
+
+    # Simulate a legacy base: a per-page ``synth`` row for the source whose
+    # page we will fail, with NO ``synth_source_done`` and NO backfill
+    # sentinel (the pre-fan-out shape the backfill block migrates).
+    from dikw_core.schemas import KnowledgeLogEntry
+
+    cfg, _root, storage = await api_synth._with_storage(wiki)
+    del cfg
+    try:
+        await storage.append_knowledge_log(
+            KnowledgeLogEntry(
+                ts=1.0,
+                action="synth",
+                src="sources/notes/retrieval.md",
+                dst=_FAIL_PATH,
+            )
+        )
+    finally:
+        await storage.close()
+
+    # First new-pipeline run is force_all; the hybrid-retrieval page fails.
+    fail_doc_id = api._doc_id_for(api.Layer.KNOWLEDGE, _FAIL_PATH)
+    _patch_persist_failure(monkeypatch, fail_doc_id, RuntimeError("boom"))
+    forced = await api.synthesize(
+        wiki, llm=llm, embedder=embedder, force_all=True
+    )
+    assert [e.path for e in forced.persist_errors] == [_FAIL_PATH]
+
+    # Next default synth runs the legacy backfill. The failed source must NOT
+    # be marked done by it — it must be re-processed and the page rebuilt.
+    monkeypatch.undo()
+    await api.synthesize(wiki, llm=llm, embedder=embedder)
+
+    cfg, _root, storage = await api_synth._with_storage(wiki)
+    del cfg
+    try:
+        recovered = await storage.get_document(fail_doc_id)
+        assert recovered is not None and recovered.active is True, (
+            "legacy backfill must not resurrect a source with a "
+            "synth_source_failed marker"
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_synth_without_embedder_keeps_pages_active(tmp_path: Path) -> None:
     """Regression guard for the pending≠failure boundary: a synth run with no
     active embed version defers embedding (pages land with no vectors) but
