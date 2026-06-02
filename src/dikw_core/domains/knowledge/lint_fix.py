@@ -751,13 +751,20 @@ async def run_lint_apply(
             # with the synth path and D/W. A transient embed retry-skip does
             # NOT reach here (it returns chunks_pending without raising).
             #
-            # Recovery note: for a ``create_page`` op the file is already on
-            # disk, so a plain re-run of lint apply can't rebuild it — the
-            # create preflight sees the file and skips before Phase 1. This is
-            # the same K "no scan-based reindex" limitation documented in
-            # CLAUDE.md: re-run ``synth`` against the source, or remove the
-            # file and re-propose. Deactivating is still strictly better than
-            # the prior behaviour (an active, retrievable, half-written page).
+            # Recovery note: the deactivated page is surfaced in
+            # ``ApplyReport.persist_errors``. We deliberately do NOT write a
+            # ``synth_source_failed`` marker for the page's sources here (the
+            # way the synth path invalidates its own done markers): a lint fix
+            # is not reproducible by re-synthesis — synth regenerates the page
+            # from the D-source WITHOUT the lint edit — so auto-routing
+            # recovery through default ``synth`` would silently drop the
+            # user's fix. The on-disk file keeps the fix; recovery is
+            # ``synth --all`` (regenerates, fix lost) or the future
+            # ``dikw client reindex`` (re-persists the file as-is, fix
+            # preserved) — the same K "no scan-based reindex" limitation
+            # documented in CLAUDE.md. Deactivating is still strictly better
+            # than the prior behaviour (an active, retrievable, half-written
+            # page that leaks into retrieval).
             with contextlib.suppress(Exception):
                 await storage.deactivate_document(page_doc_id)
             persist_errors.append(
