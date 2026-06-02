@@ -559,6 +559,10 @@ async def run_lint_apply(
     applied: list[FixOperation] = []
     skipped: list[dict[str, Any]] = []
     persist_errors: list[dict[str, Any]] = []
+    # Phase-1 persist failures: their on-disk file was written (Phase 0) but
+    # the doc was deactivated, so they must be excluded from the reported
+    # ``knowledge_paths_changed`` (they are surfaced via ``persist_errors``).
+    persist_failed_paths: set[str] = set()
     paths_changed: set[str] = set()
     deleted_paths: set[str] = set()
     # Every path mutated by an in-pass op (whether write or delete) so
@@ -750,6 +754,10 @@ async def run_lint_apply(
             # it, and continue with the remaining changed pages — parity
             # with the synth path and D/W. A transient embed retry-skip does
             # NOT reach here (it returns chunks_pending without raising).
+            # The path is also dropped from ``knowledge_paths_changed`` below
+            # (it is reported via ``persist_errors`` instead) so the report
+            # doesn't claim a now-inactive page as a live change — mirroring
+            # synth, whose created/updated counters exclude failed pages.
             #
             # Recovery note: the deactivated page is surfaced in
             # ``ApplyReport.persist_errors``. We deliberately do NOT write a
@@ -770,6 +778,7 @@ async def run_lint_apply(
             persist_errors.append(
                 {"path": path, "message": f"{type(e).__name__}: {e}"}
             )
+            persist_failed_paths.add(path)
             continue
         chunks_embedded_total += result.chunks_embedded
         chunks_pending_total += result.chunks_pending_embedding
@@ -809,7 +818,9 @@ async def run_lint_apply(
         applied=applied,
         skipped=skipped,
         persist_errors=persist_errors,
-        knowledge_paths_changed=sorted(paths_changed | deleted_paths),
+        knowledge_paths_changed=sorted(
+            (paths_changed - persist_failed_paths) | deleted_paths
+        ),
         chunks_embedded=chunks_embedded_total,
         chunks_pending_embedding=chunks_pending_total,
     )

@@ -178,7 +178,10 @@ from every retrieval leg (`fts_search` / `vec_search` /
 four write entries enforce this at the call site: D in `api.ingest`'s
 `storage_error` arm, W in `write_wisdom_page`, and K in **both** synth's
 per-page loop and `lint_apply`'s Phase 1 loop (K was the last to gain
-it). A transient embed skip is *not* a failure — it leaves the page
+it). The same call sites also catch `asyncio.CancelledError` (a
+`BaseException` a bare `except Exception` would miss) — they deactivate
+the in-flight doc and re-raise, so a mid-persist cancellation can't strand
+a half-written `active=True` row either. A transient embed skip is *not* a failure — it leaves the page
 `active=True` with `chunks_pending_embedding > 0` for the resume scan.
 Recovery is layer-specific: D re-activates on the next ingest (it
 re-scans `sources/` and the early-skip arm falls through for

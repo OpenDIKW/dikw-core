@@ -360,7 +360,13 @@ async def synthesize(
                     # or a cancelled ``--all`` re-synth would strand the
                     # deactivated page behind the stale done marker. Mirrors
                     # the Exception path's ``synth_source_failed`` marker
-                    # (codex review round 2).
+                    # (codex review round 2). A rare double-cancellation (an
+                    # idempotent re-cancel or shutdown racing a user cancel)
+                    # landing on this await escapes ``suppress(Exception)`` and
+                    # skips the marker; we accept that window — it needs two
+                    # cancels inside a sub-await gap and only strands a
+                    # deactivated (non-retrievable) page, recoverable via the
+                    # same reindex path.
                     with contextlib.suppress(Exception):
                         await storage.append_knowledge_log(
                             KnowledgeLogEntry(
@@ -430,6 +436,12 @@ async def synthesize(
                 # recovery path. Withholding the new done marker alone is not
                 # enough: a ``synth --all`` re-synth of an already-done source
                 # would otherwise leave the stale done marker in place.
+                # Caveat: re-synth reactivates the page only if the LLM
+                # re-emits it at the same slug. If the next run produces a
+                # divergent page set (LLM non-determinism), the deactivated
+                # row + its on-disk ``.md`` diverge until ``dikw client
+                # reindex`` ships — the same no-reindex limitation that
+                # applies to K hand-edits.
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(
                         ts=time.time(),
@@ -469,6 +481,11 @@ async def synthesize(
                     "outcome": outcome_str,
                     "pages_persisted": persisted_for_src,
                     "groups": outcome.groups_processed,
+                    # A source whose page(s) failed persist still emits
+                    # ``outcome="no_pages"`` (the vocabulary is kept stable) —
+                    # this flag lets a stream-only consumer distinguish it from
+                    # a source that legitimately produced zero pages.
+                    "persist_failed": src_persist_failed,
                 },
             )
 

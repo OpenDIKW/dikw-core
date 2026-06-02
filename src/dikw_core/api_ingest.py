@@ -14,6 +14,7 @@ the ``api`` facade. ``api`` re-exports ``ingest`` (public, in ``__all__``).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import time
@@ -311,6 +312,19 @@ async def ingest(
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(ts=time.time(), action="ingest", src=logical_path)
                 )
+            except asyncio.CancelledError:
+                # CancelledError inherits from BaseException, so the
+                # ``except Exception`` below misses it. ``upsert_document``
+                # may already have committed the doc row (``active=True``)
+                # before the cancellation point, so deactivate the in-flight
+                # doc — otherwise the next ingest under an unchanged hash hits
+                # the early-skip arm above and the half-indexed doc stays
+                # active forever. Then re-raise to abort the run (cancellation
+                # is not "continue with the next file"). Parity with the K
+                # (synth / lint apply) and W cancel handlers.
+                with contextlib.suppress(Exception):
+                    await storage.deactivate_document(doc_id)
+                raise
             except Exception as e:
                 # Storage / chunking / asset materialisation raised
                 # mid-file. ``upsert_document`` may already have landed

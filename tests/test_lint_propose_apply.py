@@ -240,6 +240,12 @@ async def test_lint_apply_persist_failure_deactivates_page(
         "knowledge/concepts/source.md"
     ]
     assert "simulated link reconcile outage" in report.persist_errors[0]["message"]
+    # A page deactivated by a Phase-1 persist failure must NOT also be reported
+    # as a successfully-changed page — that would claim a now-inactive,
+    # unretrievable page as live. Parity with the synth path, whose
+    # created/updated counters exclude failed pages. The failure is surfaced
+    # via ``persist_errors`` instead.
+    assert "knowledge/concepts/source.md" not in report.knowledge_paths_changed
 
     monkeypatch.undo()
     _cfg, _root, storage = await original(populated_wiki)  # type: ignore[misc]

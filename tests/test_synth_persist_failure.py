@@ -25,6 +25,7 @@ from dikw_core import api, api_synth
 from dikw_core.providers import LLMResponse
 
 from .fakes import FakeEmbeddings, init_test_base
+from .test_progress_reporter import ListReporter
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -375,6 +376,37 @@ async def test_legacy_backfill_preserves_failed_source(
         )
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_source_progress_event_flags_persist_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-source synth progress event must flag a source whose page(s)
+    failed persist. Without this a source that failed every page emits
+    ``outcome="no_pages"`` — byte-identical to a source that legitimately
+    produced zero pages — so a stream-only consumer can't tell the two apart
+    (the failure is otherwise only in the report's ``persist_errors``)."""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    fail_doc_id = api._doc_id_for(api.Layer.KNOWLEDGE, _FAIL_PATH)
+    _patch_persist_failure(monkeypatch, fail_doc_id, RuntimeError("boom"))
+
+    reporter = ListReporter()
+    llm = ScriptedLLM(_SCRIPT)
+    await api.synthesize(wiki, llm=llm, embedder=embedder, reporter=reporter)
+
+    per_source = {
+        ev.payload["detail"]["path"]: ev.payload["detail"]
+        for ev in reporter.events
+        if ev.kind == "progress" and ev.payload.get("phase") == "synth"
+    }
+    # The source whose page failed must be flagged...
+    assert per_source["sources/notes/retrieval.md"]["persist_failed"] is True
+    # ...while the healthy sources are not.
+    assert per_source["sources/notes/dikw.md"]["persist_failed"] is False
 
 
 @pytest.mark.asyncio
