@@ -13,6 +13,7 @@ exercises both adapters. The flow:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -184,3 +185,137 @@ async def test_propose_apply_against_postgres(populated_wiki: Path) -> None:
             await conn.commit()
         finally:
             await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_lint_apply_persist_failure_deactivates_page(
+    populated_wiki: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hard storage failure during lint-apply Phase 1 must deactivate the
+    in-flight page and record it in ``ApplyReport.persist_errors`` instead of
+    aborting the apply with a half-written-but-active page — parity with the
+    synth path and with D/W."""
+    from dikw_core import api_lint
+
+    _cfg, _root, storage = await api._with_storage(populated_wiki)
+    try:
+        for path, title in [
+            ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+            ("knowledge/concepts/source.md", "Source"),
+        ]:
+            await storage.upsert_document(
+                DocumentRecord(
+                    doc_id=_wiki_doc_id(path), path=path, title=title,
+                    hash=f"hash-{path}", mtime=0.0,
+                    layer=Layer.KNOWLEDGE, active=True,
+                )
+            )
+    finally:
+        await storage.close()
+
+    proposal_report = await api.lint_propose(
+        populated_wiki, rule="broken_wikilink", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+
+    fail_doc_id = _wiki_doc_id("knowledge/concepts/source.md")
+    original = api_lint._with_storage
+
+    async def patched(path: object) -> object:
+        cfg, root, storage = await original(path)  # type: ignore[arg-type]
+        orig_rlf = storage.replace_links_from
+
+        async def maybe_boom(doc_id: object, resolved: object) -> object:
+            if doc_id == fail_doc_id:
+                raise RuntimeError("simulated link reconcile outage")
+            return await orig_rlf(doc_id, resolved)  # type: ignore[arg-type]
+
+        storage.replace_links_from = maybe_boom  # type: ignore[method-assign]
+        return cfg, root, storage
+
+    monkeypatch.setattr(api_lint, "_with_storage", patched)
+
+    # Must NOT raise — the failing page is deactivated + recorded.
+    report = await api.lint_apply(populated_wiki, proposal_report=proposal_report)
+    assert [e["path"] for e in report.persist_errors] == [
+        "knowledge/concepts/source.md"
+    ]
+    assert "simulated link reconcile outage" in report.persist_errors[0]["message"]
+    # A page deactivated by a Phase-1 persist failure must NOT also be reported
+    # as a successfully-changed page — that would claim a now-inactive,
+    # unretrievable page as live. Parity with the synth path, whose
+    # created/updated counters exclude failed pages. The failure is surfaced
+    # via ``persist_errors`` instead.
+    assert "knowledge/concepts/source.md" not in report.knowledge_paths_changed
+
+    monkeypatch.undo()
+    _cfg, _root, storage = await original(populated_wiki)  # type: ignore[misc]
+    try:
+        doc = await storage.get_document(fail_doc_id)
+        assert doc is not None and doc.active is False, (
+            "a page whose lint-apply persist failed must be deactivated"
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_lint_apply_persist_cancelled_deactivates_and_reraises(
+    populated_wiki: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``asyncio.CancelledError`` (a ``BaseException``) mid lint-apply Phase 1
+    must still deactivate the in-flight page and then re-raise to abort the
+    apply — the bare ``except Exception`` arm misses it. Parity with the synth
+    and D cancel handlers."""
+    from dikw_core import api_lint
+
+    _cfg, _root, storage = await api._with_storage(populated_wiki)
+    try:
+        for path, title in [
+            ("knowledge/concepts/foo-bar.md", "Foo Bar"),
+            ("knowledge/concepts/source.md", "Source"),
+        ]:
+            await storage.upsert_document(
+                DocumentRecord(
+                    doc_id=_wiki_doc_id(path), path=path, title=title,
+                    hash=f"hash-{path}", mtime=0.0,
+                    layer=Layer.KNOWLEDGE, active=True,
+                )
+            )
+    finally:
+        await storage.close()
+
+    proposal_report = await api.lint_propose(
+        populated_wiki, rule="broken_wikilink", limit=10
+    )
+    assert len(proposal_report.proposals) == 1
+
+    fail_doc_id = _wiki_doc_id("knowledge/concepts/source.md")
+    original = api_lint._with_storage
+
+    async def patched(path: object) -> object:
+        cfg, root, storage = await original(path)  # type: ignore[arg-type]
+        orig_rlf = storage.replace_links_from
+
+        async def maybe_cancel(doc_id: object, resolved: object) -> object:
+            if doc_id == fail_doc_id:
+                raise asyncio.CancelledError()
+            return await orig_rlf(doc_id, resolved)  # type: ignore[arg-type]
+
+        storage.replace_links_from = maybe_cancel  # type: ignore[method-assign]
+        return cfg, root, storage
+
+    monkeypatch.setattr(api_lint, "_with_storage", patched)
+
+    with pytest.raises(asyncio.CancelledError):
+        await api.lint_apply(populated_wiki, proposal_report=proposal_report)
+
+    monkeypatch.undo()
+    _cfg, _root, storage = await original(populated_wiki)  # type: ignore[misc]
+    try:
+        doc = await storage.get_document(fail_doc_id)
+        assert doc is not None and doc.active is False, (
+            "cancellation mid lint-apply persist must still deactivate the page"
+        )
+    finally:
+        await storage.close()

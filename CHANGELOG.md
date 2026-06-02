@@ -5,6 +5,56 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Fixed
+
+- **K-layer persist is now fault-tolerant via `documents.active`, matching D
+  and W.** A hard storage failure mid-`persist_knowledge` (a permanent
+  `ProviderError` from inline embed, or `replace_chunks` /
+  `replace_links_from` / `replace_provenance_from` raising) previously left a
+  half-written knowledge page with `active=True` that still surfaced in
+  retrieval, and aborted the whole synth / lint-apply run. Now both K write
+  paths — synth's per-page loop and `lint apply`'s Phase 1 loop — catch the
+  exception, `deactivate_document` the in-flight page (so it is hidden from
+  `fts_search` / `vec_search` / the wikilink graph leg / `read_page` /
+  `list_pages`), record it, and continue with the remaining pages. This is the
+  same deactivate-on-failure contract D (`api.ingest`) and W
+  (`write_wisdom_page`) already enforced. A transient embed retry-skip is
+  **not** treated as a failure — the page stays `active=True` with
+  `chunks_pending_embedding > 0` for the next ingest's resume scan.
+- **A failed page invalidates its source's `synth_source_done` marker.** Synth
+  writes a new `synth_source_failed` knowledge_log marker when a page in a
+  source failed to persist; it invalidates any prior `synth_source_done` for
+  that source (markers apply in log order, last-writer-wins), so the next
+  default `dikw client synth` re-processes the source and rebuilds the page
+  parked inactive — even after a `synth --all` re-synth. K has no scan-based
+  reindex, so this is the recovery path for a transient failure.
+- **D (`api.ingest`) now deactivates the in-flight doc on cancellation too.**
+  `asyncio.CancelledError` inherits from `BaseException`, so the per-file
+  `except Exception` arm missed it: a cancel arriving mid-`persist_source`
+  (after `upsert_document` committed `active=True`) left a half-indexed doc
+  active forever, since the next ingest's unchanged-hash early-skip kept it
+  stranded. D now catches cancellation, deactivates, and re-raises — closing
+  the last gap so the deactivate-on-failure invariant holds uniformly across
+  D / K / W for both hard exceptions and cancellation.
+- **lint apply no longer reports a persist-failed page as a live change.** A
+  page deactivated by a Phase-1 persist failure is now excluded from
+  `ApplyReport.knowledge_paths_changed` (it is surfaced via `persist_errors`
+  instead), matching synth — whose `created` / `updated` counters already
+  excluded failed pages.
+
+### Added
+
+- `SynthReport.persist_errors` (tuple of `PagePersistError{path, message}`) and
+  `ApplyReport.persist_errors` (list of `{path, message}`) surface pages
+  deactivated by a mid-pipeline persist failure. The CLI renders them as a
+  `path | message` table under the synth / lint-apply report.
+- Synth's per-source progress event carries a `persist_failed` boolean in its
+  `detail`, so a stream-only consumer can tell a source whose pages failed
+  persist (still emitted as `outcome="no_pages"`, vocabulary kept stable) apart
+  from one that legitimately produced zero pages.
+
 ## 0.5.0 — configurable knowledge taxonomy + overridable prompts; drop index.md/log.md
 
 This release generalizes the fixed K-layer classification into a

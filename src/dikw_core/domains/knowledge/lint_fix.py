@@ -24,6 +24,7 @@ The contract is:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import datetime as _dt
@@ -43,6 +44,7 @@ from ...providers.base import EmbeddingProvider, LLMProvider
 from ...schemas import Layer
 from ...storage.base import Storage
 from ..data.hashing import hash_bytes, hash_file
+from ..data.path_norm import doc_id_for
 from ..info.tokenize import CjkTokenizer
 from .links import build_fuzzy_index, parse_links, resolve_links
 from .lint import LintKind
@@ -163,6 +165,12 @@ class ApplyReport(BaseModel):
     # the resume scan picks up the deferred work on the next ingest.
     chunks_embedded: int = 0
     chunks_pending_embedding: int = 0
+    # Pages whose Phase-1 persist raised mid-pipeline; each was
+    # deactivated (``active=False``) so it stays out of retrieval, and the
+    # apply continued with the remaining changed pages — parity with the
+    # synth path (``SynthReport.persist_errors``) and D/W. Each entry is
+    # ``{"path": str, "message": str}``.
+    persist_errors: list[dict[str, Any]] = Field(default_factory=list)
     # The source ``lint.propose`` task id that produced the proposals
     # we just applied. Server runners stamp this in so the proposals
     # listing in the CLI can show which proposal tasks have been
@@ -550,6 +558,11 @@ async def run_lint_apply(
 
     applied: list[FixOperation] = []
     skipped: list[dict[str, Any]] = []
+    persist_errors: list[dict[str, Any]] = []
+    # Phase-1 persist failures: their on-disk file was written (Phase 0) but
+    # the doc was deactivated, so they must be excluded from the reported
+    # ``knowledge_paths_changed`` (they are surfaced via ``persist_errors``).
+    persist_failed_paths: set[str] = set()
     paths_changed: set[str] = set()
     deleted_paths: set[str] = set()
     # Every path mutated by an in-pass op (whether write or delete) so
@@ -711,19 +724,62 @@ async def run_lint_apply(
     for path in sorted(paths_changed):
         if not (base_root / path).resolve().is_file():
             continue
-        result = await persist_knowledge(
-            storage=storage,
-            root=base_root,
-            path=path,
-            embedder=embedder,
-            embedding_model=embedding_model,
-            text_version_id=text_version_id,
-            cjk_tokenizer=cjk_tokenizer,
-            title_to_path=title_to_path,
-            fuzzy_index=fuzzy_index,
-            retries=embedding_error_retries,
-            backoff_seconds=embedding_error_retry_backoff_seconds,
-        )
+        page_doc_id = doc_id_for(Layer.KNOWLEDGE, path)
+        try:
+            result = await persist_knowledge(
+                storage=storage,
+                root=base_root,
+                path=path,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                text_version_id=text_version_id,
+                cjk_tokenizer=cjk_tokenizer,
+                title_to_path=title_to_path,
+                fuzzy_index=fuzzy_index,
+                retries=embedding_error_retries,
+                backoff_seconds=embedding_error_retry_backoff_seconds,
+            )
+        except asyncio.CancelledError:
+            # CancelledError inherits from BaseException, so the
+            # ``except Exception`` below misses it. Deactivate the in-flight
+            # page so cancellation doesn't strand a half-written-but-active
+            # doc, then re-raise to abort the apply.
+            with contextlib.suppress(Exception):
+                await storage.deactivate_document(page_doc_id)
+            raise
+        except Exception as e:
+            # A hard persist failure leaves the doc row + chunks committed
+            # but links/provenance unreconciled. Deactivate so the
+            # half-written page is hidden from retrieval + read_page, record
+            # it, and continue with the remaining changed pages — parity
+            # with the synth path and D/W. A transient embed retry-skip does
+            # NOT reach here (it returns chunks_pending without raising).
+            # The path is also dropped from ``knowledge_paths_changed`` below
+            # (it is reported via ``persist_errors`` instead) so the report
+            # doesn't claim a now-inactive page as a live change — mirroring
+            # synth, whose created/updated counters exclude failed pages.
+            #
+            # Recovery note: the deactivated page is surfaced in
+            # ``ApplyReport.persist_errors``. We deliberately do NOT write a
+            # ``synth_source_failed`` marker for the page's sources here (the
+            # way the synth path invalidates its own done markers): a lint fix
+            # is not reproducible by re-synthesis — synth regenerates the page
+            # from the D-source WITHOUT the lint edit — so auto-routing
+            # recovery through default ``synth`` would silently drop the
+            # user's fix. The on-disk file keeps the fix; recovery is
+            # ``synth --all`` (regenerates, fix lost) or the future
+            # ``dikw client reindex`` (re-persists the file as-is, fix
+            # preserved) — the same K "no scan-based reindex" limitation
+            # documented in CLAUDE.md. Deactivating is still strictly better
+            # than the prior behaviour (an active, retrievable, half-written
+            # page that leaks into retrieval).
+            with contextlib.suppress(Exception):
+                await storage.deactivate_document(page_doc_id)
+            persist_errors.append(
+                {"path": path, "message": f"{type(e).__name__}: {e}"}
+            )
+            persist_failed_paths.add(path)
+            continue
         chunks_embedded_total += result.chunks_embedded
         chunks_pending_total += result.chunks_pending_embedding
 
@@ -761,7 +817,10 @@ async def run_lint_apply(
     return ApplyReport(
         applied=applied,
         skipped=skipped,
-        knowledge_paths_changed=sorted(paths_changed | deleted_paths),
+        persist_errors=persist_errors,
+        knowledge_paths_changed=sorted(
+            (paths_changed - persist_failed_paths) | deleted_paths
+        ),
         chunks_embedded=chunks_embedded_total,
         chunks_pending_embedding=chunks_pending_total,
     )

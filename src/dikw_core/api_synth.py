@@ -18,15 +18,17 @@ never the ``api`` facade. ``api`` re-exports ``synthesize`` (public, in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import prompts
 from .api_core import _with_storage
-from .api_types import SynthReport
+from .api_types import PagePersistError, SynthReport
 from .config import DikwConfig
 from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
@@ -123,12 +125,31 @@ async def synthesize(
             # exists, do not backfill" state.
             has_legacy_backfill_sentinel = False
             legacy_dst_sources: set[str] = set()
+            # Sources carrying a ``synth_source_failed`` marker. A failed
+            # marker is always newer than any legacy per-page ``synth`` row, so
+            # such a source must be excluded from the one-time legacy backfill
+            # below — otherwise the backfill would re-mark it done and strand
+            # the page its failure deactivated (codex review round 2).
+            failed_sources: set[str] = set()
             for entry in await storage.list_knowledge_log():
                 if entry.action == "synth_source_done":
                     if entry.src == _LEGACY_BACKFILL_SENTINEL:
                         has_legacy_backfill_sentinel = True
                     elif entry.src:
                         already.add(entry.src)
+                elif entry.action == "synth_source_failed" and entry.src:
+                    # A page persist failure invalidates a prior
+                    # ``synth_source_done`` for the same source.
+                    # ``list_knowledge_log`` is ordered ``ts ASC, id ASC``, so
+                    # a failed marker appended after the done marker discards
+                    # it (last-writer-wins); a later successful synth re-adds
+                    # the done marker and re-populates this set. Without this,
+                    # a ``synth --all`` re-synth whose page failed would leave
+                    # the stale done marker in place and the next default
+                    # synth would skip the source, stranding the deactivated
+                    # page (K has no scan-based reindex).
+                    already.discard(entry.src)
+                    failed_sources.add(entry.src)
                 elif entry.action == "synth" and entry.src and entry.dst:
                     legacy_dst_sources.add(entry.src)
             if not has_legacy_backfill_sentinel:
@@ -146,7 +167,12 @@ async def synthesize(
                         ),
                     )
                 )
-                for src_path in sorted(legacy_dst_sources):
+                # Exclude sources with a ``synth_source_failed`` marker: that
+                # marker postdates the legacy synth rows and means the source
+                # has a deactivated page awaiting rebuild, so backfilling a
+                # done marker (and adding it to ``already``) would strand it.
+                backfill_sources = legacy_dst_sources - failed_sources
+                for src_path in sorted(backfill_sources):
                     await storage.append_knowledge_log(
                         KnowledgeLogEntry(
                             ts=ts,
@@ -155,7 +181,7 @@ async def synthesize(
                             note="backfilled from legacy per-page synth rows",
                         )
                     )
-                already |= legacy_dst_sources
+                already |= backfill_sources
 
         report = SynthReport()
         tmpl = prompts.resolve(
@@ -301,26 +327,80 @@ async def synthesize(
 
             created_for_src = 0
             updated_for_src = 0
+            src_persist_failed = False
             for page in deduped:
-                pre_existing = await storage.get_document(
-                    _doc_id_for(Layer.KNOWLEDGE, page.path)
-                )
+                doc_id = _doc_id_for(Layer.KNOWLEDGE, page.path)
+                pre_existing = await storage.get_document(doc_id)
                 write_page(root, page)
-                page_unresolved = await _persist_knowledge_page(
-                    storage=storage,
-                    root=root,
-                    page=page,
-                    embedder=embedder,
-                    embedding_model=text_embed_model,
-                    text_version_id=text_version_id,
-                    cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
-                    title_to_path=title_to_path,
-                    fuzzy_index=fuzzy_index,
-                    embedding_error_retries=cfg.provider.embedding_error_retries,
-                    embedding_error_retry_backoff_seconds=(
-                        cfg.provider.embedding_error_retry_backoff_seconds
-                    ),
-                )
+                try:
+                    page_unresolved = await _persist_knowledge_page(
+                        storage=storage,
+                        root=root,
+                        page=page,
+                        embedder=embedder,
+                        embedding_model=text_embed_model,
+                        text_version_id=text_version_id,
+                        cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
+                        title_to_path=title_to_path,
+                        fuzzy_index=fuzzy_index,
+                        embedding_error_retries=cfg.provider.embedding_error_retries,
+                        embedding_error_retry_backoff_seconds=(
+                            cfg.provider.embedding_error_retry_backoff_seconds
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    # CancelledError inherits from BaseException, so the
+                    # ``except Exception`` below misses it. Still deactivate the
+                    # in-flight page so cancellation doesn't strand a
+                    # half-written-but-active doc, then re-raise to abort the
+                    # run (cancellation is not "continue with the next page").
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
+                    # Invalidate the source's prior ``synth_source_done`` too,
+                    # or a cancelled ``--all`` re-synth would strand the
+                    # deactivated page behind the stale done marker. Mirrors
+                    # the Exception path's ``synth_source_failed`` marker
+                    # (codex review round 2). A rare double-cancellation (an
+                    # idempotent re-cancel or shutdown racing a user cancel)
+                    # landing on this await escapes ``suppress(Exception)`` and
+                    # skips the marker; we accept that window — it needs two
+                    # cancels inside a sub-await gap and only strands a
+                    # deactivated (non-retrievable) page, recoverable via the
+                    # same reindex path.
+                    with contextlib.suppress(Exception):
+                        await storage.append_knowledge_log(
+                            KnowledgeLogEntry(
+                                ts=time.time(),
+                                action="synth_source_failed",
+                                src=src.path,
+                            )
+                        )
+                    raise
+                except Exception as e:
+                    # A hard persist failure (replace_chunks / replace_links_from
+                    # / replace_provenance_from raising, or a permanent
+                    # ProviderError from inline embed) leaves the doc row +
+                    # chunks committed but later steps unreconciled. Deactivate
+                    # so the half-written page is hidden from every retrieval leg
+                    # + read_page, then record and continue with the remaining
+                    # pages — parity with D (api.ingest) and W (write_wisdom_page).
+                    # A transient embed retry-skip does NOT reach here: it
+                    # returns chunks_pending without raising.
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
+                    src_persist_failed = True
+                    msg = f"{type(e).__name__}: {e}"
+                    report = _sr_replace(
+                        report,
+                        persist_errors=(
+                            *report.persist_errors,
+                            PagePersistError(path=page.path, message=msg),
+                        ),
+                    )
+                    await _reporter.partial(
+                        "page_error", {"path": page.path, "message": msg}
+                    )
+                    continue
                 if page_unresolved:
                     report = _sr_replace(
                         report,
@@ -346,14 +426,37 @@ async def synthesize(
             report = _sr_replace(
                 report, sources_processed=report.sources_processed + 1
             )
-            # Mark the source as fully synthesised so default ``synth``
-            # skips it next run. Skip the marker when any group raised
-            # a hard ``SynthesisError`` — those failures should be
-            # retried (the LLM may produce parseable output next time).
-            # Partial-parse outcomes don't count: the surviving pages
-            # were persisted, retrying would just hit the same partial
-            # response and re-emit the warning to ``knowledge_log``.
-            if outcome.parse_errors == 0:
+            if src_persist_failed:
+                # A page was deactivated by a persist failure. Record a
+                # ``synth_source_failed`` marker that invalidates any prior
+                # ``synth_source_done`` for this source (applied in log order
+                # by the ``already`` computation above), so the next default
+                # synth re-processes the source and rebuilds the deactivated
+                # page — K has no scan-based reindex, so this is the only
+                # recovery path. Withholding the new done marker alone is not
+                # enough: a ``synth --all`` re-synth of an already-done source
+                # would otherwise leave the stale done marker in place.
+                # Caveat: re-synth reactivates the page only if the LLM
+                # re-emits it at the same slug. If the next run produces a
+                # divergent page set (LLM non-determinism), the deactivated
+                # row + its on-disk ``.md`` diverge until ``dikw client
+                # reindex`` ships — the same no-reindex limitation that
+                # applies to K hand-edits.
+                await storage.append_knowledge_log(
+                    KnowledgeLogEntry(
+                        ts=time.time(),
+                        action="synth_source_failed",
+                        src=src.path,
+                    )
+                )
+            elif outcome.parse_errors == 0:
+                # Mark the source as fully synthesised so default ``synth``
+                # skips it next run. Skip the marker when any group raised
+                # a hard ``SynthesisError`` — those failures should be
+                # retried (the LLM may produce parseable output next time).
+                # Partial-parse outcomes don't count: the surviving pages
+                # were persisted, retrying would just hit the same partial
+                # response and re-emit the warning to ``knowledge_log``.
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(
                         ts=time.time(),
@@ -378,6 +481,11 @@ async def synthesize(
                     "outcome": outcome_str,
                     "pages_persisted": persisted_for_src,
                     "groups": outcome.groups_processed,
+                    # A source whose page(s) failed persist still emits
+                    # ``outcome="no_pages"`` (the vocabulary is kept stable) —
+                    # this flag lets a stream-only consumer distinguish it from
+                    # a source that legitimately produced zero pages.
+                    "persist_failed": src_persist_failed,
                 },
             )
 
@@ -958,7 +1066,7 @@ async def _synth_pages_from_source(
     )
 
 
-def _sr_replace(r: SynthReport, **kw: int) -> SynthReport:
+def _sr_replace(r: SynthReport, **kw: Any) -> SynthReport:
     return dataclasses.replace(r, **kw)
 
 

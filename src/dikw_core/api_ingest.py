@@ -14,6 +14,7 @@ the ``api`` facade. ``api`` re-exports ``ingest`` (public, in ``__all__``).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import time
@@ -242,6 +243,16 @@ async def ingest(
                 )
                 continue
 
+            # Gate the deactivate-on-failure arms below to a failure *inside*
+            # ``persist_source`` — the only step that can leave a partial doc
+            # row (its multi-call pipeline commits ``active=True`` first, then
+            # chunks / links / provenance separately). A failure before it
+            # (asset materialization) leaves any prior complete row intact; a
+            # failure after it (the trailing ``append_knowledge_log`` history
+            # marker) means the doc is already fully indexed — deactivating in
+            # either case would needlessly hide a good row until the next
+            # ingest. (codex review P2.)
+            doc_row_may_be_partial = False
             try:
                 # Materialize image references before chunking so asset_ids
                 # are available when chunk_asset_refs land. Decoupled from
@@ -277,6 +288,7 @@ async def ingest(
                     except NotSupported:
                         ref_assets = {}
 
+                doc_row_may_be_partial = True
                 persist_result = await persist_source(
                     storage=storage,
                     parsed=parsed,
@@ -288,6 +300,7 @@ async def ingest(
                     ref_assets=ref_assets,
                     cjk_tokenizer=cfg.retrieval.cjk_tokenizer,
                 )
+                doc_row_may_be_partial = False
 
                 # Queue chunks for embedding only when a text embedder + version
                 # is wired up. Chunk vectors live exclusively in the text
@@ -311,17 +324,33 @@ async def ingest(
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(ts=time.time(), action="ingest", src=logical_path)
                 )
+            except asyncio.CancelledError:
+                # CancelledError inherits from BaseException, so the
+                # ``except Exception`` below misses it. If the cancellation
+                # landed inside ``persist_source``, ``upsert_document`` may
+                # already have committed the doc row (``active=True``) ahead of
+                # the chunks / links it didn't finish — deactivate so the next
+                # ingest under an unchanged hash doesn't keep the half-indexed
+                # doc active forever (the early-skip arm above falls through for
+                # ``active=False`` rows). Then re-raise to abort the run
+                # (cancellation is not "continue with the next file"). Parity
+                # with the K (synth / lint apply) and W cancel handlers.
+                if doc_row_may_be_partial:
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
+                raise
             except Exception as e:
-                # Storage / chunking / asset materialisation raised
-                # mid-file. ``upsert_document`` may already have landed
-                # the doc row before the failure point — without an
-                # explicit deactivation, the next ingest under an
-                # unchanged content hash would hit the early-skip arm
-                # above and the orphaned doc would stay half-indexed
-                # forever. Deactivating bypasses the skip on retry so
-                # the doc gets re-processed end-to-end.
-                with contextlib.suppress(Exception):
-                    await storage.deactivate_document(doc_id)
+                # Storage / chunking raised inside ``persist_source``:
+                # ``upsert_document`` may already have landed the doc row
+                # before the failure point — without an explicit deactivation,
+                # the next ingest under an unchanged content hash would hit the
+                # early-skip arm above and the orphaned doc would stay
+                # half-indexed forever. Deactivating bypasses the skip on retry
+                # so the doc gets re-processed end-to-end. (Guarded so a failure
+                # before/after persist doesn't hide a complete row — see above.)
+                if doc_row_may_be_partial:
+                    with contextlib.suppress(Exception):
+                        await storage.deactivate_document(doc_id)
                 report = await _record_ingest_error(
                     report,
                     _reporter,

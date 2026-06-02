@@ -17,6 +17,7 @@ from dikw_core.client.progress import (
     render_health_report,
     render_import_report,
     render_ingest_report,
+    render_persist_errors,
     render_retrieve_table,
     render_status,
     render_synth_eval_report,
@@ -260,6 +261,33 @@ def test_render_synth_report_smoke() -> None:
     out = console.export_text()
     assert "dikw client synth" in out
     assert "candidates" in out
+
+
+def test_render_persist_errors_smoke() -> None:
+    """``render_persist_errors`` lists each deactivated page as a
+    ``path | message`` row; non-Mapping entries are skipped defensively."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_persist_errors(
+        console,
+        [
+            {
+                "path": "knowledge/concept/hybrid-retrieval.md",
+                "message": "RuntimeError: link reconcile outage",
+            },
+            "not-a-mapping",  # type: ignore[list-item]
+        ],
+    )
+    out = console.export_text()
+    assert "persist errors" in out
+    assert "hybrid-retrieval.md" in out
+    assert "link reconcile outage" in out
+
+
+def test_render_persist_errors_empty_is_noop() -> None:
+    """An empty list renders nothing — the common success path."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_persist_errors(console, [])
+    assert console.export_text().strip() == ""
 
 
 def test_render_synth_eval_report_smoke() -> None:
