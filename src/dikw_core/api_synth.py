@@ -131,6 +131,18 @@ async def synthesize(
                         has_legacy_backfill_sentinel = True
                     elif entry.src:
                         already.add(entry.src)
+                elif entry.action == "synth_source_failed" and entry.src:
+                    # A page persist failure invalidates a prior
+                    # ``synth_source_done`` for the same source.
+                    # ``list_knowledge_log`` is ordered ``ts ASC, id ASC``, so
+                    # a failed marker appended after the done marker discards
+                    # it (last-writer-wins); a later successful synth re-adds
+                    # the done marker and re-populates this set. Without this,
+                    # a ``synth --all`` re-synth whose page failed would leave
+                    # the stale done marker in place and the next default
+                    # synth would skip the source, stranding the deactivated
+                    # page (K has no scan-based reindex).
+                    already.discard(entry.src)
                 elif entry.action == "synth" and entry.src and entry.dst:
                     legacy_dst_sources.add(entry.src)
             if not has_legacy_backfill_sentinel:
@@ -383,18 +395,31 @@ async def synthesize(
             report = _sr_replace(
                 report, sources_processed=report.sources_processed + 1
             )
-            # Mark the source as fully synthesised so default ``synth``
-            # skips it next run. Skip the marker when any group raised
-            # a hard ``SynthesisError`` — those failures should be
-            # retried (the LLM may produce parseable output next time).
-            # Partial-parse outcomes don't count: the surviving pages
-            # were persisted, retrying would just hit the same partial
-            # response and re-emit the warning to ``knowledge_log``.
-            # Also skip it when a page's persist failed and was deactivated:
-            # K has no scan-based reindex, so re-running default synth is the
-            # only recovery path — marking the source done would strand the
-            # deactivated page forever.
-            if outcome.parse_errors == 0 and not src_persist_failed:
+            if src_persist_failed:
+                # A page was deactivated by a persist failure. Record a
+                # ``synth_source_failed`` marker that invalidates any prior
+                # ``synth_source_done`` for this source (applied in log order
+                # by the ``already`` computation above), so the next default
+                # synth re-processes the source and rebuilds the deactivated
+                # page — K has no scan-based reindex, so this is the only
+                # recovery path. Withholding the new done marker alone is not
+                # enough: a ``synth --all`` re-synth of an already-done source
+                # would otherwise leave the stale done marker in place.
+                await storage.append_knowledge_log(
+                    KnowledgeLogEntry(
+                        ts=time.time(),
+                        action="synth_source_failed",
+                        src=src.path,
+                    )
+                )
+            elif outcome.parse_errors == 0:
+                # Mark the source as fully synthesised so default ``synth``
+                # skips it next run. Skip the marker when any group raised
+                # a hard ``SynthesisError`` — those failures should be
+                # retried (the LLM may produce parseable output next time).
+                # Partial-parse outcomes don't count: the surviving pages
+                # were persisted, retrying would just hit the same partial
+                # response and re-emit the warning to ``knowledge_log``.
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(
                         ts=time.time(),

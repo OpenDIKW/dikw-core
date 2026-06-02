@@ -239,6 +239,51 @@ async def test_synth_persist_cancelled_deactivates_and_reraises(
 
 
 @pytest.mark.asyncio
+async def test_forced_resynth_persist_failure_invalidates_prior_done_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source synthesized successfully earlier (so it carries a
+    ``synth_source_done`` marker) and then re-synthesized with
+    ``force_all=True`` where its page fails persist must NOT stay marked done.
+    Withholding the *new* marker is not enough — the *prior* marker would
+    still make the next default synth skip the source, stranding the
+    deactivated page. The failure must invalidate the stale done marker so
+    the recovery path actually fires. (codex review P1.)"""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+    llm = ScriptedLLM(_SCRIPT)
+
+    # 1. Clean synth → every source gets a synth_source_done marker.
+    first = await api.synthesize(wiki, llm=llm, embedder=embedder)
+    assert first.created == 3
+
+    # 2. Forced re-synth where the hybrid-retrieval page fails persist.
+    fail_doc_id = api._doc_id_for(api.Layer.KNOWLEDGE, _FAIL_PATH)
+    _patch_persist_failure(monkeypatch, fail_doc_id, RuntimeError("boom"))
+    forced = await api.synthesize(
+        wiki, llm=llm, embedder=embedder, force_all=True
+    )
+    assert [e.path for e in forced.persist_errors] == [_FAIL_PATH]
+
+    # 3. Next DEFAULT synth must re-process the failed source (its stale done
+    #    marker is invalidated) and rebuild the deactivated page.
+    monkeypatch.undo()
+    third = await api.synthesize(wiki, llm=llm, embedder=embedder)
+    assert third.created + third.updated == 1, (
+        "the failed source must be retried by default synth, not skipped"
+    )
+
+    cfg, _root, storage = await api_synth._with_storage(wiki)
+    del cfg
+    try:
+        recovered = await storage.get_document(fail_doc_id)
+        assert recovered is not None and recovered.active is True
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_synth_without_embedder_keeps_pages_active(tmp_path: Path) -> None:
     """Regression guard for the pending≠failure boundary: a synth run with no
     active embed version defers embedding (pages land with no vectors) but

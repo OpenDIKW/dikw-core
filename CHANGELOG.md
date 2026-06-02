@@ -23,10 +23,13 @@ on each entry call out exactly what shape changes break.
   (`write_wisdom_page`) already enforced. A transient embed retry-skip is
   **not** treated as a failure — the page stays `active=True` with
   `chunks_pending_embedding > 0` for the next ingest's resume scan.
-- **Synth withholds the `synth_source_done` marker when a page in that source
-  failed to persist.** Because K has no scan-based reindex, this lets the next
-  default `dikw client synth` re-process the source and rebuild the page that
-  was parked inactive — the recovery path for a transient failure.
+- **A failed page invalidates its source's `synth_source_done` marker.** Synth
+  writes a new `synth_source_failed` knowledge_log marker when a page in a
+  source failed to persist; it invalidates any prior `synth_source_done` for
+  that source (markers apply in log order, last-writer-wins), so the next
+  default `dikw client synth` re-processes the source and rebuilds the page
+  parked inactive — even after a `synth --all` re-synth. K has no scan-based
+  reindex, so this is the recovery path for a transient failure.
 
 ### Added
 

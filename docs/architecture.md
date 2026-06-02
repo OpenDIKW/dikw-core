@@ -182,9 +182,12 @@ it). A transient embed skip is *not* a failure — it leaves the page
 `active=True` with `chunks_pending_embedding > 0` for the resume scan.
 Recovery is layer-specific: D re-activates on the next ingest (it
 re-scans `sources/` and the early-skip arm falls through for
-`active=False` rows); K has no scan-based reindex, so synth withholds
-the source's `synth_source_done` marker when a page failed, letting the
-next default `synth` re-process and rebuild it. Synth surfaces failed
+`active=False` rows); K has no scan-based reindex, so when a page failed
+synth writes a `synth_source_failed` knowledge_log marker that invalidates
+any prior `synth_source_done` for that source (done/failed markers apply in
+`ts ASC, id ASC` log order, last-writer-wins — so even a `synth --all`
+re-synth that fails doesn't strand the page), letting the next default
+`synth` re-process and rebuild it. Synth surfaces failed
 pages as `SynthReport.persist_errors`; lint apply as
 `ApplyReport.persist_errors`.
 

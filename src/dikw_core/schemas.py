@@ -546,8 +546,18 @@ class KnowledgeLogEntry(BaseModel):
     # been processed without a hard parse error. Lets default ``synth``
     # skip done sources without misfiring on partial-failure or legal
     # zero-page responses (which never write a per-page ``synth`` row).
+    # ``synth_source_failed`` is the inverse marker: a page persist failed
+    # and was deactivated, so it invalidates any prior ``synth_source_done``
+    # for the same source (last-writer-wins in log order) and forces the next
+    # default synth to re-process and rebuild the deactivated page.
     action: Literal[
-        "ingest", "synth", "synth_source_done", "lint", "delete", "wisdom_write"
+        "ingest",
+        "synth",
+        "synth_source_done",
+        "synth_source_failed",
+        "lint",
+        "delete",
+        "wisdom_write",
     ]
     src: str | None = None
     dst: str | None = None
