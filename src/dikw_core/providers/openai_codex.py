@@ -365,11 +365,32 @@ class OpenAICodexLLM:
             # model authoritatively cleared). ``parts`` only carries the
             # done payload on the reducer-bug branch where ``final`` is
             # explicitly ``None``.
-            final_text = (
-                "".join(parts)
-                if final is None
-                else _extract_text_from_response(final)
-            )
+            #
+            # EXCEPTION (issue #160): the ChatGPT codex backend ships a
+            # terminal ``response.completed`` whose ``output`` is an EMPTY
+            # LIST (``[]`` — zero items) even though valid
+            # ``response.output_text.delta`` events already streamed the real
+            # answer (reproduced live: 90 token events / 332 chars, usage
+            # output_tokens=132, status "completed"). ``final`` is a well-
+            # formed Response (NOT the ``output=None`` reducer bug, which
+            # raises), so the code reached here and ``_extract_text_from_response``
+            # returns "" from the empty list — discarding a complete
+            # completion. When the final carries NO output items at all but
+            # deltas DID arrive, the streamed ``parts`` are authoritative.
+            # This is deliberately narrow: an explicit empty *message* item
+            # (``output=[message(output_text="")]`` — a non-empty list, a real
+            # cleared turn) keeps ``text=""`` because that output list is
+            # truthy, so the authoritative-empty-retraction contract above
+            # still holds.
+            extracted = "" if final is None else _extract_text_from_response(final)
+            if final is None:
+                final_text = "".join(parts)
+            elif extracted:
+                final_text = extracted
+            elif parts and not (getattr(final, "output", None) or []):
+                final_text = "".join(parts)
+            else:
+                final_text = extracted
 
             # Total-loss safeguard: when the reducer bug fires before any
             # text delta has arrived, there is no partial response to

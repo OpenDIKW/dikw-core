@@ -85,6 +85,23 @@ async def test_check_reports_embed_failure_distinctly_from_llm_failure(
     assert "refused" in report.embed.detail.lower()
 
 
+@pytest.mark.asyncio
+async def test_check_reports_llm_empty_completion_as_failure(wiki: Path) -> None:
+    """Issue #160: a provider that RETURNS an empty completion (without
+    raising) must fail the LLM probe. ``dikw client check --llm-only`` was
+    green during the codex misconfig because ``_probe_llm`` only checked that
+    ``complete()`` did not raise, never that it produced text — so a 227-source
+    synth ran against a provider that yields nothing and looked healthy. The
+    probe must verify the returned text is non-empty."""
+    report = await api.check_providers(
+        wiki, llm=FakeLLM(response_text=""), llm_only=True
+    )
+    assert not report.ok
+    assert report.llm is not None
+    assert not report.llm.ok
+    assert "empty" in report.llm.detail.lower()
+
+
 def test_cli_check_exits_nonzero_on_failure(
     asgi_client: Any,
     patch_transport_factory: Any,

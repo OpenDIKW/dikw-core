@@ -1039,6 +1039,74 @@ async def test_authoritative_empty_final_does_not_fall_back_to_parts(
     assert done[0].finish_reason == "stop"
 
 
+async def test_complete_stream_recovers_deltas_when_final_output_empty(
+    stream_captured: dict[str, Any],
+) -> None:
+    """Issue #160: the ChatGPT codex backend ships a terminal
+    ``response.completed`` whose ``output`` is an EMPTY LIST (``[]``) even
+    though valid ``response.output_text.delta`` events already streamed the
+    real answer. Trusting the empty final discards a complete completion —
+    reproduced live (90 token events / 332 chars dropped, usage
+    output_tokens=132). When the final carries NO output items but deltas
+    DID arrive, the streamed text is authoritative and must be surfaced.
+
+    This is distinct from ``test_authoritative_empty_final_does_not_fall_back_to_parts``
+    (final ``output=[message(output_text="")]`` — a non-empty list holding an
+    explicitly empty message), which stays ``text=""``: that output list is
+    truthy, so the empty-output-list fallback does not fire.
+    """
+    stream_captured["events"] = [
+        SimpleNamespace(type="response.output_text.delta", delta="<page>"),
+        SimpleNamespace(type="response.output_text.delta", delta="X</page>"),
+    ]
+    stream_captured["final"] = make_codex_response(
+        output=[], status="completed", input_tokens=85, output_tokens=132
+    )
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
+    )
+    events = await _drain(provider, system="s", user="u", model="gpt-5.5")
+    done = [e for e in events if e.type == "done"]
+    assert len(done) == 1
+    assert done[0].text == "<page>X</page>"
+    # A recovered completion is a clean stop, not a reducer-bug error.
+    assert done[0].finish_reason == "stop"
+
+
+async def test_complete_recovers_deltas_when_final_output_empty(
+    stream_captured: dict[str, Any],
+) -> None:
+    """``complete()`` collapse path inherits the empty-output-list recovery —
+    synth calls ``complete()``, not ``complete_stream()`` directly, so this is
+    the pin that actually guards #160 at the synth call site."""
+    stream_captured["events"] = [
+        SimpleNamespace(type="response.output_text.delta", delta="ok"),
+    ]
+    stream_captured["final"] = make_codex_response(output=[], status="completed")
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
+    )
+    resp = await provider.complete(system="s", user="u", model="gpt-5.5")
+    assert resp.text == "ok"
+    assert resp.finish_reason == "stop"
+
+
+async def test_empty_output_list_with_no_deltas_stays_empty(
+    stream_captured: dict[str, Any],
+) -> None:
+    """Guard the recovery's lower bound: a final with ``output=[]`` AND zero
+    streamed deltas is a genuinely empty turn — there is nothing to recover,
+    so ``text`` stays ``""`` (no fabrication)."""
+    stream_captured["events"] = []
+    stream_captured["final"] = make_codex_response(output=[], status="completed")
+    provider = OpenAICodexLLM(
+        base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
+    )
+    resp = await provider.complete(system="s", user="u", model="gpt-5.5")
+    assert resp.text == ""
+    assert resp.finish_reason == "stop"
+
+
 async def test_reducer_bug_fallback_warning_excludes_delta_text(
     failing_stream: dict[str, Any],
     caplog: pytest.LogCaptureFixture,

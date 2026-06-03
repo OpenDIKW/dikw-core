@@ -254,6 +254,19 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   before the reducer fired (auth / quota / refusal failures), the
   provider raises `ProviderError` instead of returning an empty
   response, so synth doesn't silently drop a source page.
+- **Empty-final-output recovery (issue #160).** A *different* codex
+  backend quirk: the terminal `response.completed` sometimes ships
+  `output = []` (an empty **list**, not `None` — so the reducer above
+  does *not* fire) even though valid `response.output_text.delta`
+  events already streamed the full answer. The SDK hands back a
+  well-formed final `Response`, so the provider used to trust it and
+  return `text=""`, discarding a complete completion (observed live:
+  every synth group returning `response_chars: 0` while the model had
+  actually produced `<page>` blocks). The provider now falls back to
+  the streamed delta text when the final carries **no output items at
+  all** but deltas did arrive. This is deliberately narrow: a final
+  holding an explicit empty *message* item (`output=[message("")]` — a
+  non-empty list, a real cleared turn) still surfaces as `text=""`.
 - **`synth` retries `ProviderError` per group, then skips.** Since
   0.4.0, a single `ProviderError` (the empty-response case above, or
   any other provider failure) on one source group no longer aborts the
