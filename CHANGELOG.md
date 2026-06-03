@@ -9,6 +9,26 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **`openai_codex` no longer drops a completion when the backend's final
+  response carries `output=[]` (issue #160).** The ChatGPT codex backend
+  sometimes ships a terminal `response.completed` whose `output` is an empty
+  **list** — distinct from the `output=None` reducer bug, so the SDK hands back
+  a well-formed `Response` and the provider trusted it, returning `text=""`
+  even though valid `response.output_text.delta` events had already streamed
+  the full answer (observed live: every synth group returning
+  `response_chars: 0` while the model had actually produced `<page>` blocks, so
+  `dikw client synth` reported `succeeded / created=0 / errors=0` and created
+  no `knowledge/` files). The provider now falls back to the streamed delta
+  text when the final response carries **no output items at all** but deltas
+  did arrive. Narrow by design: a final with an explicit empty *message* item
+  (`output=[message("")]` — a real cleared turn) still surfaces as `text=""`.
+- **`dikw client check --llm-only` now fails on an empty completion.**
+  `_probe_llm` previously reported `ok` whenever `complete()` did not raise,
+  never inspecting the returned text — so a provider that silently yields no
+  text (the #160 failure mode) passed the pre-flight check. The probe now
+  verifies the completion is non-empty and reports the `finish_reason` /
+  `output_tokens` when it isn't; the probe budget was raised (`max_tokens`
+  4 → 32) so a reasoning model isn't starved into a false-red.
 - **K-layer persist is now fault-tolerant via `documents.active`, matching D
   and W.** A hard storage failure mid-`persist_knowledge` (a permanent
   `ProviderError` from inline embed, or `replace_chunks` /

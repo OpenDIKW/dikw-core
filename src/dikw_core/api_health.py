@@ -207,16 +207,36 @@ async def _probe_llm(
     started = time.perf_counter()
     try:
         resp = await llm.complete(
-            system="You are a connectivity check. Reply with just: OK",
+            system="You are a connectivity check. Reply with exactly: OK",
             user="ping",
+            # Headroom above the single "OK" token so a reasoning model isn't
+            # budget-starved into an empty visible turn (providers that drop
+            # max_tokens on the wire, e.g. codex, are unaffected).
             model=model,
-            max_tokens=4,
+            max_tokens=32,
             temperature=0.0,
         )
     except Exception as e:  # provider exceptions are intentionally heterogeneous
         return ProbeResult(ok=False, target=target, detail=f"{type(e).__name__}: {e}")
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     input_tok = int((resp.usage or {}).get("input_tokens", 0))
+    # A call that returns without raising but yields NO text is not a healthy
+    # provider — it is the issue #160 failure mode (the provider produced an
+    # empty completion, e.g. a codex final-response that dropped its streamed
+    # output, or a model that emitted only reasoning). Reporting ``ok`` here
+    # let a 227-source synth run against a silently-empty provider. Verify the
+    # returned text, not just that the call did not throw.
+    if not resp.text.strip():
+        out_tok = int((resp.usage or {}).get("output_tokens", 0))
+        return ProbeResult(
+            ok=False,
+            target=target,
+            detail=(
+                f"{elapsed_ms}ms, provider returned an EMPTY completion "
+                f"(finish_reason={resp.finish_reason!r}, output_tokens={out_tok}) "
+                f"— the model produced no visible text; check the model/request shape"
+            ),
+        )
     return ProbeResult(
         ok=True,
         target=target,
