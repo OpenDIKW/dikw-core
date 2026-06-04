@@ -309,6 +309,16 @@ async def synthesize(
             deduped = dedup_pages_by_slug(
                 outcome.pages, strategy=cfg.synth.slug_dedup
             )
+            # Count how many pages the dedup collapsed — the over-generation
+            # signal surfaced on ``SynthReport.slug_merge_count`` (and, as a
+            # normalised fraction, the synth eval's ``synth/slug_merge_ratio_max``
+            # diagnostic). One source's fan-out can emit the same
+            # ``<category>/<slug>`` twice; each extra copy is one merge.
+            merged = len(outcome.pages) - len(deduped)
+            if merged:
+                report = _sr_replace(
+                    report, slug_merge_count=report.slug_merge_count + merged
+                )
 
             # Build the title→path index ONCE for this batch and seed it
             # with the deduped pages — without that seeding, page A → page B

@@ -72,15 +72,18 @@ from .fake_embedder import FakeEmbeddings
 from .judge import JudgeSummary, judge_synthesis
 from .metrics import (
     atomicity_score,
+    category_distribution,
+    compute_grounding_cosines,
     duplicate_ratio_max,
     expected_coverage,
-    fact_grounding_ratio,
     language_fidelity,
     mean_hit_at_k,
     mean_ndcg_at_k,
     mean_recall_at_k,
     mean_reciprocal_rank,
     page_density,
+    reduce_grounding_ratio,
+    source_chunk_coverage,
     wikilink_resolved_ratio,
 )
 
@@ -1122,6 +1125,7 @@ async def run_synth_eval(
             synth_report=synth_report,
             embedder=effective_embedder,
             embedding_model=effective_provider_cfg.embedding_model,
+            fallback=schema_cfg.fallback,
         )
 
         judge_summary: JudgeSummary | None = None
@@ -1171,6 +1175,7 @@ async def _collect_metrics_bundle(
     synth_report: api.SynthReport,
     embedder: EmbeddingProvider,
     embedding_model: str,
+    fallback: str,
 ) -> _SynthMetricsBundle:
     """Pull pages + source chunks + source bodies out of the throwaway
     wiki and compute every K-layer metric.
@@ -1241,6 +1246,16 @@ async def _collect_metrics_bundle(
         if link.kind is LinkType.WIKILINK
     )
 
+    # Embed claims↔chunks once: ``fact_grounding_ratio`` and the
+    # ``source_chunk_coverage`` diagnostic both reduce from the same
+    # per-claim cosines (with the matched chunk seq), so a 100-page base
+    # pays one grounding-embed pass, not two.
+    grounding_claims = await compute_grounding_cosines(
+        pages_with_sources=pages_with_source_keys,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model=embedding_model,
+    )
     metrics: dict[str, float] = {
         "synth/atomicity_score": atomicity_score(pages),
         "synth/wikilink_resolved_ratio": wikilink_resolved_ratio(
@@ -1248,11 +1263,9 @@ async def _collect_metrics_bundle(
             unresolved=synth_report.unresolved_wikilinks,
         ),
         "synth/language_fidelity": language_fidelity(pages_with_source_texts),
-        "synth/fact_grounding_ratio": await fact_grounding_ratio(
+        "synth/fact_grounding_ratio": reduce_grounding_ratio(
+            grounding_claims,
             pages_with_sources=pages_with_source_keys,
-            chunks_by_source=chunks_by_source,
-            embedder=embedder,
-            embedding_model=embedding_model,
             tau=spec.synth.grounding_threshold,
         ),
         "synth/duplicate_ratio_max": await duplicate_ratio_max(
@@ -1271,10 +1284,35 @@ async def _collect_metrics_bundle(
             expected_titles=expected_titles,
         )
 
+    # ``fallback_ratio_max`` = share of pages the LLM could not place under any
+    # declared category (filed under the configured fallback). High values
+    # flag taxonomy miscalibration the five gated metrics never surface.
+    dist = category_distribution(pages)
+    # Normalise the raw run-total ``slug_merge_count`` to a [0, 1)
+    # over-generation *fraction* (merges / pre-dedup pages). The raw count
+    # would (a) be mis-scaled against the A/B harness's ratio-calibrated noise
+    # floor and (b) lack a direction. ``len(pages)`` is post-dedup; pre-dedup
+    # ≈ that plus the merges (exact under eval, where no page fails persist).
+    merges = synth_report.slug_merge_count
+    pre_dedup_pages = len(pages) + merges
+    slug_merge_ratio = merges / pre_dedup_pages if pre_dedup_pages else 0.0
+    # Both ``*_ratio_max`` metrics are lower-is-better: a higher fallback share
+    # or merge fraction is worse. The ``_max`` suffix is the project's
+    # direction convention (``_threshold_direction`` / the A/B harness's
+    # ``metric_direction``) — without it both would be scored backwards as
+    # higher-is-better. ``source_chunk_coverage`` is genuinely higher-is-better
+    # (more covered chunks), so it stays min-direction (no suffix).
     informational: dict[str, float] = {
         "synth/page_density": page_density(
             n_pages=len(pages), n_chunks=n_chunks
         ),
+        "synth/source_chunk_coverage": source_chunk_coverage(
+            grounding_claims,
+            chunks_by_source=chunks_by_source,
+            tau=spec.synth.grounding_threshold,
+        ),
+        "synth/fallback_ratio_max": dist.get(fallback, 0.0),
+        "synth/slug_merge_ratio_max": slug_merge_ratio,
     }
 
     return _SynthMetricsBundle(

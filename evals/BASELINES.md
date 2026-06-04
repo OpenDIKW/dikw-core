@@ -7,6 +7,43 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-05 — synth-quality measurement foundation (Phase 0a)
+
+**Status:** measurement tooling only — **no synth/retrieval generation change**,
+so there are no baseline numbers to pin here. This is the infrastructure the
+*next* tuning PRs (Phase 1 prompt, Phase 2 pipeline) will be measured with;
+their entries carry the before/after numbers.
+
+**What landed (all behavior-neutral):**
+
+- Informational synth-eval diagnostics the five gated metrics are blind to:
+  `synth/source_chunk_coverage` (under-generation), `synth/fallback_ratio_max`
+  (taxonomy miscalibration), `synth/slug_merge_ratio_max` (over-generation).
+  The `_max` suffix marks the lower-is-better ones for the direction convention
+  (`_threshold_direction` / the A/B harness's `metric_direction`).
+- LLM-judge deterministic bootstrap 95% CIs (`JudgeSummary.ci_<dim>`).
+- `SynthReport.slug_merge_count` raw counter, shown in the `dikw client synth`
+  summary.
+- **A/B experiment harness** `evals/tools/ab_experiment.py` — the mechanism
+  future optimization PRs cite. Runs the same synth eval N×/arm and compares
+  with a Welch t-test + direction-aware ship gate (`p < p_max` **and**
+  `improvement > effect_min`, default `0.05` / `0.10`). Pure-Python stats
+  (no scipy), validated against analytic references (Cauchy `df=1,t=1→0.5`;
+  `df=2,t=√2→1−1/√2`). Usage:
+
+  ```bash
+  # on the baseline commit, then again on the intervention commit:
+  uv run python evals/tools/ab_experiment.py collect \
+      --base <base> --dataset mvp --arm baseline --runs 3 \
+      --exp evals/experiments/<name>
+  # offline, pure stats → writes result.json + prints the table:
+  uv run python evals/tools/ab_experiment.py compare --exp evals/experiments/<name>
+  ```
+
+  `collect` needs a live LLM (MiniMax-M3 via `anthropic_compat` with
+  `llm_max_tokens_synth ≥ 8192` — it is a reasoning model; the default 2048 is
+  consumed by hidden thinking and yields 0 pages). `compare` is offline.
+
 ## 0.5.0 — configurable knowledge taxonomy + overridable prompts; drop index.md/log.md
 
 **Status:** K-layer breaking refactor (`domains/knowledge/`). The fixed

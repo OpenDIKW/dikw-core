@@ -128,6 +128,14 @@ class SynthReport:
     # refusal). High counts signal LLM-generated references that nobody
     # has authored yet — actionable signal even before ``dikw client lint`` runs.
     unresolved_wikilinks: int = 0
+    # Pages that ``dedup_pages_by_slug`` collapsed into an earlier same-path
+    # page (summed across every source this run). A non-zero count is the
+    # over-generation signal the five gated metrics never surface: the LLM
+    # emitted two ``<page>`` blocks that resolve to the same
+    # ``knowledge/<category>/<slug>.md`` — usually because a too-small
+    # ``target_tokens_per_group`` split one entity across groups, or the
+    # model re-described a page it had already written in the batch.
+    slug_merge_count: int = 0
     # Pages whose persist raised mid-pipeline; each was deactivated
     # (``active=False``) so it stays out of retrieval. ``errors`` (above)
     # counts LLM-parse failures per group; this is the storage-side analogue.

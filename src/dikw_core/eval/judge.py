@@ -62,7 +62,15 @@ class PageJudgeEntry(BaseModel):
 
 
 class JudgeSummary(BaseModel):
-    """Aggregate of judge scores across all (or sampled) pages."""
+    """Aggregate of judge scores across all (or sampled) pages.
+
+    Each ``ci_<dim>`` is a deterministic bootstrap 95% confidence interval
+    ``(low, high)`` on that dimension's mean. With a small judge sample the
+    raw mean is noisy (±0.05 swings between identical re-runs are common);
+    the CI width is the honest uncertainty band an author reads before
+    declaring a ``synthesize.md`` change an improvement. ``(0.0, 0.0)`` when
+    nothing was judged.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -72,7 +80,50 @@ class JudgeSummary(BaseModel):
     mean_atomicity: float
     mean_completeness: float
     mean_clarity: float
+    ci_grounding: tuple[float, float] = (0.0, 0.0)
+    ci_atomicity: tuple[float, float] = (0.0, 0.0)
+    ci_completeness: tuple[float, float] = (0.0, 0.0)
+    ci_clarity: tuple[float, float] = (0.0, 0.0)
     per_page: list[PageJudgeEntry] = Field(default_factory=list)
+
+
+def bootstrap_ci(
+    values: Sequence[float],
+    *,
+    seed: str,
+    n_resamples: int = 1000,
+    confidence: float = 0.95,
+) -> tuple[float, float]:
+    """Percentile bootstrap CI on the mean of ``values``.
+
+    Resamples ``values`` with replacement ``n_resamples`` times, takes the
+    mean of each resample, and returns the ``(low, high)`` percentile bounds
+    for the requested ``confidence``. The RNG is seeded from
+    ``hashlib.sha1(seed)`` so the interval is byte-stable across runs (same
+    contract as the page-sampling RNG in :func:`judge_synthesis`).
+
+    Edge cases: empty → ``(0.0, 0.0)``; a single observation → ``(v, v)``
+    (no spread to estimate). Every resample mean lies within
+    ``[min(values), max(values)]``, so the CI never escapes the 0-5 scale.
+    """
+    if not values:
+        return (0.0, 0.0)
+    vals = list(values)
+    n = len(vals)
+    if n == 1:
+        return (vals[0], vals[0])
+    rng = random.Random(hashlib.sha1(seed.encode("utf-8")).digest()[:8])
+    means: list[float] = []
+    for _ in range(n_resamples):
+        resample_sum = 0.0
+        for _ in range(n):
+            resample_sum += vals[rng.randrange(n)]
+        means.append(resample_sum / n)
+    means.sort()
+    tail = (1.0 - confidence) / 2.0
+    lo_idx = min(n_resamples - 1, max(0, int(tail * n_resamples)))
+    hi_idx = min(n_resamples - 1, max(0, int((1.0 - tail) * n_resamples)))
+    return (means[lo_idx], means[hi_idx])
 
 
 def parse_judge_response(text: str) -> JudgeScore | None:
@@ -196,12 +247,22 @@ async def judge_synthesis(
             mean_clarity=0.0,
             per_page=[],
         )
+    grounding_vals = [float(e.score.grounding) for e in per_page]
+    atomicity_vals = [float(e.score.atomicity) for e in per_page]
+    completeness_vals = [float(e.score.completeness) for e in per_page]
+    clarity_vals = [float(e.score.clarity) for e in per_page]
+    # Per-dimension seed suffix so the four bootstraps draw independent
+    # resample indices rather than sharing one RNG stream.
     return JudgeSummary(
         n_judged=n_judged,
         n_errors=n_errors,
-        mean_grounding=sum(e.score.grounding for e in per_page) / n_judged,
-        mean_atomicity=sum(e.score.atomicity for e in per_page) / n_judged,
-        mean_completeness=sum(e.score.completeness for e in per_page) / n_judged,
-        mean_clarity=sum(e.score.clarity for e in per_page) / n_judged,
+        mean_grounding=sum(grounding_vals) / n_judged,
+        mean_atomicity=sum(atomicity_vals) / n_judged,
+        mean_completeness=sum(completeness_vals) / n_judged,
+        mean_clarity=sum(clarity_vals) / n_judged,
+        ci_grounding=bootstrap_ci(grounding_vals, seed=f"{seed}:grounding"),
+        ci_atomicity=bootstrap_ci(atomicity_vals, seed=f"{seed}:atomicity"),
+        ci_completeness=bootstrap_ci(completeness_vals, seed=f"{seed}:completeness"),
+        ci_clarity=bootstrap_ci(clarity_vals, seed=f"{seed}:clarity"),
         per_page=per_page,
     )

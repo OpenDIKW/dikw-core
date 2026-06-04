@@ -5,6 +5,33 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Added
+
+- **synth-quality measurement foundation (Phase 0a).** Tooling that lets a
+  later prompt/pipeline tuning PR *prove* it helped rather than eyeball a
+  single noisy run. No synth/retrieval generation behavior changes — this is
+  measurement only.
+  - **Deterministic synth-eval diagnostics** in `dikw client eval --eval synth`
+    (informational, never gated): `synth/source_chunk_coverage`
+    (under-generation — source chunks that no page claim grounds), `synth/fallback_ratio_max`
+    (taxonomy miscalibration — share of pages filed under the fallback category),
+    `synth/slug_merge_ratio_max` (over-generation — fraction of fan-out pages the
+    slug dedup collapsed), and a per-category `category_distribution`. The `_max`
+    suffix marks the two lower-is-better metrics for the direction convention.
+  - **`SynthReport.slug_merge_count`** — a raw run-total of pages collapsed by
+    `dedup_pages_by_slug`, surfaced in the `dikw client synth` summary table as
+    a visible over-generation signal.
+  - **LLM-judge bootstrap 95% CIs** — `JudgeSummary` now carries a deterministic
+    `ci_<dimension>` per score so a small-sample mean isn't mistaken for a real
+    move.
+  - **A/B experiment harness** (`evals/tools/ab_experiment.py`, developer tooling)
+    — runs the same synth eval N times per arm and compares them with a Welch
+    two-sample t-test, Cohen's d, and a direction-aware ship gate (`p < p_max`
+    **and** `improvement > effect_min`). Pure-Python stats (no scipy). `collect`
+    runs the arms (live LLM); `compare` is offline.
+
 ## 0.5.1 — codex empty-final recovery + K-layer persist fault-tolerance
 
 ### Fixed

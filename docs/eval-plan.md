@@ -116,6 +116,25 @@ or non-destructiveness. Two gates:
    real-LLM run that lands the calibrated numbers is itself the
    baseline entry.
 
+   Alongside the gated five, the runner emits **informational diagnostics**
+   the five gated metrics are blind to: `source_chunk_coverage`
+   (under-generation — source chunks that no page claim lands on),
+   `fallback_ratio_max` (taxonomy miscalibration — share of pages filed under
+   the fallback category), and `slug_merge_ratio_max` (over-generation — the
+   fraction of fan-out pages collapsed by slug dedup). The `_max` suffix marks
+   the two lower-is-better ones for the direction convention. The LLM judge now
+   reports a deterministic bootstrap 95% CI per dimension so a noisy small-sample
+   mean isn't mistaken for a real move.
+
+   **Proving an optimization actually helped.** The LLM makes synth
+   non-deterministic, so a single before/after eval can't separate a real gain
+   from ±0.05 run-to-run noise. `evals/tools/ab_experiment.py` runs the same
+   synth eval N times per arm and compares the two arms with a Welch t-test +
+   direction-aware ship gate (`p < p_max` **and** `improvement > effect_min`).
+   A tuning PR cites its `result.json` shipped/regressed verdict, not a single
+   run. The harness is developer tooling (not on any CI gate); the human reads
+   the table.
+
 2. **Retrieval config changes** (any field on `RetrievalConfig`,
    anything under `src/dikw_core/domains/info/search.py`): run an
    ablation on at least one packaged dataset (mvp / scifact / cmteb)
