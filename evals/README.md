@@ -181,6 +181,30 @@ in the client/server migration.) The CMTEB v1 baseline lists the CJK
 tokenizer gap; re-runs under `cjk_tokenizer: jieba` are expected to lift
 BM25 from 0.03 toward the published 0.5 range.
 
+### Proving a synth-quality change (A/B)
+
+`synth` is non-deterministic (the LLM), so one before/after eval can't tell a
+real gain from ±0.05 run-to-run noise. `evals/tools/ab_experiment.py` runs the
+same `--eval synth` run N times per arm and compares the two arms with a Welch
+two-sample t-test + a direction-aware ship gate (`p < p_max` **and**
+`improvement > effect_min`). Drive the git state yourself — the harness can't
+rebuild the code:
+
+```bash
+# on the baseline commit:
+uv run python evals/tools/ab_experiment.py collect \
+    --base <base> --dataset mvp --arm baseline --runs 3 --exp evals/experiments/<name>
+# check out the intervention commit, then:
+uv run python evals/tools/ab_experiment.py collect \
+    --base <base> --dataset mvp --arm intervention --runs 3 --exp evals/experiments/<name>
+# offline pure stats → writes result.json + prints the ship/regress table:
+uv run python evals/tools/ab_experiment.py compare --exp evals/experiments/<name>
+```
+
+`collect` needs a live LLM in the base's `dikw.yml`; `compare` is offline. The
+verdict (`result.json` `shipped` / `regressed`) is what an optimization PR cites
+in `BASELINES.md`. Developer tooling — not on any CI gate.
+
 ### Comparability caveats
 
 These numbers are **calibration**, not exact reproduction. See

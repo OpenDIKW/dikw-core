@@ -300,8 +300,8 @@ class GroundingClaim:
     for hand-labelling and per-source breakdowns. ``best_chunk_seq`` is
     the ``ChunkRecord.seq`` of the nearest chunk (``None`` when the source
     had no embeddable chunks, mirroring ``max_cosine == -inf``) so the
-    ``source_chunk_coverage`` / ``grounding_per_source_chunk`` diagnostics
-    can reduce per-chunk without re-embedding.
+    ``source_chunk_coverage`` diagnostic can reduce per-chunk without
+    re-embedding.
     """
 
     page_path: str
@@ -572,29 +572,3 @@ def source_chunk_coverage(
         if c.best_chunk_seq is not None and c.max_cosine >= tau
     }
     return len(covered) / total
-
-
-def grounding_per_source_chunk(
-    claims: Sequence[GroundingClaim],
-    *,
-    tau: float,
-) -> dict[str, float]:
-    """Per-chunk grounded-claim ratio, keyed ``"<source>#<seq>"``.
-
-    Groups claims by the chunk they best-match, then reports the fraction
-    grounded (cosine ≥ ``tau``) among them. A low ratio flags a chunk that
-    attracts claims the embedder can't ground — a paraphrase-drift hotspot
-    worth a prompt-tuning look. Diagnostic, never gated; claims with no
-    matched chunk (source had no embeddable chunks) are skipped.
-    """
-    grouped: dict[str, list[float]] = {}
-    for c in claims:
-        if c.best_chunk_seq is None:
-            continue
-        grouped.setdefault(
-            f"{c.source_path}#{c.best_chunk_seq}", []
-        ).append(c.max_cosine)
-    return {
-        key: sum(1 for cos in cosines if cos >= tau) / len(cosines)
-        for key, cosines in grouped.items()
-    }

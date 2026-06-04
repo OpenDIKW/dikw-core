@@ -1284,10 +1284,24 @@ async def _collect_metrics_bundle(
             expected_titles=expected_titles,
         )
 
-    # ``fallback_ratio`` = share of pages the LLM could not place under any
+    # ``fallback_ratio_max`` = share of pages the LLM could not place under any
     # declared category (filed under the configured fallback). High values
     # flag taxonomy miscalibration the five gated metrics never surface.
     dist = category_distribution(pages)
+    # Normalise the raw run-total ``slug_merge_count`` to a [0, 1)
+    # over-generation *fraction* (merges / pre-dedup pages). The raw count
+    # would (a) be mis-scaled against the A/B harness's ratio-calibrated noise
+    # floor and (b) lack a direction. ``len(pages)`` is post-dedup; pre-dedup
+    # ≈ that plus the merges (exact under eval, where no page fails persist).
+    merges = synth_report.slug_merge_count
+    pre_dedup_pages = len(pages) + merges
+    slug_merge_ratio = merges / pre_dedup_pages if pre_dedup_pages else 0.0
+    # Both ``*_ratio_max`` metrics are lower-is-better: a higher fallback share
+    # or merge fraction is worse. The ``_max`` suffix is the project's
+    # direction convention (``_threshold_direction`` / the A/B harness's
+    # ``metric_direction``) — without it both would be scored backwards as
+    # higher-is-better. ``source_chunk_coverage`` is genuinely higher-is-better
+    # (more covered chunks), so it stays min-direction (no suffix).
     informational: dict[str, float] = {
         "synth/page_density": page_density(
             n_pages=len(pages), n_chunks=n_chunks
@@ -1297,7 +1311,8 @@ async def _collect_metrics_bundle(
             chunks_by_source=chunks_by_source,
             tau=spec.synth.grounding_threshold,
         ),
-        "synth/fallback_ratio": dist.get(fallback, 0.0),
+        "synth/fallback_ratio_max": dist.get(fallback, 0.0),
+        "synth/slug_merge_ratio_max": slug_merge_ratio,
     }
 
     return _SynthMetricsBundle(

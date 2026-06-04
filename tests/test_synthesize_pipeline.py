@@ -304,6 +304,58 @@ async def test_synth_skips_zero_page_source_on_second_run(
 
 
 @pytest.mark.asyncio
+async def test_synth_reports_slug_merge_count(tmp_path: Path) -> None:
+    """When the LLM emits two ``<page>`` blocks that resolve to the same
+    ``knowledge/<category>/<slug>.md``, ``dedup_pages_by_slug`` collapses
+    them into one page — and the collapse is surfaced on
+    ``SynthReport.slug_merge_count`` as the over-generation signal.
+    """
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
+    sources_dir = wiki / "sources" / "notes"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    (sources_dir / "spacex.md").write_text(
+        "# SpaceX\n\nAerospace firm founded by Elon Musk.\n",
+        encoding="utf-8",
+    )
+
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    # Two blocks, same category+slug → same path → one is merged away.
+    dup_response = (
+        '<page category="concept" slug="spacex">\n'
+        "---\ntags: [aerospace]\n---\n\n"
+        "# SpaceX\n\nFirst description of the rocket company.\n"
+        "</page>\n"
+        '<page category="concept" slug="spacex">\n'
+        "---\ntags: [rockets]\n---\n\n"
+        "# SpaceX again\n\nSecond description from the same group.\n"
+        "</page>"
+    )
+    llm = FakeLLM(response_text=dup_response)
+    report = await api.synthesize(wiki, llm=llm, embedder=embedder)
+
+    assert report.created == 1, "the two same-slug blocks collapse to one page"
+    assert report.slug_merge_count == 1, (
+        "the collapsed duplicate must be counted on slug_merge_count"
+    )
+
+
+@pytest.mark.asyncio
+async def test_synth_slug_merge_count_zero_when_no_duplicates(
+    wiki_with_fixtures: Path,
+) -> None:
+    """Distinct slugs across sources produce no merges — the counter stays 0."""
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki_with_fixtures, embedder=embedder)
+    llm = ScriptedLLM(_SCRIPT)
+    report = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+    assert report.created == 3
+    assert report.slug_merge_count == 0
+
+
+@pytest.mark.asyncio
 async def test_synth_uses_custom_categories_end_to_end(tmp_path: Path) -> None:
     """``SchemaConfig.categories`` propagates through prompt + parser +
     folder selection; an LLM emitting ``category="topic"`` lands under

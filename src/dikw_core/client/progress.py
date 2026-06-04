@@ -397,6 +397,7 @@ def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
         "skipped",
         "errors",
         "unresolved_wikilinks",
+        "slug_merge_count",
     ):
         table.add_row(key, str(int(report.get(key) or 0)))
     console.print(table)

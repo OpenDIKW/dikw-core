@@ -17,7 +17,6 @@ from dikw_core.eval.metrics import (
     duplicate_ratio_max,
     expected_coverage,
     fact_grounding_ratio,
-    grounding_per_source_chunk,
     hit_at_k,
     language_fidelity,
     mean_hit_at_k,
@@ -682,7 +681,7 @@ def test_category_distribution_empty() -> None:
     assert category_distribution([]) == {}
 
 
-# ---- best_chunk_seq / source_chunk_coverage / grounding_per_source_chunk ----
+# ---- best_chunk_seq / source_chunk_coverage --------------------------------
 
 
 @pytest.mark.asyncio
@@ -769,22 +768,3 @@ def test_source_chunk_coverage_ignores_ungrounded_argmax() -> None:
         source_chunk_coverage(claims, chunks_by_source=chunks_by_source, tau=0.5)
         == 0.0
     )
-
-
-@pytest.mark.asyncio
-async def test_grounding_per_source_chunk_groups_by_argmax() -> None:
-    embedder = FakeEmbeddings()
-    page = _page("A", "# A\n\nThe sky is blue today.\n")
-    chunks_by_source = {
-        "knowledge/sources/a.md": [
-            _chunk("knowledge/sources/a.md", 0, "The sky is blue today."),
-        ],
-    }
-    claims = await compute_grounding_cosines(
-        pages_with_sources=[(page, "knowledge/sources/a.md")],
-        chunks_by_source=chunks_by_source,
-        embedder=embedder,
-        embedding_model="fake",
-    )
-    per = grounding_per_source_chunk(claims, tau=0.5)
-    assert per == {"knowledge/sources/a.md#0": 1.0}
