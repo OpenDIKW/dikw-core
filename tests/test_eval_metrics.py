@@ -11,11 +11,13 @@ from dikw_core.eval.fake_embedder import FakeEmbeddings
 from dikw_core.eval.metrics import (
     GroundingClaim,
     atomicity_score,
+    category_distribution,
     classify_lang,
     compute_grounding_cosines,
     duplicate_ratio_max,
     expected_coverage,
     fact_grounding_ratio,
+    grounding_per_source_chunk,
     hit_at_k,
     language_fidelity,
     mean_hit_at_k,
@@ -27,6 +29,7 @@ from dikw_core.eval.metrics import (
     recall_at_k,
     reciprocal_rank,
     reduce_grounding_ratio,
+    source_chunk_coverage,
     split_claims,
     wikilink_resolved_ratio,
 )
@@ -659,3 +662,129 @@ def test_classify_lang_mostly_english() -> None:
 
 def test_classify_lang_empty_is_other() -> None:
     assert classify_lang("") == "other"
+
+
+# ---- category_distribution --------------------------------------------------
+
+
+def test_category_distribution_basic() -> None:
+    pages = [
+        _page("A", "# A\n\nx\n", category="entity"),
+        _page("B", "# B\n\nx\n", category="entity"),
+        _page("C", "# C\n\nx\n", category="concept"),
+        _page("D", "# D\n\nx\n", category="note"),
+    ]
+    dist = category_distribution(pages)
+    assert dist == {"entity": 0.5, "concept": 0.25, "note": 0.25}
+
+
+def test_category_distribution_empty() -> None:
+    assert category_distribution([]) == {}
+
+
+# ---- best_chunk_seq / source_chunk_coverage / grounding_per_source_chunk ----
+
+
+@pytest.mark.asyncio
+async def test_compute_grounding_cosines_records_best_chunk_seq() -> None:
+    """The argmax chunk's seq is recorded so coverage / per-chunk diagnostics
+    reduce without re-embedding. Verbatim chunk wins regardless of order."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nThe sky is blue today.\n")
+    chunks_by_source = {
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "Totally unrelated pizza text."),
+            _chunk("knowledge/sources/a.md", 1, "The sky is blue today."),
+        ],
+    }
+    claims = await compute_grounding_cosines(
+        pages_with_sources=[(page, "knowledge/sources/a.md")],
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+    )
+    assert len(claims) == 1
+    assert claims[0].best_chunk_seq == 1
+    assert claims[0].max_cosine == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_compute_grounding_cosines_no_chunks_seq_is_none() -> None:
+    """A source with no embeddable chunks yields -inf claims with no seq."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nThe sky is blue today.\n")
+    claims = await compute_grounding_cosines(
+        pages_with_sources=[(page, "knowledge/sources/a.md")],
+        chunks_by_source={"knowledge/sources/a.md": []},
+        embedder=embedder,
+        embedding_model="fake",
+    )
+    assert len(claims) == 1
+    assert claims[0].best_chunk_seq is None
+    assert claims[0].max_cosine == float("-inf")
+
+
+@pytest.mark.asyncio
+async def test_source_chunk_coverage_partial() -> None:
+    """One page claim lands on chunk 0; chunk 1 is uncovered → 1/2."""
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nThe sky is blue today.\n")
+    chunks_by_source = {
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "The sky is blue today."),
+            _chunk("knowledge/sources/a.md", 1, "Unrelated pizza content here."),
+        ],
+    }
+    claims = await compute_grounding_cosines(
+        pages_with_sources=[(page, "knowledge/sources/a.md")],
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+    )
+    cov = source_chunk_coverage(
+        claims, chunks_by_source=chunks_by_source, tau=0.5
+    )
+    assert cov == 0.5
+
+
+def test_source_chunk_coverage_zero_chunks_returns_zero() -> None:
+    assert source_chunk_coverage([], chunks_by_source={}, tau=0.5) == 0.0
+
+
+def test_source_chunk_coverage_ignores_ungrounded_argmax() -> None:
+    """A claim whose best chunk is still below tau does not 'cover' it."""
+    claims = [
+        GroundingClaim(
+            page_path="knowledge/a.md",
+            source_path="sources/a.md",
+            claim="x",
+            max_cosine=0.30,
+            best_chunk_seq=0,
+        ),
+    ]
+    chunks_by_source = {
+        "sources/a.md": [_chunk("sources/a.md", 0, "some chunk text")],
+    }
+    assert (
+        source_chunk_coverage(claims, chunks_by_source=chunks_by_source, tau=0.5)
+        == 0.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_grounding_per_source_chunk_groups_by_argmax() -> None:
+    embedder = FakeEmbeddings()
+    page = _page("A", "# A\n\nThe sky is blue today.\n")
+    chunks_by_source = {
+        "knowledge/sources/a.md": [
+            _chunk("knowledge/sources/a.md", 0, "The sky is blue today."),
+        ],
+    }
+    claims = await compute_grounding_cosines(
+        pages_with_sources=[(page, "knowledge/sources/a.md")],
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model="fake",
+    )
+    per = grounding_per_source_chunk(claims, tau=0.5)
+    assert per == {"knowledge/sources/a.md#0": 1.0}

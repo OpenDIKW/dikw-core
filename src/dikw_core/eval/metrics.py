@@ -297,13 +297,18 @@ class GroundingClaim:
     Emitted by :func:`compute_grounding_cosines` so callers (the metric,
     tau-sweep scripts, debug dumpers) can apply any threshold without
     re-running the embedder. ``page_path`` and ``source_path`` are kept
-    for hand-labelling and per-source breakdowns.
+    for hand-labelling and per-source breakdowns. ``best_chunk_seq`` is
+    the ``ChunkRecord.seq`` of the nearest chunk (``None`` when the source
+    had no embeddable chunks, mirroring ``max_cosine == -inf``) so the
+    ``source_chunk_coverage`` / ``grounding_per_source_chunk`` diagnostics
+    can reduce per-chunk without re-embedding.
     """
 
     page_path: str
     source_path: str
     claim: str
     max_cosine: float
+    best_chunk_seq: int | None = None
 
 
 async def compute_grounding_cosines(
@@ -328,32 +333,38 @@ async def compute_grounding_cosines(
     """
     if not pages_with_sources:
         return []
-    chunk_embeds_cache: dict[str, list[list[float]]] = {}
+    # source_path -> (chunk seqs, chunk embeddings) in matching order; the
+    # seqs are carried alongside so the per-claim argmax recovers WHICH
+    # chunk it landed on (``best_chunk_seq``), not just the cosine. Empty /
+    # whitespace-only chunks are dropped (Gitee / OpenAI embedding APIs
+    # 400 on empty input), so the kept index ≠ the raw chunk index — the
+    # parallel seq list is what keeps the mapping honest.
+    chunk_cache: dict[str, tuple[list[int], list[list[float]]]] = {}
 
-    async def _chunks_for(source_path: str) -> list[list[float]]:
-        cached = chunk_embeds_cache.get(source_path)
+    async def _chunks_for(
+        source_path: str,
+    ) -> tuple[list[int], list[list[float]]]:
+        cached = chunk_cache.get(source_path)
         if cached is not None:
             return cached
         chunks = chunks_by_source.get(source_path, [])
-        # Defensive: skip empty / whitespace-only chunks. Gitee /
-        # OpenAI embedding APIs 400 on empty input rather than emitting
-        # a zero vector, which would tank the whole run.
-        chunk_texts = [c.text for c in chunks if c.text.strip()]
-        if not chunk_texts:
-            chunk_embeds_cache[source_path] = []
-            return []
+        kept = [(c.seq, c.text) for c in chunks if c.text.strip()]
+        if not kept:
+            chunk_cache[source_path] = ([], [])
+            return ([], [])
+        seqs = [s for s, _ in kept]
         embeds = await _embed_batched(
-            embedder, chunk_texts, model=embedding_model
+            embedder, [t for _, t in kept], model=embedding_model
         )
-        chunk_embeds_cache[source_path] = embeds
-        return embeds
+        chunk_cache[source_path] = (seqs, embeds)
+        return (seqs, embeds)
 
     out: list[GroundingClaim] = []
     for page, source_path in pages_with_sources:
         claims = [c for c in split_claims(page.body) if c.strip()]
         if not claims:
             continue
-        chunk_embeds = await _chunks_for(source_path)
+        seqs, chunk_embeds = await _chunks_for(source_path)
         if not chunk_embeds:
             for claim in claims:
                 out.append(
@@ -362,6 +373,7 @@ async def compute_grounding_cosines(
                         source_path=source_path,
                         claim=claim,
                         max_cosine=float("-inf"),
+                        best_chunk_seq=None,
                     )
                 )
             continue
@@ -369,13 +381,20 @@ async def compute_grounding_cosines(
             embedder, claims, model=embedding_model
         )
         for claim, ce in zip(claims, claim_embeds, strict=True):
-            best = max((_cosine(ce, ch) for ch in chunk_embeds), default=0.0)
+            best_seq = seqs[0]
+            best = _cosine(ce, chunk_embeds[0])
+            for s, ch in zip(seqs[1:], chunk_embeds[1:], strict=True):
+                cos = _cosine(ce, ch)
+                if cos > best:
+                    best = cos
+                    best_seq = s
             out.append(
                 GroundingClaim(
                     page_path=page.path,
                     source_path=source_path,
                     claim=claim,
                     max_cosine=best,
+                    best_chunk_seq=best_seq,
                 )
             )
     return out
@@ -502,3 +521,80 @@ async def duplicate_ratio_max(
             if _cosine(embeds[i], embeds[j]) >= tau:
                 above += 1
     return above / total_pairs
+
+
+# ===========================================================================
+# Informational synth diagnostics (no LLM judge, $0 extra cost)
+# ===========================================================================
+
+
+def category_distribution(pages: Sequence[KnowledgePage]) -> dict[str, float]:
+    """Fraction of pages filed under each category. Empty input → ``{}``.
+
+    Surfaces taxonomy skew: a high share under the fallback category means
+    the LLM couldn't place those pages under any *declared* category —
+    a signal of taxonomy miscalibration or synth confusion that the five
+    gated metrics never see. Informational only; the caller decides which
+    keys (e.g. the fallback share) to surface as scalars.
+    """
+    if not pages:
+        return {}
+    counts: dict[str, int] = {}
+    for p in pages:
+        key = p.category or ""
+        counts[key] = counts.get(key, 0) + 1
+    total = len(pages)
+    return {k: v / total for k, v in counts.items()}
+
+
+def source_chunk_coverage(
+    claims: Sequence[GroundingClaim],
+    *,
+    chunks_by_source: Mapping[str, Sequence[ChunkRecord]],
+    tau: float,
+) -> float:
+    """Fraction of source chunks that are the nearest match (≥ ``tau``) for
+    at least one page claim.
+
+    A deterministic *under-generation* signal: a chunk no page claim lands
+    on is source content synth never turned into knowledge. Reuses the
+    cosines already computed by :func:`compute_grounding_cosines` (no extra
+    embedding). The denominator is every chunk across every source — chunks
+    of a source that produced no pages count as uncovered, which is the
+    point. Zero total chunks → 0.0.
+    """
+    total = sum(len(v) for v in chunks_by_source.values())
+    if total <= 0:
+        return 0.0
+    covered = {
+        (c.source_path, c.best_chunk_seq)
+        for c in claims
+        if c.best_chunk_seq is not None and c.max_cosine >= tau
+    }
+    return len(covered) / total
+
+
+def grounding_per_source_chunk(
+    claims: Sequence[GroundingClaim],
+    *,
+    tau: float,
+) -> dict[str, float]:
+    """Per-chunk grounded-claim ratio, keyed ``"<source>#<seq>"``.
+
+    Groups claims by the chunk they best-match, then reports the fraction
+    grounded (cosine ≥ ``tau``) among them. A low ratio flags a chunk that
+    attracts claims the embedder can't ground — a paraphrase-drift hotspot
+    worth a prompt-tuning look. Diagnostic, never gated; claims with no
+    matched chunk (source had no embeddable chunks) are skipped.
+    """
+    grouped: dict[str, list[float]] = {}
+    for c in claims:
+        if c.best_chunk_seq is None:
+            continue
+        grouped.setdefault(
+            f"{c.source_path}#{c.best_chunk_seq}", []
+        ).append(c.max_cosine)
+    return {
+        key: sum(1 for cos in cosines if cos >= tau) / len(cosines)
+        for key, cosines in grouped.items()
+    }
