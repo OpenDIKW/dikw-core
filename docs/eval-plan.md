@@ -116,9 +116,9 @@ or non-destructiveness. Two gates:
    real-LLM run that lands the calibrated numbers is itself the
    baseline entry.
 
-   Alongside the gated seven, the runner emits **informational diagnostics**
+   Alongside the gated five, the runner emits **informational diagnostics**
    the five gated metrics are blind to: `source_chunk_coverage`
-   (under-generation — source chunks no page claim lands on),
+   (under-generation — source chunks that no page claim lands on),
    `fallback_ratio_max` (taxonomy miscalibration — share of pages filed under
    the fallback category), and `slug_merge_ratio_max` (over-generation — the
    fraction of fan-out pages collapsed by slug dedup). The `_max` suffix marks

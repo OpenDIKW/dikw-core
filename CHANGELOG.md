@@ -15,7 +15,7 @@ on each entry call out exactly what shape changes break.
   measurement only.
   - **Deterministic synth-eval diagnostics** in `dikw client eval --eval synth`
     (informational, never gated): `synth/source_chunk_coverage`
-    (under-generation — source chunks no page claim grounds), `synth/fallback_ratio_max`
+    (under-generation — source chunks that no page claim grounds), `synth/fallback_ratio_max`
     (taxonomy miscalibration — share of pages filed under the fallback category),
     `synth/slug_merge_ratio_max` (over-generation — fraction of fan-out pages the
     slug dedup collapsed), and a per-category `category_distribution`. The `_max`
