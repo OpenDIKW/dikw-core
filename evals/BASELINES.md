@@ -7,6 +7,50 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-05 — entailment judge real-LLM calibration + reasoning-model `max_tokens` fix
+
+First live-LLM run of `fact_entailment_ratio` (the Phase 0b PR1 follow-up).
+Calibrating it surfaced — and this entry's PR fixes — a judge bug that made the
+metric untrustworthy on the baseline provider.
+
+**Config:** `mvp` synth eval, MiniMax-M3 (LLM via `anthropic_compat`,
+`llm_max_tokens_synth=16384`) + Qwen3-Embedding-0.6B@1024 (Gitee), `--judge
+--judge-sample 20`, `judge.entailment_grounding_enabled: true`. Repro:
+`uv run --env-file .env dikw client serve-and-run --base <minimax-base> -- eval --dataset mvp --eval synth --judge --judge-sample 20`.
+
+**The bug (now fixed in `eval/judge.py`):** both judges capped `max_tokens` at
+512 / 256. MiniMax-M3 is a reasoning model — it spends a hidden chain-of-thought
+against that budget before the JSON. A dense entailment judgment measured at
+~1350 output tokens, so dense claims truncated to empty text and were logged as
+parse errors. **First (pre-fix) run:** page judge 5/12 judged (7 errors),
+entailment 5/20 judged (15 errors) → ratio 0.900, but on n=5 and biased *high* —
+the truncated-out claims were exactly the dense/sharpened ones the judge would
+dock. Both defaults raised to a reasoning-safe `4096` (`_JUDGE_MAX_TOKENS`);
+non-reasoning models stop at `end_turn` far below it, so the ceiling bounds
+rather than pads.
+
+**Post-fix run — judge errors gone:**
+
+| judge        | judged | errors | result                                                            |
+|--------------|--------|--------|-------------------------------------------------------------------|
+| page (4-dim) | 12     | 0      | grounding 4.83 / atomicity 5.00 / completeness 3.83 / clarity 4.92 |
+| entailment   | 20     | 0      | **`fact_entailment_ratio` 0.775, 95% CI [0.65, 0.90]**, no-evidence 0 |
+
+**Entailment baseline: `0.775` (n=20, CI ±0.13).** The honest number is *below*
+the cosine `fact_grounding_ratio` — many claims are "partial" (gist supported,
+the added specific is not), which is the blind spot the metric exists to catch.
+CI width 0.25 at n=20 still exceeds the `<±0.2` target; the judge-sample power
+analysis (separate Phase 0b follow-up) will size `n` up.
+
+**Gated synth metrics this run (NOT this PR's concern):** `fact_grounding_ratio`
+0.545, `atomicity_score` 0.750, `wikilink_resolved_ratio` 0.708,
+`duplicate_ratio_max` 0.000, `language_fidelity` 1.000 → `passed=False`. These
+floors are **provider-locked to gpt-5.5** (see the 0.5.0 entry); MiniMax-M3 runs
+under them and swings run-to-run (atomicity 0.917→0.750, wikilink 0.542→0.708
+across the two runs here) — exactly the single-run noise the A/B harness + CIs
+exist to absorb. Not a regression; thresholds unchanged. This PR changes only the
+judge token budget — deterministic/embedding synth metrics are untouched by it.
+
 ## 2026-06-05 — `fact_entailment_ratio` LLM grounding judge (Phase 0b PR1)
 
 **Status:** measurement tooling only — **no synth/retrieval generation change**.
@@ -40,7 +84,9 @@ prompt, hermetically tested with a `FakeLLM`.
 elon-musk subset), then
 `uv run --env-file .env dikw client serve-and-run --base <base> -- eval --dataset mvp --eval synth --judge --judge-sample 20`
 with MiniMax-M3 via `anthropic_compat` (`llm_max_tokens_synth ≥ 8192`). Record
-the ratio + CI here as the entailment baseline.
+the ratio + CI here as the entailment baseline. *(Done 2026-06-05 — see the
+entry above; the calibration also surfaced the reasoning-model judge `max_tokens`
+fix.)*
 
 ## 2026-06-05 — synth-quality measurement foundation (Phase 0a)
 

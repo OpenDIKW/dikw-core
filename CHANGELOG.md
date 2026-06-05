@@ -45,6 +45,20 @@ on each entry call out exactly what shape changes break.
   `judge.entailment_grounding_enabled: true`. New overridable-by-nobody prompt
   `prompts/eval_judge_entailment.md`.
 
+### Fixed
+
+- **LLM judge no longer truncates to empty on reasoning models.** Both eval
+  judges (`judge_synthesis`, `judge_entailment`) capped `max_tokens` at 512 / 256
+  — too small for a reasoning LLM, which spends a hidden chain-of-thought against
+  that budget before emitting the JSON. Measured against MiniMax-M3, a dense
+  entailment judgment needs ~1350 output tokens, so the old caps truncated such
+  responses to empty text and the judge logged them as parse errors (~75% of
+  entailment calls, ~58% of page-judge calls on a real mvp run). Both defaults
+  are now a reasoning-safe `4096`; non-reasoning models stop at `end_turn` far
+  below it, so the higher ceiling bounds rather than pads (no extra spend). This
+  is what makes the Phase 0b entailment metric trustworthy on the MiniMax
+  baseline provider.
+
 ## 0.5.1 — codex empty-final recovery + K-layer persist fault-tolerance
 
 ### Fixed
