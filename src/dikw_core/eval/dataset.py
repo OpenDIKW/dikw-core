@@ -311,12 +311,20 @@ class JudgeSection(BaseModel):
     a plain ``--judge`` run pays only the four-dimension page judge; the
     entailment leg costs extra LLM spend and is opt-in per dataset. It still
     requires ``--judge`` to be set, so it is ``$0`` unless both are on.
+
+    ``category_correctness_enabled`` opts the dataset into the
+    ``category_correctness_ratio`` LLM judge (one call per sampled page — the
+    judge independently picks the best category from the closed declared set +
+    fallback and the score compares it to where synth filed the page; see
+    ``eval.judge.judge_category``). Same opt-in economics as the entailment leg:
+    off by default, requires ``--judge``, so ``$0`` unless both are on.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     model: str | None = None
     entailment_grounding_enabled: bool = False
+    category_correctness_enabled: bool = False
 
 
 class ExpectedSource(BaseModel):

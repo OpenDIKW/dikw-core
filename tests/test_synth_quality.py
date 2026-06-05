@@ -348,16 +348,22 @@ Zeta references pizza pineapple unicorn xylophone.
 
 class _DispatchLLM:
     """Routes ``complete`` by system prompt — synth pages, page-judge scores,
-    entailment verdicts — so a single fake drives the full judge+entailment
-    run without brittle call-order scripting."""
+    entailment verdicts, category verdicts — so a single fake drives the full
+    judge run without brittle call-order scripting."""
 
     def __init__(
-        self, synth_pages: list[str], *, verdict: str, page_score: str
+        self,
+        synth_pages: list[str],
+        *,
+        verdict: str,
+        page_score: str,
+        category: str,
     ) -> None:
         self._synth_pages = synth_pages
         self._synth_idx = 0
         self._verdict = verdict
         self._page_score = page_score
+        self._category = category
 
     async def complete(
         self,
@@ -372,6 +378,8 @@ class _DispatchLLM:
         s = system.lower()
         if "entailment judge" in s:
             return LLMResponse(text=self._verdict, finish_reason="end_turn")
+        if "taxonomy judge" in s:
+            return LLMResponse(text=self._category, finish_reason="end_turn")
         if "evaluation judge" in s:
             return LLMResponse(text=self._page_score, finish_reason="end_turn")
         page = self._synth_pages[
@@ -394,6 +402,9 @@ def _dispatch_llm() -> _DispatchLLM:
                 "rationale": "ok",
             }
         ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
     )
 
 
@@ -402,6 +413,15 @@ def _enable_entailment(ds: Path) -> None:
     p.write_text(
         p.read_text(encoding="utf-8")
         + "judge:\n  entailment_grounding_enabled: true\n",
+        encoding="utf-8",
+    )
+
+
+def _enable_category(ds: Path) -> None:
+    p = ds / "dataset.yaml"
+    p.write_text(
+        p.read_text(encoding="utf-8")
+        + "judge:\n  category_correctness_enabled: true\n",
         encoding="utf-8",
     )
 
@@ -454,3 +474,55 @@ async def test_run_synth_eval_entailment_off_when_flag_unset(tmp_path: Path) -> 
     assert report.judge_summary is not None  # page judge still ran
     assert report.entailment_summary is None
     assert "synth/fact_entailment_ratio" not in report.informational
+
+
+# ---- category-correctness judge wiring -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_runs_when_enabled(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    _enable_category(ds)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.category_summary is not None
+    assert report.category_summary.n_judged >= 1
+    assert report.category_summary.n_errors == 0
+    # Mirrored into informational (for the A/B harness + display), never gated.
+    assert "synth/category_correctness_ratio" in report.informational
+    assert (
+        report.informational["synth/category_correctness_ratio"]
+        == report.category_summary.ratio
+    )
+    assert "synth/category_correctness_ratio" not in report.metrics
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_off_when_judge_off(tmp_path: Path) -> None:
+    """Flag on but ``judge=False`` → no category leg (it requires --judge)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_category(ds)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=False
+    )
+    assert report.category_summary is None
+    assert "synth/category_correctness_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_off_when_flag_unset(tmp_path: Path) -> None:
+    """``judge=True`` but the dataset didn't opt in → only the page judge runs."""
+    ds = _write_synth_dataset(tmp_path)  # no category flag
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.judge_summary is not None  # page judge still ran
+    assert report.category_summary is None
+    assert "synth/category_correctness_ratio" not in report.informational
