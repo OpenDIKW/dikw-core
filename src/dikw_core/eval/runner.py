@@ -69,7 +69,14 @@ from ..storage._schema import SCHEMA_VERSION
 from ..storage.base import NotSupported
 from .dataset import DatasetSpec
 from .fake_embedder import FakeEmbeddings
-from .judge import JudgeSummary, judge_synthesis
+from .judge import (
+    ClaimEvidence,
+    EntailmentSummary,
+    JudgeSummary,
+    claim_evidence_from_grounding,
+    judge_entailment,
+    judge_synthesis,
+)
 from .metrics import (
     atomicity_score,
     category_distribution,
@@ -991,6 +998,7 @@ class SynthEvalReport(BaseModel):
     pages_per_source: dict[str, int] = Field(default_factory=dict)
     informational: dict[str, float] = Field(default_factory=dict)
     judge_summary: JudgeSummary | None = None
+    entailment_summary: EntailmentSummary | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @property
@@ -1023,6 +1031,11 @@ class _SynthMetricsBundle:
     metrics: dict[str, float]
     informational: dict[str, float]
     pages_per_source: dict[str, int]
+    # (claim, best-source-chunk) pairs for the optional fact-entailment judge.
+    # Built deterministically here (no LLM); ``run_synth_eval`` runs the judge
+    # over them only when ``judge`` AND the dataset's
+    # ``judge.entailment_grounding_enabled`` are both on.
+    entailment_pairs: list[ClaimEvidence]
 
 
 async def run_synth_eval(
@@ -1150,6 +1163,36 @@ async def run_synth_eval(
                 total=len(bundle.pages),
             )
 
+        # Optional fact-entailment judge — the LLM grounding leg the cosine
+        # ``fact_grounding_ratio`` is blind to. Gated on ``judge`` AND the
+        # dataset's opt-in flag so it's $0 unless explicitly enabled. Surfaced
+        # as an informational (ungated) metric; the honest bootstrap CI rides
+        # on ``entailment_summary``.
+        entailment_summary: EntailmentSummary | None = None
+        if judge and spec.judge.entailment_grounding_enabled:
+            await _reporter.progress(
+                phase="synth_eval/entailment",
+                current=0,
+                total=len(bundle.entailment_pairs),
+            )
+            entailment_summary = await judge_entailment(
+                bundle.entailment_pairs,
+                llm=llm,
+                model=spec.judge.model or effective_provider_cfg.llm_model,
+                sample=judge_sample,
+                reporter=_reporter,
+                seed=spec.name,
+            )
+            if entailment_summary.n_judged > 0:
+                bundle.informational["synth/fact_entailment_ratio"] = (
+                    entailment_summary.ratio
+                )
+            await _reporter.progress(
+                phase="synth_eval/entailment",
+                current=entailment_summary.n_judged + entailment_summary.n_errors,
+                total=len(bundle.entailment_pairs),
+            )
+
         synth_thresholds = {
             name: thr
             for name, thr in spec.thresholds.items()
@@ -1164,6 +1207,7 @@ async def run_synth_eval(
             pages_per_source=bundle.pages_per_source,
             informational=bundle.informational,
             judge_summary=judge_summary,
+            entailment_summary=entailment_summary,
             warnings=warnings,
         )
 
@@ -1315,6 +1359,12 @@ async def _collect_metrics_bundle(
         "synth/slug_merge_ratio_max": slug_merge_ratio,
     }
 
+    # Pair each claim with the source chunk that best matched it (reusing the
+    # grounding argmax — no re-embedding) for the optional entailment judge.
+    entailment_pairs = claim_evidence_from_grounding(
+        grounding_claims, chunks_by_source
+    )
+
     return _SynthMetricsBundle(
         pages=pages,
         source_text_by_path=source_text_by_path,
@@ -1322,4 +1372,5 @@ async def _collect_metrics_bundle(
         metrics=metrics,
         informational=informational,
         pages_per_source=pages_per_source,
+        entailment_pairs=entailment_pairs,
     )

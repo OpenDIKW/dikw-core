@@ -126,6 +126,20 @@ or non-destructiveness. Two gates:
    reports a deterministic bootstrap 95% CI per dimension so a noisy small-sample
    mean isn't mistaken for a real move.
 
+   **`fact_entailment_ratio` — the LLM grounding leg the cosine is blind to.**
+   `fact_grounding_ratio` reduces to a cosine, so a fabricated specific ("GPT-4
+   is 4x faster") and a supported gist ("GPT-4 is faster") land in the same band.
+   The entailment judge pairs each claim with its nearest source chunk (reusing
+   the grounding argmax — no re-embedding) and asks an LLM whether the evidence
+   *entails* it (`yes`/`partial`/`no` → `1.0`/`0.5`/`0.0`), catching invented
+   numbers/dates/ratios, superlatives, causal overreach, and contradictions. It
+   is informational (never gated) with its own bootstrap 95% CI on
+   `entailment_summary`, and **opt-in**: it runs only when `--judge` is set
+   **and** the dataset declares `judge.entailment_grounding_enabled: true`, so
+   it costs nothing by default. The will-it-gate question (entailment is the
+   first judge dimension a calibrated dataset is likely to promote) stays open
+   until the multi-dataset judge-sample power analysis lands.
+
    **Proving an optimization actually helped.** The LLM makes synth
    non-deterministic, so a single before/after eval can't separate a real gain
    from ±0.05 run-to-run noise. `evals/tools/ab_experiment.py` runs the same

@@ -17,6 +17,8 @@ import json
 import logging
 import random
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -24,6 +26,8 @@ from ..domains.knowledge.page import KnowledgePage
 from ..progress import NoopReporter, ProgressReporter
 from ..prompts import load as load_prompt
 from ..providers.base import LLMProvider
+from ..schemas import ChunkRecord
+from .metrics import GroundingClaim
 
 logger = logging.getLogger(__name__)
 
@@ -265,4 +269,257 @@ async def judge_synthesis(
         ci_completeness=bootstrap_ci(completeness_vals, seed=f"{seed}:completeness"),
         ci_clarity=bootstrap_ci(clarity_vals, seed=f"{seed}:clarity"),
         per_page=per_page,
+    )
+
+
+# ===========================================================================
+# Fact-entailment judge — the LLM grounding leg the cosine metric is blind to
+# ===========================================================================
+#
+# ``fact_grounding_ratio`` reduces to a cosine: "GPT-4 is 4x faster than GPT-3"
+# (a fabricated ratio) and "GPT-4 is faster than GPT-3" (supported) land in the
+# same cosine band, so the embedding metric cannot tell them apart. The
+# entailment judge asks an LLM whether the nearest source chunk actually
+# *supports* the claim (yes/partial/no), catching invented specifics the cosine
+# metric is blind to. Reuses the per-claim argmax (``best_chunk_seq``) that
+# ``compute_grounding_cosines`` already produced — no re-embedding.
+
+_ENTAILMENT_SCORE: dict[str, float] = {"yes": 1.0, "partial": 0.5, "no": 0.0}
+
+
+@dataclass(frozen=True)
+class ClaimEvidence:
+    """One page claim paired with the source-chunk text that best matches it.
+
+    Built by :func:`claim_evidence_from_grounding` from the cosines
+    :func:`..metrics.compute_grounding_cosines` already produced. ``evidence``
+    is ``None`` when the claim's source had no embeddable chunk (the grounding
+    claim's ``best_chunk_seq`` is ``None`` / ``max_cosine == -inf``); the judge
+    scores such a claim as unverifiable (``0.0``) rather than dropping it from
+    the denominator.
+    """
+
+    page_path: str
+    source_path: str
+    claim: str
+    evidence: str | None
+
+
+def claim_evidence_from_grounding(
+    grounding_claims: Sequence[GroundingClaim],
+    chunks_by_source: Mapping[str, Sequence[ChunkRecord]],
+) -> list[ClaimEvidence]:
+    """Resolve each grounding claim's nearest source chunk to its text.
+
+    Reuses the per-claim ``best_chunk_seq`` argmax from
+    :func:`..metrics.compute_grounding_cosines` (no re-embedding): looks up the
+    chunk text for ``(source_path, best_chunk_seq)`` and pairs it with the
+    claim. A claim whose ``best_chunk_seq`` is ``None`` gets ``evidence=None``
+    so the entailment judge counts it as unverifiable (scored ``0.0``) rather
+    than silently dropping it.
+    """
+    text_by_key: dict[tuple[str, int], str] = {}
+    for src, chunks in chunks_by_source.items():
+        for c in chunks:
+            text_by_key[(src, c.seq)] = c.text
+    out: list[ClaimEvidence] = []
+    for gc in grounding_claims:
+        evidence = (
+            None
+            if gc.best_chunk_seq is None
+            else text_by_key.get((gc.source_path, gc.best_chunk_seq))
+        )
+        out.append(
+            ClaimEvidence(
+                page_path=gc.page_path,
+                source_path=gc.source_path,
+                claim=gc.claim,
+                evidence=evidence,
+            )
+        )
+    return out
+
+
+class EntailmentVerdict(BaseModel):
+    """One claim's entailment verdict + its 0.0/0.5/1.0 score.
+
+    ``verdict`` is the LLM's ``yes`` / ``partial`` / ``no`` call (see
+    ``prompts/eval_judge_entailment.md``); ``score`` maps it to ``1.0`` /
+    ``0.5`` / ``0.0`` for the ratio. ``rationale`` is optional — the score only
+    needs the verdict, so a thin ``{"verdict": "yes"}`` response still parses.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    verdict: Literal["yes", "partial", "no"]
+    rationale: str = ""
+
+    @property
+    def score(self) -> float:
+        return _ENTAILMENT_SCORE[self.verdict]
+
+
+class EntailmentSummary(BaseModel):
+    """Aggregate of fact-entailment verdicts across (sampled) page claims.
+
+    ``ratio`` is the mean verdict score over ``n_judged`` claims. Claims whose
+    source had no evidence chunk count as ``0.0`` (tallied in ``n_no_evidence``)
+    rather than being dropped; parse / LLM failures are excluded and counted in
+    ``n_errors`` instead. ``ci`` is a deterministic bootstrap 95% interval on
+    the ratio — the same honesty band as :class:`JudgeSummary`. ``ratio == 0.0``
+    with ``n_judged == 0`` means nothing was judged: the caller omits the metric
+    rather than reporting a misleading floor.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ratio: float
+    n_judged: int
+    n_errors: int
+    n_no_evidence: int
+    ci: tuple[float, float] = (0.0, 0.0)
+
+
+def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:
+    """Parse an entailment-judge response into ``EntailmentVerdict``, or
+    ``None`` on any failure (malformed JSON, non-object, missing / unknown
+    verdict).
+
+    The ``verdict`` token is matched case-insensitively after stripping
+    surrounding whitespace (``"YES "`` → ``yes``) — LLMs vary on casing — but
+    only ``yes`` / ``partial`` / ``no`` are accepted; anything else (``maybe``,
+    ``true``, ``1``) is a parse failure, never a silent default. Strips an
+    optional ```` ```json … ``` ```` fence first, mirroring
+    :func:`parse_judge_response`.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline > 0 and stripped.endswith("```"):
+            stripped = stripped[first_newline + 1 : -3].strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_verdict = payload.get("verdict")
+    if not isinstance(raw_verdict, str):
+        return None
+    verdict = raw_verdict.strip().lower()
+    if verdict not in _ENTAILMENT_SCORE:
+        return None
+    raw_rationale = payload.get("rationale")
+    rationale = raw_rationale if isinstance(raw_rationale, str) else ""
+    try:
+        return EntailmentVerdict.model_validate(
+            {"verdict": verdict, "rationale": rationale}
+        )
+    except ValidationError:
+        return None
+
+
+def _format_entailment_prompt(*, claim: str, evidence: str) -> str:
+    # ``str.replace`` (not ``str.format``) so a claim or evidence chunk
+    # containing literal ``{`` / ``}`` (a JSON snippet, code) can't raise
+    # ``KeyError`` / ``IndexError`` at format time.
+    return (
+        load_prompt("eval_judge_entailment")
+        .replace("{claim}", claim)
+        .replace("{evidence}", evidence)
+    )
+
+
+_ENTAILMENT_SYSTEM = (
+    "You are an entailment judge. Decide whether the evidence supports the "
+    "claim. Return raw JSON only — no prose, no fences."
+)
+
+
+async def judge_entailment(
+    pairs: Sequence[ClaimEvidence],
+    *,
+    llm: LLMProvider,
+    model: str,
+    sample: int | None = None,
+    reporter: ProgressReporter | None = None,
+    seed: str = "dikw",
+    max_tokens: int = 256,
+    temperature: float = 0.0,
+) -> EntailmentSummary:
+    """Score each (claim, evidence) pair for entailment, aggregate to a ratio.
+
+    For every pair the judge LLM is asked whether the evidence entails the
+    claim (``yes`` / ``partial`` / ``no`` → ``1.0`` / ``0.5`` / ``0.0``). A pair
+    with no evidence (the claim's source had no embeddable chunk) scores ``0.0``
+    without an LLM call and is counted in ``n_no_evidence``. Identical
+    ``(claim, evidence)`` pairs are judged once and the verdict reused, so a
+    corpus with repeated claims doesn't pay double spend.
+
+    ``sample`` caps the number of claims judged; selection is seeded via
+    ``hashlib.sha1(seed)`` so repeated runs draw the same subset (``sample`` ≥
+    ``len(pairs)`` is a no-op cap). A per-pair LLM exception or parse failure
+    increments ``n_errors`` and skips the pair (the ratio is over
+    successfully-scored claims only) — one bad response never kills the run.
+    """
+    _reporter: ProgressReporter = reporter or NoopReporter()
+    selected = list(pairs)
+    if sample is not None and sample < len(selected):
+        rng = random.Random(hashlib.sha1(seed.encode("utf-8")).digest()[:8])
+        selected = rng.sample(selected, sample)
+
+    scores: list[float] = []
+    n_errors = 0
+    n_no_evidence = 0
+    cache: dict[str, float] = {}
+
+    for idx, pair in enumerate(selected):
+        await _reporter.progress(
+            phase="entailment",
+            current=idx,
+            total=len(selected),
+            detail={"path": pair.page_path},
+        )
+        if not pair.evidence:
+            scores.append(0.0)
+            n_no_evidence += 1
+            continue
+        key = hashlib.sha1(
+            (pair.claim + "\0" + pair.evidence).encode("utf-8")
+        ).hexdigest()
+        cached = cache.get(key)
+        if cached is not None:
+            scores.append(cached)
+            continue
+        try:
+            response = await llm.complete(
+                system=_ENTAILMENT_SYSTEM,
+                user=_format_entailment_prompt(
+                    claim=pair.claim, evidence=pair.evidence
+                ),
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.warning(
+                "entailment: LLM call failed for %s — %s", pair.page_path, e
+            )
+            n_errors += 1
+            continue
+        verdict = parse_entailment_verdict(response.text)
+        if verdict is None:
+            n_errors += 1
+            continue
+        cache[key] = verdict.score
+        scores.append(verdict.score)
+
+    n_judged = len(scores)
+    ratio = sum(scores) / n_judged if n_judged else 0.0
+    return EntailmentSummary(
+        ratio=ratio,
+        n_judged=n_judged,
+        n_errors=n_errors,
+        n_no_evidence=n_no_evidence,
+        ci=bootstrap_ci(scores, seed=f"{seed}:entailment"),
     )

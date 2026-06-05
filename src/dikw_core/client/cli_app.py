@@ -1296,8 +1296,9 @@ def eval_cmd(
         typer.Option(
             "--judge-sample",
             help=(
-                "Sample N pages for the LLM judge instead of judging "
-                "all. Ignored when --judge is not set."
+                "Sample N items for the LLM judge instead of judging all "
+                "(N pages for the page judge; N claims for the entailment "
+                "judge when enabled). Ignored when --judge is not set."
             ),
         ),
     ] = None,

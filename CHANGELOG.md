@@ -31,6 +31,19 @@ on each entry call out exactly what shape changes break.
     two-sample t-test, Cohen's d, and a direction-aware ship gate (`p < p_max`
     **and** `improvement > effect_min`). Pure-Python stats (no scipy). `collect`
     runs the arms (live LLM); `compare` is offline.
+- **`synth/fact_entailment_ratio` — LLM grounding judge (Phase 0b).** The
+  embedding `fact_grounding_ratio` reduces to a cosine, so "GPT-4 is 4x faster
+  than GPT-3" (a fabricated ratio) and "GPT-4 is faster than GPT-3" (supported)
+  land in the same band — it cannot tell a true claim from a sharpened one. The
+  new judge pairs each page claim with its nearest source chunk (reusing the
+  grounding argmax — no re-embedding) and asks an LLM whether the evidence
+  *entails* the claim (`yes`/`partial`/`no` → `1.0`/`0.5`/`0.0`), catching
+  invented numbers, dates, ratios, superlatives, causal links, and contradicted
+  claims. Surfaced as an informational metric (never gated) with a deterministic
+  bootstrap 95% CI on `SynthEvalReport.entailment_summary`. **Opt-in and `$0` by
+  default**: runs only when `--judge` is set **and** the dataset declares
+  `judge.entailment_grounding_enabled: true`. New overridable-by-nobody prompt
+  `prompts/eval_judge_entailment.md`.
 
 ## 0.5.1 — codex empty-final recovery + K-layer persist fault-tolerance
 

@@ -303,11 +303,20 @@ class JudgeSection(BaseModel):
     dataset would mean a separate auth / billing path and isn't needed
     yet. ``extra="forbid"`` ensures a ``provider:`` typo isn't silently
     ignored.
+
+    ``entailment_grounding_enabled`` opts the dataset into the
+    ``fact_entailment_ratio`` LLM judge (one ``yes``/``partial``/``no`` call per
+    sampled page claim, identical ``(claim, evidence)`` pairs judged once — see
+    ``eval.judge.judge_entailment``). Off by default so
+    a plain ``--judge`` run pays only the four-dimension page judge; the
+    entailment leg costs extra LLM spend and is opt-in per dataset. It still
+    requires ``--judge`` to be set, so it is ``$0`` unless both are on.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     model: str | None = None
+    entailment_grounding_enabled: bool = False
 
 
 class ExpectedSource(BaseModel):
