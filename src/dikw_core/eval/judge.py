@@ -480,7 +480,11 @@ async def judge_entailment(
             total=len(selected),
             detail={"path": pair.page_path},
         )
-        if not pair.evidence:
+        if not (pair.evidence and pair.evidence.strip()):
+            # No embeddable source chunk (or a blank one) → unverifiable: score
+            # 0.0 without an LLM call rather than dropping the claim from the
+            # denominator. Grounding already filters blank chunks, so this is
+            # belt-and-suspenders, but it keeps "no evidence" airtight.
             scores.append(0.0)
             n_no_evidence += 1
             continue
