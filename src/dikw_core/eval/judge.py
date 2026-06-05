@@ -610,11 +610,20 @@ def parse_category_verdict(
         return None
     if not isinstance(payload, dict):
         return None
-    chosen = payload.get("chosen")
-    if not isinstance(chosen, str) or chosen not in allowed:
+    # ``.strip()`` the returned paths before the closed-set check — a stray
+    # ``"concept "`` is the LLM's whitespace, not a different category, and
+    # shouldn't inflate ``n_errors``. (The allowed set is already NFC-normalized
+    # by ``CategoryNode``; the prompt hands the LLM those exact paths to copy.)
+    raw_chosen = payload.get("chosen")
+    if not isinstance(raw_chosen, str):
+        return None
+    chosen = raw_chosen.strip()
+    if chosen not in allowed:
         return None
     raw_also = payload.get("also_fits")
-    also_fits = raw_also if (isinstance(raw_also, str) and raw_also in allowed) else None
+    also_fits = raw_also.strip() if isinstance(raw_also, str) else None
+    if also_fits not in allowed:
+        also_fits = None
     raw_rationale = payload.get("rationale")
     rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     try:

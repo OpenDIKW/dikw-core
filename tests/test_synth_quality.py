@@ -408,20 +408,24 @@ def _dispatch_llm() -> _DispatchLLM:
     )
 
 
-def _enable_entailment(ds: Path) -> None:
+def _enable_judge(
+    ds: Path, *, entailment: bool = False, category: bool = False
+) -> None:
+    """Append a single ``judge:`` block enabling the requested judge legs.
+
+    One block even when both legs are requested, so the YAML never carries
+    duplicate ``judge:`` keys (which a per-leg append helper would produce).
+    """
+    flags: list[str] = []
+    if entailment:
+        flags.append("  entailment_grounding_enabled: true")
+    if category:
+        flags.append("  category_correctness_enabled: true")
+    if not flags:
+        return
     p = ds / "dataset.yaml"
     p.write_text(
-        p.read_text(encoding="utf-8")
-        + "judge:\n  entailment_grounding_enabled: true\n",
-        encoding="utf-8",
-    )
-
-
-def _enable_category(ds: Path) -> None:
-    p = ds / "dataset.yaml"
-    p.write_text(
-        p.read_text(encoding="utf-8")
-        + "judge:\n  category_correctness_enabled: true\n",
+        p.read_text(encoding="utf-8") + "judge:\n" + "\n".join(flags) + "\n",
         encoding="utf-8",
     )
 
@@ -429,7 +433,7 @@ def _enable_category(ds: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_synth_eval_entailment_runs_when_enabled(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
-    _enable_entailment(ds)
+    _enable_judge(ds, entailment=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(
@@ -452,7 +456,7 @@ async def test_run_synth_eval_entailment_runs_when_enabled(tmp_path: Path) -> No
 async def test_run_synth_eval_entailment_off_when_judge_off(tmp_path: Path) -> None:
     """Flag on but ``judge=False`` → no entailment leg (it requires --judge)."""
     ds = _write_synth_dataset(tmp_path)
-    _enable_entailment(ds)
+    _enable_judge(ds, entailment=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(
@@ -482,7 +486,7 @@ async def test_run_synth_eval_entailment_off_when_flag_unset(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_run_synth_eval_category_runs_when_enabled(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
-    _enable_category(ds)
+    _enable_judge(ds, category=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(
@@ -504,7 +508,7 @@ async def test_run_synth_eval_category_runs_when_enabled(tmp_path: Path) -> None
 async def test_run_synth_eval_category_off_when_judge_off(tmp_path: Path) -> None:
     """Flag on but ``judge=False`` → no category leg (it requires --judge)."""
     ds = _write_synth_dataset(tmp_path)
-    _enable_category(ds)
+    _enable_judge(ds, category=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(

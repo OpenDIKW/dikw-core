@@ -1206,9 +1206,15 @@ async def run_synth_eval(
         # ``category_summary``.
         category_summary: CategorySummary | None = None
         if judge and spec.judge.category_correctness_enabled:
+            # Build the closed set from ``schema_cfg`` — the SAME normalized
+            # categories synth was materialised with — not raw
+            # ``spec.synth.categories``. ``CategoryNode`` NFC-normalizes + strips
+            # each path, so persisted ``page.category`` is normalized; sourcing
+            # the judge's options from the raw spec would make the judge copy an
+            # un-normalized path and score a correctly-filed page as wrong.
             category_options = [
                 CategoryOption(path=c.path, desc=c.desc)
-                for c in spec.synth.categories
+                for c in schema_cfg.categories
             ]
             category_options.append(
                 CategoryOption(

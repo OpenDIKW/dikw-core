@@ -624,6 +624,19 @@ def test_parse_category_verdict_strips_fences() -> None:
     assert v.chosen == "entity"
 
 
+def test_parse_category_verdict_strips_whitespace_tokens() -> None:
+    # An LLM's stray surrounding space ("concept ") is whitespace, not a
+    # different category — strip before the closed-set check so a valid choice
+    # doesn't inflate n_errors.
+    v = parse_category_verdict(
+        _catv("concept ", also_fits=" note"),
+        allowed=frozenset({"concept", "note"}),
+    )
+    assert v is not None
+    assert v.chosen == "concept"
+    assert v.also_fits == "note"
+
+
 def test_parse_category_verdict_chosen_not_in_allowed_returns_none() -> None:
     # Closed-set discipline: an invented category is a parse failure, never a
     # silent re-file (mirrors synth's own refusal).
