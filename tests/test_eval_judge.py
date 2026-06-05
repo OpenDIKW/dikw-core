@@ -236,6 +236,18 @@ async def test_judge_synthesis_empty_pages_returns_empty_summary() -> None:
     assert summary.per_page == []
 
 
+@pytest.mark.asyncio
+async def test_judge_synthesis_default_max_tokens_is_reasoning_safe() -> None:
+    # A reasoning LLM (e.g. MiniMax-M3) spends a hidden thinking trace that
+    # counts against max_tokens before the JSON score; a small cap truncates
+    # the page-judge response to empty and every call logs a parse error.
+    # The default must leave headroom for that trace — see judge.py.
+    pages = [_page("A")]
+    llm = FakeLLM(response_text=_valid_payload())
+    await judge_synthesis(pages, sources={"sources/a.md": "src"}, llm=llm, model="m")
+    assert llm.last_max_tokens == 4096
+
+
 # ---- bootstrap_ci -----------------------------------------------------------
 
 
@@ -524,6 +536,17 @@ async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
     await judge_entailment([_ce("c", "e")], llm=llm, model="m")
     assert captured["temperature"] == 0.0
     assert "entailment" in str(captured["system"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_default_max_tokens_is_reasoning_safe() -> None:
+    # Reasoning LLMs (e.g. MiniMax-M3) spend a hidden thinking trace that
+    # counts against max_tokens before emitting the JSON verdict; the old
+    # 256 cap truncated dense-claim judgments to empty (~75% parse errors on
+    # MiniMax-M3). The default must leave room for that trace — see judge.py.
+    llm = FakeLLM(response_text=_verdict("yes"))
+    await judge_entailment([_ce("c", "e")], llm=llm, model="m")
+    assert llm.last_max_tokens == 4096
 
 
 @pytest.mark.asyncio

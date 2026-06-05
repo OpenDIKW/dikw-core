@@ -31,6 +31,15 @@ from .metrics import GroundingClaim
 
 logger = logging.getLogger(__name__)
 
+# Reasoning LLMs (e.g. MiniMax-M3) emit a hidden chain-of-thought that counts
+# against ``max_tokens`` before the final JSON. Measured against MiniMax-M3, a
+# dense entailment judgment spends ~1350 output tokens (mostly that trace), so
+# the old 256/512 caps truncated such responses to empty text — ~75% / ~58% of
+# judge calls then failed to parse. 4096 leaves ~3x headroom; non-reasoning
+# models stop at end_turn far below it, so the higher ceiling is effectively
+# free (it bounds, it doesn't pad). Callers may still override per-call.
+_JUDGE_MAX_TOKENS = 4096
+
 
 class JudgeScore(BaseModel):
     """Four 0-5 integer scores + a one-sentence rationale."""
@@ -181,7 +190,7 @@ async def judge_synthesis(
     sample: int | None = None,
     reporter: ProgressReporter | None = None,
     seed: str = "dikw",
-    max_tokens: int = 512,
+    max_tokens: int = _JUDGE_MAX_TOKENS,
     temperature: float = 0.0,
 ) -> JudgeSummary:
     """Run the judge across (sampled) pages, aggregate to ``JudgeSummary``.
@@ -444,7 +453,7 @@ async def judge_entailment(
     sample: int | None = None,
     reporter: ProgressReporter | None = None,
     seed: str = "dikw",
-    max_tokens: int = 256,
+    max_tokens: int = _JUDGE_MAX_TOKENS,
     temperature: float = 0.0,
 ) -> EntailmentSummary:
     """Score each (claim, evidence) pair for entailment, aggregate to a ratio.
