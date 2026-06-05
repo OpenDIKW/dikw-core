@@ -7,6 +7,41 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-05 — `fact_entailment_ratio` LLM grounding judge (Phase 0b PR1)
+
+**Status:** measurement tooling only — **no synth/retrieval generation change**.
+The metric is informational (never gated) and `$0` unless explicitly enabled, so
+there are no baseline numbers to pin yet. Real-LLM calibration of the ratio (and
+the judge-sample power analysis that sizes the sample for a `<±0.2` CI) is the
+follow-up step in Phase 0b; this PR lands the metric + its adversarially-designed
+prompt, hermetically tested with a `FakeLLM`.
+
+**What landed (behavior-neutral, eval-only):**
+
+- `synth/fact_entailment_ratio` — pairs each page claim with its nearest source
+  chunk (reusing `compute_grounding_cosines`'s `best_chunk_seq` argmax — no
+  re-embedding) and asks an LLM whether the evidence entails the claim
+  (`yes`/`partial`/`no` → `1.0`/`0.5`/`0.0`). Closes the cosine blind spot: a
+  fabricated specific ("4x faster") and a supported gist ("faster") sit in the
+  same cosine band but get different entailment verdicts.
+- `eval/judge.py`: `judge_entailment` (claim sampling, identical-pair caching,
+  per-claim error tolerance, bootstrap-CI'd `EntailmentSummary`),
+  `parse_entailment_verdict`, `claim_evidence_from_grounding`. Surfaced on
+  `SynthEvalReport.entailment_summary` + mirrored into `informational` for the
+  A/B harness.
+- `prompts/eval_judge_entailment.md` — designed via a 3-framing draft +
+  adversarial-synthesis + red-team workflow; the red-team pass added the
+  contradiction-beats-`partial`, wrong-entity-is-`no`, and
+  causal/superlative-overreach-is-`partial` rules.
+- Opt-in: `judge.entailment_grounding_enabled: true` in `dataset.yaml` **and**
+  `--judge`. Off → not computed, no LLM spend.
+
+**How to calibrate it (follow-up, live LLM):** enable the flag on `mvp` (or the
+elon-musk subset), then
+`uv run --env-file .env dikw client serve-and-run --base <base> -- eval --dataset mvp --eval synth --judge --judge-sample 20`
+with MiniMax-M3 via `anthropic_compat` (`llm_max_tokens_synth ≥ 8192`). Record
+the ratio + CI here as the entailment baseline.
+
 ## 2026-06-05 — synth-quality measurement foundation (Phase 0a)
 
 **Status:** measurement tooling only — **no synth/retrieval generation change**,

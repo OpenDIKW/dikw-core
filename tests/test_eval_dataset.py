@@ -565,6 +565,21 @@ def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:
     ds = _write_valid_dataset(tmp_path)
     spec = load_dataset(ds)
     assert spec.judge.model is None
+    # fact-entailment judge is opt-in — off unless the dataset enables it.
+    assert spec.judge.entailment_grounding_enabled is False
+
+
+def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    (ds / "dataset.yaml").write_text(
+        (ds / "dataset.yaml").read_text(encoding="utf-8").replace(
+            "judge:\n  model: claude-sonnet\n",
+            "judge:\n  model: claude-sonnet\n  entailment_grounding_enabled: true\n",
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    assert spec.judge.entailment_grounding_enabled is True
 
 
 def test_load_dataset_accepts_synth_namespaced_thresholds(tmp_path: Path) -> None:

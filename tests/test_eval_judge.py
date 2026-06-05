@@ -8,13 +8,21 @@ import pytest
 
 from dikw_core.domains.knowledge.page import KnowledgePage, build_page
 from dikw_core.eval.judge import (
+    ClaimEvidence,
+    EntailmentSummary,
+    EntailmentVerdict,
     JudgeScore,
     JudgeSummary,
     PageJudgeEntry,
     bootstrap_ci,
+    claim_evidence_from_grounding,
+    judge_entailment,
     judge_synthesis,
+    parse_entailment_verdict,
     parse_judge_response,
 )
+from dikw_core.eval.metrics import GroundingClaim
+from dikw_core.schemas import ChunkRecord
 
 from .fakes import FakeLLM
 
@@ -290,3 +298,243 @@ async def test_judge_synthesis_populates_dimension_cis() -> None:
     # A dimension with identical scores across pages has a degenerate CI
     # pinned to that value (every resample mean is 4.0).
     assert summary.ci_atomicity == (4.0, 4.0)
+
+
+# ---- fact-entailment judge --------------------------------------------------
+
+
+def _verdict(v: str, rationale: str = "ok") -> str:
+    return json.dumps({"verdict": v, "rationale": rationale})
+
+
+def _ce(
+    claim: str,
+    evidence: str | None,
+    *,
+    page: str = "knowledge/concept/a.md",
+    source: str = "sources/a.md",
+) -> ClaimEvidence:
+    return ClaimEvidence(
+        page_path=page, source_path=source, claim=claim, evidence=evidence
+    )
+
+
+# ---- parse_entailment_verdict ----------------------------------------------
+
+
+def test_parse_entailment_verdict_maps_to_scores() -> None:
+    for token, score in (("yes", 1.0), ("partial", 0.5), ("no", 0.0)):
+        v = parse_entailment_verdict(_verdict(token))
+        assert isinstance(v, EntailmentVerdict)
+        assert v.verdict == token
+        assert v.score == score
+
+
+def test_parse_entailment_verdict_strips_fences() -> None:
+    v1 = parse_entailment_verdict("```json\n" + _verdict("yes") + "\n```")
+    v2 = parse_entailment_verdict("```\n" + _verdict("no") + "\n```")
+    assert v1 is not None and v1.score == 1.0
+    assert v2 is not None and v2.score == 0.0
+
+
+def test_parse_entailment_verdict_case_and_whitespace_lenient() -> None:
+    """LLM casing varies — ``YES`` / `` Partial `` normalise; the token set
+    stays strict."""
+    v1 = parse_entailment_verdict(_verdict("YES"))
+    v2 = parse_entailment_verdict(_verdict(" Partial "))
+    assert v1 is not None and v1.score == 1.0
+    assert v2 is not None and v2.score == 0.5
+
+
+def test_parse_entailment_verdict_unknown_token_returns_none() -> None:
+    for bad in ("maybe", "true", "1", ""):
+        assert parse_entailment_verdict(_verdict(bad)) is None
+
+
+def test_parse_entailment_verdict_malformed_and_non_object_returns_none() -> None:
+    assert parse_entailment_verdict("not json") is None
+    assert parse_entailment_verdict("{broken") is None
+    assert parse_entailment_verdict('["yes"]') is None  # top-level array
+    # object without a verdict key
+    assert parse_entailment_verdict(json.dumps({"rationale": "x"})) is None
+    # verdict present but not a string
+    assert parse_entailment_verdict(json.dumps({"verdict": 1})) is None
+
+
+def test_parse_entailment_verdict_rationale_optional() -> None:
+    """Score only needs the verdict — a thin ``{"verdict": "yes"}`` parses."""
+    v = parse_entailment_verdict(json.dumps({"verdict": "yes"}))
+    assert v is not None
+    assert v.score == 1.0
+    assert v.rationale == ""
+
+
+def test_entailment_verdict_score_mapping() -> None:
+    assert EntailmentVerdict(verdict="yes").score == 1.0
+    assert EntailmentVerdict(verdict="partial").score == 0.5
+    assert EntailmentVerdict(verdict="no").score == 0.0
+
+
+# ---- claim_evidence_from_grounding -----------------------------------------
+
+
+def test_claim_evidence_from_grounding_resolves_chunk_text() -> None:
+    gcs = [
+        GroundingClaim(
+            page_path="knowledge/c/p.md",
+            source_path="sources/a.md",
+            claim="alpha is great",
+            max_cosine=0.9,
+            best_chunk_seq=1,
+        )
+    ]
+    chunks = {
+        "sources/a.md": [
+            ChunkRecord(doc_id="d", seq=0, start=0, end=4, text="zero"),
+            ChunkRecord(
+                doc_id="d", seq=1, start=5, end=26, text="alpha is great indeed"
+            ),
+        ]
+    }
+    pairs = claim_evidence_from_grounding(gcs, chunks)
+    assert len(pairs) == 1
+    assert pairs[0].evidence == "alpha is great indeed"
+    assert pairs[0].claim == "alpha is great"
+    assert pairs[0].page_path == "knowledge/c/p.md"
+
+
+def test_claim_evidence_from_grounding_none_when_no_chunk() -> None:
+    """A claim whose source had no embeddable chunk (best_chunk_seq=None) gets
+    evidence=None — counted as unverifiable, not dropped."""
+    gcs = [
+        GroundingClaim(
+            page_path="knowledge/c/p.md",
+            source_path="sources/a.md",
+            claim="ungrounded",
+            max_cosine=float("-inf"),
+            best_chunk_seq=None,
+        )
+    ]
+    pairs = claim_evidence_from_grounding(gcs, {"sources/a.md": []})
+    assert len(pairs) == 1
+    assert pairs[0].evidence is None
+
+
+# ---- judge_entailment aggregation ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_averages_verdict_scores() -> None:
+    pairs = [_ce("c1", "e1"), _ce("c2", "e2"), _ce("c3", "e3")]
+    llm = FakeLLM(
+        responses=[_verdict("yes"), _verdict("partial"), _verdict("no")]
+    )
+    summary = await judge_entailment(pairs, llm=llm, model="x")
+    assert isinstance(summary, EntailmentSummary)
+    assert summary.n_judged == 3
+    assert summary.n_errors == 0
+    assert summary.n_no_evidence == 0
+    assert summary.ratio == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_empty_input_returns_zero_summary() -> None:
+    summary = await judge_entailment([], llm=FakeLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.ratio == 0.0
+    assert summary.ci == (0.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_all_evidence_none_scores_zero() -> None:
+    pairs = [_ce("c1", None), _ce("c2", None)]
+    llm = FakeLLM()
+    summary = await judge_entailment(pairs, llm=llm, model="x")
+    assert summary.n_judged == 2
+    assert summary.n_no_evidence == 2
+    assert summary.ratio == 0.0
+    assert llm.call_count == 0  # no evidence → no LLM call
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_parse_failures_counted_not_raised() -> None:
+    pairs = [_ce("c1", "e1"), _ce("c2", "e2"), _ce("c3", "e3")]
+    llm = FakeLLM(responses=[_verdict("yes"), "garbage", _verdict("yes")])
+    summary = await judge_entailment(pairs, llm=llm, model="x")
+    assert summary.n_judged == 2  # the unparseable one is excluded
+    assert summary.n_errors == 1
+    assert summary.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_llm_exception_counted_not_raised() -> None:
+    class BoomLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            raise RuntimeError("simulated provider failure")
+
+    summary = await judge_entailment([_ce("c", "e")], llm=BoomLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 1
+    assert summary.ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_sample_caps_claim_count_seeded_stable() -> None:
+    pairs = [_ce(f"c{i}", f"e{i}") for i in range(6)]
+    llm1 = FakeLLM(response_text=_verdict("yes"))
+    llm2 = FakeLLM(response_text=_verdict("yes"))
+    s1 = await judge_entailment(pairs, llm=llm1, model="x", sample=3, seed="d")
+    s2 = await judge_entailment(pairs, llm=llm2, model="x", sample=3, seed="d")
+    assert s1.n_judged == 3
+    assert llm1.call_count == 3  # only the sampled claims hit the LLM
+    # Same seed → same subset → identical aggregate.
+    assert s1.ratio == s2.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_sample_larger_than_n_is_noop() -> None:
+    pairs = [_ce("c1", "e1"), _ce("c2", "e2")]
+    llm = FakeLLM(response_text=_verdict("yes"))
+    summary = await judge_entailment(pairs, llm=llm, model="x", sample=10)
+    assert summary.n_judged == 2
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_caches_identical_pairs() -> None:
+    """Two identical (claim, evidence) pairs are judged once; the verdict is
+    reused so a repeated claim doesn't pay double LLM spend."""
+    pairs = [_ce("same", "eq"), _ce("same", "eq")]
+    llm = FakeLLM(response_text=_verdict("yes"))
+    summary = await judge_entailment(pairs, llm=llm, model="x")
+    assert summary.n_judged == 2
+    assert summary.ratio == 1.0
+    assert llm.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    llm = CaptureLLM(response_text=_verdict("yes"))
+    await judge_entailment([_ce("c", "e")], llm=llm, model="m")
+    assert captured["temperature"] == 0.0
+    assert "entailment" in str(captured["system"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_mixed_evidence_and_no_evidence() -> None:
+    """No-evidence claims count as 0.0 in the ratio alongside judged ones."""
+    pairs = [_ce("c1", "e1"), _ce("c2", None), _ce("c3", "e3")]
+    llm = FakeLLM(responses=[_verdict("yes"), _verdict("yes")])
+    summary = await judge_entailment(pairs, llm=llm, model="x")
+    assert summary.n_judged == 3
+    assert summary.n_no_evidence == 1
+    assert summary.n_errors == 0
+    # two yes (1.0 each) + one no-evidence (0.0) → 2/3
+    assert summary.ratio == pytest.approx(2.0 / 3.0)
+    assert llm.call_count == 2

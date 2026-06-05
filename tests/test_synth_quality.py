@@ -16,6 +16,7 @@ real LLM in Step 8 dogfood.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from dikw_core.eval.runner import (
     SynthEvalReport,
     run_synth_eval,
 )
+from dikw_core.providers.base import LLMResponse
 
 from .fakes import FakeLLM
 
@@ -339,3 +341,116 @@ Zeta references pizza pineapple unicorn xylophone.
     assert len(grounding_rows) == 1
     assert grounding_rows[0].direction == "min"
     assert grounding_rows[0].passed is False
+
+
+# ---- fact-entailment judge wiring ------------------------------------------
+
+
+class _DispatchLLM:
+    """Routes ``complete`` by system prompt — synth pages, page-judge scores,
+    entailment verdicts — so a single fake drives the full judge+entailment
+    run without brittle call-order scripting."""
+
+    def __init__(
+        self, synth_pages: list[str], *, verdict: str, page_score: str
+    ) -> None:
+        self._synth_pages = synth_pages
+        self._synth_idx = 0
+        self._verdict = verdict
+        self._page_score = page_score
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        tools: object = None,
+    ) -> LLMResponse:
+        s = system.lower()
+        if "entailment judge" in s:
+            return LLMResponse(text=self._verdict, finish_reason="end_turn")
+        if "evaluation judge" in s:
+            return LLMResponse(text=self._page_score, finish_reason="end_turn")
+        page = self._synth_pages[
+            min(self._synth_idx, len(self._synth_pages) - 1)
+        ]
+        self._synth_idx += 1
+        return LLMResponse(text=page, finish_reason="end_turn")
+
+
+def _dispatch_llm() -> _DispatchLLM:
+    return _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+    )
+
+
+def _enable_entailment(ds: Path) -> None:
+    p = ds / "dataset.yaml"
+    p.write_text(
+        p.read_text(encoding="utf-8")
+        + "judge:\n  entailment_grounding_enabled: true\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_entailment_runs_when_enabled(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    _enable_entailment(ds)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged >= 1
+    # The ratio is mirrored into informational for the A/B harness + display.
+    assert "synth/fact_entailment_ratio" in report.informational
+    assert (
+        report.informational["synth/fact_entailment_ratio"]
+        == report.entailment_summary.ratio
+    )
+    # All verdicts scripted "yes" → ratio 1.0; never gated.
+    assert report.entailment_summary.ratio == 1.0
+    assert "synth/fact_entailment_ratio" not in report.metrics
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_entailment_off_when_judge_off(tmp_path: Path) -> None:
+    """Flag on but ``judge=False`` → no entailment leg (it requires --judge)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_entailment(ds)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=False
+    )
+    assert report.entailment_summary is None
+    assert "synth/fact_entailment_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_entailment_off_when_flag_unset(tmp_path: Path) -> None:
+    """``judge=True`` but the dataset didn't opt in → only the page judge runs."""
+    ds = _write_synth_dataset(tmp_path)  # no entailment flag
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.judge_summary is not None  # page judge still ran
+    assert report.entailment_summary is None
+    assert "synth/fact_entailment_ratio" not in report.informational
