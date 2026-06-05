@@ -1297,8 +1297,9 @@ def eval_cmd(
             "--judge-sample",
             help=(
                 "Sample N items for the LLM judge instead of judging all "
-                "(N pages for the page judge; N claims for the entailment "
-                "judge when enabled). Ignored when --judge is not set."
+                "(N pages for the page judge and the category judge; N claims "
+                "for the entailment judge — the latter two when enabled). "
+                "Ignored when --judge is not set."
             ),
         ),
     ] = None,

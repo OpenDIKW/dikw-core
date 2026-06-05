@@ -140,6 +140,18 @@ or non-destructiveness. Two gates:
    first judge dimension a calibrated dataset is likely to promote) stays open
    until the multi-dataset judge-sample power analysis lands.
 
+   **`category_correctness_ratio` — is each page filed under the right
+   category?** `category_distribution` / `fallback_ratio_max` see *where* pages
+   landed but not whether that filing is correct. The taxonomy judge re-picks
+   the best category independently from the page body and the closed declared
+   set (fallback included), then scores synth's actual choice: exact `1.0`, a
+   judge-acknowledged co-equal `0.5`, wrong `0.0`. The closed set is enforced at
+   parse time — a verdict naming an undeclared category is rejected, never
+   silently re-filed, the same Karpathy discipline synth itself follows.
+   Informational (never gated), bootstrap 95% CI on `category_summary`, and
+   **opt-in** under `judge.category_correctness_enabled: true` (+ `--judge`), so
+   `$0` by default.
+
    **Proving an optimization actually helped.** The LLM makes synth
    non-deterministic, so a single before/after eval can't separate a real gain
    from ±0.05 run-to-run noise. `evals/tools/ab_experiment.py` runs the same

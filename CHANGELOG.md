@@ -44,6 +44,20 @@ on each entry call out exactly what shape changes break.
   default**: runs only when `--judge` is set **and** the dataset declares
   `judge.entailment_grounding_enabled: true`. New overridable-by-nobody prompt
   `prompts/eval_judge_entailment.md`.
+- **`synth/category_correctness_ratio` — LLM taxonomy judge (Phase 0b).** The
+  embedding metrics see *where* synth filed each page (`category_distribution`,
+  `fallback_ratio_max`) but never whether the filing is *right* — a named-tool
+  page mis-filed under `concept` looks identical to a correctly filed one. The
+  new judge re-derives the best category independently from the page body and
+  the closed declared set (fallback included), then scores synth's actual
+  choice: exact `1.0`, a judge-acknowledged co-equal `0.5`, wrong `0.0`. The
+  closed set is enforced at parse time — a verdict naming an undeclared category
+  is a parse failure, never a silent re-file (mirrors synth's own refusal).
+  Informational (never gated) with a bootstrap 95% CI on
+  `SynthEvalReport.category_summary`. **Opt-in and `$0` by default**: runs only
+  when `--judge` is set **and** the dataset declares
+  `judge.category_correctness_enabled: true`. New prompt
+  `prompts/eval_judge_category.md`.
 
 ### Fixed
 

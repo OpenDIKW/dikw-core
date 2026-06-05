@@ -7,6 +7,42 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-05 — `category_correctness_ratio` LLM taxonomy judge (Phase 0b) + calibration
+
+Phase 0b's second judge metric: does synth file each page under the *right*
+category? Landed *with* a real-LLM calibration in one PR — the entailment-judge
+`max_tokens` fix from earlier today (see the entry below) made the judge
+trustworthy on the MiniMax baseline, so a single PR can both ship and calibrate.
+
+**Config:** same as the entailment calibration — `mvp` synth eval, MiniMax-M3
+(LLM via `anthropic_compat`, `llm_max_tokens_synth=16384`) +
+Qwen3-Embedding-0.6B@1024 (Gitee), `--judge --judge-sample 20`,
+`judge.category_correctness_enabled: true`. Repro:
+`uv run --env-file .env dikw client serve-and-run --base <minimax-base> -- eval --dataset mvp --eval synth --judge --judge-sample 20`.
+
+**What landed:** `synth/category_correctness_ratio` — the judge re-derives the
+best category independently from the page body + the closed declared set
+(fallback included) and scores synth's actual filing: exact `1.0`, a
+judge-acknowledged co-equal `0.5`, wrong `0.0`. Closed-set discipline at parse
+time (an undeclared category is a parse error, never a silent re-file).
+Informational, bootstrap CI on `category_summary`, opt-in + `$0` by default. New
+prompt `prompts/eval_judge_category.md` (closed-set framing, primary-subject
+over surface-keyword, co-equality only for genuine borderlines).
+
+**Category baseline: `0.875` (n=8, 95% CI [0.62, 1.00], 0 judge errors).** High
+agreement — M3's synth files most pages under the category the judge would pick.
+The wide CI at n=8 (this run produced only 8 pages) underlines the pending
+judge-sample power analysis. Page judge this run: grounding 4.75 / atomicity
+4.88 / completeness 3.38 / clarity 4.75 (8/8, 0 errors).
+
+**Gated synth metrics this run (NOT this PR's concern):** `fact_grounding_ratio`
+0.672 (pass), `atomicity_score` 0.625, `wikilink_resolved_ratio` 0.429,
+`duplicate_ratio_max` 0.000, `language_fidelity` 1.000 → `passed=False`. Floors
+are provider-locked to gpt-5.5; MiniMax-M3 swings run-to-run (this run 8 pages vs
+12 earlier today; atomicity 0.750→0.625, wikilink 0.708→0.429). Not a regression;
+thresholds unchanged. This PR adds an informational judge metric only — it does
+not touch synth generation or any gated metric.
+
 ## 2026-06-05 — entailment judge real-LLM calibration + reasoning-model `max_tokens` fix
 
 First live-LLM run of `fact_entailment_ratio` (the Phase 0b PR1 follow-up).

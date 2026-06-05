@@ -348,16 +348,22 @@ Zeta references pizza pineapple unicorn xylophone.
 
 class _DispatchLLM:
     """Routes ``complete`` by system prompt — synth pages, page-judge scores,
-    entailment verdicts — so a single fake drives the full judge+entailment
-    run without brittle call-order scripting."""
+    entailment verdicts, category verdicts — so a single fake drives the full
+    judge run without brittle call-order scripting."""
 
     def __init__(
-        self, synth_pages: list[str], *, verdict: str, page_score: str
+        self,
+        synth_pages: list[str],
+        *,
+        verdict: str,
+        page_score: str,
+        category: str,
     ) -> None:
         self._synth_pages = synth_pages
         self._synth_idx = 0
         self._verdict = verdict
         self._page_score = page_score
+        self._category = category
 
     async def complete(
         self,
@@ -372,6 +378,8 @@ class _DispatchLLM:
         s = system.lower()
         if "entailment judge" in s:
             return LLMResponse(text=self._verdict, finish_reason="end_turn")
+        if "taxonomy judge" in s:
+            return LLMResponse(text=self._category, finish_reason="end_turn")
         if "evaluation judge" in s:
             return LLMResponse(text=self._page_score, finish_reason="end_turn")
         page = self._synth_pages[
@@ -394,14 +402,30 @@ def _dispatch_llm() -> _DispatchLLM:
                 "rationale": "ok",
             }
         ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
     )
 
 
-def _enable_entailment(ds: Path) -> None:
+def _enable_judge(
+    ds: Path, *, entailment: bool = False, category: bool = False
+) -> None:
+    """Append a single ``judge:`` block enabling the requested judge legs.
+
+    One block even when both legs are requested, so the YAML never carries
+    duplicate ``judge:`` keys (which a per-leg append helper would produce).
+    """
+    flags: list[str] = []
+    if entailment:
+        flags.append("  entailment_grounding_enabled: true")
+    if category:
+        flags.append("  category_correctness_enabled: true")
+    if not flags:
+        return
     p = ds / "dataset.yaml"
     p.write_text(
-        p.read_text(encoding="utf-8")
-        + "judge:\n  entailment_grounding_enabled: true\n",
+        p.read_text(encoding="utf-8") + "judge:\n" + "\n".join(flags) + "\n",
         encoding="utf-8",
     )
 
@@ -409,7 +433,7 @@ def _enable_entailment(ds: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_synth_eval_entailment_runs_when_enabled(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
-    _enable_entailment(ds)
+    _enable_judge(ds, entailment=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(
@@ -432,7 +456,7 @@ async def test_run_synth_eval_entailment_runs_when_enabled(tmp_path: Path) -> No
 async def test_run_synth_eval_entailment_off_when_judge_off(tmp_path: Path) -> None:
     """Flag on but ``judge=False`` → no entailment leg (it requires --judge)."""
     ds = _write_synth_dataset(tmp_path)
-    _enable_entailment(ds)
+    _enable_judge(ds, entailment=True)
     spec = load_dataset(ds)
 
     report = await run_synth_eval(
@@ -454,3 +478,55 @@ async def test_run_synth_eval_entailment_off_when_flag_unset(tmp_path: Path) -> 
     assert report.judge_summary is not None  # page judge still ran
     assert report.entailment_summary is None
     assert "synth/fact_entailment_ratio" not in report.informational
+
+
+# ---- category-correctness judge wiring -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_runs_when_enabled(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, category=True)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.category_summary is not None
+    assert report.category_summary.n_judged >= 1
+    assert report.category_summary.n_errors == 0
+    # Mirrored into informational (for the A/B harness + display), never gated.
+    assert "synth/category_correctness_ratio" in report.informational
+    assert (
+        report.informational["synth/category_correctness_ratio"]
+        == report.category_summary.ratio
+    )
+    assert "synth/category_correctness_ratio" not in report.metrics
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_off_when_judge_off(tmp_path: Path) -> None:
+    """Flag on but ``judge=False`` → no category leg (it requires --judge)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, category=True)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=False
+    )
+    assert report.category_summary is None
+    assert "synth/category_correctness_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_category_off_when_flag_unset(tmp_path: Path) -> None:
+    """``judge=True`` but the dataset didn't opt in → only the page judge runs."""
+    ds = _write_synth_dataset(tmp_path)  # no category flag
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.judge_summary is not None  # page judge still ran
+    assert report.category_summary is None
+    assert "synth/category_correctness_ratio" not in report.informational

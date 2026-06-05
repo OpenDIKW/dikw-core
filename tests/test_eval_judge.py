@@ -8,6 +8,9 @@ import pytest
 
 from dikw_core.domains.knowledge.page import KnowledgePage, build_page
 from dikw_core.eval.judge import (
+    CategoryOption,
+    CategorySummary,
+    CategoryVerdict,
     ClaimEvidence,
     EntailmentSummary,
     EntailmentVerdict,
@@ -16,8 +19,10 @@ from dikw_core.eval.judge import (
     PageJudgeEntry,
     bootstrap_ci,
     claim_evidence_from_grounding,
+    judge_category,
     judge_entailment,
     judge_synthesis,
+    parse_category_verdict,
     parse_entailment_verdict,
     parse_judge_response,
 )
@@ -561,3 +566,209 @@ async def test_judge_entailment_mixed_evidence_and_no_evidence() -> None:
     # two yes (1.0 each) + one no-evidence (0.0) → 2/3
     assert summary.ratio == pytest.approx(2.0 / 3.0)
     assert llm.call_count == 2
+
+
+# ---- category-correctness judge --------------------------------------------
+
+
+_CAT_OPTS = [
+    CategoryOption(path="entity", desc="A named thing."),
+    CategoryOption(path="concept", desc="An idea or pattern."),
+    CategoryOption(path="note", desc="An observation."),
+    CategoryOption(path="未分类", desc="None of the above."),
+]
+
+
+def _catv(chosen: str, also_fits: str | None = None, rationale: str = "ok") -> str:
+    payload: dict[str, object] = {"chosen": chosen, "rationale": rationale}
+    if also_fits is not None:
+        payload["also_fits"] = also_fits
+    return json.dumps(payload)
+
+
+def _cpage(category: str, *, title: str = "A") -> KnowledgePage:
+    return build_page(
+        title=title,
+        body="# T\n\nbody.\n",
+        category=category,
+        tags=[],
+        sources=["sources/a.md"],
+        path=None,
+        extras={},
+    )
+
+
+# ---- parse_category_verdict -------------------------------------------------
+
+
+def test_parse_category_verdict_valid() -> None:
+    v = parse_category_verdict(_catv("concept"), allowed=frozenset({"concept", "note"}))
+    assert isinstance(v, CategoryVerdict)
+    assert v.chosen == "concept"
+    assert v.also_fits is None
+    assert v.rationale == "ok"
+
+
+def test_parse_category_verdict_keeps_allowed_also_fits() -> None:
+    v = parse_category_verdict(
+        _catv("concept", also_fits="note"), allowed=frozenset({"concept", "note"})
+    )
+    assert v is not None
+    assert v.also_fits == "note"
+
+
+def test_parse_category_verdict_strips_fences() -> None:
+    text = "```json\n" + _catv("entity") + "\n```"
+    v = parse_category_verdict(text, allowed=frozenset({"entity"}))
+    assert v is not None
+    assert v.chosen == "entity"
+
+
+def test_parse_category_verdict_strips_whitespace_tokens() -> None:
+    # An LLM's stray surrounding space ("concept ") is whitespace, not a
+    # different category — strip before the closed-set check so a valid choice
+    # doesn't inflate n_errors.
+    v = parse_category_verdict(
+        _catv("concept ", also_fits=" note"),
+        allowed=frozenset({"concept", "note"}),
+    )
+    assert v is not None
+    assert v.chosen == "concept"
+    assert v.also_fits == "note"
+
+
+def test_parse_category_verdict_chosen_not_in_allowed_returns_none() -> None:
+    # Closed-set discipline: an invented category is a parse failure, never a
+    # silent re-file (mirrors synth's own refusal).
+    assert parse_category_verdict(_catv("invented"), allowed=frozenset({"concept"})) is None
+
+
+def test_parse_category_verdict_also_fits_not_in_allowed_coerced_to_none() -> None:
+    # A hallucinated secondary can never match the page's real category, so drop
+    # it (score-neutral) rather than reject the whole verdict.
+    v = parse_category_verdict(
+        _catv("concept", also_fits="invented"), allowed=frozenset({"concept"})
+    )
+    assert v is not None
+    assert v.chosen == "concept"
+    assert v.also_fits is None
+
+
+def test_parse_category_verdict_also_fits_wrong_type_coerced_to_none() -> None:
+    text = json.dumps({"chosen": "concept", "also_fits": 5, "rationale": "x"})
+    v = parse_category_verdict(text, allowed=frozenset({"concept"}))
+    assert v is not None
+    assert v.also_fits is None
+
+
+def test_parse_category_verdict_malformed_and_non_object_returns_none() -> None:
+    allowed = frozenset({"concept"})
+    assert parse_category_verdict("not json", allowed=allowed) is None
+    assert parse_category_verdict("[1, 2]", allowed=allowed) is None
+    assert parse_category_verdict(json.dumps({"rationale": "x"}), allowed=allowed) is None
+
+
+def test_parse_category_verdict_rationale_optional() -> None:
+    text = json.dumps({"chosen": "concept"})
+    v = parse_category_verdict(text, allowed=frozenset({"concept"}))
+    assert v is not None
+    assert v.rationale == ""
+
+
+# ---- judge_category ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_judge_category_exact_match_scores_one() -> None:
+    llm = FakeLLM(response_text=_catv("concept"))
+    summary = await judge_category([_cpage("concept")], options=_CAT_OPTS, llm=llm, model="x")
+    assert isinstance(summary, CategorySummary)
+    assert summary.n_judged == 1
+    assert summary.n_errors == 0
+    assert summary.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_category_also_fits_match_scores_half() -> None:
+    # synth filed it under ``note``; the judge's top pick is ``concept`` but it
+    # names ``note`` as an equally-valid co-equal → 0.5.
+    llm = FakeLLM(response_text=_catv("concept", also_fits="note"))
+    summary = await judge_category([_cpage("note")], options=_CAT_OPTS, llm=llm, model="x")
+    assert summary.ratio == 0.5
+
+
+@pytest.mark.asyncio
+async def test_judge_category_mismatch_scores_zero() -> None:
+    llm = FakeLLM(response_text=_catv("concept"))
+    summary = await judge_category([_cpage("entity")], options=_CAT_OPTS, llm=llm, model="x")
+    assert summary.n_judged == 1
+    assert summary.ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_judge_category_averages_scores() -> None:
+    pages = [_cpage("concept", title="A"), _cpage("entity", title="B"), _cpage("note", title="C")]
+    # exact (1.0), mismatch (0.0), also_fits (0.5) → mean 0.5
+    llm = FakeLLM(
+        responses=[_catv("concept"), _catv("concept"), _catv("entity", also_fits="note")]
+    )
+    summary = await judge_category(pages, options=_CAT_OPTS, llm=llm, model="x")
+    assert summary.n_judged == 3
+    assert summary.ratio == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_judge_category_empty_input_returns_zero_summary() -> None:
+    summary = await judge_category([], options=_CAT_OPTS, llm=FakeLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 0
+    assert summary.ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_judge_category_invented_choice_counted_as_error() -> None:
+    # A category not in the closed option set is a parse failure → n_errors.
+    llm = FakeLLM(response_text=_catv("invented"))
+    summary = await judge_category([_cpage("concept")], options=_CAT_OPTS, llm=llm, model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_category_parse_failure_counted_not_raised() -> None:
+    pages = [_cpage("concept", title="A"), _cpage("concept", title="B")]
+    llm = FakeLLM(responses=[_catv("concept"), "garbage"])
+    summary = await judge_category(pages, options=_CAT_OPTS, llm=llm, model="x")
+    assert summary.n_judged == 1
+    assert summary.n_errors == 1
+    assert summary.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_category_llm_exception_counted_not_raised() -> None:
+    class BoomLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    summary = await judge_category([_cpage("concept")], options=_CAT_OPTS, llm=BoomLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_category_sample_caps_pages_seeded_stable() -> None:
+    pages = [_cpage("concept", title=f"P{i}") for i in range(6)]
+    llm1 = FakeLLM(response_text=_catv("concept"))
+    llm2 = FakeLLM(response_text=_catv("concept"))
+    s1 = await judge_category(pages, options=_CAT_OPTS, llm=llm1, model="x", sample=3, seed="d")
+    s2 = await judge_category(pages, options=_CAT_OPTS, llm=llm2, model="x", sample=3, seed="d")
+    assert s1.n_judged == 3
+    assert llm1.call_count == 3
+    assert s1.ratio == s2.ratio
+
+
+@pytest.mark.asyncio
+async def test_judge_category_default_max_tokens_is_reasoning_safe() -> None:
+    llm = FakeLLM(response_text=_catv("concept"))
+    await judge_category([_cpage("concept")], options=_CAT_OPTS, llm=llm, model="m")
+    assert llm.last_max_tokens == 4096

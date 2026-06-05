@@ -536,3 +536,195 @@ async def judge_entailment(
         n_no_evidence=n_no_evidence,
         ci=bootstrap_ci(scores, seed=f"{seed}:entailment"),
     )
+
+
+# --- Category-correctness judge ---------------------------------------------
+#
+# The embedding metrics see *where* each page was filed (``category_distribution``
+# / ``fallback_ratio_max``) but never whether that filing is *right*: a page
+# about a named tool mis-filed under ``concept`` looks identical to a correctly
+# filed one. This judge re-derives the best category independently — body +
+# the closed declared set (fallback included) — and compares it to where synth
+# actually put the page. Karpathy's rule: the closed set is deterministic
+# scoping; whether a page belongs in it is the probabilistic call.
+
+
+@dataclass(frozen=True)
+class CategoryOption:
+    """One choosable category: its ``path`` (the on-disk folder / taxonomy node)
+    and ``desc`` (the guidance the synth LLM was given for it). The runner passes
+    the declared categories plus the fallback bucket as the closed option set."""
+
+    path: str
+    desc: str
+
+
+class CategoryVerdict(BaseModel):
+    """The judge's independent placement: the best-fit ``chosen`` path, an
+    optional co-equal ``also_fits`` (a genuine borderline, else ``None``), and a
+    one-line ``rationale``. Both paths are validated against the closed option
+    set at parse time, so a verdict can only name a declared category."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chosen: str
+    also_fits: str | None = None
+    rationale: str = ""
+
+
+class CategorySummary(BaseModel):
+    """Aggregate of the category judge: ``ratio`` is the mean correctness score
+    over successfully-judged pages (exact ``1.0`` / co-equal ``0.5`` / wrong
+    ``0.0``), with a deterministic bootstrap CI."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ratio: float
+    n_judged: int
+    n_errors: int
+    ci: tuple[float, float] = (0.0, 0.0)
+
+
+def parse_category_verdict(
+    text: str, *, allowed: frozenset[str]
+) -> CategoryVerdict | None:
+    """Parse a category-judge response, or ``None`` on any failure.
+
+    ``chosen`` must be one of ``allowed`` (the closed declared set) — an invented
+    or re-spelled category is a parse failure, never a silent re-file, mirroring
+    synth's own refusal to honour an out-of-set category. ``also_fits`` is a
+    *secondary* signal: ``null``, missing, wrong-typed, or not-in-``allowed`` all
+    collapse to ``None`` (no co-equal) rather than rejecting the whole verdict —
+    a hallucinated second choice can never match the page's real category anyway,
+    so dropping it is score-neutral and preserves the primary ``chosen`` signal.
+    Strips an optional ```` ```json … ``` ```` fence first.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline > 0 and stripped.endswith("```"):
+            stripped = stripped[first_newline + 1 : -3].strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # ``.strip()`` the returned paths before the closed-set check — a stray
+    # ``"concept "`` is the LLM's whitespace, not a different category, and
+    # shouldn't inflate ``n_errors``. (The allowed set is already NFC-normalized
+    # by ``CategoryNode``; the prompt hands the LLM those exact paths to copy.)
+    raw_chosen = payload.get("chosen")
+    if not isinstance(raw_chosen, str):
+        return None
+    chosen = raw_chosen.strip()
+    if chosen not in allowed:
+        return None
+    raw_also = payload.get("also_fits")
+    also_fits = raw_also.strip() if isinstance(raw_also, str) else None
+    if also_fits not in allowed:
+        also_fits = None
+    raw_rationale = payload.get("rationale")
+    rationale = raw_rationale if isinstance(raw_rationale, str) else ""
+    try:
+        return CategoryVerdict.model_validate(
+            {"chosen": chosen, "also_fits": also_fits, "rationale": rationale}
+        )
+    except ValidationError:
+        return None
+
+
+def _score_category(verdict: CategoryVerdict, actual: str) -> float:
+    if verdict.chosen == actual:
+        return 1.0
+    if verdict.also_fits is not None and verdict.also_fits == actual:
+        return 0.5
+    return 0.0
+
+
+def _format_category_prompt(*, body: str, options: Sequence[CategoryOption]) -> str:
+    # ``str.replace`` (not ``str.format``) so a page body containing literal
+    # ``{`` / ``}`` (a JSON snippet, code) can't raise at format time. Render the
+    # closed set first, then inject the body last so body content is never itself
+    # treated as a placeholder.
+    rendered = "\n".join(f"- `{o.path}`: {o.desc}" for o in options)
+    return (
+        load_prompt("eval_judge_category")
+        .replace("{categories}", rendered)
+        .replace("{page_body}", body)
+    )
+
+
+_CATEGORY_SYSTEM = (
+    "You are a taxonomy judge. Choose the single best-fit category for the page "
+    "from the closed set provided. Return raw JSON only — no prose, no fences."
+)
+
+
+async def judge_category(
+    pages: Sequence[KnowledgePage],
+    *,
+    options: Sequence[CategoryOption],
+    llm: LLMProvider,
+    model: str,
+    sample: int | None = None,
+    reporter: ProgressReporter | None = None,
+    seed: str = "dikw",
+    max_tokens: int = _JUDGE_MAX_TOKENS,
+    temperature: float = 0.0,
+) -> CategorySummary:
+    """Score each page's category assignment, aggregate to a correctness ratio.
+
+    For every page the judge independently picks the best category from
+    ``options`` (the declared set + fallback) given the page body, then the
+    score compares that to the page's actual ``category``: exact match ``1.0``,
+    the judge's co-equal ``also_fits`` matching ``0.5``, otherwise ``0.0``.
+
+    ``sample`` caps the pages judged; selection is seeded via ``hashlib.sha1``
+    so repeated runs draw the same subset (``sample`` ≥ ``len(pages)`` is a
+    no-op). A per-page LLM exception or parse failure increments ``n_errors``
+    and skips the page — one bad response never kills the run.
+    """
+    _reporter: ProgressReporter = reporter or NoopReporter()
+    selected = list(pages)
+    if sample is not None and sample < len(selected):
+        rng = random.Random(hashlib.sha1(seed.encode("utf-8")).digest()[:8])
+        selected = rng.sample(selected, sample)
+
+    allowed = frozenset(o.path for o in options)
+    scores: list[float] = []
+    n_errors = 0
+
+    for idx, page in enumerate(selected):
+        await _reporter.progress(
+            phase="category",
+            current=idx,
+            total=len(selected),
+            detail={"path": page.path},
+        )
+        try:
+            response = await llm.complete(
+                system=_CATEGORY_SYSTEM,
+                user=_format_category_prompt(body=page.body, options=options),
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.warning("category: LLM call failed for %s — %s", page.path, e)
+            n_errors += 1
+            continue
+        verdict = parse_category_verdict(response.text, allowed=allowed)
+        if verdict is None:
+            n_errors += 1
+            continue
+        scores.append(_score_category(verdict, page.category))
+
+    n_judged = len(scores)
+    ratio = sum(scores) / n_judged if n_judged else 0.0
+    return CategorySummary(
+        ratio=ratio,
+        n_judged=n_judged,
+        n_errors=n_errors,
+        ci=bootstrap_ci(scores, seed=f"{seed}:category"),
+    )

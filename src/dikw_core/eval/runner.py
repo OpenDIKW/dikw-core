@@ -70,10 +70,13 @@ from ..storage.base import NotSupported
 from .dataset import DatasetSpec
 from .fake_embedder import FakeEmbeddings
 from .judge import (
+    CategoryOption,
+    CategorySummary,
     ClaimEvidence,
     EntailmentSummary,
     JudgeSummary,
     claim_evidence_from_grounding,
+    judge_category,
     judge_entailment,
     judge_synthesis,
 )
@@ -999,6 +1002,7 @@ class SynthEvalReport(BaseModel):
     informational: dict[str, float] = Field(default_factory=dict)
     judge_summary: JudgeSummary | None = None
     entailment_summary: EntailmentSummary | None = None
+    category_summary: CategorySummary | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @property
@@ -1193,6 +1197,53 @@ async def run_synth_eval(
                 total=len(bundle.entailment_pairs),
             )
 
+        # Optional category-correctness judge — the embedding metrics see *where*
+        # pages were filed (``category_distribution`` / ``fallback_ratio_max``)
+        # but never whether the filing is *right*. The judge re-picks the best
+        # category from the closed declared set + fallback and compares it to
+        # synth's choice. Same opt-in economics as the entailment leg ($0 unless
+        # ``judge`` AND the dataset flag are both on); informational, CI on
+        # ``category_summary``.
+        category_summary: CategorySummary | None = None
+        if judge and spec.judge.category_correctness_enabled:
+            # Build the closed set from ``schema_cfg`` — the SAME normalized
+            # categories synth was materialised with — not raw
+            # ``spec.synth.categories``. ``CategoryNode`` NFC-normalizes + strips
+            # each path, so persisted ``page.category`` is normalized; sourcing
+            # the judge's options from the raw spec would make the judge copy an
+            # un-normalized path and score a correctly-filed page as wrong.
+            category_options = [
+                CategoryOption(path=c.path, desc=c.desc)
+                for c in schema_cfg.categories
+            ]
+            category_options.append(
+                CategoryOption(
+                    path=schema_cfg.fallback,
+                    desc="None of the categories above fit this page.",
+                )
+            )
+            await _reporter.progress(
+                phase="synth_eval/category", current=0, total=len(bundle.pages)
+            )
+            category_summary = await judge_category(
+                bundle.pages,
+                options=category_options,
+                llm=llm,
+                model=spec.judge.model or effective_provider_cfg.llm_model,
+                sample=judge_sample,
+                reporter=_reporter,
+                seed=spec.name,
+            )
+            if category_summary.n_judged > 0:
+                bundle.informational["synth/category_correctness_ratio"] = (
+                    category_summary.ratio
+                )
+            await _reporter.progress(
+                phase="synth_eval/category",
+                current=category_summary.n_judged + category_summary.n_errors,
+                total=len(bundle.pages),
+            )
+
         synth_thresholds = {
             name: thr
             for name, thr in spec.thresholds.items()
@@ -1208,6 +1259,7 @@ async def run_synth_eval(
             informational=bundle.informational,
             judge_summary=judge_summary,
             entailment_summary=entailment_summary,
+            category_summary=category_summary,
             warnings=warnings,
         )
 
