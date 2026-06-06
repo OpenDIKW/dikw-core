@@ -82,6 +82,20 @@ on each entry call out exactly what shape changes break.
   see `docs/providers.md`). A new test pins the default to leave `>= 512` tokens
   per page so a future `max_pages_per_group` bump can't silently re-introduce the
   clip. `dikw client synth` now also logs the per-page budget at DEBUG.
+- **Enriched synthesis prompt (Phase 1).** `prompts/synthesize.md` and the
+  default system prompt now frame the K layer as a Zettelkasten of small,
+  densely-linked atomic notes and add the guidance the heuristics implied but the
+  prompt never stated: page-size (a `< ~200`-char body is **rarely** worth its
+  own page — fold it into a neighbour; typical pages run 300–1500 chars), inline
+  wikilink density (`~2–4` links per 500 chars, never a trailing "see also"
+  list), a reusable tag vocabulary (`entity`/`concept`/`process`/…, one namespace
+  domain per page), and an explicit duplicate-vs-facet rule. The existing-pages
+  section moves **ahead** of category/links so the model reads "reuse beats
+  regenerate" before drafting, and a new `## Example` section carries two worked
+  pages (one English, one Chinese) that round-trip through the real parser and
+  clear the atomicity heuristic — a regression test pins this so a malformed
+  example can't ship. Prompt-only: no engine code, no placeholder/marker contract
+  change, fully overridable per base via `synth.prompt_path`.
 
 ### Fixed
 
