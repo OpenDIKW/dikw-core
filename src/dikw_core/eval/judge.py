@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -137,6 +138,34 @@ def bootstrap_ci(
     lo_idx = min(n_resamples - 1, max(0, int(tail * n_resamples)))
     hi_idx = min(n_resamples - 1, max(0, int((1.0 - tail) * n_resamples)))
     return (means[lo_idx], means[hi_idx])
+
+
+# Bounds for ``--judge-sample auto``: never trust a judge ratio on fewer than 5
+# items, never spend on more than 50 (past ~50 the LLM cost outweighs the
+# marginal CI tightening -- diminishing 1/sqrt(n) returns).
+_AUTO_SAMPLE_MIN = 5
+_AUTO_SAMPLE_MAX = 50
+
+
+def recommended_judge_sample(target_margin: float = 0.2) -> int:
+    """Smallest judge sample whose bootstrap 95% CI half-width clears
+    ``target_margin`` for any [0, 1] judge ratio, clamped to ``[5, 50]``.
+
+    A [0, 1] ratio metric (entailment / category / ...) has a bootstrap 95% CI
+    half-width of about ``1.96 * sd / sqrt(n)``, maximised at the worst-case
+    standard deviation ``sd = 0.5`` (variance 0.25, a 50/50 split). Solving
+    ``1.96 * 0.5 / sqrt(n) <= target_margin`` gives
+    ``n >= (1.96 * 0.5 / target_margin) ** 2`` -> ``25`` at the default ``0.2``.
+    The bound is the worst case over *all* score distributions, so it holds for
+    any dataset or metric -- no per-corpus calibration can push it higher. The
+    two real MiniMax-M3 calibrations confirm the ``1/sqrt(n)`` model (entailment
+    n=20 -> +/-0.13, category n=8 -> +/-0.19). Datasets with fewer items than
+    the result are judged in full (the sample cap is a no-op there).
+    """
+    if target_margin <= 0.0:
+        return _AUTO_SAMPLE_MAX
+    raw = math.ceil((1.96 * 0.5 / target_margin) ** 2)
+    return max(_AUTO_SAMPLE_MIN, min(_AUTO_SAMPLE_MAX, raw))
 
 
 def parse_judge_response(text: str) -> JudgeScore | None:

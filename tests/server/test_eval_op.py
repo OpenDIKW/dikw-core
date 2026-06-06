@@ -21,7 +21,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from dikw_core.server.synth_op import _resolve_eval_modes
+import pytest
+
+from dikw_core.server.errors import BadRequest
+from dikw_core.server.synth_op import _resolve_eval_modes, _resolve_judge_sample
 
 
 def test_resolve_eval_modes_defaults_to_retrieval_only_on_synth_dataset() -> None:
@@ -55,3 +58,22 @@ def test_resolve_eval_modes_explicit_intersection_preserves_order() -> None:
         "retrieval",
     ]
     assert _resolve_eval_modes(spec, ["synth"]) == ["synth"]
+
+
+# ---- _resolve_judge_sample (``--judge-sample auto``) ------------------------
+
+
+def test_resolve_judge_sample_auto_uses_calibrated_size() -> None:
+    from dikw_core.eval.judge import recommended_judge_sample
+
+    assert _resolve_judge_sample("auto") == recommended_judge_sample()
+
+
+def test_resolve_judge_sample_passes_through_positive_int_and_none() -> None:
+    assert _resolve_judge_sample(7) == 7
+    assert _resolve_judge_sample(None) is None
+
+
+def test_resolve_judge_sample_rejects_nonpositive() -> None:
+    with pytest.raises(BadRequest):
+        _resolve_judge_sample(0)

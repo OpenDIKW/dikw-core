@@ -7,6 +7,30 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-06 — judge-sample power analysis (`--judge-sample auto`, Phase 0b)
+
+**Question:** how many items must a judge score for the bootstrap CI to be tight
+enough to trust? Both real calibrations on this page landed CIs wider than the
+±0.2 target (entailment **n=20 → ±0.13**, category **n=8 → ±0.19**).
+
+**Answer (analytical, dataset-independent):** a [0,1] judge ratio (entailment,
+category, …) is a mean of scores in `{0, 0.5, 1}`; its bootstrap 95% CI
+half-width is `≈ 1.96 · sd / sqrt(n)`, maximised at the worst-case `sd = 0.5`
+(variance 0.25, a 50/50 split). Solving `1.96 · 0.5 / sqrt(n) ≤ 0.2` gives
+**`n ≥ 25`**. Because that is the worst case over *all* score distributions, no
+per-corpus sweep can push it higher — a real metric with lower variance needs
+*fewer* samples, never more. The two calibrations confirm the `1/sqrt(n)` shape:
+category at n=8 (variance ~0.11 from ratio 0.875) gave ±0.19, and the model
+predicts that same metric clears ±0.2 by n≈11 and the worst case by n=25.
+
+**Shipped:** `eval.judge.recommended_judge_sample(target_margin=0.2) → 25`,
+clamped to `[5, 50]` (never trust < 5; cost ceiling at 50 — past it the LLM
+spend isn't worth the `1/sqrt(n)` tightening). Exposed as `dikw client eval
+--judge-sample auto`, resolved server-side (the client forwards the sentinel; the
+number is engine knowledge). Datasets with fewer items than the result are judged
+in full (the cap is a no-op there). No new LLM run — the bound is analytical and
+validated against the two calibration data points above.
+
 ## 2026-06-05 — `category_correctness_ratio` LLM taxonomy judge (Phase 0b) + calibration
 
 Phase 0b's second judge metric: does synth file each page under the *right*

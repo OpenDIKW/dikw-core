@@ -23,7 +23,7 @@ import base64
 import binascii
 import contextlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -34,7 +34,7 @@ from .errors import BadRequest, NotFoundError
 from .ingest_op import make_ingest_runner
 from .lint_op import make_lint_apply_runner, make_lint_propose_runner
 from .runtime import ServerRuntime, get_runtime
-from .synth_op import make_eval_runner, make_synth_runner
+from .synth_op import _resolve_judge_sample, make_eval_runner, make_synth_runner
 from .tasks import (
     TERMINAL_STATUSES,
     TaskRow,
@@ -178,7 +178,7 @@ class EvalSubmit(BaseModel):
     cache_mode: str = "read_write"
     eval_modes: list[str] | None = None
     judge: bool = False
-    judge_sample: int | None = None
+    judge_sample: int | Literal["auto"] | None = None
 
 
 class TaskHandle(BaseModel):
@@ -482,10 +482,9 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 )
             if not body.eval_modes:
                 raise BadRequest("eval_modes must be non-empty when provided")
-        if body.judge_sample is not None and body.judge_sample < 1:
-            raise BadRequest(
-                f"judge_sample must be >= 1, got {body.judge_sample!r}"
-            )
+        # Resolve ``"auto"`` to the calibrated sample size engine-side (the
+        # client forwards the sentinel; the recommended n is engine knowledge).
+        judge_sample = _resolve_judge_sample(body.judge_sample)
         runner: TaskRunner = make_eval_runner(
             base_root=rt.root,
             dataset=body.dataset,
@@ -493,7 +492,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             cache_mode=body.cache_mode,
             eval_modes=body.eval_modes,
             judge=body.judge,
-            judge_sample=body.judge_sample,
+            judge_sample=judge_sample,
         )
         row = await rt.manager.submit(
             op="eval",
@@ -504,7 +503,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "cache_mode": body.cache_mode,
                 "eval_modes": body.eval_modes,
                 "judge": body.judge,
-                "judge_sample": body.judge_sample,
+                "judge_sample": judge_sample,
             },
         )
         return _handle(row)

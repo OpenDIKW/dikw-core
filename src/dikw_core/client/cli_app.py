@@ -1292,14 +1292,15 @@ def eval_cmd(
         ),
     ] = False,
     judge_sample: Annotated[
-        int | None,
+        str | None,
         typer.Option(
             "--judge-sample",
             help=(
                 "Sample N items for the LLM judge instead of judging all "
                 "(N pages for the page judge and the category judge; N claims "
-                "for the entailment judge — the latter two when enabled). "
-                "Ignored when --judge is not set."
+                "for the entailment judge — the latter two when enabled), or "
+                "'auto' for a calibrated sample (~25) targeting a <±0.2 CI "
+                "half-width. Ignored when --judge is not set."
             ),
         ),
     ] = None,
@@ -1334,6 +1335,22 @@ def eval_cmd(
     Default is async — submit + print JSON task handle. Use ``--wait``
     to block + render + exit with task / gate status."""
 
+    # ``--judge-sample`` is one option accepting either a positive int or the
+    # ``auto`` sentinel; forward both to the server (it resolves ``auto`` to the
+    # calibrated sample size). Reject other shapes client-side for a clear error.
+    parsed_sample: int | str | None
+    if judge_sample is None:
+        parsed_sample = None
+    elif judge_sample == "auto":
+        parsed_sample = "auto"
+    elif judge_sample.isdigit() and int(judge_sample) >= 1:
+        parsed_sample = int(judge_sample)
+    else:
+        raise typer.BadParameter(
+            "--judge-sample must be a positive integer or 'auto'",
+            param_hint="--judge-sample",
+        )
+
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             handle = await t.post_json(
@@ -1344,7 +1361,7 @@ def eval_cmd(
                     "cache_mode": cache_mode,
                     "eval_modes": eval_modes,
                     "judge": judge,
-                    "judge_sample": judge_sample,
+                    "judge_sample": parsed_sample,
                 },
             )
             task_id = str(handle["task_id"])

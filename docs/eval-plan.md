@@ -137,8 +137,9 @@ or non-destructiveness. Two gates:
    `entailment_summary`, and **opt-in**: it runs only when `--judge` is set
    **and** the dataset declares `judge.entailment_grounding_enabled: true`, so
    it costs nothing by default. The will-it-gate question (entailment is the
-   first judge dimension a calibrated dataset is likely to promote) stays open
-   until the multi-dataset judge-sample power analysis lands.
+   first judge dimension a calibrated dataset is likely to promote) stays open,
+   but the sample size needed to trust the number is settled by the power
+   analysis below.
 
    **`category_correctness_ratio` — is each page filed under the right
    category?** `category_distribution` / `fallback_ratio_max` see *where* pages
@@ -151,6 +152,16 @@ or non-destructiveness. Two gates:
    Informational (never gated), bootstrap 95% CI on `category_summary`, and
    **opt-in** under `judge.category_correctness_enabled: true` (+ `--judge`), so
    `$0` by default.
+
+   **Sizing the judge sample (`--judge-sample auto`).** A judge ratio is only as
+   trustworthy as its CI is tight, and the two real calibrations landed wider
+   than the ±0.2 target (entailment n=20 → ±0.13, category n=8 → ±0.19). A [0,1]
+   ratio's bootstrap 95% CI half-width is at most `1.96 * 0.5 / sqrt(n)`
+   (worst-case variance at a 50/50 split), so `n ≥ 25` clears ±0.2 for *any*
+   score distribution — a dataset-independent bound, which is why a multi-corpus
+   empirical sweep can't push it higher. `recommended_judge_sample()` returns
+   that `n` clamped to `[5, 50]`, exposed as `dikw client eval --judge-sample
+   auto`; smaller datasets are judged in full.
 
    **Proving an optimization actually helped.** The LLM makes synth
    non-deterministic, so a single before/after eval can't separate a real gain
