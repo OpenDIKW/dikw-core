@@ -184,6 +184,20 @@ async def codex_create_sentinel(*_args: Any, **_kwargs: Any) -> Any:
     pytest.fail(CODEX_NO_CREATE_MSG)
 
 
+ANTHROPIC_NO_CREATE_MSG = (
+    "AnthropicCompatLLM.complete must delegate to messages.stream (per-event "
+    "read timeout), never the non-streaming messages.create — a reasoning "
+    "model's long synthesis trips the whole-response timeout on create()."
+)
+
+
+async def anthropic_create_sentinel(*_args: Any, **_kwargs: Any) -> Any:
+    """Async stand-in for ``messages.create``: fails any test that invokes
+    it, pinning that ``complete`` collapses ``complete_stream`` rather than
+    re-introducing the non-streaming path."""
+    pytest.fail(ANTHROPIC_NO_CREATE_MSG)
+
+
 # Parameters the chatgpt.com/backend-api/codex endpoint rejects with
 # ``400 Unsupported parameter``. The endpoint is a stricter subset of
 # the public Responses API; extend this tuple as new rejections are

@@ -18,22 +18,30 @@ cases.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+import httpx
 import pytest
 
 from dikw_core.providers.anthropic_compat import AnthropicCompatLLM
-from dikw_core.providers.base import LLMProvider, LLMResponse
+from dikw_core.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    ProviderError,
+    TransientProviderError,
+)
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import _FINISH_REASON_MAP, OpenAICodexLLM
 from dikw_core.providers.openai_compat import OpenAICompatLLM
 
 from .fakes import (
     CodexResponsesStreamStub,
+    anthropic_create_sentinel,
     assert_codex_request_kwargs_clean,
     codex_create_sentinel,
     make_codex_response,
@@ -86,18 +94,32 @@ class _Harness(Protocol):
 class _OpenAICompatHarness:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._complete = _CompleteScript()
-        self._stream = _StreamScript()
+        # ``None`` → ``complete()`` (collapsed over the streaming create) reads
+        # the ``_complete`` script as a single-shot stream, mirroring codex.
+        self._stream: _StreamScript | None = None
+        # Optional fault injection: "create" raises from the create() await
+        # (connection-open phase); "iteration" raises mid-chunk-stream.
+        self._raise_at: str | None = None
+        self._exc_factory: Callable[[], BaseException] | None = None
         harness = self
 
         class _FakeAsyncStream:
             def __init__(self, chunks: list[Any]) -> None:
                 self._chunks = list(chunks)
+                self._raised = False
 
             def __aiter__(self) -> _FakeAsyncStream:
                 return self
 
             async def __anext__(self) -> Any:
                 if not self._chunks:
+                    if (
+                        harness._raise_at == "iteration"
+                        and harness._exc_factory
+                        and not self._raised
+                    ):
+                        self._raised = True
+                        raise harness._exc_factory()
                     raise StopAsyncIteration
                 return self._chunks.pop(0)
 
@@ -137,27 +159,29 @@ class _OpenAICompatHarness:
                 ),
             )
 
+        def _build_chunks(deltas: list[str], s: Any) -> list[Any]:
+            chunks: list[Any] = [_delta_chunk(d) for d in deltas]
+            chunks.append(_finish_chunk(s.finish_reason))
+            chunks.append(_usage_chunk(s.input_tokens, s.output_tokens))
+            return chunks
+
         class _FakeCompletions:
             async def create(self, **kwargs: Any) -> Any:
-                if kwargs.get("stream"):
+                # ``complete`` must collapse the streaming path — a
+                # non-streaming create() is the bug this PR removes.
+                if not kwargs.get("stream"):
+                    pytest.fail(
+                        "OpenAICompatLLM.complete must call create(stream=True); "
+                        "the non-streaming path trips the whole-response timeout."
+                    )
+                if harness._raise_at == "create" and harness._exc_factory:
+                    raise harness._exc_factory()
+                if harness._stream is not None:
                     s = harness._stream
-                    chunks: list[Any] = [_delta_chunk(d) for d in s.deltas]
-                    chunks.append(_finish_chunk(s.finish_reason))
-                    chunks.append(_usage_chunk(s.input_tokens, s.output_tokens))
-                    return _FakeAsyncStream(chunks)
+                    return _FakeAsyncStream(_build_chunks(list(s.deltas), s))
                 c = harness._complete
-                return SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            message=SimpleNamespace(content=c.text),
-                            finish_reason=c.finish_reason,
-                        )
-                    ],
-                    usage=SimpleNamespace(
-                        prompt_tokens=c.input_tokens,
-                        completion_tokens=c.output_tokens,
-                    ),
-                )
+                deltas = [c.text] if c.text else []
+                return _FakeAsyncStream(_build_chunks(deltas, c))
 
         class _FakeAsyncOpenAI:
             def __init__(self, **_kwargs: Any) -> None:
@@ -177,6 +201,12 @@ class _OpenAICompatHarness:
     def arrange_stream(self, script: _StreamScript) -> None:
         self._stream = script
 
+    def arrange_stream_raises(
+        self, exc_factory: Callable[[], BaseException], *, at: str = "iteration"
+    ) -> None:
+        self._exc_factory = exc_factory
+        self._raise_at = at
+
 
 # --------------------------------------------------------------------------- #
 # anthropic_compat harness — messages.create + messages.stream
@@ -186,7 +216,13 @@ class _OpenAICompatHarness:
 class _AnthropicHarness:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._complete = _CompleteScript()
-        self._stream = _StreamScript()
+        # ``None`` → ``complete()`` (collapsed over ``messages.stream``) reads
+        # the ``_complete`` script with no token deltas, mirroring _CodexHarness.
+        self._stream: _StreamScript | None = None
+        # Optional fault injection for the classification / cancel contract:
+        # raise ``_exc_factory()`` at "aenter" | "text_stream" | "final".
+        self._raise_at: str | None = None
+        self._exc_factory: Callable[[], BaseException] | None = None
         harness = self
 
         class _FakeMessageStream:
@@ -195,6 +231,8 @@ class _AnthropicHarness:
                 self._final = final
 
             async def __aenter__(self) -> _FakeMessageStream:
+                if harness._raise_at == "aenter" and harness._exc_factory:
+                    raise harness._exc_factory()
                 return self
 
             async def __aexit__(self, *_: Any) -> None:
@@ -205,17 +243,21 @@ class _AnthropicHarness:
                 async def _gen() -> AsyncIterator[str]:
                     for d in self._deltas:
                         yield d
+                    if harness._raise_at == "text_stream" and harness._exc_factory:
+                        raise harness._exc_factory()
 
                 return _gen()
 
             async def get_final_message(self) -> SimpleNamespace:
+                if harness._raise_at == "final" and harness._exc_factory:
+                    raise harness._exc_factory()
                 return self._final
 
         def _make_final(
             text: str, finish_reason: str, input_tokens: int, output_tokens: int
         ) -> SimpleNamespace:
             return SimpleNamespace(
-                content=[SimpleNamespace(text=text)],
+                content=[SimpleNamespace(text=text)] if text else [],
                 usage=SimpleNamespace(
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
@@ -226,18 +268,22 @@ class _AnthropicHarness:
             )
 
         class _FakeMessages:
-            async def create(self, **_kwargs: Any) -> Any:
-                c = harness._complete
-                return _make_final(
-                    c.text, c.finish_reason, c.input_tokens, c.output_tokens
-                )
+            # ``complete`` must collapse ``messages.stream``; calling the
+            # non-streaming ``create`` fails the test loudly.
+            create = anthropic_create_sentinel
 
             def stream(self, **_kwargs: Any) -> _FakeMessageStream:
-                s = harness._stream
+                if harness._stream is not None:
+                    s = harness._stream
+                    final = _make_final(
+                        s.final_text, s.finish_reason, s.input_tokens, s.output_tokens
+                    )
+                    return _FakeMessageStream(list(s.deltas), final)
+                c = harness._complete
                 final = _make_final(
-                    s.final_text, s.finish_reason, s.input_tokens, s.output_tokens
+                    c.text, c.finish_reason, c.input_tokens, c.output_tokens
                 )
-                return _FakeMessageStream(list(s.deltas), final)
+                return _FakeMessageStream([], final)
 
         class _FakeAsyncAnthropic:
             def __init__(self, **_kwargs: Any) -> None:
@@ -254,6 +300,12 @@ class _AnthropicHarness:
 
     def arrange_stream(self, script: _StreamScript) -> None:
         self._stream = script
+
+    def arrange_stream_raises(
+        self, exc_factory: Callable[[], BaseException], *, at: str = "text_stream"
+    ) -> None:
+        self._exc_factory = exc_factory
+        self._raise_at = at
 
 
 # --------------------------------------------------------------------------- #
@@ -451,3 +503,129 @@ async def test_stream_done_event_carries_usage(harness: _Harness) -> None:
     done = events[-1]
     assert done.usage["input_tokens"] == 11
     assert done.usage["output_tokens"] == 22
+
+
+# --------------------------------------------------------------------------- #
+# Contract: streaming exception classification (anthropic_compat + openai_compat)
+#
+# A reasoning model's long synthesis can fail mid-stream; the synth group
+# retry loop retries ONLY TransientProviderError and lets bare ProviderError
+# fail fast. These tests pin that real SDK exceptions are classified into the
+# right bucket and that a cancel is never reclassified. openai_codex's own
+# classification is a documented follow-up, so it is excluded here.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _Classifier:
+    harness: Any
+    open_at: str  # the realistic site a connection-phase error surfaces from
+    timeout: Callable[[], BaseException]
+    connection: Callable[[], BaseException]
+    status: Callable[[int], BaseException]
+    api_error: Callable[[], BaseException]
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("openai_compat", id="openai_compat"),
+        pytest.param("anthropic_compat", id="anthropic_compat"),
+    ]
+)
+def classifier(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> _Classifier:
+    req = httpx.Request("POST", "http://fake.example/v1/x")
+    if request.param == "anthropic_compat":
+        import anthropic
+
+        return _Classifier(
+            harness=_AnthropicHarness(monkeypatch),
+            open_at="aenter",
+            timeout=lambda: anthropic.APITimeoutError(request=req),
+            connection=lambda: anthropic.APIConnectionError(request=req),
+            status=lambda code: anthropic.APIStatusError(
+                "boom", response=httpx.Response(code, request=req), body=None
+            ),
+            api_error=lambda: anthropic.APIError("boom", req, body=None),
+        )
+    import openai
+
+    return _Classifier(
+        harness=_OpenAICompatHarness(monkeypatch),
+        open_at="create",
+        timeout=lambda: openai.APITimeoutError(request=req),
+        connection=lambda: openai.APIConnectionError(request=req),
+        status=lambda code: openai.APIStatusError(
+            "boom", response=httpx.Response(code, request=req), body=None
+        ),
+        api_error=lambda: openai.APIError("boom", req, body=None),
+    )
+
+
+async def test_stream_timeout_is_transient(classifier: _Classifier) -> None:
+    classifier.harness.arrange_stream_raises(classifier.timeout)
+    provider = classifier.harness.make()
+    with pytest.raises(TransientProviderError):
+        await _drain(provider)
+
+
+async def test_stream_connection_error_is_transient(classifier: _Classifier) -> None:
+    classifier.harness.arrange_stream_raises(classifier.connection)
+    provider = classifier.harness.make()
+    with pytest.raises(TransientProviderError):
+        await _drain(provider)
+
+
+@pytest.mark.parametrize("code", [500, 503, 408, 429])
+async def test_stream_5xx_and_throttle_are_transient(
+    classifier: _Classifier, code: int
+) -> None:
+    classifier.harness.arrange_stream_raises(lambda: classifier.status(code))
+    provider = classifier.harness.make()
+    with pytest.raises(TransientProviderError):
+        await _drain(provider)
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+async def test_stream_client_errors_fail_fast(
+    classifier: _Classifier, code: int
+) -> None:
+    # Surfaces from the connection-open site (where a real 401 lands), and
+    # must be the bare permanent ProviderError — NOT the retryable subclass,
+    # so misconfig is not retried-then-skipped.
+    classifier.harness.arrange_stream_raises(
+        lambda: classifier.status(code), at=classifier.open_at
+    )
+    provider = classifier.harness.make()
+    with pytest.raises(ProviderError) as ei:
+        await _drain(provider)
+    assert not isinstance(ei.value, TransientProviderError)
+
+
+async def test_stream_base_api_error_is_permanent(classifier: _Classifier) -> None:
+    classifier.harness.arrange_stream_raises(classifier.api_error)
+    provider = classifier.harness.make()
+    with pytest.raises(ProviderError) as ei:
+        await _drain(provider)
+    assert not isinstance(ei.value, TransientProviderError)
+
+
+async def test_stream_cancel_propagates_untouched(classifier: _Classifier) -> None:
+    # asyncio.CancelledError is a BaseException — it must propagate so synth's
+    # per-group cancel contract holds, never be reclassified as transient.
+    classifier.harness.arrange_stream_raises(lambda: asyncio.CancelledError())
+    provider = classifier.harness.make()
+    with pytest.raises(asyncio.CancelledError):
+        await _drain(provider)
+
+
+async def test_complete_empty_text_is_legal_zero_page(harness: _Harness) -> None:
+    # A reasoning model that legitimately emits zero text (synth's "this
+    # candidate duplicates an existing page → zero <page> blocks" path)
+    # yields no tokens and an empty final; complete() must return text="" and
+    # NOT raise — the empty result is a legal signal, not a failure.
+    harness.arrange_stream(_StreamScript(deltas=[], final_text=""))
+    provider = harness.make()
+    resp = await provider.complete(system="s", user="u", model="m")
+    assert resp.text == ""

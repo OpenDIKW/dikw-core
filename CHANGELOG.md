@@ -99,6 +99,27 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **LLM completions no longer time out on long reasoning-model syntheses
+  (`anthropic_compat` + `openai_compat`).** Both providers' `complete()` issued a
+  **non-streaming** request whose read timeout (`llm_timeout_seconds`, default
+  120 s) bounded the *whole response*, so a reasoning model (e.g. MiniMax-M3)
+  spending minutes on a 16k-token synthesis raised `APITimeoutError` mid-receipt
+  — and the SDK's `max_retries` only re-waited the full timeout, so every retry
+  failed identically. `complete()` is now a collapse of the existing
+  `complete_stream()`, so the read timeout applies **per SSE event** (token /
+  thinking / keepalive) instead of per whole response; a steadily-streaming
+  generation never trips it regardless of length (measured on MiniMax-M3: max
+  inter-event gap ~2 s). The stream path also now **classifies** SDK failures —
+  timeout / connection drop / 5xx / 408 / 429 → `TransientProviderError` (the
+  synth group loop retries it); 401 / 403 / 404 / other 4xx → permanent
+  `ProviderError` that fails fast instead of being retried-then-skipped (closing
+  the asymmetry where only the embedding leg classified). `asyncio.CancelledError`
+  propagates untouched. Behavior change for `openai_compat`: `complete()` now
+  streams, so on gateways that don't emit a usage-only final chunk (older vLLM /
+  TEI) it reports empty `usage` — observability only, not correctness. See
+  `docs/providers.md` §3 for the two-tier retry model and the keepalive-stall
+  limitation. (`openai_codex` already streamed; its exception classification is a
+  follow-up.)
 - **LLM judge no longer truncates to empty on reasoning models.** Both eval
   judges (`judge_synthesis`, `judge_entailment`) capped `max_tokens` at 512 / 256
   — too small for a reasoning LLM, which spends a hidden chain-of-thought against
