@@ -885,6 +885,19 @@ async def _synth_pages_from_source(
             len(group.section_starts),
             group.token_count,
         )
+        # Per-page output budget for this group — a low value (a small
+        # ``llm_max_tokens_synth`` against a large ``max_pages_per_group``)
+        # is the usual cause of mid-page truncation, so surface it when
+        # tuning synth output quality.
+        logger.debug(
+            "  group %d/%d budget: max_tokens=%d / max_pages=%d = ~%d tok/page",
+            group_pos,
+            total_groups,
+            cfg.provider.llm_max_tokens_synth,
+            cfg.synth.max_pages_per_group,
+            cfg.provider.llm_max_tokens_synth
+            // max(1, cfg.synth.max_pages_per_group),
+        )
         # Per-group ProviderError resilience (issue #134). One bad group
         # (codex empty-response, auth flap, refusal) must not abort the
         # whole task — retry up to ``provider_error_retries`` times with

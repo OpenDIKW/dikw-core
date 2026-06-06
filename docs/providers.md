@@ -150,9 +150,14 @@ cost model is different from the Anthropic leg.
 ### 5. `max_tokens` is per-op, configurable via `dikw.yml`
 
 Default (in [`config.py`](../src/dikw_core/config.py)):
-`provider.llm_max_tokens_synth = 2048`. Comfortable for all tested
-vendors, but some cost-optimized models (a few GLM-Flash variants,
-smaller Gemini Nano endpoints) cap responses below 2048 and return 400.
+`provider.llm_max_tokens_synth = 3072` — ~768 tokens per page at the
+default `max_pages_per_group=4`, so a full fan-out group rarely truncates
+mid-page (the old 2048 default left only ~512/page and clipped dense
+groups). Some cost-optimized models (a few GLM-Flash variants, smaller
+Gemini Nano endpoints) cap responses below 2048 and return 400 — shrink
+the field for those. **Reasoning models need much more**: their hidden
+chain-of-thought also draws on this budget, so MiniMax-M3 and similar
+silently emit zero pages at 3072 — set `>= 8192` (16384 recommended).
 Override per-base by adding the field to your `dikw.yml` `provider:`
 block — no code change needed. There is no `llm_max_tokens_query` knob;
 `retrieve` doesn't call an LLM, so the read-path budget lives on the
