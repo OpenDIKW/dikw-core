@@ -411,6 +411,7 @@ async def collect_synth_eval_runs(
     *,
     judge: bool = False,
     judge_sample: int | None = None,
+    target_tokens_per_group: int | None = None,
 ) -> list[dict[str, float]]:
     """Live driver: build providers from ``base``'s ``dikw.yml`` and run the
     synth eval ``n`` times, returning one flat metric dict per run.
@@ -437,6 +438,7 @@ async def collect_synth_eval_runs(
             retrieval_config=cfg.retrieval,
             judge=judge,
             judge_sample=judge_sample,
+            target_tokens_per_group=target_tokens_per_group,
         )
         return flatten_synth_report(report)
 
@@ -486,6 +488,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
             args.runs,
             judge=args.judge,
             judge_sample=args.judge_sample,
+            target_tokens_per_group=args.target_tokens,
         )
     )
     combined = append_runs(exp_dir, args.arm, runs)
@@ -538,6 +541,17 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--exp", required=True, help="experiment directory")
     pc.add_argument("--judge", action="store_true", help="also run the LLM judge")
     pc.add_argument("--judge-sample", type=int, default=None, dest="judge_sample")
+    pc.add_argument(
+        "--target-tokens",
+        type=int,
+        default=None,
+        dest="target_tokens",
+        help=(
+            "override synth.target_tokens_per_group for this run; a small value "
+            "fans a small corpus into multiple groups so grouping-sensitive "
+            "changes (priority-create / existing-pages) are exercised"
+        ),
+    )
     pc.set_defaults(func=_cmd_collect)
 
     pp = sub.add_parser("compare", help="compare collected arms (pure stats)")

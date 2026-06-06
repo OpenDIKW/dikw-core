@@ -1,0 +1,52 @@
+{
+  "runs": [
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.48717948717948717,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.6140873015873016,
+      "synth/duplicate_ratio_max": 0.005263157894736842,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9523809523809523,
+      "synth/source_chunk_coverage": 0.8095238095238095,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.4,
+      "judge/atomicity": 5.0,
+      "judge/completeness": 3.8,
+      "judge/clarity": 4.9
+    },
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.4074074074074074,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5531897926634768,
+      "synth/duplicate_ratio_max": 0.0,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9047619047619048,
+      "synth/source_chunk_coverage": 0.8095238095238095,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.368421052631579,
+      "judge/atomicity": 4.7368421052631575,
+      "judge/completeness": 3.5789473684210527,
+      "judge/clarity": 4.7894736842105265
+    },
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.41935483870967744,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5377401837928154,
+      "synth/duplicate_ratio_max": 0.0,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9047619047619048,
+      "synth/source_chunk_coverage": 0.8571428571428571,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.578947368421052,
+      "judge/atomicity": 4.894736842105263,
+      "judge/completeness": 3.8421052631578947,
+      "judge/clarity": 5.0
+    }
+  ]
+}

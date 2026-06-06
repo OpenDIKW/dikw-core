@@ -31,6 +31,12 @@ on each entry call out exactly what shape changes break.
     two-sample t-test, Cohen's d, and a direction-aware ship gate (`p < p_max`
     **and** `improvement > effect_min`). Pure-Python stats (no scipy). `collect`
     runs the arms (live LLM); `compare` is offline.
+  - **`--target-tokens` override** on `ab_experiment collect` (threaded through
+    `run_synth_eval` / `_materialise_base`, default = production 3600) — fans a
+    small packaged corpus into multiple groups so grouping-sensitive synth
+    changes (the Phase 2 priority-create / existing-pages features) can be A/B'd
+    on `mvp` instead of needing a bespoke large-source dataset. No behavior
+    change when unset.
 - **`synth/fact_entailment_ratio` — LLM grounding judge (Phase 0b).** The
   embedding `fact_grounding_ratio` reduces to a cosine, so "GPT-4 is 4x faster
   than GPT-3" (a fabricated ratio) and "GPT-4 is faster than GPT-3" (supported)
@@ -96,6 +102,24 @@ on each entry call out exactly what shape changes break.
   clear the atomicity heuristic — a regression test pins this so a malformed
   example can't ship. Prompt-only: no engine code, no placeholder/marker contract
   change, fully overridable per base via `synth.prompt_path`.
+- **Synth prompt now disambiguates existing pages by slug + nudges
+  priority-create (Phase 2).** Two deterministic-scoping additions to the
+  per-group fan-out prompt; neither adds an LLM call.
+  - **Existing-pages slug.** Every existing-pages / batch-accumulator bullet
+    renders as `- Title [slug] (category)` (was `- Title (category)`). The slug
+    is the deterministic kebab-case file stem, surfaced so the model can tell
+    two same-titled pages apart; the prompt still instructs it to link by
+    **title**, never slug.
+  - **Priority-create feedback.** Wikilink targets an earlier group of the same
+    source referenced but that resolve to no page yet (existing snapshot **or**
+    in-batch, via the same exact → fuzzy → collision rules as `resolve_links`)
+    are surfaced to later groups under a `## Priority targets (create if
+    relevant)` section, so a group whose content covers one creates it at the
+    right title instead of leaving the graph broken. Re-resolved each group (a
+    target a prior group satisfied is dropped), ranked by how many distinct
+    pages want it, and recorded in `knowledge_log`. Empty / anchor-only /
+    punctuation-only targets (`[[#sec]]`, `[[ ]]`, `[[...]]`) are excluded — no
+    usable key, uncreatable.
 
 ### Fixed
 

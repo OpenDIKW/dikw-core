@@ -587,6 +587,7 @@ def _materialise_base(
     retrieval_cfg: RetrievalConfig,
     assets_cfg: AssetsConfig,
     schema_cfg: SchemaConfig | None = None,
+    target_tokens_per_group: int | None = None,
 ) -> Path:
     """Scaffold a throwaway base + dikw.yml that matches ``spec``.
 
@@ -600,6 +601,12 @@ def _materialise_base(
     ``schema_cfg`` is optional and only used by ``run_synth_eval`` so a
     synth-mode dataset can pin its own ``categories`` taxonomy into the
     throwaway base (separate from the user's production categories).
+
+    ``target_tokens_per_group`` (optional) overrides the synth group budget.
+    ``None`` keeps the production default (3600). A small value fans a source
+    into more groups, which is how a grouping-sensitive change (e.g. the
+    priority-create / existing-pages features) is exercised under A/B on a
+    small corpus that would otherwise be a single group per source.
     """
     base = tmp_root / "base"
     api.init_base(base, description=f"eval/{spec.name}")
@@ -612,6 +619,8 @@ def _materialise_base(
     cfg.assets = assets_cfg
     if schema_cfg is not None:
         cfg.schema_ = schema_cfg
+    if target_tokens_per_group is not None:
+        cfg.synth.target_tokens_per_group = target_tokens_per_group
     (base / CONFIG_FILENAME).write_text(dump_config_yaml(cfg), encoding="utf-8")
     return base
 
@@ -1051,6 +1060,7 @@ async def run_synth_eval(
     retrieval_config: RetrievalConfig | None = None,
     judge: bool = False,
     judge_sample: int | None = None,
+    target_tokens_per_group: int | None = None,
     reporter: ProgressReporter | None = None,
 ) -> SynthEvalReport:
     """End-to-end K-layer eval: ingest → synth → metrics + optional judge.
@@ -1105,6 +1115,7 @@ async def run_synth_eval(
             retrieval_cfg=effective_retrieval_cfg,
             assets_cfg=AssetsConfig(),
             schema_cfg=schema_cfg,
+            target_tokens_per_group=target_tokens_per_group,
         )
         _copy_corpus(spec.corpus_dir, base / "sources")
 

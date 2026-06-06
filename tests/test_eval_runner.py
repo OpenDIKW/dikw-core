@@ -56,6 +56,43 @@ def _write_dataset(
     return ds
 
 
+def test_materialise_base_honors_target_tokens_override(tmp_path: Path) -> None:
+    """``run_synth_eval``'s ``target_tokens_per_group`` override is threaded
+    into the throwaway base's ``dikw.yml`` so grouping-sensitive changes (the
+    priority-create / slug features) can be A/B'd by fanning a small corpus
+    into multiple groups. ``None`` leaves the production default (3600)."""
+    from dikw_core.config import (
+        CONFIG_FILENAME,
+        AssetsConfig,
+        ProviderConfig,
+        RetrievalConfig,
+        load_config,
+    )
+    from dikw_core.eval.runner import _materialise_base
+
+    spec = load_dataset(_write_dataset(tmp_path, queries=[("foo", ["alpha"])]))
+    provider_cfg = ProviderConfig(
+        embedding_model="fake",
+        embedding_dim=64,
+        embedding_revision="",
+        embedding_normalize=True,
+        embedding_distance="cosine",
+    )
+    kwargs = {
+        "provider_cfg": provider_cfg,
+        "retrieval_cfg": RetrievalConfig(),
+        "assets_cfg": AssetsConfig(),
+    }
+
+    overridden = _materialise_base(
+        tmp_path / "ov", spec, target_tokens_per_group=512, **kwargs
+    )
+    assert load_config(overridden / CONFIG_FILENAME).synth.target_tokens_per_group == 512
+
+    default = _materialise_base(tmp_path / "def", spec, **kwargs)
+    assert load_config(default / CONFIG_FILENAME).synth.target_tokens_per_group == 3600
+
+
 @pytest.mark.asyncio
 async def test_run_eval_returns_report_with_metrics_and_passed_flag(
     tmp_path: Path,

@@ -15,6 +15,7 @@ duplicates that PR1's fuzzy resolver cannot absorb.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -151,8 +152,8 @@ async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> N
     assert "## Existing knowledge pages" in prompt, (
         "fresh-base synth must render the existing-pages section header"
     )
-    assert "- Tesla (entity)" in prompt, (
-        "the seeded page must appear as a 'Title (category)' bullet"
+    assert "- Tesla [tesla] (entity)" in prompt, (
+        "the seeded page must appear as a 'Title [slug] (category)' bullet"
     )
 
 
@@ -196,7 +197,7 @@ async def test_synth_prompt_includes_batch_accumulator_after_first_group(
         "group 2's prompt must surface the batch accumulator section"
     )
     # Group 0 emitted a page titled "Group 0 page" of type "concept".
-    assert "- Group 0 page (concept)" in second_prompt, (
+    assert "- Group 0 page [group-0-page] (concept)" in second_prompt, (
         "the page emitted by group 0 must appear in group 1's batch section"
     )
 
@@ -250,6 +251,12 @@ async def test_synth_existing_pages_truncates_to_retrieval_top_k(
         f"expected retrieval-gated truncation to <=3 bullets, "
         f"got {bullet_count} (full render had 12 pages)"
     )
+    # The retrieval-gated branch must also carry the [slug] (a count-only
+    # assertion would pass even if the slug were dropped from this branch).
+    assert any(
+        re.match(r"- Seeded page \d+ \[seeded-page-\d+\] \(concept\)", line)
+        for line in prompt.splitlines()
+    ), "retrieval-gated existing-pages bullets must render the [slug] shape"
 
 
 @pytest.mark.asyncio
@@ -283,7 +290,7 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
         "force_all=True must not surface the existing-pages section; "
         "regeneration would otherwise be suppressed by the duplicate rule"
     )
-    assert "- Tesla (entity)" not in prompt
+    assert "- Tesla [tesla] (entity)" not in prompt
 
 
 @pytest.mark.asyncio

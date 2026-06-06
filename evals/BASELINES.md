@@ -7,6 +7,93 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-07 — existing-pages slug + priority-create A/B (Phase 2)
+
+**Change under test:** two deterministic-scoping additions to the per-group
+synth fan-out prompt, neither adding an LLM call (Karpathy's rule — scoping is
+deterministic, reasoning is probabilistic):
+
+1. **Existing-pages slug (#3).** Every existing-pages / batch-accumulator bullet
+   renders `- Title [slug] (category)` (was `- Title (category)`) so the model can
+   tell two same-titled pages apart; it still links by **title**, never slug.
+2. **Priority-create (#4).** Wikilink targets an earlier group of the same source
+   referenced but that resolve to no page yet (snapshot **or** in-batch, via the
+   same exact → fuzzy → collision rules as `resolve_links`) are surfaced to later
+   groups under `## Priority targets (create if relevant)`, re-resolved each group,
+   ranked by distinct-referencing-page count, recorded in `knowledge_log`.
+
+**Method — two corpora, two providers (and why):**
+
+- **`mvp` multi-group A/B** — the statistical no-regression backbone. MiniMax-M3
+  (LLM via `anthropic_compat`), Qwen3-Embedding-0.6B@1024 (Gitee), baseline (main)
+  ×3 vs intervention (branch `feat/synth-phase2-slug-priority`) ×3,
+  `--judge --judge-sample 25`, Welch t-test, ship gate `p<0.05 AND Δ>0.10`. `mvp`'s
+  3 sources are single-group at the default 3600 tokens, so the new
+  `--target-tokens 700` harness flag fans them into 5 groups — without it #3/#4 are
+  dormant. A throwaway diagnostic confirmed #4 *fires* on `mvp@700`
+  (`karpathy-gist.md` → 1 priority note). Raw runs + `result.json` in
+  `evals/experiments/phase2-slug-priority/`.
+- **`elon-musk.md` 1500-line subset** — the mandated K-layer baseline corpus, and
+  the strong-signal corpus: a single biography fans into **19 groups** with dense
+  forward entity references, exactly where #4 has signal. baseline (main) ×2 vs
+  intervention (branch) ×2, default 3600 tokens. **Provider = `openai_codex`
+  (gpt-5.5)**, *not* MiniMax: MiniMax-M3 rejects the biography with content-
+  moderation `api_error 1027 'new_sensitive'` mid-synth. codex is also the
+  historical elon-musk baseline provider, and the 19-group fan-out keeps every
+  request small so codex's large-input SSE hang never triggers (same as the
+  2026-05-10 PR2 entry). Embeddings still Qwen3-Embedding-0.6B@1024 (Gitee).
+
+**Result — `mvp` (n=3, no signal, 0 ship / 0 regress):**
+
+| metric | baseline | intervention | Δimprove | p | verdict |
+|---|---|---|---|---|---|
+| synth/wikilink_resolved_ratio | 0.4784 | 0.4380 | −0.0404 | 0.31 | noise |
+| judge/completeness | 3.8596 | 3.7404 | −0.1193 | 0.35 | noise |
+| judge/clarity | 4.8421 | 4.8965 | +0.0544 | 0.48 | noise |
+| judge/atomicity | 4.9474 | 4.8772 | −0.0702 | 0.46 | noise |
+| judge/grounding | 4.4561 | 4.4491 | −0.0070 | 0.94 | noise |
+| synth/fact_grounding_ratio | 0.5775 | 0.5683 | −0.0091 | 0.74 | noise |
+| synth/page_density | 0.9048 | 0.9206 | +0.0159 | 0.42 | noise |
+| atomicity / duplicate / fallback / slug_merge / language / source_chunk_cov | — | — | ≈0 | — | unchanged |
+
+Every p ∈ [0.31, 1.0] — the two arms are statistically indistinguishable at n=3.
+On `mvp` #4 fires only ~1×/run (one source splits into 2 groups; 3 sources → 5
+groups total) and same-title collisions are rare, so neither #3 nor #4 has enough
+to bite on. **The honest `mvp` read: no measurable change, no regression** — the
+small corpus can't separate the intervention from LLM run-to-run noise.
+
+**Result — `elon-musk` 1500-line subset (n=2/arm, strong signal):**
+
+| metric | baseline (main) | intervention (branch) | Δ |
+|---|---|---|---|
+| wikilink_resolved_ratio (mean) | **0.811** | **0.899** | **+0.088** |
+| ├─ per-run | 0.788 / 0.834 | 0.867 / 0.932 | (non-overlapping) |
+| unresolved wikilinks (mean) | 47.5 | 27.0 | **−20.5 (−43%)** |
+| pages created (mean) | 75.5 | 75.5 | 0 |
+| atomicity_score | 1.000 | 1.000 | 0 |
+| duplicate_ratio_max (mean) | 0.00071 | 0.00036 | −0.00035 (better) |
+| fallback_ratio / slug_merge | 0.000 / 0 | 0.000 / 0 | unchanged |
+| priority-create fired | 0 / 2 runs | 2 / 2 runs | clean attribution |
+
+**Read:** on the corpus where #4 has signal, the intervention lifts
+`wikilink_resolved_ratio` **0.811 → 0.899 (+0.088)** and cuts unresolved wikilinks
+**43%**, with **zero regression** — same page count, identical atomicity, *lower*
+duplicate, zero fallback. The single-run n=1 delta was +0.144; the n=2 mean is the
+honest +0.088 (intervention has real run-to-run variance: 0.932 vs 0.867). What
+makes the direction robust despite n=2 is that the **ranges do not overlap** —
+every intervention run (0.867, 0.932) beats every baseline run (0.788, 0.834) — and
+the mechanism attribution is clean: priority-create fired in both intervention runs
+and neither baseline run (the only code difference), pages/atomicity/duplicate all
+hold. The 0.5.0 elon baseline (old pre-Phase-1 prompt) had 107 unresolved on the
+same 76-page subset; Phase 1 + Phase 2 together bring that to 18–36.
+
+**Net:** Phase 2 is a no-regression change whose benefit scales with forward-
+reference density — invisible on the small `mvp` corpus (within noise), clearly
+positive on a large real document (+0.088 resolved, −43% broken links). The
+mechanism is also proven deterministically by `tests/test_synth_priority_targets.py`
+(it fires regardless of corpus). Ships on: no regression anywhere, robust
+direction on the signal corpus, $0 (no extra LLM call), Karpathy-clean.
+
 ## 2026-06-06 — enriched synthesis prompt A/B (Phase 1, PR 1b)
 
 **Change under test:** the Phase-1 prompt rewrite — `prompts/synthesize.md` +
