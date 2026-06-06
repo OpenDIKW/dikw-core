@@ -368,7 +368,7 @@ semantic duplicate that no string-distance trick can absorb.
 two prompt sections to every group:
 
 1. **`## Already created in this batch`** — a per-source accumulator
-   listing the `Title (type)` of every page emitted by groups
+   listing the `Title [slug] (category)` of every page emitted by groups
    `0..N-1` of the SAME source. Stage A 1:N fan-out runs groups
    serially; without this, group 2 reinvents what group 1 wrote.
 2. **`## Existing knowledge pages`** — a snapshot of the base K-layer.
@@ -380,6 +380,22 @@ two prompt sections to every group:
    so the only new Storage primitive is `get_chunk_embeddings`
    (a pure SELECT over the existing per-version vec table). Top-K
    defaults to `synth.existing_pages_top_k = 50`.
+
+Both render each page as `- Title [slug] (category)`: the kebab-case
+file stem disambiguates two same-titled pages, while the prompt still
+tells the model to write `[[Title]]` (never the slug) when linking.
+
+A third section, **`## Priority targets (create if relevant)`**, is
+prepended for every group after the first. It lists the top-5 wikilink
+targets earlier groups of the SAME source referenced but that resolve
+to no page yet — checked against the snapshot **and** the batch with
+the same exact → fuzzy → collision rules as `resolve_links`, re-resolved
+each group so a target a prior group has since authored drops off, and
+ranked by how many distinct pages want it. This nudges a later group
+whose content covers one to author it at the right title instead of
+stranding a broken `[[wikilink]]`. It is pure deterministic scoping over
+data the loop already has (parsed wikilinks + the title index) — no
+extra LLM call, no new Storage primitive.
 
 The S2 prompt strategy: strong instruction + zero-block escape hatch.
 On a detected duplicate the LLM is told to emit **zero `<page>` blocks
