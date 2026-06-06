@@ -18,7 +18,7 @@ import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .. import api
 from ..config import CONFIG_FILENAME, load_config
@@ -296,6 +296,23 @@ def _resolve_eval_modes(
     if requested is None:
         return ["retrieval"] if "retrieval" in declared else []
     return [m for m in requested if m in declared]
+
+
+def _resolve_judge_sample(value: int | Literal["auto"] | None) -> int | None:
+    """Resolve the ``judge_sample`` request field to a concrete cap.
+
+    ``"auto"`` → the calibrated sample size (engine-side knowledge, so the
+    client can forward the sentinel without importing ``eval``). A positive int
+    passes through; ``None`` judges everything. A non-positive int is a
+    ``BadRequest`` so a typo fails fast rather than silently judging nothing.
+    """
+    if value == "auto":
+        from ..eval.judge import recommended_judge_sample
+
+        return recommended_judge_sample()
+    if value is not None and value < 1:
+        raise BadRequest(f"judge_sample must be >= 1 or 'auto', got {value!r}")
+    return value
 
 
 __all__ = [

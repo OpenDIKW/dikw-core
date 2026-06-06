@@ -115,6 +115,20 @@ def test_dataset_path_fails_when_thresholds_unmet(
     assert result.exit_code == 1, result.stdout
 
 
+def test_eval_judge_sample_rejects_invalid_value() -> None:
+    """``--judge-sample`` takes a positive int or 'auto'; anything else is a
+    client-side parse error (no server round-trip needed to reject it)."""
+    result = CliRunner().invoke(
+        app, ["client", "eval", "--judge-sample", "bogus"]
+    )
+    # Exit 2 is click's usage-error code (the BadParameter raised at parse),
+    # distinct from a runtime/transport failure (exit 1) — so this proves the
+    # value was rejected up front, not that some unrelated step blew up. (The
+    # message itself renders in a Rich panel that truncates under test capture,
+    # so assert the code, not the wrapped text.)
+    assert result.exit_code == 2
+
+
 def test_synth_reports_helper_filters_by_mode() -> None:
     """``_synth_reports`` is the load-bearing helper for the
     ``--eval synth`` exit-code logic: it must pluck only synth-mode

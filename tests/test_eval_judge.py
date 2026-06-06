@@ -25,6 +25,7 @@ from dikw_core.eval.judge import (
     parse_category_verdict,
     parse_entailment_verdict,
     parse_judge_response,
+    recommended_judge_sample,
 )
 from dikw_core.eval.metrics import GroundingClaim
 from dikw_core.schemas import ChunkRecord
@@ -315,6 +316,36 @@ async def test_judge_synthesis_populates_dimension_cis() -> None:
     # A dimension with identical scores across pages has a degenerate CI
     # pinned to that value (every resample mean is 4.0).
     assert summary.ci_atomicity == (4.0, 4.0)
+
+
+# ---- recommended_judge_sample (power analysis) ------------------------------
+
+
+def test_recommended_judge_sample_default_margin_is_25() -> None:
+    # 1.96*0.5/0.2 = 4.9; 4.9**2 = 24.01 -> ceil 25.
+    assert recommended_judge_sample() == 25
+    assert recommended_judge_sample(0.2) == 25
+
+
+def test_recommended_judge_sample_clamps_tight_margin_to_max() -> None:
+    # 1.96*0.5/0.1 = 9.8; 9.8**2 ~ 96 -> clamped to the 50 ceiling.
+    assert recommended_judge_sample(0.1) == 50
+
+
+def test_recommended_judge_sample_clamps_wide_margin_to_min() -> None:
+    # 1.96*0.5/0.5 = 1.96; 1.96**2 ~ 3.84 -> ceil 4 -> clamped up to the 5 floor.
+    assert recommended_judge_sample(0.5) == 5
+
+
+def test_recommended_judge_sample_monotonic_in_margin() -> None:
+    # A tighter target margin never decreases the required sample (within clamps).
+    samples = [recommended_judge_sample(m) for m in (0.5, 0.3, 0.2, 0.15, 0.1)]
+    assert samples == sorted(samples)
+
+
+def test_recommended_judge_sample_nonpositive_margin_returns_max() -> None:
+    assert recommended_judge_sample(0.0) == 50
+    assert recommended_judge_sample(-1.0) == 50
 
 
 # ---- fact-entailment judge --------------------------------------------------
