@@ -269,8 +269,12 @@ def touch(page: KnowledgePage) -> KnowledgePage:
 
 
 DEFAULT_SYNTH_SYSTEM = (
-    "You synthesise K-layer knowledge pages for dikw-core. "
-    "Preserve the dominant language of the source section in generated "
+    "You synthesise the knowledge (K) layer of dikw-core: a Zettelkasten of "
+    "small, atomic notes. Each page captures one self-contained idea, entity, "
+    "or note that stands on its own and can be composed and cited from others "
+    "through dense [[wikilinks]]. Favour many tightly-linked atomic pages over "
+    "a few sprawling ones, and reuse an existing page rather than regenerating "
+    "a near-duplicate. Preserve the dominant language of the source section in "
     "page titles, body text, tags, and new wikilink titles."
 )
 # Underscore alias for legacy callers; new code should use the public name.
