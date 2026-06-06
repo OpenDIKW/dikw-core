@@ -120,19 +120,49 @@ violates other vendors:
 Exceeding the cap typically returns HTTP 400. Gitee AI emits
 `"No schema matches, </input>"`.
 
-### 3. No retry / backoff
+### 3. Streaming completions, per-event timeout, and classified retry
 
-LLM and embedding calls are one-shot; the underlying SDKs retry
-transient network errors but not all 4xx/5xx. You'll see:
+**LLM completions stream internally.** Both `anthropic_compat` and
+`openai_compat` implement `complete()` as a collapse of `complete_stream()`
+(iterate the SSE event stream, return the terminal assembled text/usage). The
+reason is timeouts on **reasoning models**: a non-streaming call bounds the
+*whole response* by the read timeout (`llm_timeout_seconds`, default 120 s), so
+a model like MiniMax-M3 that spends minutes generating a 16k-token synthesis
+times out mid-receipt. Streaming makes the read timeout apply **per SSE event**
+instead — each token / thinking / keepalive frame resets the deadline, so a
+steadily-streaming generation never trips it regardless of total length.
+(Measured on MiniMax-M3: it emits a `thinking_delta` every ~1–2 s throughout
+its hidden chain-of-thought, max inter-event gap ~2 s — far under any sane
+`llm_timeout_seconds`. The hidden reasoning is *not* a silent gap.)
 
-- MiniMax 529 overloaded (intermittent, no-op to re-run)
-- Gemini 429 rate-limit (project-quota dependent)
-- GLM 5xx occasionally
+**Exception classification.** A streamed completion that fails is sorted into
+two buckets, mirroring the embedding leg:
 
-`dikw client check` will print them as red cells; `dikw client ingest` aborts on
-first failure *but is idempotent via content hash*, so re-running
-resumes without double-embedding unchanged docs. For production
-automation, wrap the call in your own retry layer (e.g., `tenacity`).
+| SDK failure | class | synth behavior |
+|---|---|---|
+| timeout, connection drop, 5xx, 408, 429 | `TransientProviderError` | retried by the synth group loop |
+| 401 / 403 / 404 / other 4xx, bad model, missing key | `ProviderError` (permanent) | fails fast — never retried-then-skipped |
+
+`asyncio.CancelledError` propagates untouched (never reclassified), so a cancel
+mid-synthesis still honors the per-group cancel contract.
+
+**Two-tier retry.** The SDK's own `max_retries` (`llm_max_retries`, default 5)
+covers connection-phase failures on the initial request with exponential
+backoff; the engine-level synth loop (`synth.provider_error_retries`, default 2
+→ 3 attempts; linear `provider_error_retry_backoff_seconds`) re-issues the
+*whole* `complete()` call on a `TransientProviderError` that surfaced mid-stream
+(the SDK cannot resume a partially-drained stream). For a genuinely slow-to-
+first-byte gateway these can compound — budget worst-case wall-clock at roughly
+`llm_max_retries × synth.provider_error_retries` full timeouts when tuning
+`llm_timeout_seconds`. **Known limitation:** the per-event timeout replaces the
+old whole-response cap, so a pathological gateway that trickles a keepalive
+faster than `llm_timeout_seconds` but never completes would stall (a fully
+silent gateway still trips the per-event deadline). Real endpoints (MiniMax,
+OpenAI, vLLM) don't exhibit this.
+
+`dikw client check` prints provider failures as red cells; `dikw client ingest`
+is idempotent via content hash, so re-running resumes without double-embedding
+unchanged docs.
 
 ### 4. Prompt caching only on the `anthropic_compat` leg
 

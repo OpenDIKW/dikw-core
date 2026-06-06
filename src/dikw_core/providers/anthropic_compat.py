@@ -11,11 +11,18 @@ embeddings must go through the OpenAI-compatible provider.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from .base import LLMResponse, LLMStreamEvent, ProviderError, ToolSpec
+from .base import (
+    LLMResponse,
+    LLMStreamEvent,
+    ProviderError,
+    ToolSpec,
+    TransientProviderError,
+)
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
@@ -92,48 +99,30 @@ class AnthropicCompatLLM:
         temperature: float = 0.2,
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
-        client = self._get_client()
-        _ = tools  # Phase 1 answers are plain-text; tool use comes later.
-
-        # Wrap the system prompt as a cache-eligible block so repeated calls
-        # within a session hit the prompt cache.
-        system_block: list[dict[str, Any]] = [
-            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-        ]
-
-        resp = await client.messages.create(
+        # ``complete`` is a collapse of ``complete_stream``: a reasoning model
+        # (e.g. MiniMax-M3) can spend minutes on hidden chain-of-thought, and
+        # a non-streaming ``messages.create`` bounds the WHOLE response by the
+        # read timeout, so a long synthesis times out mid-receipt. Streaming
+        # makes the read timeout apply PER SSE event (token / thinking / ping
+        # keepalive) instead, so a steadily-streaming generation never trips
+        # it. Iterate the event stream and read the terminal ``done`` event,
+        # which already carries the assembled text, finish_reason, and usage.
+        text = ""
+        finish_reason: str | None = None
+        usage: dict[str, int] = {}
+        async for event in self.complete_stream(
+            system=system,
+            user=user,
             model=model,
-            system=system_block,  # type: ignore[arg-type]
-            messages=[{"role": "user", "content": user}],
             max_tokens=max_tokens,
             temperature=temperature,
-        )
-        # Concatenate text blocks only; ignore tool_use / other block types for now.
-        parts: list[str] = []
-        for block in resp.content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        text_out = "".join(parts)
-
-        usage = {}
-        if resp.usage is not None:
-            usage = {
-                "input_tokens": int(getattr(resp.usage, "input_tokens", 0) or 0),
-                "output_tokens": int(getattr(resp.usage, "output_tokens", 0) or 0),
-                "cache_creation_input_tokens": int(
-                    getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
-                ),
-                "cache_read_input_tokens": int(
-                    getattr(resp.usage, "cache_read_input_tokens", 0) or 0
-                ),
-            }
-
-        return LLMResponse(
-            text=text_out,
-            finish_reason=resp.stop_reason,
-            usage=usage,
-        )
+            tools=tools,
+        ):
+            if event.type == "done":
+                text = event.text or ""  # "" is a legal zero-page synth result
+                finish_reason = event.finish_reason
+                usage = event.usage
+        return LLMResponse(text=text, finish_reason=finish_reason, usage=usage)
 
     def complete_stream(
         self,
@@ -155,40 +144,85 @@ class AnthropicCompatLLM:
         ]
 
         async def _gen() -> AsyncIterator[LLMStreamEvent]:
-            async with client.messages.stream(
-                model=model,
-                system=system_block,  # type: ignore[arg-type]
-                messages=[{"role": "user", "content": user}],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ) as stream:
-                async for delta in stream.text_stream:
-                    if delta:
-                        yield LLMStreamEvent(type="token", delta=delta)
-                final = await stream.get_final_message()
+            # Classify SDK failures so the synth group retry loop
+            # (api_synth, ``cfg.synth.provider_error_retries``) retries
+            # transient ones (timeout, connect drop, 5xx/408/429) and a
+            # permanent misconfig (401/403/404, bad model) fails fast instead
+            # of being retried-then-skipped — mirrors ``OpenAICompatEmbeddings.
+            # embed``. APITimeoutError IS-A APIConnectionError IS-A APIError,
+            # so the except order (timeout/connect, then status, then base)
+            # is load-bearing.
+            from anthropic import (
+                APIConnectionError,
+                APIError,
+                APIStatusError,
+                APITimeoutError,
+            )
+
             parts: list[str] = []
-            for block in final.content:
-                text = getattr(block, "text", None)
-                if isinstance(text, str):
-                    parts.append(text)
             usage: dict[str, int] = {}
-            if final.usage is not None:
-                usage = {
-                    "input_tokens": int(getattr(final.usage, "input_tokens", 0) or 0),
-                    "output_tokens": int(
-                        getattr(final.usage, "output_tokens", 0) or 0
-                    ),
-                    "cache_creation_input_tokens": int(
-                        getattr(final.usage, "cache_creation_input_tokens", 0) or 0
-                    ),
-                    "cache_read_input_tokens": int(
-                        getattr(final.usage, "cache_read_input_tokens", 0) or 0
-                    ),
-                }
+            finish_reason: str | None = None
+            try:
+                async with client.messages.stream(
+                    model=model,
+                    system=system_block,  # type: ignore[arg-type]
+                    messages=[{"role": "user", "content": user}],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                ) as stream:
+                    async for delta in stream.text_stream:
+                        if delta:
+                            yield LLMStreamEvent(type="token", delta=delta)
+                    final = await stream.get_final_message()
+                for block in final.content:
+                    text = getattr(block, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+                if final.usage is not None:
+                    usage = {
+                        "input_tokens": int(
+                            getattr(final.usage, "input_tokens", 0) or 0
+                        ),
+                        "output_tokens": int(
+                            getattr(final.usage, "output_tokens", 0) or 0
+                        ),
+                        "cache_creation_input_tokens": int(
+                            getattr(final.usage, "cache_creation_input_tokens", 0) or 0
+                        ),
+                        "cache_read_input_tokens": int(
+                            getattr(final.usage, "cache_read_input_tokens", 0) or 0
+                        ),
+                    }
+                finish_reason = final.stop_reason
+            except asyncio.CancelledError:
+                # BaseException — must propagate so synth's per-group cancel
+                # contract holds; never reclassify a cancel as transient.
+                raise
+            except (APITimeoutError, APIConnectionError) as exc:
+                raise TransientProviderError(
+                    f"Anthropic-compat completion timed out / connection failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            except APIStatusError as exc:
+                status = getattr(exc, "status_code", None)
+                err = (
+                    TransientProviderError
+                    if status is not None and (status >= 500 or status in (408, 429))
+                    else ProviderError
+                )
+                raise err(
+                    f"Anthropic-compat completion failed with status {status}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            except APIError as exc:
+                raise ProviderError(
+                    f"Anthropic-compat completion failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             yield LLMStreamEvent(
                 type="done",
                 text="".join(parts),
-                finish_reason=final.stop_reason,
+                finish_reason=finish_reason,
                 usage=usage,
             )
 
