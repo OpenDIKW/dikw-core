@@ -1,0 +1,52 @@
+{
+  "runs": [
+    {
+      "synth/atomicity_score": 0.9166666666666666,
+      "synth/wikilink_resolved_ratio": 0.4117647058823529,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5258449883449884,
+      "synth/duplicate_ratio_max": 0.0,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.5714285714285714,
+      "synth/source_chunk_coverage": 0.9047619047619048,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.75,
+      "judge/atomicity": 4.916666666666667,
+      "judge/completeness": 3.8333333333333335,
+      "judge/clarity": 4.833333333333333
+    },
+    {
+      "synth/atomicity_score": 0.8333333333333334,
+      "synth/wikilink_resolved_ratio": 0.3902439024390244,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5088901090739326,
+      "synth/duplicate_ratio_max": 0.0,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.5714285714285714,
+      "synth/source_chunk_coverage": 0.9523809523809523,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.583333333333333,
+      "judge/atomicity": 4.916666666666667,
+      "judge/completeness": 3.6666666666666665,
+      "judge/clarity": 4.833333333333333
+    },
+    {
+      "synth/atomicity_score": 0.8333333333333334,
+      "synth/wikilink_resolved_ratio": 0.5476190476190477,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5170121545121545,
+      "synth/duplicate_ratio_max": 0.0,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.5714285714285714,
+      "synth/source_chunk_coverage": 0.8571428571428571,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "judge/grounding": 4.833333333333333,
+      "judge/atomicity": 4.833333333333333,
+      "judge/completeness": 3.5833333333333335,
+      "judge/clarity": 4.916666666666667
+    }
+  ]
+}

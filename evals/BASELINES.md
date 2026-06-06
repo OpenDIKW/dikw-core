@@ -7,6 +7,62 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-06 — enriched synthesis prompt A/B (Phase 1, PR 1b)
+
+**Change under test:** the Phase-1 prompt rewrite — `prompts/synthesize.md` +
+`DEFAULT_SYNTH_SYSTEM` reframed as a Zettelkasten of atomic, densely-linked
+notes, with explicit page-size / link-density / tag-vocabulary / duplicate-vs-
+facet guidance, the existing-pages section moved ahead of category/links, and
+two worked examples (one EN, one ZH). Prompt-only — no engine code, no
+placeholder/marker contract change.
+
+**Method:** `evals/tools/ab_experiment.py`, `mvp` synth eval, baseline (main
+`e4f4fef`, old prompt) ×3 vs intervention (branch `feat/synth-prompt-quality`,
+new prompt) ×3, `--judge --judge-sample 25`. Provider: MiniMax-M3 (LLM via
+`anthropic_compat`, `llm_max_tokens_synth=16384`) + Qwen3-Embedding-0.6B@1024
+(Gitee). Welch two-sample t-test, ship gate `p<0.05 AND improvement>0.10`.
+Raw runs + `result.json` in `evals/experiments/enriched-synth-prompt/`.
+
+**Timeout asymmetry (and why it does not confound):** the richer prompt elicits
+longer M3 generations that reliably exceed the base's `llm_timeout_seconds=120`
+(httpx ReadTimeout → APITimeoutError; all 5 SDK retries re-wait the full 120s on
+the same slow request, so they all time out). The intervention arm was therefore
+run at `llm_timeout_seconds=300`. The read timeout is **purely client-side** — it
+governs whether a slow request *completes*, never what the model generates — and
+the baseline arm hit **0** timeouts, so all 3 baseline runs' outputs are complete
+and untruncated. Both arms thus compare complete generations; the timeout only
+changed feasibility, not content (no metric below looks like a truncation
+artifact — `page_density`/`fallback`/`slug_merge`/`language_fidelity` are stable
+or identical across arms). The proper fix — streaming, so the read timeout
+applies per-event — lands in PR 1c and removes the workaround entirely.
+
+**Result — 2 ship, 0 regress:**
+
+| metric | baseline | intervention | Δimprove | p | verdict |
+|---|---|---|---|---|---|
+| judge/completeness | 3.694 | 4.028 | +0.333 | 0.025 | **SHIP** |
+| synth/atomicity_score | 0.861 | 0.972 | +0.111 | 0.047 | **SHIP** |
+| judge/atomicity | 4.889 | 5.000 | +0.111 | 0.057 | ↑ (ceiling at 5.0) |
+| synth/fact_grounding_ratio | 0.517 | 0.563 | +0.046 | 0.069 | ↑ (near-sig) |
+| judge/clarity | 4.861 | 4.917 | +0.056 | 0.18 | ↑ |
+| synth/expected_coverage | 0.222 | 0.259 | +0.037 | 0.42 | ↑ |
+| synth/wikilink_resolved_ratio | 0.450 | 0.428 | −0.022 | 0.86 | noise |
+| synth/source_chunk_coverage | 0.905 | 0.857 | −0.048 | 0.29 | noise |
+| judge/grounding | 4.722 | 4.667 | −0.056 | 0.73 | noise |
+| duplicate_ratio_max / fallback_ratio_max / slug_merge_ratio_max | 0.000 | 0.000 | — | — | unchanged |
+| language_fidelity / page_density | 1.000 / 0.571 | 1.000 / 0.571 | — | — | unchanged |
+
+**Read:** the rewrite ships two quality metrics (pages are **more complete** and
+**more atomic**) with **no regression anywhere**, plus near-significant lifts on
+judge/atomicity (p=0.057, ceiling-bound at 5.0) and fact_grounding (p=0.069). A
+single-run snapshot mid-experiment showed `wikilink_resolved` 0.41→0.29 and
+looked like a density-guidance regression; across 3 runs it is 0.450→0.428
+(−0.022, p=0.86) — **noise, not signal**. That correction is exactly why the
+3-run + t-test gate exists. Crucially the Zettelkasten "many atomic pages"
+framing did **not** inflate over-generation: `duplicate`/`fallback`/`slug_merge`
+all stay at 0.000 (the dedup + existing-pages-first guidance held), and
+`language_fidelity` stays 1.000.
+
 ## 2026-06-06 — judge-sample power analysis (`--judge-sample auto`, Phase 0b)
 
 **Question:** how many items must a judge score for the bootstrap CI to be tight
