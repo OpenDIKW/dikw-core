@@ -90,9 +90,21 @@ def test_load_config_rejects_non_mapping(tmp_path: Path) -> None:
 
 
 def test_provider_config_llm_max_tokens_defaults() -> None:
-    """Per-op max_tokens fields default to the values currently hardcoded in api.py."""
+    """Per-op max_tokens default leaves headroom for a full fan-out group."""
     cfg = ProviderConfig()
-    assert cfg.llm_max_tokens_synth == 2048
+    assert cfg.llm_max_tokens_synth == 3072
+
+
+def test_synth_token_budget_covers_max_pages_per_group() -> None:
+    """The default synth budget must leave at least ~512 tokens per page for a
+    full fan-out group — otherwise a dense ``max_pages_per_group`` group clips
+    mid-page. Guards against bumping ``max_pages_per_group`` without the budget.
+    """
+    from dikw_core.config import SynthConfig
+
+    budget = ProviderConfig().llm_max_tokens_synth
+    pages = SynthConfig().max_pages_per_group
+    assert budget >= 512 * pages
 
 
 def test_provider_config_llm_max_tokens_override_via_yaml(tmp_path: Path) -> None:

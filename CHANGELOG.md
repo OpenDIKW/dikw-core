@@ -72,6 +72,17 @@ on each entry call out exactly what shape changes break.
   `eval.judge.recommended_judge_sample()` = that `n`, clamped to `[5, 50]`;
   datasets with fewer items are judged in full.
 
+### Changed
+
+- **`provider.llm_max_tokens_synth` default 2048 → 3072 (Phase 1).** The old
+  default left only ~512 tokens per page at `max_pages_per_group=4`, so a dense
+  fan-out group could truncate mid-page (losing the last page or its closing
+  body). 3072 gives ~768/page. Override per-base in `dikw.yml`; reasoning models
+  still need `>= 8192` (their hidden chain-of-thought draws on the same budget —
+  see `docs/providers.md`). A new test pins the default to leave `>= 512` tokens
+  per page so a future `max_pages_per_group` bump can't silently re-introduce the
+  clip. `dikw client synth` now also logs the per-page budget at DEBUG.
+
 ### Fixed
 
 - **LLM judge no longer truncates to empty on reasoning models.** Both eval

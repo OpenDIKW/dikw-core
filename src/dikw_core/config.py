@@ -121,11 +121,14 @@ class ProviderConfig(BaseModel):
     # SDK's default endpoint (api.anthropic.com / api.openai.com).
     llm_base_url: str | None = None
     # Per-operation response budget handed to ``LLMProvider.complete`` via
-    # ``max_tokens``. Default matches the value previously hardcoded in
-    # ``api.py``; shrink for cost-optimised models (some GLM-Flash / Gemini
-    # Nano variants cap below 2048), grow if synth responses get
-    # truncated.
-    llm_max_tokens_synth: int = 2048
+    # ``max_tokens``. 3072 leaves ~768 tokens per page at the default
+    # ``max_pages_per_group=4``, so a full fan-out group rarely truncates
+    # mid-page (the old 2048 default left only ~512/page and clipped dense
+    # groups). Shrink for cost-optimised models (some GLM-Flash / Gemini Nano
+    # variants cap below 2048); grow a lot for reasoning models, whose hidden
+    # chain-of-thought also draws on this budget (MiniMax-M3 needs >= 8192,
+    # 16384 recommended — see docs/providers.md).
+    llm_max_tokens_synth: int = 3072
     # Per-leg SDK retry budget. Anthropic and OpenAI SDKs retry 408/409/429/5xx
     # (incl. MiniMax 529) with exponential backoff + jitter; their default is
     # 2. We bump to 5 by default to absorb intermittent overload without
