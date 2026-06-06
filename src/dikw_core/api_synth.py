@@ -22,6 +22,7 @@ import contextlib
 import dataclasses
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,11 @@ from .domains.knowledge.grouping import (
     derive_sections_from_chunks,
     group_sections,
 )
-from .domains.knowledge.links import build_fuzzy_index
+from .domains.knowledge.links import (
+    build_fuzzy_index,
+    normalize_for_match,
+    parse_links,
+)
 from .domains.knowledge.page import KnowledgePage, category_from_path, write_page
 from .domains.knowledge.synthesize import (
     DEFAULT_SYNTH_SYSTEM,
@@ -59,6 +64,7 @@ from .schemas import (
     DocumentRecord,
     KnowledgeLogEntry,
     Layer,
+    LinkType,
 )
 from .storage import Storage
 from .storage.base import NotSupported
@@ -623,13 +629,23 @@ class _ExistingPagesSnapshot:
             if d.title
         ]
         full_render_bytes = sum(
-            len(f"- {d.title} ({category_from_path(d.path)})\n".encode())
+            len(
+                f"- {d.title} [{Path(d.path).stem}] "
+                f"({category_from_path(d.path)})\n".encode()
+            )
             for d in pages
         )
         return cls(pages=pages, full_render_bytes=full_render_bytes)
 
-    def full_pages(self) -> list[tuple[str, str]]:
-        return [(t, category_from_path(d.path)) for d in self.pages if (t := d.title)]
+    def full_pages(self) -> list[tuple[str, str, str]]:
+        # ``(title, slug, category)`` — slug is the deterministic kebab-case
+        # filename stem (``knowledge/<category>/<slug>.md``), surfaced so the
+        # LLM can disambiguate two same-titled pages.
+        return [
+            (t, Path(d.path).stem, category_from_path(d.path))
+            for d in self.pages
+            if (t := d.title)
+        ]
 
 
 async def _existing_pages_for_prompt(
@@ -640,10 +656,10 @@ async def _existing_pages_for_prompt(
     max_bytes: int,
     top_k: int,
     version_id: int | None,
-) -> list[tuple[str, str]]:
-    """Return ``[(title, category), ...]`` for the synth prompt's existing-pages section.
+) -> list[tuple[str, str, str]]:
+    """Return ``[(title, slug, category), ...]`` for the existing-pages section.
 
-    Full render up to ``max_bytes`` of the rendered ``- Title (category)``
+    Full render up to ``max_bytes`` of the rendered ``- Title [slug] (category)``
     bullets; above the threshold, switches to a vec_search-gated top-K
     driven by the group's chunk embeddings (per-chunk vec_search →
     union by doc_id → score sort → top-K). The retrieval branch keeps
@@ -675,7 +691,7 @@ async def _existing_pages_for_prompt(
     # vec-ranked top-K but a better one than "fresh knowledge base, generate
     # freely". Order matches the snapshot, which mirrors
     # ``list_documents`` order — stable across runs.
-    def _truncated_fallback() -> list[tuple[str, str]]:
+    def _truncated_fallback() -> list[tuple[str, str, str]]:
         return snapshot.full_pages()[:top_k]
 
     embs = await storage.get_chunk_embeddings(
@@ -709,27 +725,141 @@ async def _existing_pages_for_prompt(
     ][:top_k]
     docs = await storage.get_documents(ordered_doc_ids)
     by_id = {d.doc_id: d for d in docs}
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for doc_id in ordered_doc_ids:
         d = by_id.get(doc_id)
         if d is not None and d.title:
-            out.append((d.title, category_from_path(d.path)))
+            out.append((d.title, Path(d.path).stem, category_from_path(d.path)))
     return out
 
 
 def _render_existing_section(
-    pages: list[tuple[str, str]], header: str
+    pages: list[tuple[str, str, str]], header: str
 ) -> str:
-    """Render a list of ``(title, category)`` tuples as a markdown section.
+    """Render a list of ``(title, slug, category)`` tuples as a markdown section.
 
-    Empty input returns ``""`` so callers can concatenate two sections
-    (batch accumulator + base snapshot) and fall back to a single
-    "(no existing pages …)" sentinel only when both are empty.
+    Each page renders as ``- Title [slug] (category)``: the slug is the
+    deterministic kebab-case file identifier, surfaced so the LLM can tell
+    two same-titled pages apart. Empty input returns ``""`` so callers can
+    concatenate two sections (batch accumulator + base snapshot) and fall
+    back to a single "(no existing pages …)" sentinel only when both are
+    empty.
     """
     if not pages:
         return ""
-    lines = [f"## {header}", ""] + [f"- {t} ({tp})" for t, tp in pages]
+    lines = [f"## {header}", ""] + [
+        f"- {title} [{slug}] ({cat})" for title, slug, cat in pages
+    ]
     return "\n".join(lines) + "\n"
+
+
+# Header + cap for the priority-create feedback section. Top-K caps how many
+# unresolved targets a later group sees so the directive stays focused on the
+# most-referenced gaps rather than a long noisy list.
+_PRIORITY_SECTION_HEADER = "Priority targets (create if relevant)"
+_PRIORITY_TARGETS_TOP_K = 5
+
+
+def _wikilink_resolves(
+    target: str,
+    *,
+    title_to_path: dict[str, str],
+    fuzzy_index: dict[str, list[str]],
+) -> bool:
+    """Whether ``target`` resolves to exactly one known page.
+
+    Mirrors the wikilink branch of ``resolve_links``: exact title hit, else a
+    single fuzzy-normalize candidate. A ≥2-candidate fuzzy collision is
+    deliberately NOT resolved (refuse to guess — same Karpathy rule the
+    persist-time graph build follows), so an ambiguous target is treated as
+    still-unresolved.
+    """
+    if target in title_to_path:
+        return True
+    key = normalize_for_match(target)
+    candidates = fuzzy_index.get(key, []) if key else []
+    return len(candidates) == 1
+
+
+def _unresolved_wikilink_targets(
+    body: str,
+    *,
+    title_to_path: dict[str, str],
+    fuzzy_index: dict[str, list[str]],
+) -> list[str]:
+    """Clean ``[[target]]`` titles in ``body`` that resolve to no known page.
+
+    Uses :func:`_wikilink_resolves` so the priority-create signal applies the
+    SAME resolution rules the persist-time graph build will. ``parse_links``
+    has already stripped anchors/aliases, so the returned title is exactly what
+    a later group should create verbatim. Targets repeat once per occurrence;
+    the caller dedups per page before counting so the rank reflects how many
+    distinct pages want a target, not how often one page repeats it.
+
+    An anchor-only / blank / punctuation-only wikilink (``[[#sec]]``, ``[[ ]]``,
+    ``[[...]]``) strips to an empty or keyless target. ``resolve_links``
+    surfaces those to ``lint`` via their RAW text, but as a *create* directive
+    an uncreatable empty/punctuation title is junk — drop any target with no
+    usable fuzzy key, so the priority section never emits a nonsensical
+    ``- [[]]`` create-this line.
+    """
+    out: list[str] = []
+    for link in parse_links(body):
+        if link.kind is not LinkType.WIKILINK:
+            continue
+        if not normalize_for_match(link.target):
+            continue
+        if not _wikilink_resolves(
+            link.target, title_to_path=title_to_path, fuzzy_index=fuzzy_index
+        ):
+            out.append(link.target)
+    return out
+
+
+def _render_priority_targets(targets: list[tuple[str, int]]) -> str:
+    """Render the top unresolved wikilink targets as a create-this directive.
+
+    ``targets`` is ``[(title, reference_count), ...]`` already sorted
+    most-referenced-first and truncated. Empty input returns ``""`` so the
+    caller omits the section entirely (group 1, or a source whose earlier
+    groups left nothing unresolved).
+    """
+    if not targets:
+        return ""
+    lines = [
+        f"## {_PRIORITY_SECTION_HEADER}",
+        "",
+        "Earlier sections of THIS source referenced these via [[wikilink]] but "
+        "no page exists for them yet. If this section's content genuinely "
+        "defines or covers one, prefer creating that page now using the exact "
+        "title shown — do NOT invent unrelated pages just to satisfy the list:",
+        "",
+    ]
+    lines += [
+        f"- [[{title}]] ({count} prior reference{'s' if count != 1 else ''})"
+        for title, count in targets
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _build_known_title_index(
+    snapshot_title_to_path: dict[str, str],
+    batch_accumulator: list[tuple[str, str, str]],
+) -> dict[str, str]:
+    """Merge the existing-page snapshot with the in-batch pages into one
+    ``title → path`` map for wikilink resolution.
+
+    A real path per title (from the batch page's category + slug) is kept so
+    the fuzzy ≥2-candidate collision check can still fire; ``setdefault`` lets
+    the snapshot win on a title clash with a batch page.
+    """
+    known = dict(snapshot_title_to_path)
+    for title, slug, cat in batch_accumulator:
+        # ``cat`` is never empty — the accumulator stores ``p.category or "page"``
+        # — so the path form is unconditional. The exact string is only an opaque
+        # distinctness token for the fuzzy ≥2-candidate collision check anyway.
+        known.setdefault(title, f"knowledge/{cat}/{slug}.md")
+    return known
 
 
 @dataclass(frozen=True)
@@ -800,8 +930,14 @@ async def _synth_pages_from_source(
     # tightly to this function — a new source starts empty.
     # ``seen_titles`` mirrors the accumulator titles for O(1) dedup
     # without rebuilding a set every group.
-    batch_accumulator: list[tuple[str, str]] = []
+    batch_accumulator: list[tuple[str, str, str]] = []
     seen_titles: set[str] = set()
+    # Priority-create feedback (#4): wikilink targets earlier groups of THIS
+    # source referenced but that no page (existing snapshot OR batch) satisfies
+    # yet, counted by reference frequency. A later group covering one is nudged
+    # to create it at the right title instead of leaving the graph broken.
+    unresolved_counts: Counter[str] = Counter()
+    priority_surfaced = 0
     # Map section-start → chunk so we can recover per-group chunks for
     # the retrieval-gated existing-pages branch. ``derive_sections_from_chunks``
     # builds sections 1:1 from chunks, so ``section.start == chunk.start``.
@@ -822,6 +958,15 @@ async def _synth_pages_from_source(
         if storage is not None and not force_all
         else None
     )
+    # Full existing-page title→path map for priority-create resolution. The
+    # FULL snapshot (not the byte-truncated prompt view) is the right basis:
+    # a wikilink may resolve to a page that exists but wasn't shown, and we
+    # must not nudge a later group to recreate it.
+    snapshot_title_to_path: dict[str, str] = {}
+    if snapshot is not None:
+        for d in snapshot.pages:
+            if d.title:
+                snapshot_title_to_path.setdefault(d.title, d.path)
     for group in groups:
         cancel.raise_if_cancelled()
         group_pos = group.index + 1
@@ -843,10 +988,38 @@ async def _synth_pages_from_source(
             # render the no-pages sentinel — they exercise the prompt
             # plumbing, not the existing-pages contract itself.
             existing_pages = []
-        existing_pages_section = (
+        # Priority-create feedback (#4): for any group after the first,
+        # surface the still-unresolved targets earlier groups left behind.
+        # Re-resolve each accumulated target against the FULL existing set +
+        # the batch as it stands BEFORE this group (groups 0..N-1) using the
+        # same fuzzy rules — so a target a prior group has since satisfied
+        # (even via a plural/normalize match) is dropped, never nudging a
+        # later group to create a page that already exists.
+        priority_section = ""
+        if group.index >= 1 and unresolved_counts:
+            known_so_far = _build_known_title_index(
+                snapshot_title_to_path, batch_accumulator
+            )
+            fuzzy_so_far = build_fuzzy_index(known_so_far)
+            pending = [
+                (title, count)
+                for title, count in unresolved_counts.most_common()
+                if not _wikilink_resolves(
+                    title, title_to_path=known_so_far, fuzzy_index=fuzzy_so_far
+                )
+            ][:_PRIORITY_TARGETS_TOP_K]
+            priority_section = _render_priority_targets(pending)
+            if pending:
+                priority_surfaced += 1
+        existing_core = (
             _render_existing_section(batch_accumulator, _BATCH_SECTION_HEADER)
             + _render_existing_section(existing_pages, _EXISTING_SECTION_HEADER)
         ).strip() or _NO_EXISTING_PAGES_SENTINEL
+        existing_pages_section = (
+            f"{priority_section}\n{existing_core}"
+            if priority_section
+            else existing_core
+        )
         user_prompt = template.format(
             source_path=source_path,
             source_body=group.text,
@@ -1075,11 +1248,41 @@ async def _synth_pages_from_source(
         # Feed group N's emitted page titles into the per-source
         # accumulator so group N+1's prompt sees them. ``seen_titles``
         # is maintained incrementally above so dedup is O(1) per page
-        # without rebuilding a set every group.
+        # without rebuilding a set every group. The slug (file stem) rides
+        # along so the batch section renders ``- Title [slug] (category)``.
         for p in new_pages:
             if p.title and p.title not in seen_titles:
-                batch_accumulator.append((p.title, p.category or "page"))
+                batch_accumulator.append(
+                    (p.title, Path(p.path).stem, p.category or "page")
+                )
                 seen_titles.add(p.title)
+
+        # Accumulate this group's unresolved wikilink targets for the
+        # priority-create feedback. Resolve against the FULL existing-pages
+        # set + every batch page (incl. this group's own, just added above),
+        # so we count only targets nobody has authored.
+        known_after_group = _build_known_title_index(
+            snapshot_title_to_path, batch_accumulator
+        )
+        fuzzy_after_group = build_fuzzy_index(known_after_group)
+        for p in new_pages:
+            # Dedup per page (set) so the count ranks targets by how many
+            # distinct pages want them — one page repeating [[X]] ten times
+            # must not outrank ten pages each wanting a different target.
+            for target in set(
+                _unresolved_wikilink_targets(
+                    p.body,
+                    title_to_path=known_after_group,
+                    fuzzy_index=fuzzy_after_group,
+                )
+            ):
+                unresolved_counts[target] += 1
+
+    if priority_surfaced:
+        notes.append(
+            f"priority-create: surfaced unresolved wikilink target(s) to "
+            f"{priority_surfaced} later group(s)"
+        )
 
     return _SourceSynthOutcome(
         pages=pages,

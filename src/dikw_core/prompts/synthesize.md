@@ -28,6 +28,8 @@ This applies to BOTH:
 - pages already in the knowledge base (titles may not match exactly — use judgement; prefer reference over regeneration on ambiguity)
 - pages just created earlier in this same batch (MUST reference, not regenerate)
 
+Each existing-page bullet is formatted `- Title [slug] (category)`. The `[slug]` is that page's file identifier — use it only to tell apart two pages that share a title; always write the **title** (not the slug) inside `[[ ]]`.
+
 ## Category
 
 File each page under exactly one **category** — a folder path from this knowledge base's configured taxonomy. Choose the single best-fitting path from the list below:
