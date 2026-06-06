@@ -121,7 +121,12 @@ def test_eval_judge_sample_rejects_invalid_value() -> None:
     result = CliRunner().invoke(
         app, ["client", "eval", "--judge-sample", "bogus"]
     )
-    assert result.exit_code != 0
+    # Exit 2 is click's usage-error code (the BadParameter raised at parse),
+    # distinct from a runtime/transport failure (exit 1) — so this proves the
+    # value was rejected up front, not that some unrelated step blew up. (The
+    # message itself renders in a Rich panel that truncates under test capture,
+    # so assert the code, not the wrapped text.)
+    assert result.exit_code == 2
 
 
 def test_synth_reports_helper_filters_by_mode() -> None:

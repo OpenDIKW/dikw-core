@@ -59,14 +59,18 @@ on each entry call out exactly what shape changes break.
   `judge.category_correctness_enabled: true`. New prompt
   `prompts/eval_judge_category.md`.
 - **`--judge-sample auto` — calibrated judge sample size (Phase 0b).** Both
-  real-LLM judge calibrations landed CIs wider than the ±0.2 target (entailment
-  n=20 → ±0.13, category n=8 → ±0.19), raising "how many items must a judge
-  score for a trustworthy ratio?". A [0,1] judge ratio's bootstrap 95% CI
-  half-width is at most `1.96 * 0.5 / sqrt(n)`, so `n ≥ 25` guarantees ≤ ±0.2
-  for *any* score distribution — a worst-case bound that holds on every dataset,
-  so no per-corpus sweep can push it higher. `dikw client eval --judge-sample
-  auto` resolves (server-side) to `eval.judge.recommended_judge_sample()` = that
-  `n`, clamped to `[5, 50]`; datasets with fewer items are judged in full.
+  real-LLM judge calibrations *cleared* the ±0.2 CI half-width target — but
+  category only barely (entailment n=20 → ±0.13, category n=8 → ±0.19), and only
+  because its scores were low-variance. At n=8 the worst-case (50/50) half-width
+  is ±0.35, so a metric nearer an even split would have blown past ±0.2: the
+  target was being met by luck, not design. That raised "how many items
+  *guarantee* a trustworthy ratio regardless of variance?". A [0,1] judge
+  ratio's bootstrap 95% CI half-width is at most `1.96 * 0.5 / sqrt(n)`, so
+  `n ≥ 25` guarantees ≤ ±0.2 for *any* score distribution — a worst-case bound
+  that holds on every dataset, so no per-corpus sweep can push it higher. `dikw
+  client eval --judge-sample auto` resolves (server-side) to
+  `eval.judge.recommended_judge_sample()` = that `n`, clamped to `[5, 50]`;
+  datasets with fewer items are judged in full.
 
 ### Fixed
 

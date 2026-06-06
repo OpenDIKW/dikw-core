@@ -154,14 +154,17 @@ or non-destructiveness. Two gates:
    `$0` by default.
 
    **Sizing the judge sample (`--judge-sample auto`).** A judge ratio is only as
-   trustworthy as its CI is tight, and the two real calibrations landed wider
-   than the ±0.2 target (entailment n=20 → ±0.13, category n=8 → ±0.19). A [0,1]
-   ratio's bootstrap 95% CI half-width is at most `1.96 * 0.5 / sqrt(n)`
-   (worst-case variance at a 50/50 split), so `n ≥ 25` clears ±0.2 for *any*
-   score distribution — a dataset-independent bound, which is why a multi-corpus
-   empirical sweep can't push it higher. `recommended_judge_sample()` returns
-   that `n` clamped to `[5, 50]`, exposed as `dikw client eval --judge-sample
-   auto`; smaller datasets are judged in full.
+   trustworthy as its CI is tight. The two real calibrations both cleared the
+   ±0.2 half-width target, but category only barely (entailment n=20 → ±0.13,
+   category n=8 → ±0.19) — riding low score-variance, not a sufficient sample. At
+   n=8 the worst-case (50/50) half-width is ±0.35, so a higher-variance metric
+   would have failed; we want a size that *guarantees* the target regardless of
+   variance. A [0,1] ratio's bootstrap 95% CI half-width is at most
+   `1.96 * 0.5 / sqrt(n)` (worst case at a 50/50 split), so `n ≥ 25` clears ±0.2
+   for *any* score distribution — a dataset-independent bound, which is why a
+   multi-corpus empirical sweep can't push it higher. `recommended_judge_sample()`
+   returns that `n` clamped to `[5, 50]`, exposed as `dikw client eval
+   --judge-sample auto`; smaller datasets are judged in full.
 
    **Proving an optimization actually helped.** The LLM makes synth
    non-deterministic, so a single before/after eval can't separate a real gain
