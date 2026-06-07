@@ -5,12 +5,20 @@ name: Eval gate
 #    evals/BASELINES.md showing real-data outcome."
 #
 # Until this gate landed, that discipline was pure human review. PRs
-# that quietly touched ``domains/knowledge/`` or ``domains/info/`` with
-# no baseline entry slipped through whenever the reviewer (typically
-# the author themselves) didn't catch it.
+# that quietly touched K-layer / Retrieval / storage code with no
+# baseline entry slipped through whenever the reviewer (typically the
+# author themselves) didn't catch it.
+#
+# This is a *content* check, not a presence check: it parses the added
+# BASELINES.md lines and asserts they form a substantive, change-type-
+# appropriate entry (a new, not-reused dated/versioned header; for K-layer/synth
+# diffs, signal — synth metrics or lint-outcome counts — OR a non-destructiveness
+# claim, plus the elon-musk corpus; retrieval metrics for info diffs). A
+# blank-line edit no longer passes. Actually re-running the eval to verify the
+# numbers is a separate, heavier gate (roadmap Phase 2).
 #
 # Override: label the PR ``no-baseline-needed`` for rename-only or
-# comment-only refactors that genuinely don't shift retrieval behavior.
+# comment-only refactors that genuinely don't shift behavior.
 
 on:
   pull_request:
@@ -18,6 +26,18 @@ on:
       - 'src/dikw_core/domains/knowledge/**'
       - 'src/dikw_core/domains/info/**'
       - 'src/dikw_core/storage/**'
+      # K-layer authoring also lives outside domains/knowledge/: the synth verb
+      # body and the three LLM authoring prompts (synth + the two lint-fix
+      # grounded-page generators). A synth-quality PR commonly touches only
+      # these (e.g. #172), so without them the gate never fires on the dominant
+      # synth-PR shape. Keep this list in sync with _KNOWLEDGE_FILES in
+      # tools/check_baselines.py. RetrievalConfig lives in the broad config.py
+      # and is left out deliberately (watching it wholesale would gate every
+      # config edit).
+      - 'src/dikw_core/api_synth.py'
+      - 'src/dikw_core/prompts/synthesize.md'
+      - 'src/dikw_core/prompts/lint_fix_orphan_merge.md'
+      - 'src/dikw_core/prompts/lint_fix_broken_wikilink_grounded.md'
 
 jobs:
   baseline-must-update:
@@ -28,33 +48,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for ``no-baseline-needed`` label
-        id: label-check
+      # Override via a native expression (no shell): a label containing a quote
+      # can't break label detection the way an inline ``${{ toJson(...) }}`` grep can.
+      - name: Skip note (no-baseline-needed)
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'no-baseline-needed') }}
         run: |
-          labels='${{ toJson(github.event.pull_request.labels) }}'
-          if echo "$labels" | grep -q '"name": *"no-baseline-needed"'; then
-            echo "override=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "override=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Skip if override label present
-        if: steps.label-check.outputs.override == 'true'
-        run: |
-          echo "::notice::PR labeled 'no-baseline-needed' — skipping baseline check."
+          echo "::notice::PR labeled 'no-baseline-needed' — skipping baseline content check."
           echo "Reviewer is expected to confirm the change is genuinely non-functional."
 
-      - name: Verify BASELINES.md updated
-        if: steps.label-check.outputs.override != 'true'
+      # Content check (not just "was the file diffed?"): parse the *added*
+      # BASELINES.md lines and assert they form a substantive, change-type-
+      # appropriate entry — a new (not reused) dated/versioned header, plus, for
+      # K-layer/synth diffs, signal (synth metrics or lint counts) OR a
+      # non-destructiveness claim + the elon-musk corpus; retrieval metrics for
+      # info diffs. stdlib-only, so no uv/setup-python needed. See
+      # tools/check_baselines.py and tests/test_check_baselines.py.
+      - name: Content-check evals/BASELINES.md
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-baseline-needed') }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -q '^evals/BASELINES\.md$'; then
-            echo "::notice::evals/BASELINES.md updated alongside K-layer/Retrieval/storage change — gate passed."
-          else
-            echo "::error::This PR touches domains/knowledge/, domains/info/, or storage/ but evals/BASELINES.md is unchanged."
-            echo "::error::Per CLAUDE.md, K-layer / Retrieval / storage changes need a BASELINES.md entry with real-data outcome."
-            echo "::error::If this is a non-functional refactor (rename/comment/typing only), label the PR with 'no-baseline-needed'."
-            exit 1
-          fi
+          python3 tools/check_baselines.py --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
