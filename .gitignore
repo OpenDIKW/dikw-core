@@ -20,7 +20,13 @@ venv/
 .DS_Store
 .idea/
 .vscode/
-.claude/
+# Ignore local Claude Code state (settings, local skills) but version-control
+# the shared project skills under .claude/skills/ — these are the team's
+# verification/workflow tooling (e.g. dikw-core-delivery-workflow, grill-with-docs).
+# Note: must ignore .claude/* (contents), not .claude/ (the dir), or git can't
+# re-include the skills subtree under an excluded parent.
+.claude/*
+!.claude/skills/
 # engine-managed state in example/test wikis
 **/.dikw/
 # parallel-development worktrees
