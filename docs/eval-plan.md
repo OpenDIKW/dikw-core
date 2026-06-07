@@ -96,8 +96,10 @@ cite an `evals/BASELINES.md` entry** that demonstrates either signal
 or non-destructiveness. Two gates:
 
 1. **K-layer changes** (`src/dikw_core/domains/knowledge/`,
-   `src/dikw_core/prompts/synthesize.md`,
-   knowledge page schema in `schemas.py`): run a real-data baseline against
+   `src/dikw_core/api_synth.py`, the LLM authoring prompts under
+   `src/dikw_core/prompts/` — `synthesize.md`, `lint_fix_orphan_merge.md`,
+   `lint_fix_broken_wikilink_grounded.md` — knowledge page schema in
+   `schemas.py`): run a real-data baseline against
    `~/Project/opendikw/dikw-data/datasets/markdown-books/elon-musk.md`
    (1500-line subset is the working size — the full text exposes a
    codex SSE keepalive timeout bug, see 2026-05-08 entry). Use the
