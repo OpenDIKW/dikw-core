@@ -31,12 +31,18 @@ Package manager is **`uv`** (not pip/poetry). Python **3.12+**.
 
 ```bash
 uv sync --all-extras          # install (includes [postgres] + dev group)
+uv run python tools/check.py  # local CI mirror: ruff + mypy + fast pytest in CI order — run before every commit
+uv run pre-commit install     # (once) wire the git pre-commit hook: ruff + mypy on every commit
 uv run ruff check .           # lint
 uv run mypy src               # strict type-check
 uv run pytest -v              # tests (asyncio_mode=auto)
 uv run pytest tests/test_storage_contract.py   # storage-contract tests (also run in CI against real Postgres)
 uv run dikw <cmd>             # exercise the CLI against a scratch base
 ```
+
+`tools/check.py` is the single in-loop gate to run before every commit; it runs
+the same ruff/mypy/pytest CI runs, in CI order, without `--cov` (which flakes
+ASGI/CliRunner tests locally on Windows).
 
 CI (`.github/workflows/ci.yml`) gates PRs on ruff + mypy + pytest across
 Python 3.12 and 3.13, and runs the storage contract suite against a
