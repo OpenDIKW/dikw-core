@@ -110,6 +110,74 @@ class PagePersistError:
 
 
 @dataclass(frozen=True)
+class SynthVerifyLintFinding:
+    """One scoped K-layer lint issue on a page THIS synth run produced.
+
+    A flattened, JSON-serialisable slice of ``domains.knowledge.lint.LintIssue``
+    (the client renders from ``dataclasses.asdict``, so it never imports the
+    engine type). ``kind`` is the ``LintKind`` string value.
+    """
+
+    kind: str
+    path: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class SynthVerifyReport:
+    """Post-synth self-check over the pages THIS run created/updated.
+
+    The "open the vault and click around" pass made automatic: after synth
+    writes K pages, ``synthesize(verify=True)`` runs a deterministic, no-extra-
+    LLM check scoped to just this run's output and folds the verdict in here so
+    the user doesn't have to remember to run ``dikw client lint`` afterwards.
+    Purely additive — it READS synth output, never alters it.
+
+    Three independently-gated legs feed ``passed``:
+
+    * **persist** — ``persist_error_count == 0``. A page deactivated mid-
+      pipeline (``SynthReport.persist_errors``) is never "clean output".
+    * **lint** — a scoped ``run_lint`` over this run's pages, gated on the
+      kinds that mark *defective new output*: ``broken_wikilink`` /
+      ``duplicate_title`` / ``non_atomic_page`` / ``uncategorized`` /
+      ``missing_provenance``. ``orphan_page`` is deliberately excluded —
+      surfaced on ``orphan_pages`` but NOT gated, because a freshly
+      synthesised page is legitimately orphan until something cites it;
+      gating it would make ``--verify`` perpetually red on healthy runs
+      (Karpathy's rule: a missed backlink is a fixable warning, not
+      defective output).
+    * **duplicate** — semantic ``duplicate_ratio_max`` over this run's page
+      bodies, gated on ``<= max_duplicate_ratio``. Requires an embedder;
+      when none was wired the leg is SKIPPED LOUDLY (``duplicate_checked``
+      is False, ``duplicate_ratio`` is None) rather than silently passing —
+      a green verify must never imply "no duplicates" when the check never
+      ran (mirrors the 0.6 loud-skip contract). A skip is NOT a failure.
+
+    ``unresolved_wikilinks`` is surfaced from ``SynthReport`` for context; its
+    gated form is the lint leg's ``broken_wikilink`` (re-resolved against the
+    final base), so it is not a separate gate.
+
+    The boolean legs (``persist_ok`` / ``lint_ok`` / ``duplicate_ok`` /
+    ``passed``) are stored fields, not properties, so they survive
+    ``dataclasses.asdict`` and reach the (engine-free) client unchanged.
+    """
+
+    pages_checked: int = 0
+    persist_error_count: int = 0
+    unresolved_wikilinks: int = 0
+    lint_findings: tuple[SynthVerifyLintFinding, ...] = ()
+    orphan_pages: tuple[str, ...] = ()
+    duplicate_checked: bool = False
+    duplicate_ratio: float | None = None
+    duplicate_cosine_tau: float = 0.0
+    max_duplicate_ratio: float = 0.0
+    persist_ok: bool = True
+    lint_ok: bool = True
+    duplicate_ok: bool = True
+    passed: bool = True
+
+
+@dataclass(frozen=True)
 class SynthReport:
     # ``candidates`` and ``skipped`` count *sources* (the unit synth iterates
     # at the outer level); ``created`` / ``updated`` / ``errors`` count
@@ -140,6 +208,10 @@ class SynthReport:
     # (``active=False``) so it stays out of retrieval. ``errors`` (above)
     # counts LLM-parse failures per group; this is the storage-side analogue.
     persist_errors: tuple[PagePersistError, ...] = ()
+    # Post-synth self-check over this run's pages, populated only when
+    # ``synthesize(verify=True)`` (``dikw client synth --verify``); ``None``
+    # otherwise. See :class:`SynthVerifyReport`.
+    verify: SynthVerifyReport | None = None
 
 
 class ProbeResult(BaseModel):

@@ -22,6 +22,7 @@ from dikw_core.client.progress import (
     render_status,
     render_synth_eval_report,
     render_synth_report,
+    render_synth_verify_report,
 )
 
 
@@ -331,3 +332,83 @@ def test_render_eval_report_marks_failures() -> None:
     out = console.export_text()
     assert "FAIL" in out
     assert "pass" in out
+
+
+def test_render_synth_verify_report_pass() -> None:
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        {
+            "pages_checked": 3,
+            "persist_ok": True,
+            "persist_error_count": 0,
+            "lint_ok": True,
+            "lint_findings": [],
+            "orphan_pages": [],
+            "duplicate_checked": True,
+            "duplicate_ratio": 0.0,
+            "max_duplicate_ratio": 0.05,
+            "duplicate_ok": True,
+            "unresolved_wikilinks": 0,
+            "passed": True,
+        },
+    )
+    out = console.export_text()
+    assert "PASS" in out
+    assert "SKIPPED" not in out
+
+
+def test_render_synth_verify_report_fail_lists_findings() -> None:
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        {
+            "pages_checked": 2,
+            "persist_ok": True,
+            "persist_error_count": 0,
+            "lint_ok": False,
+            "lint_findings": [
+                {
+                    "kind": "broken_wikilink",
+                    "path": "knowledge/concept/a.md",
+                    "detail": "[[Ghost]] has no matching knowledge page",
+                }
+            ],
+            "orphan_pages": [],
+            "duplicate_checked": True,
+            "duplicate_ratio": 0.0,
+            "max_duplicate_ratio": 0.05,
+            "duplicate_ok": True,
+            "unresolved_wikilinks": 1,
+            "passed": False,
+        },
+    )
+    out = console.export_text()
+    assert "FAIL" in out
+    assert "broken_wikilink" in out
+
+
+def test_render_synth_verify_report_loud_skip_when_no_embedder() -> None:
+    """The duplicate leg skip must be announced LOUDLY — a green-looking
+    verdict must never be read as "no duplicates" when the check never ran."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        {
+            "pages_checked": 3,
+            "persist_ok": True,
+            "persist_error_count": 0,
+            "lint_ok": True,
+            "lint_findings": [],
+            "orphan_pages": [],
+            "duplicate_checked": False,
+            "duplicate_ratio": None,
+            "max_duplicate_ratio": 0.05,
+            "duplicate_ok": True,
+            "unresolved_wikilinks": 0,
+            "passed": True,
+        },
+    )
+    out = console.export_text()
+    assert "SKIPPED" in out
+    assert "embedder" in out.lower()

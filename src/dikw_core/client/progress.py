@@ -404,6 +404,108 @@ def render_synth_report(console: Console, report: Mapping[str, Any]) -> None:
     render_persist_errors(console, report.get("persist_errors") or [])
 
 
+def render_synth_verify_report(
+    console: Console, verify: Mapping[str, Any] | None
+) -> None:
+    """Render the ``SynthVerifyReport`` folded into a ``--verify`` synth result.
+
+    One pass/fail verdict over THIS run's pages plus the three gated legs
+    (persist / scoped lint / semantic duplicate). The duplicate leg is
+    announced LOUDLY when it was skipped for lack of an embedder — a green
+    verdict must never read as "no duplicates" when the check never ran."""
+    if not isinstance(verify, Mapping):
+        console.print(
+            "[yellow]verify[/yellow] requested but the server returned no "
+            "verify section (older server?)"
+        )
+        return
+
+    passed = bool(verify.get("passed"))
+    pages = int(verify.get("pages_checked") or 0)
+    verdict = "[green]PASS[/green]" if passed else "[red]FAIL[/red]"
+    console.print(f"synth verify {verdict} — {pages} page(s) checked")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("leg")
+    table.add_column("status")
+    table.add_column("detail", overflow="fold")
+
+    persist_ok = bool(verify.get("persist_ok"))
+    table.add_row(
+        "persist",
+        "[green]ok[/green]" if persist_ok else "[red]fail[/red]",
+        f"{int(verify.get('persist_error_count') or 0)} deactivated page(s)",
+    )
+
+    lint_ok = bool(verify.get("lint_ok"))
+    findings = verify.get("lint_findings") or []
+    table.add_row(
+        "lint",
+        "[green]ok[/green]" if lint_ok else "[red]fail[/red]",
+        f"{len(findings) if isinstance(findings, list) else 0} gated finding(s)",
+    )
+
+    duplicate_checked = bool(verify.get("duplicate_checked"))
+    if duplicate_checked:
+        ratio = verify.get("duplicate_ratio")
+        max_ratio = verify.get("max_duplicate_ratio")
+        dup_ok = bool(verify.get("duplicate_ok"))
+        ratio_s = "n/a" if ratio is None else f"{float(ratio):.3f}"
+        max_s = "n/a" if max_ratio is None else f"{float(max_ratio):.3f}"
+        table.add_row(
+            "duplicate",
+            "[green]ok[/green]" if dup_ok else "[red]fail[/red]",
+            f"ratio {ratio_s} (max {max_s})",
+        )
+    else:
+        table.add_row(
+            "duplicate",
+            "[yellow]skipped[/yellow]",
+            "no embedder — semantic duplicate gate did NOT run",
+        )
+    console.print(table)
+
+    if not duplicate_checked:
+        console.print(
+            "[yellow]warning:[/yellow] the semantic-duplicate check was "
+            "SKIPPED (no embedder wired) — near-duplicate pages were NOT "
+            "detected. Configure DIKW_EMBEDDING_API_KEY (or run with an "
+            "embedder) for the duplicate gate."
+        )
+
+    if isinstance(findings, list) and findings:
+        ftable = Table(
+            title="gated lint findings",
+            show_header=True,
+            header_style="bold",
+            title_style="red",
+        )
+        ftable.add_column("kind")
+        ftable.add_column("path", style="red")
+        ftable.add_column("detail", overflow="fold")
+        for f in findings:
+            if not isinstance(f, Mapping):
+                continue
+            ftable.add_row(
+                str(f.get("kind") or ""),
+                str(f.get("path") or ""),
+                str(f.get("detail") or ""),
+            )
+        console.print(ftable)
+
+    orphans = verify.get("orphan_pages") or []
+    if isinstance(orphans, list) and orphans:
+        console.print(
+            f"[dim]orphan pages (informational, not gated): {len(orphans)} — "
+            "freshly synthesised pages with no inbound wikilinks yet[/dim]"
+        )
+    unresolved = int(verify.get("unresolved_wikilinks") or 0)
+    if unresolved:
+        console.print(
+            f"[dim]unresolved wikilinks this run (informational): {unresolved}[/dim]"
+        )
+
+
 def render_lint_report(console: Console, report: Mapping[str, Any]) -> None:
     issues = report.get("issues") or []
     if not isinstance(issues, list) or not issues:
@@ -929,4 +1031,5 @@ __all__ = [
     "render_status",
     "render_synth_eval_report",
     "render_synth_report",
+    "render_synth_verify_report",
 ]

@@ -129,3 +129,113 @@ async def test_synth_task_emits_per_source_progress_and_final_report(
     assert len(synth_progress) == 3
     assert {e["detail"]["outcome"] for e in synth_progress} == {"created"}
     assert events[-1]["type"] == "final" and events[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_synth_verify_returns_verify_section(
+    server_client: httpx.AsyncClient,
+    base_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``POST /v1/synth {verify: true}`` folds a ``SynthVerifyReport`` into the
+    task result under ``verify`` — the gated booleans (``passed`` / leg-ok) and
+    the duplicate leg (run because the server builds a real embedder)."""
+    dest = base_root / "sources" / "notes"
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, dest / src.name)
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
+
+    script = {
+        "sources/notes/karpathy-wiki.md": (
+            '<page category="concept" slug="karpathy">\n'
+            "---\ntags: [karpathy]\n---\n\n"
+            "# Karpathy\n\nDeterministic scoping beats probabilistic guessing.\n"
+            "</page>"
+        ),
+        "sources/notes/dikw.md": (
+            '<page category="concept" slug="dikw">\n'
+            "---\ntags: [dikw]\n---\n\n"
+            "# DIKW\n\nData becomes information becomes knowledge becomes wisdom.\n"
+            "</page>"
+        ),
+        "sources/notes/retrieval.md": (
+            '<page category="concept" slug="retrieval">\n'
+            "---\ntags: [retrieval]\n---\n\n"
+            "# Retrieval\n\nReciprocal rank fusion blends sparse and dense hits.\n"
+            "</page>"
+        ),
+    }
+    _patch_synth_factories(monkeypatch, llm=FakeLLM())
+    monkeypatch.setattr(
+        synth_op_module, "build_llm", lambda _cfg, **_kw: _ScriptedSynthLLM(script)
+    )
+
+    submit = await server_client.post(
+        "/v1/synth", json={"force_all": True, "no_embed": False, "verify": True}
+    )
+    assert submit.status_code == 200, submit.text
+    task_id = submit.json()["task_id"]
+
+    row = await _wait_terminal(server_client, task_id, timeout=15.0)
+    assert row["status"] == "succeeded", row
+
+    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]
+    verify = result["verify"]
+    assert verify is not None
+    assert verify["pages_checked"] == 3
+    # Distinct bodies, no broken links → clean gated legs; the duplicate leg
+    # ran (the server builds a real embedder).
+    assert verify["duplicate_checked"] is True
+    assert verify["lint_ok"] is True
+    assert verify["persist_ok"] is True
+    assert verify["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_synth_without_verify_has_null_verify_section(
+    server_client: httpx.AsyncClient,
+    base_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A default synth (no ``verify``) leaves ``result.verify`` null — the
+    post-pass is strictly opt-in."""
+    dest = base_root / "sources" / "notes"
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, dest / src.name)
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
+
+    script = {
+        "sources/notes/karpathy-wiki.md": (
+            '<page category="concept" slug="karpathy">\n---\n---\n\n'
+            "# Karpathy\n\nScoping is deterministic.\n</page>"
+        ),
+        "sources/notes/dikw.md": (
+            '<page category="concept" slug="dikw">\n---\n---\n\n'
+            "# DIKW\n\nFour layers stacked.\n</page>"
+        ),
+        "sources/notes/retrieval.md": (
+            '<page category="concept" slug="retrieval">\n---\n---\n\n'
+            "# Retrieval\n\nRRF fuses BM25 with dense.\n</page>"
+        ),
+    }
+    _patch_synth_factories(monkeypatch, llm=FakeLLM())
+    monkeypatch.setattr(
+        synth_op_module, "build_llm", lambda _cfg, **_kw: _ScriptedSynthLLM(script)
+    )
+
+    submit = await server_client.post(
+        "/v1/synth", json={"force_all": True, "no_embed": False}
+    )
+    assert submit.status_code == 200, submit.text
+    task_id = submit.json()["task_id"]
+    row = await _wait_terminal(server_client, task_id, timeout=15.0)
+    assert row["status"] == "succeeded", row
+
+    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]
+    assert result["verify"] is None

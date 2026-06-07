@@ -34,8 +34,13 @@ def make_synth_runner(
     base_root: Path,
     force_all: bool,
     no_embed: bool,
+    verify: bool = False,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
-    """Build a ``TaskRunner`` that drives ``api.synthesize`` for one task."""
+    """Build a ``TaskRunner`` that drives ``api.synthesize`` for one task.
+
+    ``verify=True`` runs the post-synth self-check and folds a
+    ``SynthVerifyReport`` into the task's final result under ``verify``.
+    """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
         # Reload cfg from disk INSIDE the runner so providers stay
@@ -69,6 +74,7 @@ def make_synth_runner(
             llm=llm,
             embedder=embedder,
             reporter=reporter,
+            verify=verify,
         )
         return dataclasses.asdict(report)
 

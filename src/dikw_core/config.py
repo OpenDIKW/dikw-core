@@ -406,6 +406,15 @@ class SynthConfig(BaseModel):
     # never re-raises a per-group ProviderError, by design.
     provider_error_retries: int = Field(default=2, ge=0)
     provider_error_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
+    # ``dikw client synth --verify`` semantic-duplicate gate. The post-synth
+    # self-check embeds this run's page bodies and flags any pair whose cosine
+    # is ``>= verify_duplicate_cosine_tau`` as a near-duplicate; the run fails
+    # the duplicate leg when the flagged fraction exceeds
+    # ``verify_max_duplicate_ratio``. Defaults mirror the synth-eval dataset
+    # defaults (``duplicate_threshold=0.85``, ``synth/duplicate_ratio_max=0.05``)
+    # so the interactive gate and the eval gate agree.
+    verify_duplicate_cosine_tau: float = Field(default=0.85, ge=0.0, le=1.0)
+    verify_max_duplicate_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 class MultimodalEmbedConfig(BaseModel):

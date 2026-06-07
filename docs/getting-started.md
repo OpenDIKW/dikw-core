@@ -205,7 +205,26 @@ uv run dikw client synth
 # Block until the synth task finishes, render the report, and exit
 # with succeeded=0 / failed=1 / cancelled=130 / timeout=124.
 uv run dikw client synth --wait
+
+# Self-check this run's pages and exit non-zero if they aren't clean
+# (implies --wait). Runs a scoped lint + persist check + semantic-
+# duplicate gate over only the pages this run created/updated.
+uv run dikw client synth --verify
 ```
+
+`--verify` is the "open the vault and click around" pass made automatic: after
+synth writes the K pages, it runs a deterministic, no-extra-LLM check scoped to
+just this run's output and prints one PASS/FAIL verdict. Three legs gate the
+verdict — **persist** (no page was deactivated mid-write), **lint** (no
+`broken_wikilink` / `duplicate_title` / `non_atomic_page` / `uncategorized` /
+`missing_provenance` on the new pages), and **duplicate** (the semantic
+near-duplicate ratio over this run's page bodies stays under
+`synth.verify_max_duplicate_ratio`, default `0.05`, using cosine tau
+`synth.verify_duplicate_cosine_tau`, default `0.85`). Orphan pages are surfaced
+but **not** gated — a freshly synthesised page is legitimately orphan until
+something cites it. The duplicate leg needs an embedder; with none wired it is
+**skipped loudly** (a warning, not a silent pass) so a green verdict never reads
+as "no duplicates" when the check never ran.
 
 The LLM reads each source doc and produces a `knowledge/<category>/<slug>.md`
 page, cross-linked via `[[wikilinks]]`. The `<category>` is chosen from the closed

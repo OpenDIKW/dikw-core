@@ -7,6 +7,38 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-07 — synth --verify post-synth self-check (Phase 1, non-destructive)
+
+**Change under test:** `dikw client synth --verify` — a deterministic,
+no-extra-LLM post-synth self-check over the pages a run created/updated
+(scoped `run_lint` + `persist_errors` + semantic `duplicate_ratio_max`),
+plus the config knobs `synth.verify_duplicate_cosine_tau` (0.85) and
+`synth.verify_max_duplicate_ratio` (0.05).
+
+**Why no new A/B numbers (non-destructiveness):** `--verify` is **purely
+additive** and only READS synth output — it runs *after* the existing
+`_synth_pages_from_source` → `persist_knowledge` pipeline and mutates nothing
+on that path. With `verify=False` (the default) not a single new line executes,
+and with `verify=True` the generated `knowledge/<category>/<slug>.md` pages are
+**byte-identical** to a run without the flag. So the K-layer generation
+baseline is unchanged: the **elon-musk.md** 1500-line subset (the mandated
+K-layer corpus, last measured in the Phase 2 entry below and the 2026-05-10 PR2
+entry) produces the same pages with or without `--verify` — the flag just adds a
+PASS/FAIL verdict over them. No synth metric moves; this entry records a
+**behavior-neutral** addition, not a regression test.
+
+**Validation — the verify legs themselves:** exercised end-to-end against a
+real storage + lint + inline-embed pipeline (FakeLLM for hermeticity) in
+`tests/test_synth_verify.py`: clean run passes; a dangling `[[wikilink]]` fails
+the lint leg; two near-identical bodies fail the semantic-duplicate leg; a hard
+persist failure fails the persist leg; orphan pages are surfaced but **not**
+gated; and with no embedder the duplicate leg is **skipped loudly** (0.6
+loud-skip contract) rather than silently passing. Server task round-trip in
+`tests/server/test_synth_tasks.py`; renderer + exit-code in
+`tests/client/test_progress.py`. A live verdict over a real vault (real LLM +
+embedder) is the job of the Phase 1.0 `dikw-core-verify-synth` skill once it
+lands; this PR ships the deterministic engine leg it will call.
+
 ## 2026-06-07 — existing-pages slug + priority-create A/B (Phase 2)
 
 **Change under test:** two deterministic-scoping additions to the per-group
