@@ -80,6 +80,15 @@ on each entry call out exactly what shape changes break.
 
 ### Changed
 
+- **LLM prompts now name and introduce `dikw-core`.** Every engine prompt that
+  referenced the product (`synthesize.md`, the two `lint_fix_*` prompts, the
+  three `eval_judge_*` prompts, plus the synth / lint-fix / merge system strings)
+  now writes the name as code-formatted `` `dikw-core` `` and, in the six prompt
+  templates, adds one shared appositive — *"an AI-native knowledge engine that
+  refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW)
+  pyramid"* — so the model has product context instead of a bare unexplained
+  name. Descriptive grounding only: no instruction, output-format, placeholder,
+  or behavior change, and no new LLM calls.
 - **`provider.llm_max_tokens_synth` default 2048 → 3072 (Phase 1).** The old
   default left only ~512 tokens per page at `max_pages_per_group=4`, so a dense
   fan-out group could truncate mid-page (losing the last page or its closing

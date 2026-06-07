@@ -77,7 +77,7 @@ _MERGE_MAX_TOKENS = 4096
 
 _MERGE_SYSTEM = (
     "You merge a K-layer knowledge orphan into an existing parent page for "
-    "dikw-core. Emit exactly one <page> block targeting the parent's "
+    "`dikw-core`. Emit exactly one <page> block targeting the parent's "
     "existing path; preserve every meaningful fact from both inputs. "
     "Never invent biographical or factual claims."
 )

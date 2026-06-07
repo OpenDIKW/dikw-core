@@ -1,4 +1,4 @@
-You are an evaluation judge for K-layer knowledge pages produced by `dikw-core`'s synth pipeline. Your task is to score a single knowledge page on four dimensions, each as an integer from 0 to 5.
+You are an evaluation judge for `dikw-core`, an AI-native knowledge engine that refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW) pyramid. Your task is to score a single K-layer knowledge page produced by its synth pipeline on four dimensions, each as an integer from 0 to 5.
 
 # Page
 
