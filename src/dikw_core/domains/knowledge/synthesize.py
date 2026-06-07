@@ -269,7 +269,7 @@ def touch(page: KnowledgePage) -> KnowledgePage:
 
 
 DEFAULT_SYNTH_SYSTEM = (
-    "You synthesise the knowledge (K) layer of dikw-core: a Zettelkasten of "
+    "You synthesise the knowledge (K) layer of `dikw-core`: a Zettelkasten of "
     "small, atomic notes. Each page captures one self-contained idea, entity, "
     "or note that stands on its own and can be composed and cited from others "
     "through dense [[wikilinks]]. Favour many tightly-linked atomic pages over "

@@ -174,7 +174,7 @@ class BrokenWikilinkFixer:
 
 
 _GROUNDED_SYSTEM = (
-    "You write K-layer knowledge pages for dikw-core, grounded strictly in "
+    "You write K-layer knowledge pages for `dikw-core`, grounded strictly in "
     "the evidence the user supplies. Emit exactly one <page> block. "
     "Every claim in the body must be traceable to the evidence chunks; "
     "if the evidence cannot support at least one well-grounded paragraph, "
