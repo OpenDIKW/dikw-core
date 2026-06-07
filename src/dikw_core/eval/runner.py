@@ -438,6 +438,19 @@ async def run_eval(
 
     _reporter: ProgressReporter = reporter or NoopReporter()
     effective_embedder: EmbeddingProvider = embedder or FakeEmbeddings()
+    # Loud-skip: same silent FakeEmbeddings fallback as run_synth_eval — the
+    # vector leg becomes lexical, so announce it when the embedder is actually
+    # missing (the hermetic gate passes FakeEmbeddings() explicitly → no warn).
+    # EvalReport has no ``warnings`` field, so this is a live-stream log only
+    # (deliberate — a parseable field would touch the model + both renderers).
+    if embedder is None:
+        await _reporter.log(
+            "WARN",
+            "no embedder provided — the vector retrieval leg uses FakeEmbeddings "
+            "(lexical bag-of-words); hybrid / vector numbers are not real-vector "
+            "measurements. Pass a real embedder (build_embedder from a base with "
+            "DIKW_EMBEDDING_API_KEY) for trustworthy retrieval numbers",
+        )
     effective_provider_cfg = provider_config or ProviderConfig(
         embedding_model="fake",
         embedding_dim=64,  # matches dikw_core.eval.fake_embedder.EMBED_DIM
@@ -1106,6 +1119,19 @@ async def run_synth_eval(
         warnings.append(
             "expected.yaml absent — expected_coverage metric skipped"
         )
+    # Loud-skip: a silently-substituted FakeEmbeddings makes the grounding /
+    # duplicate metrics lexical, not semantic — say so rather than present the
+    # numbers as real. ``embedder is None`` (not ``effective_embedder``) so the
+    # hermetic gate's *explicit* FakeEmbeddings() does not trip it.
+    if embedder is None:
+        warnings.append(
+            "no embedder provided — fact_grounding_ratio / duplicate_ratio_max "
+            "were computed against FakeEmbeddings (lexical bag-of-words), NOT a "
+            "real semantic measurement; pass a real embedder (build_embedder from "
+            "a base with DIKW_EMBEDDING_API_KEY) for trustworthy grounding / "
+            "duplicate numbers"
+        )
+        await _reporter.log("WARN", warnings[-1])
 
     with tempfile.TemporaryDirectory(prefix="dikw-synth-eval-") as tmpdir:
         base = _materialise_base(
