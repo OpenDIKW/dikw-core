@@ -98,6 +98,8 @@ from .api_types import (
     ProbeResult,
     ProvidersInfo,
     SynthReport,
+    SynthVerifyLintFinding,
+    SynthVerifyReport,
 )
 from .api_types import (
     BaseUpgradeRequired as BaseUpgradeRequired,
@@ -153,6 +155,8 @@ __all__ = [
     "ProvidersInfo",
     "RetrieveResult",
     "SynthReport",
+    "SynthVerifyLintFinding",
+    "SynthVerifyReport",
     "WisdomWriteReport",
     "check_providers",
     "find_config",

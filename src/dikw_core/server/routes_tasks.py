@@ -115,10 +115,15 @@ class SynthSubmit(BaseModel):
 
     ``no_embed`` skips the K-layer embed pass; pages still land on disk
     so dense retrieval recovers on the next ingest run.
+
+    ``verify`` runs the post-synth self-check (scoped lint + persist +
+    semantic duplicate) over this run's pages and returns a
+    ``SynthVerifyReport`` under the result's ``verify`` key.
     """
 
     force_all: bool = False
     no_embed: bool = False
+    verify: bool = False
 
 
 class LintProposeSubmit(BaseModel):
@@ -374,6 +379,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             base_root=rt.root,
             force_all=body.force_all,
             no_embed=body.no_embed,
+            verify=body.verify,
         )
         row = await rt.manager.submit(
             op="synth",
@@ -381,6 +387,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             params={
                 "force_all": body.force_all,
                 "no_embed": body.no_embed,
+                "verify": body.verify,
             },
         )
         return _handle(row)

@@ -29,7 +29,12 @@ from typing import Any
 
 from . import prompts
 from .api_core import _with_storage
-from .api_types import PagePersistError, SynthReport
+from .api_types import (
+    PagePersistError,
+    SynthReport,
+    SynthVerifyLintFinding,
+    SynthVerifyReport,
+)
 from .config import DikwConfig
 from .domains.data.backends import UnsupportedFormat, parse_any
 from .domains.data.backends.base import ParsedDocument
@@ -78,6 +83,7 @@ async def synthesize(
     llm: LLMProvider | None = None,
     embedder: EmbeddingProvider | None = None,
     reporter: ProgressReporter | None = None,
+    verify: bool = False,
 ) -> SynthReport:
     """Turn source docs into K-layer knowledge pages via the configured LLM.
 
@@ -87,6 +93,13 @@ async def synthesize(
 
     ``reporter`` (optional) receives one ``progress`` event per source
     document processed for server-driven task wrappers.
+
+    ``verify=True`` runs a deterministic post-synth self-check over the pages
+    this run created/updated (persist + lint filtered to this run's pages +
+    semantic-duplicate) and folds a :class:`SynthVerifyReport` into the
+    returned report (``None`` otherwise). It only READS synth output — the
+    generated pages are unchanged. See :class:`SynthVerifyReport` for the
+    gated legs.
     """
     cfg, root, storage = await _with_storage(path)
     _reporter: ProgressReporter = reporter or NoopReporter()
@@ -190,6 +203,12 @@ async def synthesize(
                 already |= backfill_sources
 
         report = SynthReport()
+        # ``verify`` accumulates the pages this run persisted successfully
+        # (created or updated, NOT the deactivated persist-failures) so the
+        # post-synth self-check scopes its lint + duplicate legs to exactly
+        # this run's output. Appended to only when ``verify`` is set, so a
+        # non-verify run never grows this list past the empty allocation.
+        produced_pages: list[KnowledgePage] = []
         tmpl = prompts.resolve(
             "synthesize", override_path=cfg.synth.prompt_path, base_root=root
         )
@@ -437,6 +456,8 @@ async def synthesize(
                 else:
                     updated_for_src += 1
                     report = _sr_replace(report, updated=report.updated + 1)
+                if verify:
+                    produced_pages.append(page)
 
             persisted_for_src = created_for_src + updated_for_src
             report = _sr_replace(
@@ -510,9 +531,140 @@ async def synthesize(
         # ``knowledge/index.md`` catalogue or ``knowledge/log.md`` chronology
         # into the vault — the category folder tree is the catalogue and the
         # table is the authoritative history (see ADR-0004).
+        if verify:
+            # Run the post-synth self-check while storage is still open. The
+            # ``embedder`` here reflects whether inline embed actually ran
+            # (it is dropped to ``None`` above when there is no active text
+            # version), so the duplicate leg loud-skips exactly when the
+            # embeddings it would compare against do not exist.
+            report = _sr_replace(
+                report,
+                verify=await _verify_synth_output(
+                    storage=storage,
+                    root=root,
+                    fallback=cfg.schema_.fallback,
+                    report=report,
+                    produced_pages=produced_pages,
+                    embedder=embedder,
+                    embedding_model=text_embed_model,
+                    duplicate_cosine_tau=cfg.synth.verify_duplicate_cosine_tau,
+                    max_duplicate_ratio=cfg.synth.verify_max_duplicate_ratio,
+                ),
+            )
         return report
     finally:
         await storage.close()
+
+
+# Lint kinds that mark *defective new synth output* and so fail
+# ``synth --verify``. ``orphan_page`` is excluded on purpose (a fresh page is
+# legitimately orphan until cited — surfaced, never gated) and
+# ``invalid_wisdom_status`` is wisdom-only (synth never writes W). See
+# :class:`SynthVerifyReport`.
+_VERIFY_GATED_LINT_KINDS = frozenset(
+    {
+        "broken_wikilink",
+        "duplicate_title",
+        "non_atomic_page",
+        "uncategorized",
+        "missing_provenance",
+    }
+)
+
+
+async def _verify_synth_output(
+    *,
+    storage: Storage,
+    root: Path,
+    fallback: str,
+    report: SynthReport,
+    produced_pages: list[KnowledgePage],
+    embedder: EmbeddingProvider | None,
+    embedding_model: str,
+    duplicate_cosine_tau: float,
+    max_duplicate_ratio: float,
+) -> SynthVerifyReport:
+    """Deterministic post-synth self-check over the pages THIS run produced.
+
+    Scopes a full ``run_lint`` to ``produced_pages``, splits the issues into
+    gated findings vs the informational orphan list, and (when an embedder is
+    wired) measures the semantic duplicate ratio over the run's page bodies.
+    See :class:`SynthVerifyReport` for the gating contract — orphans are not
+    gated, and a missing embedder loud-skips the duplicate leg rather than
+    silently passing it.
+
+    Local imports keep ``run_lint`` / the eval duplicate metric off the hot
+    synth path when verify is not requested (and avoid any import-cycle risk
+    from pulling the eval package into the engine facade at module load).
+    """
+    from .domains.knowledge.lint import run_lint
+    from .eval.metrics import duplicate_ratio_max
+
+    # ``produced_pages`` is appended per-page per-source, and
+    # ``dedup_pages_by_slug`` only dedups WITHIN one source. Two different
+    # sources can each emit the same ``<category>/<slug>.md`` (realistic under
+    # ``force_all``, where the existing-pages snapshot that would nudge the LLM
+    # to reference ``[[Title]]`` is skipped). On disk / in storage the later
+    # write overwrites the earlier one (same doc_id), so the base holds exactly
+    # ONE page per path. Dedup the verify view by path — keeping the
+    # last-written body, matching what storage actually holds — so the duplicate
+    # leg never fabricates a phantom near-duplicate pair out of two copies of a
+    # single final page (which would flip ``passed`` to False on clean output),
+    # and so the duplicate-pair denominator agrees with ``pages_checked``.
+    pages = list({p.path: p for p in produced_pages}.values())
+    produced_paths = {p.path for p in pages}
+
+    lint_report = await run_lint(storage, root=root, fallback=fallback)
+    findings: list[SynthVerifyLintFinding] = []
+    orphans: list[str] = []
+    for issue in lint_report.issues:
+        if issue.path not in produced_paths:
+            continue
+        if issue.kind == "orphan_page":
+            orphans.append(issue.path)
+        elif issue.kind in _VERIFY_GATED_LINT_KINDS:
+            findings.append(
+                SynthVerifyLintFinding(
+                    kind=issue.kind, path=issue.path, detail=issue.detail
+                )
+            )
+
+    duplicate_checked = embedder is not None
+    duplicate_ratio: float | None = None
+    if duplicate_checked:
+        assert embedder is not None  # narrow for mypy
+        # ``duplicate_ratio_max`` short-circuits to 0.0 for <2 bodied pages and
+        # filters empty bodies, so tiny runs cost no embed call. For ≥2 bodied
+        # pages this is a deliberate SECOND embed pass over the just-written
+        # page bodies (whole-body vectors — the inline-persist pass embedded
+        # chunk-granularity vectors, which are not reusable for body cosine).
+        # That extra cost is the price of the opt-in ``--verify`` duplicate gate.
+        duplicate_ratio = await duplicate_ratio_max(
+            pages=pages,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            tau=duplicate_cosine_tau,
+        )
+
+    persist_error_count = len(report.persist_errors)
+    persist_ok = persist_error_count == 0
+    lint_ok = not findings
+    duplicate_ok = duplicate_ratio is None or duplicate_ratio <= max_duplicate_ratio
+    return SynthVerifyReport(
+        pages_checked=len(produced_paths),
+        persist_error_count=persist_error_count,
+        unresolved_wikilinks=report.unresolved_wikilinks,
+        lint_findings=tuple(findings),
+        orphan_pages=tuple(sorted(set(orphans))),
+        duplicate_checked=duplicate_checked,
+        duplicate_ratio=duplicate_ratio,
+        duplicate_cosine_tau=duplicate_cosine_tau,
+        max_duplicate_ratio=max_duplicate_ratio,
+        persist_ok=persist_ok,
+        lint_ok=lint_ok,
+        duplicate_ok=duplicate_ok,
+        passed=persist_ok and lint_ok and duplicate_ok,
+    )
 
 
 def _read_source_parsed(root: Path, doc: DocumentRecord) -> ParsedDocument | None:

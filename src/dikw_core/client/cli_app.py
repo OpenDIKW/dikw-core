@@ -47,6 +47,7 @@ from .progress import (
     render_status,
     render_synth_eval_report,
     render_synth_report,
+    render_synth_verify_report,
 )
 from .serve_and_run import ENV_SERVE_AND_RUN_AUTO_WAIT
 from .task_follow import follow_to_terminal
@@ -1202,6 +1203,18 @@ def synth_cmd(
             help="Skip embedding the generated K-layer pages.",
         ),
     ] = False,
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify",
+            help=(
+                "Run the post-synth self-check over this run's pages "
+                "(lint + persist + semantic duplicate; the lint scan is "
+                "full-base, filtered to this run's pages) and exit "
+                "non-zero if it fails. Implies --wait."
+            ),
+        ),
+    ] = False,
     wait: Annotated[
         bool,
         typer.Option(
@@ -1222,21 +1235,38 @@ def synth_cmd(
     """Synthesise K-layer knowledge pages from D-layer sources.
 
     Default is async — submit + print JSON task handle. Use ``--wait``
-    to block + render + exit with task status."""
+    to block + render + exit with task status. ``--verify`` additionally
+    runs the post-synth self-check and exits non-zero when it fails."""
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
             handle = await t.post_json(
                 "/v1/synth",
-                json_body={"force_all": force_all, "no_embed": no_embed},
+                json_body={
+                    "force_all": force_all,
+                    "no_embed": no_embed,
+                    "verify": verify,
+                },
             )
             task_id = str(handle["task_id"])
-            if not wait and not _serve_and_run_forces_wait():
+            # ``--verify`` is meaningless without the result, so it forces a
+            # blocking wait the same way an explicit ``--wait`` does.
+            if not wait and not verify and not _serve_and_run_forces_wait():
                 _print_task_handle(task_id, str(handle.get("status") or "pending"))
                 return
             status, payload = await _wait_and_render(t, task_id, plain=plain)
         if status == "succeeded" and payload is not None:
             render_synth_report(console, payload)
+            if verify:
+                verify_payload = (
+                    payload.get("verify") if isinstance(payload, Mapping) else None
+                )
+                render_synth_verify_report(console, verify_payload)
+                if not (
+                    isinstance(verify_payload, Mapping)
+                    and verify_payload.get("passed")
+                ):
+                    raise typer.Exit(code=_EXIT_FAILED)
         _exit_for_status(status, payload)
 
     _run(_go())
