@@ -58,6 +58,9 @@ dev = [
     "ruff>=0.15",
     "mypy>=1.20",
     "types-PyYAML",
+    # Local git pre-commit hooks (ruff + mypy) mirroring the CI floor. Wire
+    # them once with `uv run pre-commit install`; config in .pre-commit-config.yaml.
+    "pre-commit>=4.0",
     # jieba is required to run tokenize.py's tests regardless of the
     # project extras the user picked, so it lives in dev-deps as well.
     "jieba>=0.42",
