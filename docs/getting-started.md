@@ -213,8 +213,8 @@ uv run dikw client synth --verify
 ```
 
 `--verify` is the "open the vault and click around" pass made automatic: after
-synth writes the K pages, it runs a deterministic, no-extra-LLM check scoped to
-just this run's output and prints one PASS/FAIL verdict. Three legs gate the
+synth writes the K pages, it runs a deterministic, no-extra-LLM check over just
+this run's output and prints one PASS/FAIL verdict. Three legs gate the
 verdict — **persist** (no page was deactivated mid-write), **lint** (no
 `broken_wikilink` / `duplicate_title` / `non_atomic_page` / `uncategorized` /
 `missing_provenance` on the new pages), and **duplicate** (the semantic
@@ -222,9 +222,16 @@ near-duplicate ratio over this run's page bodies stays under
 `synth.verify_max_duplicate_ratio`, default `0.05`, using cosine tau
 `synth.verify_duplicate_cosine_tau`, default `0.85`). Orphan pages are surfaced
 but **not** gated — a freshly synthesised page is legitimately orphan until
-something cites it. The duplicate leg needs an embedder; with none wired it is
+something cites it. The duplicate leg needs embeddings; when none are available
+(no embedder configured, `--no-embed`, or no active embed version yet) it is
 **skipped loudly** (a warning, not a silent pass) so a green verdict never reads
 as "no duplicates" when the check never ran.
+
+Two cost notes: the lint leg runs a **full-base** scan (it has to, so
+wikilinks resolve against every page) and then filters to this run's pages, so
+its cost scales with total vault size, not with how many pages this run
+produced; and the duplicate leg performs a second embed pass over the
+just-written page bodies. Both only run when you pass `--verify`.
 
 The LLM reads each source doc and produces a `knowledge/<category>/<slug>.md`
 page, cross-linked via `[[wikilinks]]`. The `<category>` is chosen from the closed

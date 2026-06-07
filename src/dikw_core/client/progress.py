@@ -449,28 +449,31 @@ def render_synth_verify_report(
     if duplicate_checked:
         ratio = verify.get("duplicate_ratio")
         max_ratio = verify.get("max_duplicate_ratio")
+        tau = verify.get("duplicate_cosine_tau")
         dup_ok = bool(verify.get("duplicate_ok"))
         ratio_s = "n/a" if ratio is None else f"{float(ratio):.3f}"
         max_s = "n/a" if max_ratio is None else f"{float(max_ratio):.3f}"
+        tau_s = "n/a" if tau is None else f"{float(tau):.2f}"
         table.add_row(
             "duplicate",
             "[green]ok[/green]" if dup_ok else "[red]fail[/red]",
-            f"ratio {ratio_s} (max {max_s})",
+            f"ratio {ratio_s} (max {max_s}, cosine tau {tau_s})",
         )
     else:
         table.add_row(
             "duplicate",
             "[yellow]skipped[/yellow]",
-            "no embedder — semantic duplicate gate did NOT run",
+            "no embeddings available — semantic duplicate gate did NOT run",
         )
     console.print(table)
 
     if not duplicate_checked:
         console.print(
             "[yellow]warning:[/yellow] the semantic-duplicate check was "
-            "SKIPPED (no embedder wired) — near-duplicate pages were NOT "
-            "detected. Configure DIKW_EMBEDDING_API_KEY (or run with an "
-            "embedder) for the duplicate gate."
+            "SKIPPED (no embeddings available — no embedder configured, "
+            "--no-embed, or no active embed version) — near-duplicate pages "
+            "were NOT detected. Configure DIKW_EMBEDDING_API_KEY (and run "
+            "without --no-embed) for the duplicate gate."
         )
 
     if isinstance(findings, list) and findings:
@@ -501,8 +504,14 @@ def render_synth_verify_report(
         )
     unresolved = int(verify.get("unresolved_wikilinks") or 0)
     if unresolved:
+        # Write-time count (resolved as each page was persisted). The GATED
+        # form is the lint broken_wikilink leg above, re-resolved against the
+        # final base — a single-pass run with forward references can show a
+        # nonzero count here yet still PASS once those targets exist.
         console.print(
-            f"[dim]unresolved wikilinks this run (informational): {unresolved}[/dim]"
+            f"[dim]unresolved wikilinks at write time "
+            f"(informational; gated form is the lint leg above): "
+            f"{unresolved}[/dim]"
         )
 
 

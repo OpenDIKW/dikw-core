@@ -13,9 +13,11 @@ on each entry call out exactly what shape changes break.
   K pages, `--verify` runs a deterministic, no-extra-LLM check scoped to just
   this run's created/updated pages and emits one PASS/FAIL verdict (exit
   non-zero on fail; implies `--wait`). Three gated legs: **persist**
-  (`SynthReport.persist_errors == 0`), **lint** (a scoped `run_lint` gated on
-  `broken_wikilink` / `duplicate_title` / `non_atomic_page` / `uncategorized` /
-  `missing_provenance`), and **duplicate** (semantic `duplicate_ratio_max` over
+  (`SynthReport.persist_errors == 0`), **lint** (a full-base `run_lint` whose
+  results are filtered to this run's pages — the scan needs the whole base to
+  resolve wikilinks — gated on `broken_wikilink` / `duplicate_title` /
+  `non_atomic_page` / `uncategorized` / `missing_provenance`), and
+  **duplicate** (semantic `duplicate_ratio_max` over
   this run's page bodies ≤ `synth.verify_max_duplicate_ratio`, default `0.05`,
   at cosine tau `synth.verify_duplicate_cosine_tau`, default `0.85`).
   `orphan_page` is surfaced but **not** gated (a fresh page is legitimately

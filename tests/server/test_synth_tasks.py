@@ -239,3 +239,109 @@ async def test_synth_without_verify_has_null_verify_section(
         "result"
     ]
     assert result["verify"] is None
+
+
+@pytest.mark.asyncio
+async def test_synth_verify_populated_report_survives_asdict(
+    server_client: httpx.AsyncClient,
+    base_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FAILing verify with a non-empty `lint_findings` (tuple of nested frozen
+    `SynthVerifyLintFinding`) must survive `dataclasses.asdict` on the server
+    task path and reach the engine-free client as a list of plain dicts. Pins
+    the nested-tuple serialization contract a future @property regression would
+    break."""
+    dest = base_root / "sources" / "notes"
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, dest / src.name)
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
+
+    # One page carries a dangling [[Ghost Reference]] nobody authors → the
+    # broken_wikilink lint leg fails verify.
+    script = {
+        "sources/notes/dikw.md": (
+            '<page category="concept" slug="dikw">\n---\n---\n\n'
+            "# DIKW\n\nFour layers. See [[Ghost Reference]] which is dangling.\n"
+            "</page>"
+        ),
+        "sources/notes/karpathy-wiki.md": (
+            '<page category="concept" slug="karpathy">\n---\n---\n\n'
+            "# Karpathy\n\nDeterministic scoping.\n</page>"
+        ),
+        "sources/notes/retrieval.md": (
+            '<page category="concept" slug="retrieval">\n---\n---\n\n'
+            "# Retrieval\n\nRRF fuses BM25 with dense.\n</page>"
+        ),
+    }
+    _patch_synth_factories(monkeypatch, llm=FakeLLM())
+    monkeypatch.setattr(
+        synth_op_module, "build_llm", lambda _cfg, **_kw: _ScriptedSynthLLM(script)
+    )
+
+    submit = await server_client.post(
+        "/v1/synth", json={"force_all": True, "no_embed": False, "verify": True}
+    )
+    task_id = submit.json()["task_id"]
+    row = await _wait_terminal(server_client, task_id, timeout=15.0)
+    assert row["status"] == "succeeded", row
+
+    verify = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]["verify"]
+    assert verify["passed"] is False
+    assert verify["lint_ok"] is False
+    findings = verify["lint_findings"]
+    assert isinstance(findings, list) and findings
+    assert any(f["kind"] == "broken_wikilink" for f in findings)
+    # Each finding is a plain dict (the nested frozen dataclass flattened).
+    assert all({"kind", "path", "detail"} <= set(f) for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_synth_verify_no_embed_loud_skips_duplicate_leg(
+    server_client: httpx.AsyncClient,
+    base_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`no_embed=True` leaves the runner without an embedder, so the duplicate
+    leg is skipped: `duplicate_checked` is False and `duplicate_ratio` survives
+    asdict as JSON null — never silently passed off as measured."""
+    dest = base_root / "sources" / "notes"
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, dest / src.name)
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
+
+    script = {
+        "sources/notes/dikw.md": (
+            '<page category="concept" slug="dikw">\n---\n---\n\n'
+            "# DIKW\n\nFour layers stacked.\n</page>"
+        ),
+        "sources/notes/karpathy-wiki.md": (
+            '<page category="concept" slug="karpathy">\n---\n---\n\n'
+            "# Karpathy\n\nScoping is deterministic.\n</page>"
+        ),
+        "sources/notes/retrieval.md": (
+            '<page category="concept" slug="retrieval">\n---\n---\n\n'
+            "# Retrieval\n\nRRF fuses BM25 with dense.\n</page>"
+        ),
+    }
+    _patch_synth_factories(monkeypatch, llm=FakeLLM())
+    monkeypatch.setattr(
+        synth_op_module, "build_llm", lambda _cfg, **_kw: _ScriptedSynthLLM(script)
+    )
+
+    submit = await server_client.post(
+        "/v1/synth", json={"force_all": True, "no_embed": True, "verify": True}
+    )
+    task_id = submit.json()["task_id"]
+    row = await _wait_terminal(server_client, task_id, timeout=15.0)
+    assert row["status"] == "succeeded", row
+
+    verify = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]["verify"]
+    assert verify["duplicate_checked"] is False
+    assert verify["duplicate_ratio"] is None

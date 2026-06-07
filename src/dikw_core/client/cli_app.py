@@ -1209,7 +1209,8 @@ def synth_cmd(
             "--verify",
             help=(
                 "Run the post-synth self-check over this run's pages "
-                "(scoped lint + persist + semantic duplicate) and exit "
+                "(lint + persist + semantic duplicate; the lint scan is "
+                "full-base, filtered to this run's pages) and exit "
                 "non-zero if it fails. Implies --wait."
             ),
         ),

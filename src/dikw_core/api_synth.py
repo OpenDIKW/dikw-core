@@ -95,10 +95,11 @@ async def synthesize(
     document processed for server-driven task wrappers.
 
     ``verify=True`` runs a deterministic post-synth self-check over the pages
-    this run created/updated (scoped lint + persist + semantic-duplicate) and
-    folds a :class:`SynthVerifyReport` into the returned report (``None``
-    otherwise). It only READS synth output — the generated pages are
-    unchanged. See :class:`SynthVerifyReport` for the gated legs.
+    this run created/updated (persist + lint filtered to this run's pages +
+    semantic-duplicate) and folds a :class:`SynthVerifyReport` into the
+    returned report (``None`` otherwise). It only READS synth output — the
+    generated pages are unchanged. See :class:`SynthVerifyReport` for the
+    gated legs.
     """
     cfg, root, storage = await _with_storage(path)
     _reporter: ProgressReporter = reporter or NoopReporter()
@@ -205,8 +206,8 @@ async def synthesize(
         # ``verify`` accumulates the pages this run persisted successfully
         # (created or updated, NOT the deactivated persist-failures) so the
         # post-synth self-check scopes its lint + duplicate legs to exactly
-        # this run's output. Collected only when requested to keep the hot
-        # path allocation-free.
+        # this run's output. Appended to only when ``verify`` is set, so a
+        # non-verify run never grows this list past the empty allocation.
         produced_pages: list[KnowledgePage] = []
         tmpl = prompts.resolve(
             "synthesize", override_path=cfg.synth.prompt_path, base_root=root
@@ -599,7 +600,19 @@ async def _verify_synth_output(
     from .domains.knowledge.lint import run_lint
     from .eval.metrics import duplicate_ratio_max
 
-    produced_paths = {p.path for p in produced_pages}
+    # ``produced_pages`` is appended per-page per-source, and
+    # ``dedup_pages_by_slug`` only dedups WITHIN one source. Two different
+    # sources can each emit the same ``<category>/<slug>.md`` (realistic under
+    # ``force_all``, where the existing-pages snapshot that would nudge the LLM
+    # to reference ``[[Title]]`` is skipped). On disk / in storage the later
+    # write overwrites the earlier one (same doc_id), so the base holds exactly
+    # ONE page per path. Dedup the verify view by path — keeping the
+    # last-written body, matching what storage actually holds — so the duplicate
+    # leg never fabricates a phantom near-duplicate pair out of two copies of a
+    # single final page (which would flip ``passed`` to False on clean output),
+    # and so the duplicate-pair denominator agrees with ``pages_checked``.
+    pages = list({p.path: p for p in produced_pages}.values())
+    produced_paths = {p.path for p in pages}
 
     lint_report = await run_lint(storage, root=root, fallback=fallback)
     findings: list[SynthVerifyLintFinding] = []
@@ -620,10 +633,14 @@ async def _verify_synth_output(
     duplicate_ratio: float | None = None
     if duplicate_checked:
         assert embedder is not None  # narrow for mypy
-        # ``duplicate_ratio_max`` already short-circuits to 0.0 for <2 bodied
-        # pages and filters empty bodies, so no wasted embed call on tiny runs.
+        # ``duplicate_ratio_max`` short-circuits to 0.0 for <2 bodied pages and
+        # filters empty bodies, so tiny runs cost no embed call. For ≥2 bodied
+        # pages this is a deliberate SECOND embed pass over the just-written
+        # page bodies (whole-body vectors — the inline-persist pass embedded
+        # chunk-granularity vectors, which are not reusable for body cosine).
+        # That extra cost is the price of the opt-in ``--verify`` duplicate gate.
         duplicate_ratio = await duplicate_ratio_max(
-            pages=produced_pages,
+            pages=pages,
             embedder=embedder,
             embedding_model=embedding_model,
             tau=duplicate_cosine_tau,

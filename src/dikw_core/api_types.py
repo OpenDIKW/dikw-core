@@ -137,15 +137,26 @@ class SynthVerifyReport:
 
     * **persist** — ``persist_error_count == 0``. A page deactivated mid-
       pipeline (``SynthReport.persist_errors``) is never "clean output".
-    * **lint** — a scoped ``run_lint`` over this run's pages, gated on the
-      kinds that mark *defective new output*: ``broken_wikilink`` /
-      ``duplicate_title`` / ``non_atomic_page`` / ``uncategorized`` /
+    * **lint** — a full-base ``run_lint`` whose issues are then filtered to
+      this run's pages (the scan itself must see the whole base so
+      ``broken_wikilink`` / ``duplicate_title`` resolve against every page),
+      gated on the kinds that mark *defective new output*: ``broken_wikilink``
+      / ``duplicate_title`` / ``non_atomic_page`` / ``uncategorized`` /
       ``missing_provenance``. ``orphan_page`` is deliberately excluded —
       surfaced on ``orphan_pages`` but NOT gated, because a freshly
       synthesised page is legitimately orphan until something cites it;
       gating it would make ``--verify`` perpetually red on healthy runs
       (Karpathy's rule: a missed backlink is a fixable warning, not
-      defective output).
+      defective output). Known limitation: ``run_lint`` reports
+      ``duplicate_title`` only on the *extra* path of a colliding pair (the
+      one that sorts after the first in ``list_documents`` order), so a NEW
+      page that collides on title with a PRE-EXISTING page is gated only when
+      the new page is the extra. On SQLite the pre-existing page keeps its
+      lower rowid (re-synth upserts in place) so the new page is the extra and
+      is caught; on Postgres after heap churn the order is unspecified and the
+      collision can land on the pre-existing (out-of-scope) path and be
+      dropped. Within-run collisions (both paths produced this run) are always
+      caught, and a standalone ``dikw client lint`` surfaces either case.
     * **duplicate** — semantic ``duplicate_ratio_max`` over this run's page
       bodies, gated on ``<= max_duplicate_ratio``. Requires an embedder;
       when none was wired the leg is SKIPPED LOUDLY (``duplicate_checked``
