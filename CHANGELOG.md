@@ -9,6 +9,22 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`title_slug_quality` lint — deterministic K-page title/slug hygiene.** A new
+  read-only lint kind, also wired as a `dikw client synth --verify` gated leg,
+  that flags three zero-false-positive defects on a knowledge page: a body with
+  no usable `# Title` heading (absent / blank / punctuation-only — a CJK title
+  is *not* punctuation-only), a frontmatter `title:` that disagrees with the body
+  `# H1` (the genuine title drift — `write_page` always serialises the two equal,
+  so a divergence is a hand-edit to one side), and a degenerate `untitled`
+  filename slug (only reachable when `slugify` collapsed a non-ASCII title the LLM
+  gave no ASCII/pinyin slug for). It is deliberately **not** a
+  `slugify(title) == stem` comparison — slugs are LLM-chosen and intentionally
+  diverge from `slugify(title)` (stop-word dropping, pinyin for CJK), and
+  wikilinks resolve by title, so that comparison would red-flag the engine's own
+  correct output; whether a well-formed title is *too generic* is a probabilistic
+  judgement left to a future LLM-judge leg, never this lexical lint. Scoped to
+  `Layer.KNOWLEDGE` (hand-written wisdom is exempt) and suppressible per-page via
+  `lint: {skip: [title_slug_quality]}`.
 - **`dikw client synth --verify` — post-synth self-check.** After synth writes
   K pages, `--verify` runs a deterministic, no-extra-LLM check scoped to just
   this run's created/updated pages and emits one PASS/FAIL verdict (exit
@@ -16,7 +32,8 @@ on each entry call out exactly what shape changes break.
   (`SynthReport.persist_errors == 0`), **lint** (a full-base `run_lint` whose
   results are filtered to this run's pages — the scan needs the whole base to
   resolve wikilinks — gated on `broken_wikilink` / `duplicate_title` /
-  `non_atomic_page` / `uncategorized` / `missing_provenance`), and
+  `non_atomic_page` / `uncategorized` / `missing_provenance` /
+  `title_slug_quality`), and
   **duplicate** (semantic `duplicate_ratio_max` over
   this run's page bodies ≤ `synth.verify_max_duplicate_ratio`, default `0.05`,
   at cosine tau `synth.verify_duplicate_cosine_tau`, default `0.85`).
