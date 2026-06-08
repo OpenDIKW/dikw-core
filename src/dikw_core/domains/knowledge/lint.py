@@ -70,6 +70,12 @@ _H1_CAPTURE = re.compile(
     r"^[ \t]{0,3}#[ \t]+(.+?)[ \t]*#*[ \t]*$", flags=re.MULTILINE
 )
 _TITLE_WORD = re.compile(r"\w")
+# An ASCII alphanumeric is what ``slugify`` keeps; a title with at least one is
+# what tells a *degenerate* ``untitled`` slug (a pure-CJK title that collapsed)
+# apart from a title legitimately spelled "Untitled" (which slugifies to the
+# same literal but is a real slug). ``slugify``'s output alone can't distinguish
+# them — both return ``"untitled"`` — so the lint inspects the title's content.
+_ASCII_SLUGGABLE = re.compile(r"[A-Za-z0-9]")
 
 
 LintKind = Literal[
@@ -262,7 +268,12 @@ def check_title_slug_quality(
     fm = (frontmatter_title or "").strip()
     if fm and h1 is not None and fm != h1:
         violations.append(f"frontmatter title {fm!r} != body heading {h1!r}")
-    if stem == SLUG_FALLBACK:
+    # Only flag the *degenerate* fallback: a title with no ASCII-sluggable
+    # character (pure CJK, no pinyin slug) that collapsed to ``untitled``. A page
+    # legitimately titled "Untitled" slugifies to the same literal but its title
+    # yielded a real slug, so it must not be flagged — check the title's content,
+    # not just the stem (slugify's output is identical for both cases).
+    if stem == SLUG_FALLBACK and not _ASCII_SLUGGABLE.search(fm or (h1 or "")):
         violations.append(
             f"filename slug {stem!r} is the `untitled` fallback — the title "
             "produced no usable ASCII/pinyin slug"

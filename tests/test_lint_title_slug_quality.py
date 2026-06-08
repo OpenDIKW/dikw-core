@@ -193,6 +193,21 @@ def test_internal_hash_in_title_is_preserved() -> None:
     )
 
 
+def test_legit_untitled_english_title_is_not_degenerate_slug() -> None:
+    # A page legitimately titled "Untitled" slugifies to "untitled" too, but its
+    # title DID yield a real ASCII slug — it is not the degenerate fallback that
+    # only a no-ASCII-content title collapses to. slugify's output alone can't
+    # tell the two apart (both return "untitled"); the title's ASCII content can.
+    assert (
+        check_title_slug_quality(
+            body="# Untitled\n\nbody\n",
+            frontmatter_title="Untitled",
+            stem="untitled",
+        )
+        == ()
+    )
+
+
 def test_stopword_dropping_ascii_slug_is_clean() -> None:
     # ``slugify('The DIKW Pyramid')`` == 'the-dikw-pyramid', but the LLM chose
     # 'dikw-pyramid'. This intentional divergence must NOT be flagged.
@@ -229,11 +244,12 @@ def test_fenced_code_heading_only_reads_as_missing() -> None:
 
 def test_multiple_violations_all_reported() -> None:
     out = check_title_slug_quality(
-        body="no heading at all\n",
-        frontmatter_title="Ghost",
+        body="正文，没有标题。\n",
+        frontmatter_title="神经网络",
         stem="untitled",
     )
-    # missing H1 + degenerate slug (mismatch leg can't fire without an H1).
+    # missing H1 + degenerate slug (a no-ASCII title that collapsed to the
+    # fallback); the mismatch leg can't fire without an H1, so exactly two.
     assert len(out) == 2
 
 

@@ -162,7 +162,7 @@ dikw-core/
 │   │   │   ├── page.py       # page read/write, front-matter conventions
 │   │   │   ├── synthesize.py # ingest → knowledge pages (LLM-driven), category-filed
 │   │   │   ├── links.py      # wikilink/markdown/URL link graph
-│   │   │   ├── lint.py       # broken wikilinks, orphans, uncategorized, missing_provenance, title_slug_quality
+│   │   │   ├── lint.py       # broken wikilinks, orphans, duplicate titles, non-atomic pages, uncategorized, missing_provenance, invalid_wisdom_status, title_slug_quality
 │   │   │   └── lint_fix.py   # Fixer Protocol + apply orchestrator (+ lint_fixers/)
 │   │   │                     # (history → knowledge_log table; no generated index.md/log.md, ADR-0004)
 │   │   └── wisdom/           # W layer — hand-written first-class documents
