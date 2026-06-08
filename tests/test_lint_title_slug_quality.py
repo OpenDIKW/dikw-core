@@ -244,7 +244,7 @@ def test_fenced_code_heading_only_reads_as_missing() -> None:
 
 def test_multiple_violations_all_reported() -> None:
     out = check_title_slug_quality(
-        body="正文，没有标题。\n",
+        body="只有正文没有标题\n",
         frontmatter_title="神经网络",
         stem="untitled",
     )
