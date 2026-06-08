@@ -28,7 +28,7 @@ from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
 from ..data.path_norm import normalize_path
 from .links import build_title_indexes, parse_links, resolve_links
-from .page import category_from_path, frontmatter_str_list
+from .page import SLUG_FALLBACK, category_from_path, frontmatter_str_list
 
 # Heuristic thresholds for ``non_atomic_page``. A page is flagged when ANY
 # of these are exceeded — they're independent symptoms of "this page is
@@ -56,14 +56,20 @@ _FENCED_CODE = re.compile(r"```[\s\S]*?```", flags=re.MULTILINE)
 
 # ``title_slug_quality`` detection. ``_H1_CAPTURE`` grabs the first ATX H1's
 # text (after fenced code is stripped); ``_TITLE_WORD`` is a Unicode word-char
-# probe (CJK counts, so a Chinese title is never "punctuation-only");
-# ``_UNTITLED_STEM`` matches the ``slugify`` fallback the filename collapses to
-# when a non-ASCII title carried no ASCII/pinyin slug.
-# ``[ \t]`` not ``\s`` for the gap/indent: ``\s`` matches newlines, so a blank
-# ``#`` heading would greedily swallow the next paragraph as its "title".
-_H1_CAPTURE = re.compile(r"^[ \t]{0,3}#[ \t]+(.+?)[ \t]*$", flags=re.MULTILINE)
+# probe (CJK counts, so a Chinese title is never "punctuation-only").
+# Two regex subtleties, both load-bearing for the no-false-positive contract:
+#   * ``[ \t]`` not ``\s`` for the gap/indent — ``\s`` matches newlines, so a
+#     blank ``#`` heading would greedily swallow the next paragraph as its title.
+#   * the trailing ``[ \t]*#*[ \t]*$`` strips an ATX *closing* hash sequence
+#     (``# Title #``), so this agrees byte-for-byte with synthesize.py's
+#     ``_ATX_TITLE`` (``\s*#*\s*$``) — the regex that produced the frontmatter
+#     ``title:`` we compare against. Without it, ``# Title #`` would read as
+#     ``Title #`` here but ``Title`` in frontmatter and the title-drift leg
+#     would false-fire on the engine's own correct output.
+_H1_CAPTURE = re.compile(
+    r"^[ \t]{0,3}#[ \t]+(.+?)[ \t]*#*[ \t]*$", flags=re.MULTILINE
+)
 _TITLE_WORD = re.compile(r"\w")
-_UNTITLED_STEM = re.compile(r"^untitled(-\d+)?$")
 
 
 LintKind = Literal[
@@ -223,9 +229,11 @@ def check_title_slug_quality(
       divergence is a hand-edit to one side; storage indexes by frontmatter
       title while the user reads the H1, so the two silently disagreeing is a
       real hazard.
-    * ``stem`` is the ``untitled`` slug fallback (optionally ``-NNN`` suffixed),
+    * ``stem`` is the ``untitled`` slug fallback (:data:`page.SLUG_FALLBACK`),
       which is only reachable when ``slugify`` collapsed a non-ASCII title the
-      LLM gave no ASCII/pinyin slug for.
+      LLM gave no ASCII/pinyin slug for. (There is no ``-NNN`` collision
+      suffix — same-slug pages are merged by ``dedup_pages_by_slug``, never
+      counter-suffixed — so an exact match is correct.)
 
     Deliberately NOT a ``slugify(title) == stem`` comparison: slugs are
     LLM-chosen and *intentionally* diverge from ``slugify(title)`` (stop-word
@@ -243,6 +251,9 @@ def check_title_slug_quality(
     h1: str | None = m.group(1).strip() if m else None
     if not h1:
         violations.append("body has no usable `# Title` heading")
+        # Reset an empty-after-strip capture (a whitespace-only ``#   `` heading)
+        # to None so the title-drift leg below doesn't then re-report it as a
+        # frontmatter-vs-empty mismatch.
         h1 = None
     elif not _TITLE_WORD.search(h1):
         violations.append(
@@ -251,7 +262,7 @@ def check_title_slug_quality(
     fm = (frontmatter_title or "").strip()
     if fm and h1 is not None and fm != h1:
         violations.append(f"frontmatter title {fm!r} != body heading {h1!r}")
-    if _UNTITLED_STEM.match(stem):
+    if stem == SLUG_FALLBACK:
         violations.append(
             f"filename slug {stem!r} is the `untitled` fallback — the title "
             "produced no usable ASCII/pinyin slug"

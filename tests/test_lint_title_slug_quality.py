@@ -141,14 +141,56 @@ def test_untitled_stem_flagged() -> None:
     assert "untitled" in out[0].lower()
 
 
-def test_untitled_counter_stem_flagged() -> None:
-    out = check_title_slug_quality(
-        body="# 机器学习\n\n正文。",
-        frontmatter_title="机器学习",
-        stem="untitled-001",
+def test_untitled_counter_stem_is_not_flagged() -> None:
+    # There is no ``-NNN`` collision suffix in the engine (same-slug pages are
+    # merged, never counter-suffixed), so a hand-created ``untitled-1`` stem is
+    # NOT the degenerate fallback and must not be flagged — only bare
+    # ``untitled`` is.
+    assert (
+        check_title_slug_quality(
+            body="# 机器学习\n\n正文。",
+            frontmatter_title="机器学习",
+            stem="untitled-1",
+        )
+        == ()
     )
-    assert len(out) == 1
-    assert "untitled" in out[0].lower()
+
+
+def test_atx_closing_hashes_agree_with_frontmatter_title() -> None:
+    # CommonMark lets a heading carry a closing hash sequence (``# Title #``).
+    # synthesize.py's ``_ATX_TITLE`` strips it when deriving the frontmatter
+    # ``title:``, so the body H1 extractor here must strip it too — otherwise
+    # the title-drift leg false-fires on the engine's own correct output.
+    assert (
+        check_title_slug_quality(
+            body="# Reward shaping #\n\nbody\n",
+            frontmatter_title="Reward shaping",
+            stem="reward-shaping",
+        )
+        == ()
+    )
+    assert (
+        check_title_slug_quality(
+            body="# Reward shaping ###\n\nbody\n",
+            frontmatter_title="Reward shaping",
+            stem="reward-shaping",
+        )
+        == ()
+    )
+
+
+def test_internal_hash_in_title_is_preserved() -> None:
+    # A ``#`` that is NOT a trailing closing sequence stays part of the title,
+    # matching ``_ATX_TITLE`` — so a body/frontmatter pair that both keep it
+    # does not false-fire.
+    assert (
+        check_title_slug_quality(
+            body="# Section #2 overview\n\nbody\n",
+            frontmatter_title="Section #2 overview",
+            stem="section-2-overview",
+        )
+        == ()
+    )
 
 
 def test_stopword_dropping_ascii_slug_is_clean() -> None:

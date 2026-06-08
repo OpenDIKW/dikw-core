@@ -30,6 +30,12 @@ import frontmatter
 
 _SLUG_ILLEGAL = re.compile(r"[^a-z0-9]+")
 
+# The stem ``slugify`` collapses to when a title carries no ASCII/CJK-romanised
+# characters (e.g. a pure-CJK title with no LLM-provided pinyin slug). Exposed as
+# a constant so the ``title_slug_quality`` lint can detect the degenerate slug
+# without copy-pasting the literal.
+SLUG_FALLBACK = "untitled"
+
 
 def category_from_path(path: str) -> str:
     """Reverse-derive a page's ``category`` (folder path) from its base-relative path.
@@ -95,7 +101,7 @@ def make_page_id(title: str, category: str) -> str:
 def slugify(title: str) -> str:
     ascii_ = title.lower().encode("ascii", "ignore").decode("ascii")
     slug = _SLUG_ILLEGAL.sub("-", ascii_).strip("-")
-    return slug or "untitled"
+    return slug or SLUG_FALLBACK
 
 
 def default_page_path(category: str, title: str) -> str:
