@@ -217,7 +217,7 @@ synth writes the K pages, it runs a deterministic, no-extra-LLM check over just
 this run's output and prints one PASS/FAIL verdict. Three legs gate the
 verdict — **persist** (no page was deactivated mid-write), **lint** (no
 `broken_wikilink` / `duplicate_title` / `non_atomic_page` / `uncategorized` /
-`missing_provenance` on the new pages), and **duplicate** (the semantic
+`missing_provenance` / `title_slug_quality` on the new pages), and **duplicate** (the semantic
 near-duplicate ratio over this run's page bodies stays under
 `synth.verify_max_duplicate_ratio`, default `0.05`, using cosine tau
 `synth.verify_duplicate_cosine_tau`, default `0.85`). Orphan pages are surfaced
@@ -241,7 +241,7 @@ page the model can't confidently place lands in `schema.fallback` (default
 catalogue and the `knowledge_log` table is the history (see ADR-0004). Re-running
 is a no-op until you add new sources (or pass `--all` to resynthesise everything).
 
-Run `dikw client lint --format table` to check the K-layer for broken wikilinks, orphans, duplicate titles, non-atomic pages, missing provenance edges, and pages stranded in the `uncategorized` fallback bucket (the default output is agent-facing JSON; add `--format table` for the human view). For `missing_provenance` issues on a legacy base, backfill in one shot via `dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>` — heuristic-only, no LLM required.
+Run `dikw client lint --format table` to check the K-layer for broken wikilinks, orphans, duplicate titles, non-atomic pages, missing provenance edges, pages stranded in the `uncategorized` fallback bucket, and `title_slug_quality` issues (a page with no usable `# Title`, a frontmatter `title:` that disagrees with the body heading, or a degenerate `untitled` filename slug) (the default output is agent-facing JSON; add `--format table` for the human view). For `missing_provenance` issues on a legacy base, backfill in one shot via `dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>` — heuristic-only, no LLM required.
 
 ### Customizing the knowledge taxonomy
 

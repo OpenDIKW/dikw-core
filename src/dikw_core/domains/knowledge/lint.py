@@ -54,6 +54,17 @@ _H2_LINE = re.compile(r"^\s{0,3}##\s+\S", flags=re.MULTILINE)
 # H1/H2 counts and false-flag an atomic technical note.
 _FENCED_CODE = re.compile(r"```[\s\S]*?```", flags=re.MULTILINE)
 
+# ``title_slug_quality`` detection. ``_H1_CAPTURE`` grabs the first ATX H1's
+# text (after fenced code is stripped); ``_TITLE_WORD`` is a Unicode word-char
+# probe (CJK counts, so a Chinese title is never "punctuation-only");
+# ``_UNTITLED_STEM`` matches the ``slugify`` fallback the filename collapses to
+# when a non-ASCII title carried no ASCII/pinyin slug.
+# ``[ \t]`` not ``\s`` for the gap/indent: ``\s`` matches newlines, so a blank
+# ``#`` heading would greedily swallow the next paragraph as its "title".
+_H1_CAPTURE = re.compile(r"^[ \t]{0,3}#[ \t]+(.+?)[ \t]*$", flags=re.MULTILINE)
+_TITLE_WORD = re.compile(r"\w")
+_UNTITLED_STEM = re.compile(r"^untitled(-\d+)?$")
+
 
 LintKind = Literal[
     "broken_wikilink",
@@ -63,6 +74,7 @@ LintKind = Literal[
     "missing_provenance",
     "invalid_wisdom_status",
     "uncategorized",
+    "title_slug_quality",
 ]
 
 # 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
@@ -194,6 +206,57 @@ def check_atomicity(*, body: str, tags: list[str]) -> AtomicityVerdict:
     if len(domains) > _ATOMIC_TAG_DOMAIN_COUNT:
         violations.append(f"tags span {len(domains)} domains: {', '.join(domains)}")
     return AtomicityVerdict(atomic=not violations, violations=tuple(violations))
+
+
+def check_title_slug_quality(
+    *, body: str, frontmatter_title: str | None, stem: str
+) -> tuple[str, ...]:
+    """Deterministic K-page title/slug hygiene — three zero-false-positive checks.
+
+    Returns an ordered tuple of violation messages (empty == clean):
+
+    * the body has no usable ``# Title`` ATX heading (absent, blank, or
+      punctuation-only — a Chinese title is *not* punctuation-only, CJK counts
+      as a word character).
+    * ``frontmatter_title`` disagrees with the body ``# H1`` — the genuine
+      title drift. ``write_page`` always serialises the two equal, so a
+      divergence is a hand-edit to one side; storage indexes by frontmatter
+      title while the user reads the H1, so the two silently disagreeing is a
+      real hazard.
+    * ``stem`` is the ``untitled`` slug fallback (optionally ``-NNN`` suffixed),
+      which is only reachable when ``slugify`` collapsed a non-ASCII title the
+      LLM gave no ASCII/pinyin slug for.
+
+    Deliberately NOT a ``slugify(title) == stem`` comparison: slugs are
+    LLM-chosen and *intentionally* diverge from ``slugify(title)`` (stop-word
+    dropping ``The DIKW Pyramid`` -> ``dikw-pyramid``, pinyin ``神经网络`` ->
+    ``shen-jing-wang-luo``), and wikilinks resolve by title not slug, so that
+    comparison would red-flag the engine's own correct output. Whether a
+    well-formed title is *too generic* is a probabilistic judgement left to the
+    LLM-judge leg, never this lexical lint.
+    """
+    violations: list[str] = []
+    # Strip fenced code first so a ``# install deps`` comment inside a code
+    # block isn't mistaken for the page heading (mirrors ``check_atomicity``).
+    prose = _FENCED_CODE.sub("", body)
+    m = _H1_CAPTURE.search(prose)
+    h1: str | None = m.group(1).strip() if m else None
+    if not h1:
+        violations.append("body has no usable `# Title` heading")
+        h1 = None
+    elif not _TITLE_WORD.search(h1):
+        violations.append(
+            f"`# Title` heading {h1!r} is punctuation-only (no word characters)"
+        )
+    fm = (frontmatter_title or "").strip()
+    if fm and h1 is not None and fm != h1:
+        violations.append(f"frontmatter title {fm!r} != body heading {h1!r}")
+    if _UNTITLED_STEM.match(stem):
+        violations.append(
+            f"filename slug {stem!r} is the `untitled` fallback — the title "
+            "produced no usable ASCII/pinyin slug"
+        )
+    return tuple(violations)
 
 
 async def run_lint(
@@ -359,6 +422,26 @@ async def run_lint(
                     ),
                 )
             )
+
+        # title_slug_quality — K-layer only (wisdom is hand-written and may
+        # legitimately carry a frontmatter title distinct from its body H1).
+        # All three sub-cases are deterministic and never fire on correct synth
+        # output, so the kind is safe to gate in ``synth --verify``.
+        if doc.layer is Layer.KNOWLEDGE and "title_slug_quality" not in skip_kinds:
+            raw_title = post.metadata.get("title")
+            tsq = check_title_slug_quality(
+                body=body,
+                frontmatter_title=raw_title if isinstance(raw_title, str) else None,
+                stem=Path(doc.path).stem,
+            )
+            if tsq:
+                issues.append(
+                    LintIssue(
+                        kind="title_slug_quality",
+                        path=doc.path,
+                        detail="; ".join(tsq),
+                    )
+                )
 
         # accumulate inbound link counts (resolved links from storage)
         for stored in await storage.links_from(doc.doc_id):

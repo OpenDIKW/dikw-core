@@ -191,6 +191,45 @@ async def test_broken_wikilink_fails_verify(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_title_slug_quality_fails_verify(tmp_path: Path) -> None:
+    """A page whose CJK title produced no ASCII/pinyin slug lands at
+    ``knowledge/concept/untitled.md`` — the degenerate-slug sub-case of
+    ``title_slug_quality``. The third source emits it with no ``slug=`` attr
+    (so ``slugify('神经网络')`` collapses to ``untitled``); the other two stay
+    clean and cross-linked, isolating the title_slug_quality gate."""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    script = {
+        "sources/notes/dikw.md": _page(
+            "dikw-pyramid", "DIKW pyramid", "Four layers. See [[Karpathy LLM Wiki]]."
+        ),
+        "sources/notes/karpathy-wiki.md": _page(
+            "karpathy-llm-wiki", "Karpathy LLM Wiki", "A wiki. See [[DIKW pyramid]]."
+        ),
+        # No slug attr + a pure-CJK title → slugify collapses to ``untitled``.
+        "sources/notes/retrieval.md": (
+            '<page category="concept">\n---\n---\n\n# 神经网络\n\n正文段落。\n</page>'
+        ),
+    }
+
+    report = await api.synthesize(
+        wiki, llm=_ScriptedLLM(script), embedder=embedder, verify=True
+    )
+
+    v = report.verify
+    assert v is not None
+    assert v.passed is False
+    assert v.lint_ok is False
+    kinds = {f.kind for f in v.lint_findings}
+    assert "title_slug_quality" in kinds
+    assert any(
+        f.path == "knowledge/concept/untitled.md" for f in v.lint_findings
+    )
+
+
 # ---- gated leg: semantic duplicate ---------------------------------------
 
 

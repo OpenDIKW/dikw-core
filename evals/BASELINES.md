@@ -7,6 +7,34 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-08 — title_slug_quality lint (Phase 1, non-destructive)
+
+**Change under test:** a new deterministic, read-only K-layer lint kind
+`title_slug_quality` (also wired as a `dikw client synth --verify` gated leg).
+It reports three zero-false-positive defects on a knowledge page — no usable
+`# Title` heading (absent / blank / punctuation-only), a frontmatter `title:`
+that disagrees with the body `# H1`, and a degenerate `untitled` filename slug.
+
+**Why no new A/B numbers (non-destructiveness):** the lint is a **pure
+detector** — `run_lint` only READS pages and appends `LintIssue` rows; it never
+writes, moves, or mutates a knowledge file, and adds no generation path. The
+synth pipeline (`_synth_pages_from_source` → `persist_knowledge`) is untouched,
+so the **elon-musk.md** 1500-line K-layer corpus (the mandated baseline, last
+measured in the Phase 2 entry below and the 2026-05-10 PR2 entry) produces
+**byte-identical** pages with or without this change. No synth metric moves;
+this is a behavior-neutral addition, not a regression test.
+
+**Why it is zero-false-positive by construction (the real risk):** the only way
+a new lint regresses is by firing on correct output. The detector deliberately
+avoids the `slugify(title) == stem` comparison that *would* mis-fire on every
+CJK page (LLM pinyin slug ≠ `slugify`, which collapses CJK to `untitled`) and
+every stop-word-dropping ASCII slug (`The DIKW Pyramid` → `dikw-pyramid`). The
+exact shapes real synth emits are pinned as **clean** in
+`tests/test_lint_title_slug_quality.py` — a CJK title with a pinyin slug, a
+stop-word-dropping ASCII slug, and a `# heading` inside a fenced code block — and
+the three real defects verify **dirty**. The `synth --verify` gate wiring is
+covered by `tests/test_synth_verify.py::test_title_slug_quality_fails_verify`.
+
 ## 2026-06-07 — synth --verify post-synth self-check (Phase 1, non-destructive)
 
 **Change under test:** `dikw client synth --verify` — a deterministic,

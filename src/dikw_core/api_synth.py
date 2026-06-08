@@ -568,6 +568,7 @@ _VERIFY_GATED_LINT_KINDS = frozenset(
         "non_atomic_page",
         "uncategorized",
         "missing_provenance",
+        "title_slug_quality",
     }
 )
 
