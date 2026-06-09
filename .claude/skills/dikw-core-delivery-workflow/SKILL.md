@@ -15,7 +15,7 @@ grows legs over phases):
 
 - `dikw-core-verify` — step 3 in-loop change-type router (until it exists, step 3 routes inline here).
 - `dikw-core-verify-synth` — the K-layer leg of step 3 (synth output self-check).
-- `dikw-core-fresh-review` — step 5 fresh-agent pre-merge review (until it exists, run `/code-review` + a clean subagent inline).
+- `dikw-core-fresh-review` — step 5 fresh-agent pre-merge review (clean subagent vs diff + rubric + design); run it alongside `/code-review`.
 
 **Run autonomously.** Per `feedback_autonomy_default` + `feedback_pr_workflow`, the full
 loop is standing approval to commit/push/PR/squash. Only stop on the 6 block signals below.
