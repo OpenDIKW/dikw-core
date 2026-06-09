@@ -8,8 +8,10 @@ packaging ``client/`` as a standalone wheel (or dragging FastAPI into the engine
 
 Rules:
   A. ``client/*`` must not import ``dikw_core.{api, api_*, storage, providers,
-     server}`` — the client depends only on ``schemas`` (+ the dependency-light
-     ``md_inspect``) within the package, so it stays wheel-packagable.
+     server, eval}`` — the client depends only on ``schemas`` (+ the
+     dependency-light ``md_inspect``) within the package, so it stays
+     wheel-packagable. (``eval`` matters now that the client restates the
+     metric-direction convention rather than importing the engine's copy.)
   B. only ``server/*`` and the ``cli.py`` launcher may import fastapi / uvicorn /
      starlette — engine code must not depend on the web framework.
   C. only ``server/*`` and ``cli.py`` may import ``dikw_core.server`` — engine /
@@ -28,7 +30,7 @@ _SRC = Path(dikw_core.__file__).resolve().parent  # .../src/dikw_core
 _WEB_FRAMEWORK = {"fastapi", "uvicorn", "starlette"}
 # Engine subpackages the standalone client must never reach into (first path
 # segment under ``dikw_core``). ``api`` / ``api_*`` are handled separately.
-_CLIENT_FORBIDDEN_ROOTS = {"storage", "providers", "server"}
+_CLIENT_FORBIDDEN_ROOTS = {"storage", "providers", "server", "eval"}
 
 
 # ---- import extraction --------------------------------------------------
@@ -119,7 +121,8 @@ def test_client_does_not_import_engine() -> None:
         if _is_client_forbidden(mod)
     ]
     assert not violations, (
-        "client/* must not import dikw_core.{api,api_*,storage,providers,server} "
+        "client/* must not import "
+        "dikw_core.{api,api_*,storage,providers,server,eval} "
         "(standalone-wheel invariant):\n" + "\n".join(violations)
     )
 
@@ -162,6 +165,7 @@ def test_rule_predicates_flag_known_violations() -> None:
     assert _is_client_forbidden("dikw_core.api_core")
     assert _is_client_forbidden("dikw_core.providers")
     assert _is_client_forbidden("dikw_core.server.app")
+    assert _is_client_forbidden("dikw_core.eval.runner")
     # …but the modules the client legitimately shares are allowed
     assert not _is_client_forbidden("dikw_core.schemas")
     assert not _is_client_forbidden("dikw_core.md_inspect")

@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 from collections.abc import Callable, Mapping
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -30,12 +31,20 @@ from rich.table import Table
 
 from ..schemas import Layer
 from . import serve_and_run as _sar
+from .baseline import (
+    DEFAULT_TOLERANCE,
+    baseline_document,
+    compare_to_baseline,
+    extract_metrics,
+    load_baseline,
+)
 from .config import ClientConfig, resolve
 from .converters import Converter, Registry, discover, pick
 from .importer import SourceImportError, build_import
 from .progress import (
     RetrieveStreamRenderer,
     TaskProgressRenderer,
+    render_baseline_comparison,
     render_check_report,
     render_eval_report,
     render_health_report,
@@ -1357,13 +1366,74 @@ def eval_cmd(
         bool,
         typer.Option("--plain", help="Disable progress widget."),
     ] = False,
+    against: Annotated[
+        Path | None,
+        typer.Option(
+            "--against",
+            help=(
+                "Compare this run's metrics to a committed baseline JSON and "
+                "exit 1 on any regression beyond the baseline's tolerance "
+                "(default 0.02). Direction-aware (a `_max` metric regresses when "
+                "it rises). Implies --wait; needs a single --dataset and one "
+                "--eval mode so the result carries one metrics set."
+            ),
+        ),
+    ] = None,
+    write_baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--write-baseline",
+            help=(
+                "After the run, write its metrics to a baseline JSON at this "
+                "path (commit it, then gate later runs with --against). Implies "
+                "--wait; needs a single --dataset and one --eval mode."
+            ),
+        ),
+    ] = None,
+    tolerance: Annotated[
+        float,
+        typer.Option(
+            "--tolerance",
+            min=0.0,
+            help=(
+                "Absolute per-metric noise floor recorded by --write-baseline "
+                "(default 0.02). Widen it for LLM-driven synth evals so model "
+                "jitter doesn't trip the gate. Ignored by --against, which reads "
+                "the tolerance from the baseline file."
+            ),
+        ),
+    ] = DEFAULT_TOLERANCE,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
     """Run an eval dataset on the server (retrieval and/or synth).
 
     Default is async — submit + print JSON task handle. Use ``--wait``
-    to block + render + exit with task / gate status."""
+    to block + render + exit with task / gate status. ``--against`` /
+    ``--write-baseline`` turn a run into a regression gate against a committed
+    baseline (both imply --wait)."""
+
+    gate = against is not None or write_baseline is not None
+    if against is not None and write_baseline is not None:
+        raise typer.BadParameter(
+            "pass only one of --against / --write-baseline",
+            param_hint="--against",
+        )
+    # Pre-flight the single-metrics-set requirement so an expensive (LLM-backed)
+    # run isn't wasted only to fail at comparison time. We can catch the obvious
+    # multi-report shapes up front: no --dataset (every packaged dataset runs) or
+    # more than one --eval mode both yield the {"datasets": [...]} envelope.
+    if gate:
+        if dataset is None:
+            raise typer.BadParameter(
+                "--against / --write-baseline need a single --dataset",
+                param_hint="--dataset",
+            )
+        if eval_modes is not None and len(eval_modes) > 1:
+            raise typer.BadParameter(
+                "--against / --write-baseline need a single --eval mode",
+                param_hint="--eval",
+            )
 
     # ``--judge-sample`` is one option accepting either a positive int or the
     # ``auto`` sentinel; forward both to the server (it resolves ``auto`` to the
@@ -1395,12 +1465,21 @@ def eval_cmd(
                 },
             )
             task_id = str(handle["task_id"])
-            if not wait and not _serve_and_run_forces_wait():
+            if not wait and not gate and not _serve_and_run_forces_wait():
                 _print_task_handle(task_id, str(handle.get("status") or "pending"))
                 return
             status, payload = await _wait_and_render(t, task_id, plain=plain)
         if status == "succeeded" and payload is not None:
             _render_eval_result(payload, pretty=pretty)
+            if gate:
+                _handle_baseline(
+                    payload,
+                    dataset=dataset,
+                    eval_modes=eval_modes,
+                    against=against,
+                    write_baseline=write_baseline,
+                    tolerance=tolerance,
+                )
             if not bool(payload.get("passed", True)):
                 raise typer.Exit(code=_EXIT_FAILED)
             # An explicit ``--eval synth`` request must have at least
@@ -1408,8 +1487,11 @@ def eval_cmd(
             # K-layer gate run and the dataset declared no synth
             # thresholds (informational only). Exit 2 to distinguish
             # "no gate ran" from "gate ran and passed" (exit 0) and
-            # "gate failed" (exit 1).
-            if eval_modes and "synth" in eval_modes:
+            # "gate failed" (exit 1). Skipped under --against/--write-baseline:
+            # there the baseline IS the gate the user chose, and it already
+            # passed (a regression would have exited 1 above), so the
+            # dataset-threshold exit-2 must not override that SHIP verdict.
+            if not gate and eval_modes and "synth" in eval_modes:
                 synth_reports = _synth_reports(payload)
                 if synth_reports and not any(
                     r.get("gated") for r in synth_reports
@@ -1424,6 +1506,86 @@ def eval_cmd(
         _exit_for_status(status, payload)
 
     _run(_go())
+
+
+def _handle_baseline(
+    payload: Mapping[str, Any],
+    *,
+    dataset: str | None,
+    eval_modes: list[str] | None,
+    against: Path | None,
+    write_baseline: Path | None,
+    tolerance: float,
+) -> None:
+    """Write or gate against a machine-readable baseline from an eval result.
+
+    Raises ``typer.Exit(1)`` when the result is the multi-dataset envelope (no
+    single metrics set to pin/compare), when a baseline can't be read, when it
+    pins no metric this run also produced (nothing to gate — a false-green
+    otherwise), or when ``--against`` finds a regression.
+    """
+
+    def _fail(message: str) -> None:
+        console.print(f"[red]error:[/red] {message}", markup=True)
+        raise typer.Exit(code=_EXIT_FAILED)
+
+    metrics = extract_metrics(payload)
+    if metrics is None:
+        _fail(
+            "--against / --write-baseline need a single --dataset and one "
+            "--eval mode so the result carries one metrics set (got a "
+            "multi-dataset / multi-mode run)."
+        )
+        return  # unreachable (— _fail raises); keeps mypy's narrowing happy
+    if write_baseline is not None:
+        # ``mode`` reflects what actually ran; fall back to the requested
+        # ``eval_modes`` so a retrieval-default run records ``["retrieval"]``,
+        # not ``[]``.
+        run_mode = payload.get("mode")
+        modes = eval_modes or ([str(run_mode)] if run_mode else [])
+        doc = baseline_document(
+            dataset=dataset,
+            modes=modes,
+            metrics=metrics,
+            tolerance=tolerance,
+            created=date.today().isoformat(),
+        )
+        try:
+            write_baseline.parent.mkdir(parents=True, exist_ok=True)
+            write_baseline.write_text(
+                json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _fail(f"could not write baseline {write_baseline}: {exc}")
+        console.print(
+            f"[green]wrote baseline[/green] {write_baseline} "
+            f"({len(metrics)} metric(s), tolerance {tolerance})",
+            markup=True,
+        )
+        return
+    assert against is not None  # guaranteed by the caller's gate condition
+    try:
+        baseline_metrics, baseline_tolerance = load_baseline(against)
+    except FileNotFoundError:
+        _fail(f"baseline not found: {against}")
+        return
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        _fail(f"could not read baseline {against}: {exc}")
+        return
+    comparison = compare_to_baseline(
+        baseline_metrics, metrics, tolerance=baseline_tolerance
+    )
+    if not comparison.rows:
+        _fail(
+            f"baseline {against} pins no metric this run also produced — "
+            f"nothing to gate (baseline has {len(baseline_metrics)} metric(s), "
+            f"run produced {len(metrics)}). Wrong --dataset/--eval, or a stale "
+            "baseline? Regenerate it with --write-baseline."
+        )
+    render_baseline_comparison(console, comparison)
+    if not comparison.ok:
+        raise typer.Exit(code=_EXIT_FAILED)
 
 
 def _synth_reports(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:

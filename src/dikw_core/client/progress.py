@@ -40,6 +40,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from .baseline import BaselineComparison
+
 
 @dataclass
 class FinalEvent:
@@ -512,6 +514,57 @@ def render_synth_verify_report(
             f"[dim]unresolved wikilinks at write time "
             f"(informational; gated form is the lint leg above): "
             f"{unresolved}[/dim]"
+        )
+
+
+def render_baseline_comparison(
+    console: Console, comparison: BaselineComparison
+) -> None:
+    """Render an ``eval --against`` regression verdict over a committed baseline.
+
+    One SHIP/REGRESSION line plus a per-metric table (direction-aware: a `_max`
+    metric regresses when it rises). Baseline metrics absent this run are
+    surfaced as a warning (not a failure); metrics new this run are noted as
+    informational."""
+    regressions = comparison.regressions
+    if regressions:
+        verdict = f"[red]REGRESSION[/red] — {len(regressions)} metric(s) regressed"
+    else:
+        verdict = "[green]SHIP[/green] — no regressions"
+    console.print(f"baseline {verdict} (tolerance {comparison.tolerance})")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("metric")
+    table.add_column("baseline", justify="right")
+    table.add_column("observed", justify="right")
+    table.add_column("Δ", justify="right")
+    table.add_column("status")
+    _style = {
+        "regressed": "[red]regressed[/red]",
+        "improved": "[green]improved[/green]",
+        "flat": "[dim]flat[/dim]",
+    }
+    for row in comparison.rows:
+        table.add_row(
+            row.name,
+            f"{row.baseline:.4f}",
+            f"{row.observed:.4f}",
+            f"{row.delta:+.4f}",
+            _style.get(row.status, row.status),
+        )
+    console.print(table)
+
+    if comparison.missing:
+        console.print(
+            f"[yellow]warning:[/yellow] {len(comparison.missing)} baseline "
+            f"metric(s) absent this run (not gated): "
+            f"{', '.join(comparison.missing)}",
+            markup=True,
+        )
+    if comparison.extra:
+        console.print(
+            f"[dim]{len(comparison.extra)} new metric(s) not pinned by the "
+            f"baseline: {', '.join(comparison.extra)}[/dim]"
         )
 
 
@@ -1031,6 +1084,7 @@ __all__ = [
     "FinalEvent",
     "RetrieveStreamRenderer",
     "TaskProgressRenderer",
+    "render_baseline_comparison",
     "render_check_report",
     "render_eval_report",
     "render_health_report",

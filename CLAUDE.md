@@ -97,6 +97,7 @@ src/dikw_core/
 ├── server/                FastAPI app, auth, sync + task + import + retrieve + pages + assets + graph routes,
 │                          NDJSON streaming, task subsystem
 └── client/                Remote Typer CLI + httpx transport + NDJSON progress + sources importer + converter dispatch
+                           + baseline.py (eval --against/--write-baseline regression gate — pure, no engine import)
 ```
 
 ### Layering invariants
