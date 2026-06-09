@@ -48,6 +48,12 @@ from pathlib import Path
 
 GOLDEN_REL = "tests/cli_command_tree.golden.txt"
 
+# The only command-kind annotations the golden tree uses. A bracketed token
+# outside this set is a typo (or an unhandled new Typer shape) — fail fast
+# rather than silently store a bogus kind that ``validate_cli_ref`` would then
+# treat as a non-group leaf.
+_GOLDEN_KINDS = frozenset({"group", "command"})
+
 # ``dikw`` followed by >=1 lowercase command tokens. ``\bdikw\b`` won't fire
 # inside ``dikw-core`` / ``dikw_core`` / ``dikw.yml`` (no following space), and a
 # bare ``dikw`` with no command word never matches (the group is required). The
@@ -108,6 +114,11 @@ def load_command_paths(golden_text: str) -> dict[tuple[str, ...], str]:
         if not (kind_tok.startswith("[") and kind_tok.endswith("]")):
             continue
         kind = kind_tok[1:-1]
+        if kind not in _GOLDEN_KINDS:
+            raise ValueError(
+                f"unknown command-kind annotation {kind_tok!r} in golden tree "
+                f"(line: {line!r}); expected one of {sorted(_GOLDEN_KINDS)}"
+            )
         path = tuple(tokens[:-1])
         if path:
             paths[path] = kind

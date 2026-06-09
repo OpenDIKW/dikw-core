@@ -320,7 +320,7 @@ buffering) or a real network hang — not a synth-loop issue.
 For server-side detail, raise the log level on the server process:
 
 ```bash
-DIKW_LOG_LEVEL=DEBUG dikw serve --base $BASE
+DIKW_LOG_LEVEL=DEBUG uv run dikw serve --base $BASE
 ```
 
 DEBUG adds a per-group log line on each side of the LLM call (model,

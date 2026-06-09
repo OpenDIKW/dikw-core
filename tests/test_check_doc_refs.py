@@ -51,6 +51,13 @@ def test_load_command_paths_parses_kind_and_path() -> None:
     assert paths[("dikw", "serve")] == "command"
 
 
+def test_load_command_paths_rejects_unknown_kind() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown command-kind"):
+        cdr.load_command_paths("dikw client splice [commnd]\n")
+
+
 # ---- pure: validate_cli_ref ---------------------------------------------
 
 
