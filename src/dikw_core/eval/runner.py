@@ -1206,9 +1206,11 @@ async def run_synth_eval(
 
         # Optional fact-entailment judge — the LLM grounding leg the cosine
         # ``fact_grounding_ratio`` is blind to. Gated on ``judge`` AND the
-        # dataset's opt-in flag so it's $0 unless explicitly enabled. Surfaced
-        # as an informational (ungated) metric; the honest bootstrap CI rides
-        # on ``entailment_summary``.
+        # dataset's opt-in flag so it's $0 unless explicitly enabled. Mirrored
+        # into ``informational`` for display / the A/B harness; the honest
+        # bootstrap CI rides on ``entailment_summary``. When the dataset also
+        # declares a ``synth/fact_entailment_ratio`` threshold, the assembly
+        # below folds this value into the gate (conditional, judge-only).
         entailment_summary: EntailmentSummary | None = None
         if judge and spec.judge.entailment_grounding_enabled:
             await _reporter.progress(
@@ -1286,12 +1288,33 @@ async def run_synth_eval(
             for name, thr in spec.thresholds.items()
             if name.startswith("synth/")
         }
+        # Conditional gate for the judge-only entailment metric. It lives in
+        # ``informational`` (never promoted into ``metrics``), so fold its
+        # observed value into the dict the gate reads WHEN the judge produced it.
+        # The two ``ent_ratio is None`` cases are NOT the same:
+        #   * judge never ran (``entailment_summary is None`` — no ``--judge`` or
+        #     the dataset didn't opt in) → DROP the threshold; the gate is
+        #     not-applicable and a non-judge run (hermetic CI, plain
+        #     ``--eval synth``) must not be failed by a metric it never computed.
+        #   * judge ran but produced no ratio (``n_judged == 0`` — every sampled
+        #     claim errored or had no evidence) → KEEP the threshold so
+        #     ``check_thresholds`` records ``observed=None → passed=False``. A
+        #     broken / empty judge on a ``--judge`` acceptance run must fail
+        #     LOUDLY, not silently green-light (a false-green gate is worse than
+        #     no gate). The errors are otherwise visible only in
+        #     ``entailment_summary.n_errors``, which nothing else gates on.
+        gate_input = dict(bundle.metrics)
+        ent_ratio = bundle.informational.get("synth/fact_entailment_ratio")
+        if ent_ratio is not None:
+            gate_input["synth/fact_entailment_ratio"] = ent_ratio
+        elif entailment_summary is None:
+            synth_thresholds.pop("synth/fact_entailment_ratio", None)
         return SynthEvalReport(
             dataset_name=spec.name,
             n_sources=bundle.n_sources,
             n_pages=len(bundle.pages),
             metrics=bundle.metrics,
-            threshold_results=check_thresholds(bundle.metrics, synth_thresholds),
+            threshold_results=check_thresholds(gate_input, synth_thresholds),
             pages_per_source=bundle.pages_per_source,
             informational=bundle.informational,
             judge_summary=judge_summary,

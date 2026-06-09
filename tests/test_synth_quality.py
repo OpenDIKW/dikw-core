@@ -59,9 +59,20 @@ Beta is another concept the test corpus mentions.
 """
 
 
-def _write_synth_dataset(root: Path, *, name: str = "synth-toy") -> Path:
+def _write_synth_dataset(
+    root: Path,
+    *,
+    name: str = "synth-toy",
+    entailment_threshold: float | None = None,
+) -> Path:
     """Build a minimal synth-eval dataset; permissive thresholds + a
-    single concept page_type so the FakeLLM responses parse cleanly."""
+    single concept page_type so the FakeLLM responses parse cleanly.
+
+    ``entailment_threshold`` (optional) declares a ``synth/fact_entailment_ratio``
+    floor AND opts the dataset into the entailment judge — the pair needed to
+    exercise the judge-only conditional gate. Left unset, the dataset gates
+    only the five deterministic synth metrics (the common case).
+    """
     ds = root / name
     (ds / "corpus").mkdir(parents=True, exist_ok=True)
     (ds / "corpus" / "alpha.md").write_text(
@@ -72,17 +83,23 @@ def _write_synth_dataset(root: Path, *, name: str = "synth-toy") -> Path:
         "# Beta\n\nBeta is another concept the test corpus mentions.\n",
         encoding="utf-8",
     )
+    thresholds = [
+        "  synth/fact_grounding_ratio: 0.0",
+        "  synth/atomicity_score: 0.0",
+        "  synth/duplicate_ratio_max: 1.0",
+        "  synth/wikilink_resolved_ratio: 0.0",
+        "  synth/language_fidelity: 0.0",
+    ]
+    judge_block = ""
+    if entailment_threshold is not None:
+        thresholds.append(f"  synth/fact_entailment_ratio: {entailment_threshold}")
+        judge_block = "judge:\n  entailment_grounding_enabled: true\n"
     (ds / "dataset.yaml").write_text(
         "name: " + name + "\n"
         "modes: [synth]\n"
-        "thresholds:\n"
-        "  synth/fact_grounding_ratio: 0.0\n"
-        "  synth/atomicity_score: 0.0\n"
-        "  synth/duplicate_ratio_max: 1.0\n"
-        "  synth/wikilink_resolved_ratio: 0.0\n"
-        "  synth/language_fidelity: 0.0\n"
+        "thresholds:\n" + "\n".join(thresholds) + "\n"
         "synth:\n"
-        "  page_types: [concept]\n",
+        "  page_types: [concept]\n" + judge_block,
         encoding="utf-8",
     )
     (ds / "queries.yaml").write_text(
@@ -217,8 +234,14 @@ async def test_mvp_synth_half_runs_hermetically() -> None:
         assert 0.0 <= report.metrics[m] <= 1.0, (
             f"{m} out of [0, 1]: {report.metrics[m]}"
         )
-    # Threshold gate keys mirror exactly the synth thresholds mvp declares.
+    # Threshold gate keys mirror the FIVE deterministic synth thresholds mvp
+    # declares. mvp also declares ``synth/fact_entailment_ratio`` — but that is
+    # a judge-only metric, and this hermetic run passes no ``--judge``, so the
+    # conditional gate drops it (rather than recording a spurious ``None`` miss).
     assert {r.name for r in report.threshold_results} == gated
+    assert "synth/fact_entailment_ratio" not in {
+        r.name for r in report.threshold_results
+    }
     assert "synth/page_density" in report.informational
 
 
@@ -575,6 +598,149 @@ async def test_run_synth_eval_entailment_off_when_flag_unset(tmp_path: Path) -> 
     assert report.judge_summary is not None  # page judge still ran
     assert report.entailment_summary is None
     assert "synth/fact_entailment_ratio" not in report.informational
+
+
+# ---- entailment as a conditional (judge-only) gate -------------------------
+
+
+@pytest.mark.asyncio
+async def test_entailment_gated_when_judge_runs(tmp_path: Path) -> None:
+    """A dataset declaring a ``synth/fact_entailment_ratio`` floor AND ``--judge``
+    folds the judge-only ratio into the gate — it becomes a hard pass/fail row
+    in ``threshold_results``. The ratio stays mirrored in ``informational`` (for
+    display / the A/B harness) and is NOT promoted into the deterministic
+    ``metrics`` dict."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+
+    rows = [
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    ]
+    assert len(rows) == 1
+    assert rows[0].observed == 1.0  # all verdicts scripted "yes"
+    assert rows[0].direction == "min"  # higher entailment is better
+    assert rows[0].passed is True
+    assert "synth/fact_entailment_ratio" in report.informational
+    assert "synth/fact_entailment_ratio" not in report.metrics
+
+
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_below_threshold(tmp_path: Path) -> None:
+    """All-``no`` verdicts → ratio 0.0 < the 0.55 floor → that gate FAILS
+    (min-direction) and drags ``report.passed`` to False."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    llm = _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict=json.dumps({"verdict": "no", "rationale": "unsupported"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed == 0.0
+    assert row.passed is False
+    assert report.passed is False
+
+
+@pytest.mark.asyncio
+async def test_entailment_threshold_dropped_when_judge_off(tmp_path: Path) -> None:
+    """The conditional-gating contract: a dataset may declare a
+    ``synth/fact_entailment_ratio`` floor, but a NON-judge run (hermetic CI,
+    plain ``--eval synth`` without ``--judge``) must NOT be failed by it — the
+    metric was never computed. The threshold is dropped, not recorded as a
+    ``observed=None`` miss; the five deterministic gates still apply."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec,
+        llm=FakeLLM(responses=[_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE]),
+        embedder=FakeEmbeddings(),
+        judge=False,
+    )
+
+    names = {r.name for r in report.threshold_results}
+    assert "synth/fact_entailment_ratio" not in names
+    assert names == {
+        "synth/fact_grounding_ratio",
+        "synth/atomicity_score",
+        "synth/duplicate_ratio_max",
+        "synth/wikilink_resolved_ratio",
+        "synth/language_fidelity",
+    }
+    assert report.entailment_summary is None
+
+
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_when_judge_errors_every_claim(
+    tmp_path: Path,
+) -> None:
+    """False-green guard: when ``--judge`` runs the entailment leg but it errors
+    on EVERY sampled claim (n_judged == 0 — a wrong model id, auth failure, or
+    unparseable output), the declared gate must NOT be silently dropped. The
+    threshold is kept as an ``observed=None`` miss so a broken judge fails
+    loudly — distinct from a non-judge run, where the gate is dropped because it
+    is genuinely not-applicable."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    llm = _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict="not a parseable entailment verdict",  # every claim → parse error
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    # The judge ran (summary present) but judged nothing.
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged == 0
+    assert report.entailment_summary.n_errors >= 1
+    # The ratio was never mirrored into informational (n_judged == 0)...
+    assert "synth/fact_entailment_ratio" not in report.informational
+    # ...yet the gate is KEPT — a loud None miss, not a silent drop.
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed is None
+    assert row.passed is False
+    assert report.passed is False
 
 
 # ---- category-correctness judge wiring -------------------------------------

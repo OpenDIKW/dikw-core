@@ -42,11 +42,23 @@ _RETRIEVAL_METRICS = frozenset(
 # MUST be namespaced (``synth/atomicity_score``); the bare form is rejected
 # at load time so a typo can't bypass the gate. ``duplicate_ratio_max``
 # carries the ``_max`` suffix to signal lower-is-better (reverse-direction).
+#
 # ``page_density`` is informational only — runner emits it into
 # ``SynthEvalReport.informational`` rather than ``metrics``, so it would
 # never satisfy a threshold even if one were declared. Kept in the
-# "known synth metric" set for the informational column, but
-# ``_GATEABLE_SYNTH_METRICS`` is what threshold validation accepts.
+# "known synth metric" set for the informational column, but excluded from
+# ``_GATEABLE_SYNTH_METRICS`` (what threshold validation accepts).
+#
+# ``fact_entailment_ratio`` is gateable but **judge-only**: it is computed
+# only under ``--judge`` + ``judge.entailment_grounding_enabled`` and lives in
+# ``informational`` (never promoted into ``metrics``). ``run_synth_eval`` folds
+# its observed value into the gate when the judge produced it, drops the
+# threshold when the judge didn't run (so declaring it doesn't fail a non-judge
+# run), and KEEPS it as a loud ``observed=None`` miss when the judge ran but
+# produced nothing (a broken / empty judge on an acceptance run). (Unlike
+# ``expected_coverage``, whose absence IS a real miss: that one needs no judge,
+# only ``expected.yaml``.) It stays in ``_GATEABLE_SYNTH_METRICS`` so a dataset
+# may declare the floor; the conditional enforcement lives in the runner.
 _SYNTH_METRICS = frozenset(
     {
         "fact_grounding_ratio",
@@ -55,6 +67,7 @@ _SYNTH_METRICS = frozenset(
         "wikilink_resolved_ratio",
         "expected_coverage",
         "language_fidelity",
+        "fact_entailment_ratio",
         "page_density",
     }
 )

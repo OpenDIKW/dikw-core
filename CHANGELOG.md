@@ -9,6 +9,17 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`synth/fact_entailment_ratio` is now a conditional (judge-only) gate.** The
+  LLM entailment metric — previously informational-only — can now be declared as
+  a `synth/<metric>` threshold in a dataset and is enforced by `run_synth_eval`
+  **only when the judge actually ran**. A non-judge run (the hermetic CI synth
+  half, or a plain `--eval synth` without `--judge`) drops the threshold instead
+  of recording a spurious `observed=None` miss, so the gate bites on real-LLM
+  `--judge` acceptance runs only. The ratio still mirrors into `informational`
+  (it is never promoted into the deterministic `metrics` set). The packaged
+  `mvp` dataset gates it at `0.55`, calibrated against the 2026-06-05 real-LLM
+  run (observed `0.775`, 95% CI `[0.65, 0.90]`, n=20 on MiniMax-M3 — floor set
+  below the CI lower bound to absorb judge noise). See `evals/BASELINES.md`.
 - **`dikw client synth --verify --judge` — report-only grounding leg.** Adds the
   one probabilistic check the deterministic `--verify` legs can't make: it
   samples this run's K-page claims, grounds each against the source chunks the

@@ -583,6 +583,32 @@ def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
     assert spec.judge.entailment_grounding_enabled is True
 
 
+def test_synth_fact_entailment_ratio_threshold_is_gateable(tmp_path: Path) -> None:
+    """``synth/fact_entailment_ratio`` is an accepted (gateable) synth threshold
+    key — it used to be rejected at load as 'not a synth metric'. (The runner's
+    conditional enforcement is covered in ``tests/test_synth_quality.py``; this
+    test pins only that the key now LOADS.)"""
+    ds = tmp_path / "ent"
+    (ds / "corpus").mkdir(parents=True)
+    (ds / "corpus" / "a.md").write_text("# A\n\nbody.\n", encoding="utf-8")
+    (ds / "dataset.yaml").write_text(
+        "name: ent\n"
+        "modes: [synth]\n"
+        "thresholds:\n"
+        "  synth/fact_entailment_ratio: 0.55\n"
+        "synth:\n"
+        "  page_types: [concept]\n"
+        "judge:\n"
+        "  entailment_grounding_enabled: true\n",
+        encoding="utf-8",
+    )
+    (ds / "queries.yaml").write_text(
+        "queries:\n  - q: a\n    expect_any: [a]\n", encoding="utf-8"
+    )
+    spec = load_dataset(ds)
+    assert spec.thresholds["synth/fact_entailment_ratio"] == 0.55
+
+
 def test_load_dataset_judge_category_flag_parsed(tmp_path: Path) -> None:
     ds = _write_synth_dataset(tmp_path)
     (ds / "dataset.yaml").write_text(
