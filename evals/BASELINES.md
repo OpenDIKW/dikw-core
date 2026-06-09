@@ -7,6 +7,38 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-09 — synth --verify --judge grounding leg (Phase 1, non-destructive)
+
+**Change under test:** `dikw client synth --verify --judge` — an optional,
+**report-only** grounding/entailment leg on the post-synth self-check. It
+samples this run's K-page claims (`synth.verify_judge_sample`, default 25),
+grounds each against its cited source's chunks (reusing the eval pipeline
+`compute_grounding_cosines` → `claim_evidence_from_grounding` →
+`judge_entailment`), and surfaces an entailment ratio + 95% CI. The ratio is
+deliberately **never** folded into the `passed` verdict.
+
+**Why no new A/B numbers (non-destructiveness):** the leg is **purely additive**
+and only READS synth output — it runs *after* the existing
+`_synth_pages_from_source` → `persist_knowledge` pipeline and mutates nothing on
+that path. With `judge=False` (the default) not a single new line of the leg
+executes, and with `judge=True` the generated `knowledge/<category>/<slug>.md`
+pages are **byte-identical** to a run without the flag. So the K-layer generation
+baseline is unchanged: the **elon-musk.md** 1500-line subset (the mandated
+K-layer corpus, last measured in the Phase 2 entry below and the 2026-05-10 PR2
+entry) produces the same pages with or without `--judge`.
+
+**Why it can't corrupt the verdict (the real risk):** a noisy LLM judge gating
+the flagship verify verdict would false-red clean runs. The leg is report-only
+by construction — `passed = persist_ok and lint_ok and duplicate_ok`, no
+grounding term — pinned by `tests/test_synth_verify_judge.py`
+(`test_low_grounding_does_not_fail_verify`: a canned `no` judge drives the ratio
+to 0.0 yet `passed` stays True). The leg also **must not crash the synth**: it
+needs an embedder + an LLM and loud-skips when either is missing, and any error
+inside it degrades to that same loud skip
+(`test_judge_leg_failure_does_not_crash_synth`) — every page is already
+persisted before the leg runs. Server plumbing is covered by
+`tests/server/test_synth_tasks.py::test_synth_verify_judge_returns_grounding_section`.
+
 ## 2026-06-08 — title_slug_quality lint (Phase 1, non-destructive)
 
 **Change under test:** a new deterministic, read-only K-layer lint kind

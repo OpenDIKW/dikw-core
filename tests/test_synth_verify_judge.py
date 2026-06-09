@@ -138,6 +138,7 @@ async def test_judge_leg_runs_and_reports(tmp_path: Path) -> None:
     assert v.grounding_requested is True
     assert v.grounding_checked is True
     assert v.grounding_n_judged > 0
+    assert v.grounding_n_errors == 0
     assert v.grounding_entailment_ratio == pytest.approx(1.0)
     # Report-only: the grounding leg is NOT one of the gated legs.
     assert v.passed is True
@@ -205,6 +206,70 @@ async def test_judge_loud_skips_without_embedder(tmp_path: Path) -> None:
     assert v.grounding_checked is False
     assert v.grounding_entailment_ratio is None
     assert llm.entailment_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_judge_leg_failure_does_not_crash_synth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grounding leg is report-only: a raise inside it (e.g. the grounding
+    re-embed hitting a provider error) must degrade to a loud skip, never
+    discard the SynthReport — every page is already persisted by then."""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    async def _boom(**_kw: object) -> list:
+        raise RuntimeError("grounding embed exploded")
+
+    # Local import in ``_grounding_verify_leg`` resolves the name at call time,
+    # so patching the source module is enough.
+    monkeypatch.setattr(
+        "dikw_core.eval.metrics.compute_grounding_cosines", _boom
+    )
+
+    llm = _SynthAndJudgeLLM(_script(), verdict="yes")
+    # Must NOT raise.
+    report = await _synth_twice(wiki, llm, embedder, judge=True)
+
+    v = report.verify
+    assert v is not None
+    assert v.grounding_requested is True
+    assert v.grounding_checked is False  # degraded to a loud skip
+    assert v.grounding_entailment_ratio is None
+    # Deterministic legs still decided the verdict.
+    assert v.passed is True
+
+
+@pytest.mark.asyncio
+async def test_judge_ratio_is_none_when_nothing_judged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The leg can run (checked) yet judge nothing (no claims / all
+    unverifiable). The engine maps ``n_judged == 0`` to ``ratio = None`` so the
+    report omits a misleading 0.0 floor — pinned here by forcing the judge to
+    return an empty summary (synth auto-attributes provenance, so an
+    all-unsourced run isn't reachable through the normal path)."""
+    from dikw_core.eval.judge import EntailmentSummary
+
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    async def _empty_summary(*_a: object, **_kw: object) -> EntailmentSummary:
+        return EntailmentSummary(ratio=0.0, n_judged=0, n_errors=0, n_no_evidence=0)
+
+    # Local import in ``_grounding_verify_leg`` resolves the name at call time.
+    monkeypatch.setattr("dikw_core.eval.judge.judge_entailment", _empty_summary)
+
+    llm = _SynthAndJudgeLLM(_script(), verdict="yes")
+    report = await _synth_twice(wiki, llm, embedder, judge=True)
+
+    v = report.verify
+    assert v is not None
+    assert v.grounding_checked is True
+    assert v.grounding_n_judged == 0
+    assert v.grounding_entailment_ratio is None
 
 
 @pytest.mark.asyncio

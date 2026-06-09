@@ -683,15 +683,36 @@ async def _verify_synth_output(
                 "embedder" if embedder is None else "LLM",
             )
         else:
-            grounding = await _grounding_verify_leg(
-                storage=storage,
-                pages=pages,
-                embedder=embedder,
-                embedding_model=embedding_model,
-                llm=judge_llm,
-                judge_model=judge_model,
-                judge_sample=judge_sample,
-            )
+            # The leg is report-only and MUST NOT fail the synth: every page is
+            # already persisted by the time we get here. ``judge_entailment``
+            # already swallows per-pair LLM errors, but the grounding re-embed
+            # (``compute_grounding_cosines``) and the ``list_chunks`` /
+            # ``list_documents`` reads can still raise (a transient embed blip,
+            # a permanent provider misconfig surfacing only on this extra embed
+            # pass, a storage hiccup). Catch and degrade to a loud skip
+            # (``checked`` stays False) rather than letting an exception in the
+            # informational leg discard the whole SynthReport. ``CancelledError``
+            # (a BaseException the ``except Exception`` arm misses) re-raises so
+            # a cancel mid-leg still propagates.
+            try:
+                grounding = await _grounding_verify_leg(
+                    storage=storage,
+                    pages=pages,
+                    embedder=embedder,
+                    embedding_model=embedding_model,
+                    llm=judge_llm,
+                    judge_model=judge_model,
+                    judge_sample=judge_sample,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    "synth --verify --judge: grounding leg FAILED (%s) — no "
+                    "entailment ratio computed; synth output is unaffected",
+                    e,
+                )
+                grounding = _GroundingVerifyResult(requested=True)
 
     persist_error_count = len(report.persist_errors)
     persist_ok = persist_error_count == 0

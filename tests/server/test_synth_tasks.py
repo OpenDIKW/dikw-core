@@ -53,6 +53,24 @@ class _ScriptedSynthLLM:
         raise NotImplementedError
 
 
+class _ScriptedSynthAndJudgeLLM(_ScriptedSynthLLM):
+    """A synth scripted LLM that also answers the entailment judge — synth
+    prompts return a canned page, entailment prompts a canned verdict."""
+
+    def __init__(self, by_source: dict[str, str], *, verdict: str = "yes") -> None:
+        super().__init__(by_source)
+        self._verdict = verdict
+
+    async def complete(
+        self, *, system: str, user: str, model: str, **_: Any
+    ) -> LLMResponse:
+        if "entailment judge" in system.lower():
+            return LLMResponse(
+                text=f'{{"verdict": "{self._verdict}"}}', finish_reason="end_turn"
+            )
+        return await super().complete(system=system, user=user, model=model)
+
+
 # ---- synth -------------------------------------------------------------
 
 
@@ -191,6 +209,73 @@ async def test_synth_verify_returns_verify_section(
     assert verify["duplicate_checked"] is True
     assert verify["lint_ok"] is True
     assert verify["persist_ok"] is True
+    assert verify["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_synth_verify_judge_returns_grounding_section(
+    server_client: httpx.AsyncClient,
+    base_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``POST /v1/synth {verify, judge}`` threads ``judge`` through
+    SynthSubmit → make_synth_runner → api.synthesize and returns the report-only
+    grounding leg in the serialized result. This is the only path the CLI
+    exercises, so it pins the server plumbing the engine tests can't."""
+    dest = base_root / "sources" / "notes"
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in FIXTURES.glob("*.md"):
+        shutil.copy2(src, dest / src.name)
+    await api_module.ingest(base_root, embedder=FakeEmbeddings())
+
+    # Pages carry ``sources:`` so the grounding leg has provenance to follow.
+    script = {
+        "sources/notes/karpathy-wiki.md": (
+            '<page category="concept" slug="karpathy">\n'
+            "---\ntags: [karpathy]\nsources: [sources/notes/karpathy-wiki.md]\n---\n\n"
+            "# Karpathy\n\nDeterministic scoping beats probabilistic guessing.\n"
+            "</page>"
+        ),
+        "sources/notes/dikw.md": (
+            '<page category="concept" slug="dikw">\n'
+            "---\ntags: [dikw]\nsources: [sources/notes/dikw.md]\n---\n\n"
+            "# DIKW\n\nData becomes information becomes knowledge becomes wisdom.\n"
+            "</page>"
+        ),
+        "sources/notes/retrieval.md": (
+            '<page category="concept" slug="retrieval">\n'
+            "---\ntags: [retrieval]\nsources: [sources/notes/retrieval.md]\n---\n\n"
+            "# Retrieval\n\nReciprocal rank fusion blends sparse and dense hits.\n"
+            "</page>"
+        ),
+    }
+    _patch_synth_factories(monkeypatch, llm=FakeLLM())
+    monkeypatch.setattr(
+        synth_op_module,
+        "build_llm",
+        lambda _cfg, **_kw: _ScriptedSynthAndJudgeLLM(script, verdict="yes"),
+    )
+
+    submit = await server_client.post(
+        "/v1/synth",
+        json={"force_all": True, "no_embed": False, "verify": True, "judge": True},
+    )
+    assert submit.status_code == 200, submit.text
+    task_id = submit.json()["task_id"]
+
+    row = await _wait_terminal(server_client, task_id, timeout=15.0)
+    assert row["status"] == "succeeded", row
+
+    result = (await server_client.get(f"/v1/tasks/{task_id}/result")).json()[
+        "result"
+    ]
+    verify = result["verify"]
+    assert verify is not None
+    assert verify["grounding_requested"] is True
+    assert verify["grounding_checked"] is True
+    assert verify["grounding_n_judged"] > 0
+    # Canned "yes" judge → ratio 1.0, and it is report-only: passed unaffected.
+    assert verify["grounding_entailment_ratio"] == pytest.approx(1.0)
     assert verify["passed"] is True
 
 
