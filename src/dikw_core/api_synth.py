@@ -84,6 +84,7 @@ async def synthesize(
     embedder: EmbeddingProvider | None = None,
     reporter: ProgressReporter | None = None,
     verify: bool = False,
+    judge: bool = False,
 ) -> SynthReport:
     """Turn source docs into K-layer knowledge pages via the configured LLM.
 
@@ -100,6 +101,13 @@ async def synthesize(
     returned report (``None`` otherwise). It only READS synth output — the
     generated pages are unchanged. See :class:`SynthVerifyReport` for the
     gated legs.
+
+    ``judge=True`` (only meaningful with ``verify=True``) additionally runs the
+    optional, **report-only** grounding/entailment leg: it samples this run's
+    page claims, grounds each against its source chunks, and asks the synth LLM
+    whether the evidence entails the claim. The ratio is surfaced but never
+    folded into ``passed`` (see :class:`SynthVerifyReport`). It loud-skips when
+    no embedder is wired.
     """
     cfg, root, storage = await _with_storage(path)
     _reporter: ProgressReporter = reporter or NoopReporter()
@@ -549,6 +557,10 @@ async def synthesize(
                     embedding_model=text_embed_model,
                     duplicate_cosine_tau=cfg.synth.verify_duplicate_cosine_tau,
                     max_duplicate_ratio=cfg.synth.verify_max_duplicate_ratio,
+                    judge=judge,
+                    judge_llm=_llm,
+                    judge_model=cfg.provider.llm_model,
+                    judge_sample=cfg.synth.verify_judge_sample,
                 ),
             )
         return report
@@ -584,6 +596,10 @@ async def _verify_synth_output(
     embedding_model: str,
     duplicate_cosine_tau: float,
     max_duplicate_ratio: float,
+    judge: bool = False,
+    judge_llm: LLMProvider | None = None,
+    judge_model: str = "",
+    judge_sample: int = 25,
 ) -> SynthVerifyReport:
     """Deterministic post-synth self-check over the pages THIS run produced.
 
@@ -593,6 +609,10 @@ async def _verify_synth_output(
     See :class:`SynthVerifyReport` for the gating contract — orphans are not
     gated, and a missing embedder loud-skips the duplicate leg rather than
     silently passing it.
+
+    ``judge=True`` adds the optional **report-only** grounding/entailment leg
+    (needs both ``judge_llm`` and ``embedder``; loud-skips otherwise). It never
+    affects ``passed`` — see :class:`SynthVerifyReport`.
 
     Local imports keep ``run_lint`` / the eval duplicate metric off the hot
     synth path when verify is not requested (and avoid any import-cycle risk
@@ -647,6 +667,53 @@ async def _verify_synth_output(
             tau=duplicate_cosine_tau,
         )
 
+    # Optional report-only grounding/entailment leg. Needs an embedder (the
+    # per-claim argmax that selects each claim's evidence chunk is embedding-
+    # driven) AND an LLM (the entailment verdict). When ``judge`` was requested
+    # but either is missing the leg loud-skips: ``grounding_requested`` stays
+    # True so the renderer can warn, ``grounding_checked`` stays False so a
+    # green verify never reads as "claims grounded" when the check never ran.
+    grounding = _GroundingVerifyResult()
+    if judge:
+        grounding.requested = True
+        if embedder is None or judge_llm is None:
+            logger.warning(
+                "synth --verify --judge: grounding leg SKIPPED — %s missing; "
+                "no entailment ratio computed",
+                "embedder" if embedder is None else "LLM",
+            )
+        else:
+            # The leg is report-only and MUST NOT fail the synth: every page is
+            # already persisted by the time we get here. ``judge_entailment``
+            # already swallows per-pair LLM errors, but the grounding re-embed
+            # (``compute_grounding_cosines``) and the ``list_chunks`` /
+            # ``list_documents`` reads can still raise (a transient embed blip,
+            # a permanent provider misconfig surfacing only on this extra embed
+            # pass, a storage hiccup). Catch and degrade to a loud skip
+            # (``checked`` stays False) rather than letting an exception in the
+            # informational leg discard the whole SynthReport. ``CancelledError``
+            # (a BaseException the ``except Exception`` arm misses) re-raises so
+            # a cancel mid-leg still propagates.
+            try:
+                grounding = await _grounding_verify_leg(
+                    storage=storage,
+                    pages=pages,
+                    embedder=embedder,
+                    embedding_model=embedding_model,
+                    llm=judge_llm,
+                    judge_model=judge_model,
+                    judge_sample=judge_sample,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    "synth --verify --judge: grounding leg FAILED (%s) — no "
+                    "entailment ratio computed; synth output is unaffected",
+                    e,
+                )
+                grounding = _GroundingVerifyResult(requested=True)
+
     persist_error_count = len(report.persist_errors)
     persist_ok = persist_error_count == 0
     lint_ok = not findings
@@ -661,11 +728,108 @@ async def _verify_synth_output(
         duplicate_ratio=duplicate_ratio,
         duplicate_cosine_tau=duplicate_cosine_tau,
         max_duplicate_ratio=max_duplicate_ratio,
+        grounding_requested=grounding.requested,
+        grounding_checked=grounding.checked,
+        grounding_entailment_ratio=grounding.ratio,
+        grounding_ci=grounding.ci,
+        grounding_n_judged=grounding.n_judged,
+        grounding_n_no_evidence=grounding.n_no_evidence,
+        grounding_n_errors=grounding.n_errors,
+        grounding_sample=grounding.sample,
         persist_ok=persist_ok,
         lint_ok=lint_ok,
         duplicate_ok=duplicate_ok,
         passed=persist_ok and lint_ok and duplicate_ok,
     )
+
+
+@dataclass
+class _GroundingVerifyResult:
+    """Mutable accumulator for the report-only grounding leg of ``_verify``.
+
+    A tiny internal struct (not a public DTO) so the leg can default-skip
+    cleanly and the return-site stays one flat ``SynthVerifyReport(...)``.
+    ``ratio`` is ``None`` when nothing was judged (no claims / all
+    unverifiable) so the report omits a misleading ``0.0`` floor.
+    """
+
+    requested: bool = False
+    checked: bool = False
+    ratio: float | None = None
+    ci: tuple[float, float] = (0.0, 0.0)
+    n_judged: int = 0
+    n_no_evidence: int = 0
+    n_errors: int = 0
+    sample: int = 0
+
+
+async def _grounding_verify_leg(
+    *,
+    storage: Storage,
+    pages: list[KnowledgePage],
+    embedder: EmbeddingProvider,
+    embedding_model: str,
+    llm: LLMProvider,
+    judge_model: str,
+    judge_sample: int,
+) -> _GroundingVerifyResult:
+    """Ground this run's page claims against their cited source chunks and ask
+    the LLM whether each is entailed. Mirrors the eval runner's construction
+    (``compute_grounding_cosines`` → ``claim_evidence_from_grounding`` →
+    ``judge_entailment``) but scoped to ``pages`` and their provenance sources.
+
+    Eval imports are local: they pull the eval package's metric/judge code,
+    which has no place on the hot synth path when ``--judge`` is not requested.
+    """
+    from .eval.judge import claim_evidence_from_grounding, judge_entailment
+    from .eval.metrics import compute_grounding_cosines
+
+    result = _GroundingVerifyResult(requested=True, sample=judge_sample)
+
+    # Map each produced page to its first provenance source (mirrors the eval
+    # runner's ``page.sources[0]`` keying) and load that source's chunks once.
+    source_docs = await storage.list_documents(layer=Layer.SOURCE, active=True)
+    doc_id_by_path = {doc.path: doc.doc_id for doc in source_docs}
+    pages_with_sources: list[tuple[KnowledgePage, str]] = []
+    needed_sources: set[str] = set()
+    for page in pages:
+        if not page.sources:
+            continue
+        key = page.sources[0]
+        if key not in doc_id_by_path:
+            continue
+        pages_with_sources.append((page, key))
+        needed_sources.add(key)
+
+    chunks_by_source: dict[str, list[ChunkRecord]] = {}
+    for src_path in needed_sources:
+        chunks_by_source[src_path] = await storage.list_chunks(
+            doc_id_by_path[src_path]
+        )
+
+    grounding_claims = await compute_grounding_cosines(
+        pages_with_sources=pages_with_sources,
+        chunks_by_source=chunks_by_source,
+        embedder=embedder,
+        embedding_model=embedding_model,
+    )
+    pairs = claim_evidence_from_grounding(grounding_claims, chunks_by_source)
+    summary = await judge_entailment(
+        pairs,
+        llm=llm,
+        model=judge_model,
+        sample=judge_sample,
+    )
+
+    result.checked = True
+    result.n_judged = summary.n_judged
+    result.n_no_evidence = summary.n_no_evidence
+    result.n_errors = summary.n_errors
+    result.ci = summary.ci
+    # ``judge_entailment`` reports ratio 0.0 with n_judged 0 (nothing scored) —
+    # surface that as ``None`` so the report omits a misleading floor.
+    result.ratio = summary.ratio if summary.n_judged else None
+    return result
 
 
 def _read_source_parsed(root: Path, doc: DocumentRecord) -> ParsedDocument | None:

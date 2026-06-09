@@ -9,6 +9,19 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`dikw client synth --verify --judge` — report-only grounding leg.** Adds the
+  one probabilistic check the deterministic `--verify` legs can't make: it
+  samples this run's K-page claims, grounds each against the source chunks the
+  page cites (reusing the eval grounding pipeline), and asks the synth LLM
+  whether the evidence entails the claim — surfacing an entailment ratio + 95%
+  CI. It is **report-only**: the ratio is *never* folded into the pass/fail
+  verdict (an LLM judge is noisy; the pass/fail call over the ratio belongs to
+  the orchestrating agent/skill, not a hard CLI gate). Needs both an embedder and
+  an LLM; when either is missing it **loud-skips** (`grounding_requested` true,
+  `grounding_checked` false) rather than silently reporting nothing, and a
+  failure inside the leg degrades to that same skip instead of failing the synth.
+  `--judge` implies `--verify`. The sample size is `synth.verify_judge_sample`
+  (default `25`, matching `eval.judge.recommended_judge_sample()`).
 - **`dikw client eval --against` / `--write-baseline` — machine-readable
   regression gate.** `--write-baseline <path>` dumps a run's metrics to a
   committed JSON; `--against <path>` re-runs the eval and exits 1 when any metric

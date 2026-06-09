@@ -210,6 +210,10 @@ uv run dikw client synth --wait
 # (implies --wait). Runs a scoped lint + persist check + semantic-
 # duplicate gate over only the pages this run created/updated.
 uv run dikw client synth --verify
+
+# Add the report-only grounding leg: have the LLM score whether this
+# run's claims are supported by the sources they cite (implies --verify).
+uv run dikw client synth --verify --judge
 ```
 
 `--verify` is the "open the vault and click around" pass made automatic: after
@@ -227,11 +231,23 @@ something cites it. The duplicate leg needs embeddings; when none are available
 **skipped loudly** (a warning, not a silent pass) so a green verdict never reads
 as "no duplicates" when the check never ran.
 
-Two cost notes: the lint leg runs a **full-base** scan (it has to, so
-wikilinks resolve against every page) and then filters to this run's pages, so
-its cost scales with total vault size, not with how many pages this run
-produced; and the duplicate leg performs a second embed pass over the
-just-written page bodies. Both only run when you pass `--verify`.
+Adding `--judge` (which implies `--verify`) runs one more, **report-only** leg:
+it samples this run's claims (`synth.verify_judge_sample`, default `25`), pairs
+each with the source chunk that best matches it, and asks the synth LLM whether
+the evidence entails the claim — printing an entailment ratio + 95% CI. This leg
+is the one probabilistic check the others can't make ("are these claims actually
+backed by their sources?"), so it is **never** folded into the PASS/FAIL verdict:
+an LLM judge is noisy, and the call over the ratio belongs to the agent or skill
+driving synth, not a hard CLI gate. It needs both an embedder and an LLM; when
+either is missing (or the leg errors) it is **skipped loudly** — never a silent
+zero.
+
+Cost notes: the lint leg runs a **full-base** scan (it has to, so wikilinks
+resolve against every page) and then filters to this run's pages, so its cost
+scales with total vault size, not with how many pages this run produced; the
+duplicate leg performs a second embed pass over the just-written page bodies; and
+`--judge` adds a grounding-embed pass plus up to `verify_judge_sample` LLM judge
+calls. All only run when you pass the corresponding flag.
 
 The LLM reads each source doc and produces a `knowledge/<category>/<slug>.md`
 page, cross-linked via `[[wikilinks]]`. The `<category>` is chosen from the closed

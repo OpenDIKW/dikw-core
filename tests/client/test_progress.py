@@ -412,3 +412,82 @@ def test_render_synth_verify_report_loud_skip_when_no_embedder() -> None:
     out = console.export_text()
     assert "SKIPPED" in out
     assert "embedder" in out.lower()
+
+
+def _verify_base(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "pages_checked": 2,
+        "persist_ok": True,
+        "persist_error_count": 0,
+        "lint_ok": True,
+        "lint_findings": [],
+        "orphan_pages": [],
+        "duplicate_checked": True,
+        "duplicate_ratio": 0.0,
+        "max_duplicate_ratio": 0.05,
+        "duplicate_ok": True,
+        "unresolved_wikilinks": 0,
+        "passed": True,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_render_synth_verify_grounding_ratio_is_informational() -> None:
+    """The grounding leg is rendered as informational context — it shows the
+    entailment ratio but the verdict stays PASS (it is never a gate)."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        _verify_base(
+            grounding_requested=True,
+            grounding_checked=True,
+            grounding_entailment_ratio=0.42,
+            grounding_ci=[0.30, 0.55],
+            grounding_n_judged=12,
+            grounding_n_no_evidence=1,
+        ),
+    )
+    out = console.export_text()
+    assert "PASS" in out
+    assert "grounding" in out.lower()
+    assert "not gated" in out.lower()
+    assert "0.42" in out
+
+
+def test_render_synth_verify_grounding_loud_skip() -> None:
+    """--judge requested but the leg couldn't run → loud skip, never silent."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        _verify_base(
+            grounding_requested=True,
+            grounding_checked=False,
+            grounding_entailment_ratio=None,
+        ),
+    )
+    out = console.export_text()
+    assert "SKIPPED" in out
+    assert "judge" in out.lower()
+
+
+def test_render_synth_verify_grounding_no_claims() -> None:
+    """Checked but nothing to judge (ratio None) → an explicit no-claims note,
+    not a misleading 0.000."""
+    console = Console(record=True, width=100, force_terminal=False)
+    render_synth_verify_report(
+        console,
+        _verify_base(
+            # Skip the duplicate leg so its own "ratio 0.000" can't satisfy the
+            # floor assertion below — we're checking the GROUNDING line.
+            duplicate_checked=False,
+            duplicate_ratio=None,
+            grounding_requested=True,
+            grounding_checked=True,
+            grounding_entailment_ratio=None,
+            grounding_n_judged=0,
+        ),
+    )
+    out = console.export_text()
+    assert "no claims" in out.lower()
+    assert "0.000" not in out

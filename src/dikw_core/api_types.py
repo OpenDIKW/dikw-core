@@ -168,6 +168,26 @@ class SynthVerifyReport:
     gated form is the lint leg's ``broken_wikilink`` (re-resolved against the
     final base), so it is not a separate gate.
 
+    The optional **grounding** leg (``synthesize(verify=True, judge=True)``,
+    ``dikw client synth --verify --judge``) is the one probabilistic check the
+    three deterministic legs can't make: it samples this run's page claims,
+    pairs each with the source chunk that best matches it (reusing the eval
+    grounding argmax — no extra dataset), and asks an LLM whether the evidence
+    entails the claim. It is **report-only** — surfaced on
+    ``grounding_entailment_ratio`` / ``grounding_ci`` / the counts, but
+    deliberately NOT folded into ``passed``. An LLM entailment judge is noisy
+    (the roadmap defers *gating* it to a calibrated threshold), and a false-red
+    on the flagship verify verdict erodes trust as much as a false-green; the
+    pass/fail decision over the ratio belongs to the orchestrating skill, not a
+    hard CLI gate (Karpathy's rule: deterministic gate in the engine,
+    probabilistic call in the agent layer). It needs BOTH an LLM and an embedder
+    (the argmax that picks each claim's evidence chunk is embedding-driven); when
+    ``judge`` was requested but either is missing the leg is SKIPPED LOUDLY
+    (``grounding_requested`` True, ``grounding_checked`` False) rather than
+    silently reporting nothing. ``grounding_entailment_ratio`` is ``None`` when
+    the leg did not run OR nothing was judged (no claims / all unverifiable) —
+    the renderer omits a misleading ``0.0`` floor.
+
     The boolean legs (``persist_ok`` / ``lint_ok`` / ``duplicate_ok`` /
     ``passed``) are stored fields, not properties, so they survive
     ``dataclasses.asdict`` and reach the (engine-free) client unchanged.
@@ -182,6 +202,15 @@ class SynthVerifyReport:
     duplicate_ratio: float | None = None
     duplicate_cosine_tau: float = 0.0
     max_duplicate_ratio: float = 0.0
+    # Optional report-only grounding/entailment leg (see the class docstring).
+    grounding_requested: bool = False
+    grounding_checked: bool = False
+    grounding_entailment_ratio: float | None = None
+    grounding_ci: tuple[float, float] = (0.0, 0.0)
+    grounding_n_judged: int = 0
+    grounding_n_no_evidence: int = 0
+    grounding_n_errors: int = 0
+    grounding_sample: int = 0
     persist_ok: bool = True
     lint_ok: bool = True
     duplicate_ok: bool = True

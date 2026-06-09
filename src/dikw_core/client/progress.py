@@ -414,7 +414,11 @@ def render_synth_verify_report(
     One pass/fail verdict over THIS run's pages plus the three gated legs
     (persist / scoped lint / semantic duplicate). The duplicate leg is
     announced LOUDLY when it was skipped for lack of an embedder — a green
-    verdict must never read as "no duplicates" when the check never ran."""
+    verdict must never read as "no duplicates" when the check never ran.
+
+    When ``--judge`` was requested, the report-only grounding/entailment leg is
+    rendered as informational context below the table (never a pass/fail row):
+    the entailment ratio + CI, or a loud skip when no embedder was available."""
     if not isinstance(verify, Mapping):
         console.print(
             "[yellow]verify[/yellow] requested but the server returned no "
@@ -477,6 +481,39 @@ def render_synth_verify_report(
             "were NOT detected. Configure DIKW_EMBEDDING_API_KEY (and run "
             "without --no-embed) for the duplicate gate."
         )
+
+    # Optional report-only grounding/entailment leg (``--judge``). NOT a gate —
+    # rendered as informational context so a noisy LLM judge never reads as a
+    # pass/fail on the verify verdict.
+    if verify.get("grounding_requested"):
+        if verify.get("grounding_checked"):
+            ratio = verify.get("grounding_entailment_ratio")
+            n_judged = int(verify.get("grounding_n_judged") or 0)
+            if ratio is None:
+                console.print(
+                    "[dim]grounding (informational, not gated): no claims to "
+                    "judge on this run's pages[/dim]"
+                )
+            else:
+                ci = verify.get("grounding_ci")
+                ci_s = ""
+                if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                    ci_s = f" [95% CI {float(ci[0]):.2f}-{float(ci[1]):.2f}]"
+                n_no_ev = int(verify.get("grounding_n_no_evidence") or 0)
+                extra = f", {n_no_ev} unverifiable" if n_no_ev else ""
+                console.print(
+                    f"[dim]grounding (informational, not gated): entailment "
+                    f"{float(ratio):.3f}{ci_s} over {n_judged} claim(s)"
+                    f"{extra} — the LLM's read on whether these pages' claims "
+                    f"are supported by their sources[/dim]"
+                )
+        else:
+            console.print(
+                "[yellow]warning:[/yellow] the grounding leg (--judge) was "
+                "SKIPPED (no embeddings available) — claim entailment was NOT "
+                "scored. Configure DIKW_EMBEDDING_API_KEY (and run without "
+                "--no-embed) for the grounding report."
+            )
 
     if isinstance(findings, list) and findings:
         ftable = Table(

@@ -1224,6 +1224,19 @@ def synth_cmd(
             ),
         ),
     ] = False,
+    judge: Annotated[
+        bool,
+        typer.Option(
+            "--judge",
+            help=(
+                "Add the report-only grounding leg to --verify: sample this "
+                "run's claims and have the LLM score whether they are "
+                "supported by their cited sources. Surfaced as an entailment "
+                "ratio; it never changes the pass/fail verdict. Needs an "
+                "embedder. Implies --verify (and --wait)."
+            ),
+        ),
+    ] = False,
     wait: Annotated[
         bool,
         typer.Option(
@@ -1245,7 +1258,12 @@ def synth_cmd(
 
     Default is async — submit + print JSON task handle. Use ``--wait``
     to block + render + exit with task status. ``--verify`` additionally
-    runs the post-synth self-check and exits non-zero when it fails."""
+    runs the post-synth self-check and exits non-zero when it fails.
+    ``--judge`` adds the report-only grounding leg (implies --verify)."""
+
+    # ``--judge`` is a sub-mode of the verify pass — it only adds a leg to the
+    # SynthVerifyReport, so it implies --verify for the wait/render/exit logic.
+    verify_on = verify or judge
 
     async def _go() -> None:
         async with Transport.from_config(_resolve(server, token)) as t:
@@ -1254,19 +1272,20 @@ def synth_cmd(
                 json_body={
                     "force_all": force_all,
                     "no_embed": no_embed,
-                    "verify": verify,
+                    "verify": verify_on,
+                    "judge": judge,
                 },
             )
             task_id = str(handle["task_id"])
             # ``--verify`` is meaningless without the result, so it forces a
             # blocking wait the same way an explicit ``--wait`` does.
-            if not wait and not verify and not _serve_and_run_forces_wait():
+            if not wait and not verify_on and not _serve_and_run_forces_wait():
                 _print_task_handle(task_id, str(handle.get("status") or "pending"))
                 return
             status, payload = await _wait_and_render(t, task_id, plain=plain)
         if status == "succeeded" and payload is not None:
             render_synth_report(console, payload)
-            if verify:
+            if verify_on:
                 verify_payload = (
                     payload.get("verify") if isinstance(payload, Mapping) else None
                 )
