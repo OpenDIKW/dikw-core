@@ -63,7 +63,7 @@ from ..providers import (
     build_multimodal_embedder,
 )
 from ..providers.base import LLMProvider
-from ..schemas import ChunkRecord, DocumentRecord, Hit, Layer, LinkType
+from ..schemas import ChunkRecord, DocumentRecord, Hit, Layer, LinkRecord, LinkType
 from ..storage import Storage, build_storage
 from ..storage._schema import SCHEMA_VERSION
 from ..storage.base import NotSupported
@@ -75,10 +75,14 @@ from .judge import (
     ClaimEvidence,
     EntailmentSummary,
     JudgeSummary,
+    WikilinkSummary,
+    WikilinkUnit,
     claim_evidence_from_grounding,
     judge_category,
     judge_entailment,
     judge_synthesis,
+    judge_wikilinks,
+    wikilink_units_from_pages,
 )
 from .metrics import (
     atomicity_score,
@@ -1025,6 +1029,7 @@ class SynthEvalReport(BaseModel):
     judge_summary: JudgeSummary | None = None
     entailment_summary: EntailmentSummary | None = None
     category_summary: CategorySummary | None = None
+    wikilink_summary: WikilinkSummary | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @property
@@ -1062,6 +1067,9 @@ class _SynthMetricsBundle:
     # over them only when ``judge`` AND the dataset's
     # ``judge.entailment_grounding_enabled`` are both on.
     entailment_pairs: list[ClaimEvidence]
+    # Resolved page→page wikilinks (context + target) for the optional
+    # wikilink-correctness judge — same deterministic-here / judge-later split.
+    wikilink_units: list[WikilinkUnit]
 
 
 async def run_synth_eval(
@@ -1283,6 +1291,39 @@ async def run_synth_eval(
                 total=len(bundle.pages),
             )
 
+        # Optional wikilink-correctness judge — ``wikilink_resolved_ratio``
+        # counts how many links resolved; this asks whether each resolved link
+        # points at the RIGHT page (the fuzzy resolver makes a wrong-referent
+        # link look *more* resolved, never less). Units were built
+        # deterministically in the bundle (the ``links`` table is the engine's
+        # truth); same opt-in economics as the other judge legs. ``n_judged ==
+        # 0`` (no resolved page→page link at all) omits the metric rather than
+        # reporting a misleading floor.
+        wikilink_summary: WikilinkSummary | None = None
+        if judge and spec.judge.wikilink_correctness_enabled:
+            await _reporter.progress(
+                phase="synth_eval/wikilink",
+                current=0,
+                total=len(bundle.wikilink_units),
+            )
+            wikilink_summary = await judge_wikilinks(
+                bundle.wikilink_units,
+                llm=llm,
+                model=spec.judge.model or effective_provider_cfg.llm_model,
+                sample=judge_sample,
+                reporter=_reporter,
+                seed=spec.name,
+            )
+            if wikilink_summary.n_judged > 0:
+                bundle.informational["synth/wikilink_correctness_ratio"] = (
+                    wikilink_summary.ratio
+                )
+            await _reporter.progress(
+                phase="synth_eval/wikilink",
+                current=wikilink_summary.n_judged + wikilink_summary.n_errors,
+                total=len(bundle.wikilink_units),
+            )
+
         synth_thresholds = {
             name: thr
             for name, thr in spec.thresholds.items()
@@ -1320,6 +1361,7 @@ async def run_synth_eval(
             judge_summary=judge_summary,
             entailment_summary=entailment_summary,
             category_summary=category_summary,
+            wikilink_summary=wikilink_summary,
             warnings=warnings,
         )
 
@@ -1379,6 +1421,14 @@ async def _collect_metrics_bundle(
                 source_text_by_path[doc.path] = source_file.read_text(
                     encoding="utf-8"
                 )
+
+        # The engine's actual link resolution (fuzzy results included) for the
+        # optional wikilink-correctness judge. Sequential on purpose — a single
+        # sqlite connection can't service concurrent ``conn.execute`` calls
+        # (same constraint as the chunk loop above).
+        links_by_src_path: dict[str, list[LinkRecord]] = {}
+        for doc in knowledge_docs:
+            links_by_src_path[doc.path] = await storage.links_from(doc.doc_id)
     finally:
         await storage.close()
 
@@ -1485,4 +1535,5 @@ async def _collect_metrics_bundle(
         informational=informational,
         pages_per_source=pages_per_source,
         entailment_pairs=entailment_pairs,
+        wikilink_units=wikilink_units_from_pages(pages, links_by_src_path),
     )
