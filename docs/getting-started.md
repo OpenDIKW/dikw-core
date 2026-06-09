@@ -50,8 +50,9 @@ uv run dikw serve --base .
 ```
 
 Leave it running. Every `dikw client <op>` shown below routes through
-this server — top-level short aliases like `dikw status` were removed in
-0.1.0, so always spell out the `client` prefix.
+this server — top-level short aliases (a bare `status` instead of
+`dikw client status`) were removed in 0.1.0, so always spell out the
+`client` prefix.
 
 ## 3. Add source material and ingest
 
@@ -319,7 +320,7 @@ buffering) or a real network hang — not a synth-loop issue.
 For server-side detail, raise the log level on the server process:
 
 ```bash
-DIKW_LOG_LEVEL=DEBUG dikw serve --base $DIKW_BASE
+DIKW_LOG_LEVEL=DEBUG dikw serve --base $BASE
 ```
 
 DEBUG adds a per-group log line on each side of the LLM call (model,

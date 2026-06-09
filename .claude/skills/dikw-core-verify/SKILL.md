@@ -60,7 +60,7 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once
 | `domains/knowledge/**`, `api_synth.py`, the LLM authoring prompts | run **`[[dikw-core-verify-synth]]`** (the K-layer leg: `synth --verify [--judge]` + scoped lint + `eval --eval synth` on the real elon-musk corpus). |
 | `providers/**` | provider contract harness + retry/error tests (`[[feedback_provider_backend_invariants]]`: SDK fake green ≠ backend green — confirm a sentinel fixture exists); `dikw client check` against a real/stub endpoint, assert exit 0 + sane dims. |
 | `cli.py`, `server/**`, `client/**` | `uv run pytest tests/server tests/client`; `uv run pytest -v -m slow` (server-e2e); assert `client/*` imports no `dikw_core.{api,storage,providers,server,eval}` symbol (`tests/test_layering_contract.py`). |
-| `docs/**`, `*.md` only | verify every `dikw client <verb>`, `/v1/...` route, `DIKW_*` env var, and frontmatter key shown resolves in source; `/code-review` stays mandatory (`[[feedback_code_review_not_optional]]`). |
+| `docs/**`, `*.md` only | `uv run python tools/check_doc_refs.py` (asserts every `dikw <verb>` + `DIKW_*` env var in the docs resolves in source — also a pytest gate); eyeball any `/v1/...` route or frontmatter key shown (not yet auto-checked); `/code-review` stays mandatory (`[[feedback_code_review_not_optional]]`). |
 
 ## 3. CLI-string grep gate (any rename/removal)
 For each CLI verb / route / env var / public symbol the diff **renamed or

@@ -69,7 +69,7 @@ src/dikw_core/
 │                          api_retrieve, api_synth, api_lint, api_wisdom, api_path_safety.
 │                          Each imports api_core/api_types + its domains, never the facade
 │                          (acyclic). Move a verb's body here, not into api.py
-├── cli.py                 top-level Typer app: version, init, serve, auth subgroup, dikw client subgroup
+├── cli.py                 top-level Typer app: version, init, serve, auth subgroup, client subgroup
 │                          (HTTP-bound commands live exclusively under `dikw client <verb>` —
 │                          there are no top-level short aliases)
 ├── auth_cli.py            `dikw auth {login,import,status,list,logout}` — local OAuth token store at <base>/.dikw/auth.json

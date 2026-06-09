@@ -118,7 +118,7 @@ src/dikw_core/
 ├── auth_cli.py            local `dikw auth {login,import,status,list,logout}` for the per-base OAuth store
 ├── logging.py             init_logging() — DIKW_LOG_LEVEL + httpx/httpcore/urllib3 clamp
 ├── md_inspect.py          standalone markdown preflight (frontmatter + image-ref extraction)
-└── cli.py                 top-level Typer app: version, init, serve, auth subgroup, dikw client subgroup
+└── cli.py                 top-level Typer app: version, init, serve, auth subgroup, client subgroup
                            (HTTP-bound commands live exclusively under `dikw client <verb>` — there
                            are no top-level short aliases)
 ```
