@@ -9,6 +9,19 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`dikw client eval --against` / `--write-baseline` — machine-readable
+  regression gate.** `--write-baseline <path>` dumps a run's metrics to a
+  committed JSON; `--against <path>` re-runs the eval and exits 1 when any metric
+  moved the wrong way past the baseline's `tolerance` (default `0.02`). The
+  comparison is **direction-aware** — a `_max` metric (e.g.
+  `synth/fallback_ratio_max`) regresses when it *rises* — mirroring the engine's
+  naming convention. Both imply `--wait` and require a single `--dataset` + one
+  `--eval` mode (so the result carries one metrics set); they are mutually
+  exclusive. This is a single-run regression *gate*, not an A/B significance
+  test — keep the tolerance tight for deterministic retrieval evals and generous
+  for LLM-driven synth evals. The statistical A/B path (Welch t-test) stays in
+  `evals/tools/ab_experiment.py`. Client-only (pure `dikw_core.client.baseline`);
+  baselines live under `evals/baselines/` (see its README).
 - **`title_slug_quality` lint — deterministic K-page title/slug hygiene.** A new
   read-only lint kind, also wired as a `dikw client synth --verify` gated leg,
   that flags three zero-false-positive defects on a knowledge page: a body with

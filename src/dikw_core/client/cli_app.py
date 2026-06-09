@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 from collections.abc import Callable, Mapping
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -30,12 +31,20 @@ from rich.table import Table
 
 from ..schemas import Layer
 from . import serve_and_run as _sar
+from .baseline import (
+    DEFAULT_TOLERANCE,
+    baseline_document,
+    compare_to_baseline,
+    extract_metrics,
+    load_baseline,
+)
 from .config import ClientConfig, resolve
 from .converters import Converter, Registry, discover, pick
 from .importer import SourceImportError, build_import
 from .progress import (
     RetrieveStreamRenderer,
     TaskProgressRenderer,
+    render_baseline_comparison,
     render_check_report,
     render_eval_report,
     render_health_report,
@@ -1357,13 +1366,45 @@ def eval_cmd(
         bool,
         typer.Option("--plain", help="Disable progress widget."),
     ] = False,
+    against: Annotated[
+        Path | None,
+        typer.Option(
+            "--against",
+            help=(
+                "Compare this run's metrics to a committed baseline JSON and "
+                "exit 1 on any regression beyond the baseline's tolerance "
+                "(default 0.02). Direction-aware (a `_max` metric regresses when "
+                "it rises). Implies --wait; needs a single --dataset and one "
+                "--eval mode so the result carries one metrics set."
+            ),
+        ),
+    ] = None,
+    write_baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--write-baseline",
+            help=(
+                "After the run, write its metrics to a baseline JSON at this "
+                "path (commit it, then gate later runs with --against). Implies "
+                "--wait; needs a single --dataset and one --eval mode."
+            ),
+        ),
+    ] = None,
     server: Annotated[str | None, _server_option()] = None,
     token: Annotated[str | None, _token_option()] = None,
 ) -> None:
     """Run an eval dataset on the server (retrieval and/or synth).
 
     Default is async — submit + print JSON task handle. Use ``--wait``
-    to block + render + exit with task / gate status."""
+    to block + render + exit with task / gate status. ``--against`` /
+    ``--write-baseline`` turn a run into a regression gate against a committed
+    baseline (both imply --wait)."""
+
+    if against is not None and write_baseline is not None:
+        raise typer.BadParameter(
+            "pass only one of --against / --write-baseline",
+            param_hint="--against",
+        )
 
     # ``--judge-sample`` is one option accepting either a positive int or the
     # ``auto`` sentinel; forward both to the server (it resolves ``auto`` to the
@@ -1395,12 +1436,21 @@ def eval_cmd(
                 },
             )
             task_id = str(handle["task_id"])
-            if not wait and not _serve_and_run_forces_wait():
+            gate = against is not None or write_baseline is not None
+            if not wait and not gate and not _serve_and_run_forces_wait():
                 _print_task_handle(task_id, str(handle.get("status") or "pending"))
                 return
             status, payload = await _wait_and_render(t, task_id, plain=plain)
         if status == "succeeded" and payload is not None:
             _render_eval_result(payload, pretty=pretty)
+            if against is not None or write_baseline is not None:
+                _handle_baseline(
+                    payload,
+                    dataset=dataset,
+                    eval_modes=eval_modes,
+                    against=against,
+                    write_baseline=write_baseline,
+                )
             if not bool(payload.get("passed", True)):
                 raise typer.Exit(code=_EXIT_FAILED)
             # An explicit ``--eval synth`` request must have at least
@@ -1424,6 +1474,53 @@ def eval_cmd(
         _exit_for_status(status, payload)
 
     _run(_go())
+
+
+def _handle_baseline(
+    payload: Mapping[str, Any],
+    *,
+    dataset: str | None,
+    eval_modes: list[str] | None,
+    against: Path | None,
+    write_baseline: Path | None,
+) -> None:
+    """Write or gate against a machine-readable baseline from an eval result.
+
+    Raises ``typer.Exit(1)`` when the result is the multi-dataset envelope (no
+    single metrics set to pin/compare) or when ``--against`` finds a regression.
+    """
+    metrics = extract_metrics(payload)
+    if metrics is None:
+        console.print(
+            "[red]error:[/red] --against / --write-baseline need a single "
+            "--dataset and one --eval mode so the result carries one metrics "
+            "set (got a multi-dataset run).",
+            markup=True,
+        )
+        raise typer.Exit(code=_EXIT_FAILED)
+    if write_baseline is not None:
+        doc = baseline_document(
+            dataset=dataset,
+            modes=eval_modes,
+            metrics=metrics,
+            tolerance=DEFAULT_TOLERANCE,
+            created=date.today().isoformat(),
+        )
+        write_baseline.write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        console.print(
+            f"[green]wrote baseline[/green] {write_baseline} "
+            f"({len(metrics)} metric(s), tolerance {DEFAULT_TOLERANCE})",
+            markup=True,
+        )
+        return
+    assert against is not None  # guaranteed by the caller's gate condition
+    baseline_metrics, tolerance = load_baseline(against)
+    comparison = compare_to_baseline(baseline_metrics, metrics, tolerance=tolerance)
+    render_baseline_comparison(console, comparison)
+    if not comparison.ok:
+        raise typer.Exit(code=_EXIT_FAILED)
 
 
 def _synth_reports(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:

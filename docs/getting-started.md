@@ -417,6 +417,28 @@ uv run dikw client eval --dataset ./my-corpus/
 Each query is marked a "hit" at top-k if any `expect_any` doc stem is in
 the top-k result. Metrics: `hit@3`, `hit@10`, `MRR`. Exit code 0/1/2.
 
+### Gate a run against a committed baseline
+
+Pin a known-good run's metrics, commit the JSON, then fail CI on any
+regression beyond a tolerance:
+
+```bash
+# Capture the current run's metrics as a baseline (single --dataset + one --eval mode).
+uv run dikw client eval --dataset mvp --eval synth --write-baseline evals/baselines/mvp-synth.json
+
+# Later, gate a fresh run against it — exit 1 on regression (implies --wait).
+uv run dikw client eval --dataset mvp --eval synth --against evals/baselines/mvp-synth.json
+```
+
+The comparison is **direction-aware** (a `_max` metric like
+`synth/fallback_ratio_max` regresses when it *rises*) and uses the baseline's
+`tolerance` field (default `0.02`). It is a single-run regression *gate*, not an
+A/B significance test — keep the tolerance tight for deterministic retrieval
+evals and generous for LLM-driven synth evals (so model jitter doesn't trip it).
+The statistical A/B path (Welch t-test over sample distributions) lives in
+[`evals/tools/ab_experiment.py`](../evals/tools/ab_experiment.py). See
+[`evals/baselines/README.md`](../evals/baselines/README.md) for the file format.
+
 The full convention (what `dataset.yaml` looks like, how to author
 queries, how to convert public benchmarks) lives in [`evals/README.md`](../evals/README.md).
 
