@@ -1,9 +1,13 @@
 """Hermetic K-layer eval gate.
 
 Smoke-tests ``run_synth_eval`` end-to-end with ``FakeLLM`` +
-``FakeEmbeddings`` — no API keys, no network. The dataset is built
-in-process so the test stays independent of changes to packaged
-datasets under ``evals/datasets/``.
+``FakeEmbeddings`` — no API keys, no network. Most tests build the
+dataset in-process so they stay independent of changes to packaged
+datasets under ``evals/datasets/``; ``test_mvp_synth_half_runs_hermetically``
+is the deliberate exception — it runs the runner against the REAL packaged
+``mvp`` dataset's synth half so a break in the committed dataset wiring or
+the synth pipeline on the real corpus is caught in CI (the synth twin of
+``test_retrieval_quality``'s ``run_eval('mvp')``).
 
 Per spec: hermetic mode does NOT enforce realistic thresholds. The
 test only verifies the runner wires up correctly, every K-layer
@@ -122,6 +126,99 @@ async def test_run_synth_eval_smokes_full_pipeline(tmp_path: Path) -> None:
     assert report.passed is True
 
     # page_density lives in informational, never gated.
+    assert "synth/page_density" in report.informational
+
+
+def _mvp_page(i: int) -> str:
+    """A distinct, parseable concept page (new ``category=``/``slug=`` format,
+    matching the ``mvp`` dataset's ``schema.categories``)."""
+    return (
+        f'<page category="concept" slug="mvp-concept-{i}">\n'
+        "---\n"
+        "tags: [topic/sample]\n"
+        "---\n\n"
+        f"# MVP Concept {i}\n\n"
+        f"Concept {i} is one of the ideas the source corpus discusses.\n"
+        "</page>\n"
+    )
+
+
+class _UniqueSynthLLM:
+    """Emits a distinct, parseable ``<page>`` per synth-group call so a real
+    multi-source dataset runs the full ingest→synth→parse→persist→metrics
+    pipeline without slug collisions. It ignores the prompt — the point is
+    pipeline integrity against the real dataset, not prompt-faithful
+    generation (which only a live LLM can give)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        tools: list | None = None,
+    ) -> LLMResponse:
+        _ = (system, user, model, max_tokens, temperature, tools)
+        self.calls += 1
+        return LLMResponse(text=_mvp_page(self.calls), finish_reason="end_turn")
+
+
+@pytest.mark.asyncio
+async def test_mvp_synth_half_runs_hermetically() -> None:
+    """The real packaged ``mvp`` dataset's *synth* half must run end-to-end in
+    CI — not just its retrieval half (which ``test_retrieval_quality`` already
+    gates via ``run_eval('mvp')``).
+
+    Before this, ``run_synth_eval`` was only exercised in CI against a
+    synthetic in-test toy dataset; the real ``mvp`` corpus + the real
+    ``mvp`` ``dataset.yaml`` synth section (categories, thresholds) never ran
+    hermetically, so a change that broke synth on the packaged dataset stayed
+    green until someone ran the manual real-LLM eval.
+
+    Hermetic: a deterministic ``FakeLLM`` + ``FakeEmbeddings``, no keys /
+    network. We assert STRUCTURAL completion — the real dataset loads, the
+    real corpus flows through ingest→synth→parse→persist→metrics, every
+    declared synth metric is computed and in ``[0, 1]``, and
+    ``threshold_results`` mirrors the dataset's declared synth thresholds.
+
+    We deliberately do NOT assert ``report.passed``. ``FakeEmbeddings`` is
+    lexical and the canned pages don't echo the Karpathy corpus, so the real
+    thresholds (e.g. ``fact_grounding_ratio >= 0.55``) cannot be met by
+    Fake-generated output — and asserting they were would be a meaningless
+    gate. Real synth-quality numbers come from the manual real-LLM
+    ``evals/BASELINES.md`` discipline, which hermetic CI cannot replace; this
+    test guards the *machinery*, not the *quality*.
+    """
+    spec = load_dataset("mvp")
+    report = await run_synth_eval(
+        spec, llm=_UniqueSynthLLM(), embedder=FakeEmbeddings()
+    )
+
+    assert report.mode == "synth"
+    assert report.dataset_name == "mvp"
+    assert report.n_sources == 3  # three Karpathy essays
+    assert report.n_pages > 0
+    assert report.gated is True
+
+    gated = {
+        "synth/fact_grounding_ratio",
+        "synth/atomicity_score",
+        "synth/duplicate_ratio_max",
+        "synth/wikilink_resolved_ratio",
+        "synth/language_fidelity",
+    }
+    for m in gated:
+        assert m in report.metrics, f"missing synth metric: {m}"
+        assert 0.0 <= report.metrics[m] <= 1.0, (
+            f"{m} out of [0, 1]: {report.metrics[m]}"
+        )
+    # Threshold gate keys mirror exactly the synth thresholds mvp declares.
+    assert {r.name for r in report.threshold_results} == gated
     assert "synth/page_density" in report.informational
 
 
