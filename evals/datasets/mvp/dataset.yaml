@@ -73,3 +73,8 @@ judge:
   # runs; the `synth/fact_entailment_ratio` threshold above gates it only when
   # the judge actually ran.
   entailment_grounding_enabled: true
+  # Opt into the wikilink-correctness LLM judge — `wikilink_resolved_ratio`
+  # counts resolution, and the fuzzy resolver makes a wrong-referent link look
+  # MORE resolved, never less; this judge asks whether each resolved link
+  # points at the right page. Informational (no threshold yet — calibrating).
+  wikilink_correctness_enabled: true

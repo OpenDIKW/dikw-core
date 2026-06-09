@@ -9,6 +9,20 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`synth/wikilink_correctness_ratio` — LLM judge for resolved-link referent
+  correctness.** `wikilink_resolved_ratio` counts how many `[[wikilinks]]`
+  resolved; it is blind to whether each resolved link points at the *right*
+  page — the fuzzy resolver makes a wrong-referent link (`[[Mercury]]` in a
+  planetary context resolving to the chemical-element page) look *more*
+  resolved, never less. The new judge reads each resolved page→page link in its
+  body context next to the target page the engine resolved it to (the `links`
+  table is the truth, fuzzy results included) and answers `yes`/`partial`/`no`
+  (right referent / related-but-imprecise / wrong thing → `1.0`/`0.5`/`0.0`).
+  Opt-in per dataset via `judge.wikilink_correctness_enabled: true` **and**
+  `--judge` (`$0` unless both are on); informational (never gated), surfaced as
+  `SynthEvalReport.wikilink_summary` with a bootstrap 95% CI and mirrored into
+  `informational` for the A/B harness. The packaged `mvp` dataset enables it.
+
 - **`synth/fact_entailment_ratio` is now a conditional (judge-only) gate.** The
   LLM entailment metric — previously informational-only — can now be declared as
   a `synth/<metric>` threshold in a dataset and is enforced by `run_synth_eval`
