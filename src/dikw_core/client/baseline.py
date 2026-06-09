@@ -19,12 +19,16 @@ server}`` (it is meant to package as a standalone wheel).
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 #: Absolute per-metric noise floor used when a baseline file omits ``tolerance``.
+#: The tolerance is **absolute** and assumes metrics on a comparable scale — all
+#: current eval metrics are 0..1 ratios. A non-ratio metric (a raw count/score)
+#: in the same map would need a relative tolerance; revisit if one ever lands.
 DEFAULT_TOLERANCE = 0.02
 
 #: Float-dust slack on the band edges so a drop of *exactly* the tolerance stays
@@ -53,7 +57,12 @@ def _as_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        coerced = float(value)
+        # Drop NaN / ±inf: a non-finite "metric" would silently classify as
+        # ``flat`` (every IEEE-754 comparison against NaN is False), turning a
+        # broken run into a green gate. json.loads accepts ``NaN``/``Infinity``
+        # by default, so a hand-authored baseline can carry them too.
+        return coerced if math.isfinite(coerced) else None
     return None
 
 

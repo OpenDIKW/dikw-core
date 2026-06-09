@@ -95,6 +95,60 @@ def test_extract_metrics_no_metrics_key_is_none() -> None:
     assert extract_metrics({"dataset": "mvp", "passed": True}) is None
 
 
+def test_non_finite_metric_values_are_dropped() -> None:
+    # NaN / inf would classify as ``flat`` (every NaN comparison is False),
+    # turning a broken run into a green gate — they must be filtered out.
+    payload = {
+        "metrics": {"x": 0.5, "nan": float("nan"), "inf": float("inf")}
+    }
+    assert extract_metrics(payload) == {"x": 0.5}
+
+
+def test_load_baseline_drops_non_finite(tmp_path: Path) -> None:
+    p = tmp_path / "b.json"
+    # json.loads accepts the bare ``NaN`` / ``Infinity`` tokens by default.
+    p.write_text('{"metrics": {"a": 0.5, "b": NaN}}', encoding="utf-8")
+    metrics, _ = load_baseline(p)
+    assert metrics == {"a": 0.5}
+
+
+def test_load_baseline_non_object_raises(tmp_path: Path) -> None:
+    p = tmp_path / "b.json"
+    p.write_text("[1, 2, 3]", encoding="utf-8")
+    try:
+        load_baseline(p)
+    except ValueError:
+        pass
+    else:  # pragma: no cover - the assertion is the test
+        raise AssertionError("expected ValueError for a non-object baseline")
+
+
+def test_direction_agrees_with_engine() -> None:
+    # The client restates the ``_max`` convention rather than importing the
+    # engine's copy (layering). Pin that the two never disagree on a fixture of
+    # real and adversarial metric names — a silent divergence would score a
+    # metric backwards in the gate vs the eval's own thresholds.
+    from dikw_core.eval.runner import _threshold_direction
+
+    names = [
+        "doc/ndcg_at_10",
+        "hit_at_3",
+        "mrr",
+        "recall_at_100",
+        "synth/fallback_ratio_max",
+        "synth/slug_merge_ratio_max",
+        "duplicate_ratio_max",
+        "bm25/ndcg_at_10",
+        "weird_name",
+        "max",  # bare 'max' has no '_max' suffix → higher-is-better
+        "_max",  # degenerate but consistent
+    ]
+    for name in names:
+        assert metric_lower_is_better(name) == (
+            _threshold_direction(name) == "max"
+        ), name
+
+
 def test_load_baseline_roundtrip(tmp_path: Path) -> None:
     doc = baseline_document(
         dataset="mvp",
