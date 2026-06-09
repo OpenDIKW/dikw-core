@@ -415,6 +415,12 @@ class SynthConfig(BaseModel):
     # so the interactive gate and the eval gate agree.
     verify_duplicate_cosine_tau: float = Field(default=0.85, ge=0.0, le=1.0)
     verify_max_duplicate_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
+    # ``dikw client synth --verify --judge`` grounding leg: how many of this
+    # run's page claims the LLM entailment judge scores (seeded subset; a cap
+    # ``>=`` the claim count judges them all). Default 25 mirrors
+    # ``eval.judge.recommended_judge_sample()`` — the smallest sample whose
+    # bootstrap 95% CI half-width clears ±0.2 for any [0, 1] ratio.
+    verify_judge_sample: int = Field(default=25, ge=1)
 
 
 class MultimodalEmbedConfig(BaseModel):

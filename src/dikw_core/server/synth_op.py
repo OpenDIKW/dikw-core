@@ -35,11 +35,13 @@ def make_synth_runner(
     force_all: bool,
     no_embed: bool,
     verify: bool = False,
+    judge: bool = False,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
     """Build a ``TaskRunner`` that drives ``api.synthesize`` for one task.
 
     ``verify=True`` runs the post-synth self-check and folds a
     ``SynthVerifyReport`` into the task's final result under ``verify``.
+    ``judge=True`` (with ``verify``) adds the report-only grounding leg.
     """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
@@ -75,6 +77,7 @@ def make_synth_runner(
             embedder=embedder,
             reporter=reporter,
             verify=verify,
+            judge=judge,
         )
         return dataclasses.asdict(report)
 

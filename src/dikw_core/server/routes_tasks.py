@@ -119,11 +119,16 @@ class SynthSubmit(BaseModel):
     ``verify`` runs the post-synth self-check (scoped lint + persist +
     semantic duplicate) over this run's pages and returns a
     ``SynthVerifyReport`` under the result's ``verify`` key.
+
+    ``judge`` (only meaningful with ``verify``) adds the optional report-only
+    grounding/entailment leg — the LLM scores whether this run's claims are
+    supported by their cited sources. It never changes ``passed``.
     """
 
     force_all: bool = False
     no_embed: bool = False
     verify: bool = False
+    judge: bool = False
 
 
 class LintProposeSubmit(BaseModel):
@@ -380,6 +385,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             force_all=body.force_all,
             no_embed=body.no_embed,
             verify=body.verify,
+            judge=body.judge,
         )
         row = await rt.manager.submit(
             op="synth",
@@ -388,6 +394,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "force_all": body.force_all,
                 "no_embed": body.no_embed,
                 "verify": body.verify,
+                "judge": body.judge,
             },
         )
         return _handle(row)
