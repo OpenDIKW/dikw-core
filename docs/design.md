@@ -179,7 +179,7 @@ dikw-core/
 │   │
 │   ├── server/               # FastAPI app, auth, sync + task routes, NDJSON streamer
 │   ├── client/               # remote Typer CLI + httpx transport + NDJSON progress + sources importer
-│   └── cli.py                # top-level typer app: version, init, serve + dikw client subgroup
+│   └── cli.py                # top-level typer app: version, init, serve + client subgroup
 │
 ├── tests/
 │   ├── fixtures/             # small MD corpora
