@@ -317,6 +317,34 @@ def test_render_synth_eval_report_smoke() -> None:
     assert "synth/atomicity" in out
 
 
+def test_render_synth_eval_gated_metric_not_double_rendered() -> None:
+    """A judge-only metric (``synth/fact_entailment_ratio``) is mirrored into
+    ``informational`` AND, when the judge ran, carried in ``threshold_results``.
+    The renderer must show it once (the gated row), not also repeat it in the
+    informational tail."""
+    console = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        console,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [
+                {
+                    "name": "synth/fact_entailment_ratio",
+                    "observed": 0.80,
+                    "threshold": 0.55,
+                    "direction": "min",
+                    "passed": True,
+                }
+            ],
+            "metrics": {},
+            "informational": {"synth/fact_entailment_ratio": 0.80},
+        },
+    )
+    out = console.export_text()
+    # Exactly one occurrence — the gated row, not a duplicate info row.
+    assert out.count("synth/fact_entailment_ratio") == 1
+
+
 def test_render_eval_report_marks_failures() -> None:
     """A failing metric must show up as ``FAIL`` so CI logs are
     grep-able for regressions."""

@@ -135,12 +135,17 @@ or non-destructiveness. Two gates:
    the grounding argmax — no re-embedding) and asks an LLM whether the evidence
    *entails* it (`yes`/`partial`/`no` → `1.0`/`0.5`/`0.0`), catching invented
    numbers/dates/ratios, superlatives, causal overreach, and contradictions. It
-   is informational (never gated) with its own bootstrap 95% CI on
-   `entailment_summary`, and **opt-in**: it runs only when `--judge` is set
-   **and** the dataset declares `judge.entailment_grounding_enabled: true`, so
-   it costs nothing by default. The will-it-gate question (entailment is the
-   first judge dimension a calibrated dataset is likely to promote) stays open,
-   but the sample size needed to trust the number is settled by the power
+   carries its own bootstrap 95% CI on `entailment_summary`, mirrors the ratio
+   into `informational` for display / the A/B harness, and is **opt-in**: it
+   runs only when `--judge` is set **and** the dataset declares
+   `judge.entailment_grounding_enabled: true`, so it costs nothing by default.
+   It is also the first judge dimension promoted to a **conditional gate**: a
+   dataset may declare a `synth/fact_entailment_ratio` floor (mvp gates `0.55`,
+   calibrated 2026-06-05 to observed `0.775`, CI `[0.65, 0.90]`, n=20), and the
+   runner enforces it **only when the judge actually ran** — a non-judge run
+   (hermetic CI, plain `--eval synth`) drops the threshold rather than recording
+   a spurious miss. So the entailment gate bites on real-LLM acceptance runs
+   only; the sample size needed to trust the number is settled by the power
    analysis below.
 
    **`category_correctness_ratio` — is each page filed under the right

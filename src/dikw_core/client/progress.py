@@ -960,10 +960,15 @@ def render_synth_eval_report(
 
     metrics = report.get("metrics") or {}
     informational = report.get("informational") or {}
+    # Names already shown as direction-aware threshold rows — don't repeat them
+    # as plain ``(info)`` rows. A judge-only metric (``synth/fact_entailment_ratio``)
+    # is carried in BOTH ``threshold_results`` (when the judge ran) AND
+    # ``informational`` (always, for the A/B harness), so without this dedup on
+    # both tails it would render twice.
+    scored = {
+        r.get("name") for r in threshold_results if isinstance(r, dict)
+    }
     if isinstance(metrics, dict):
-        scored = {
-            r.get("name") for r in threshold_results if isinstance(r, dict)
-        }
         for m_name, value in sorted(metrics.items()):
             if m_name in scored:
                 continue
@@ -973,6 +978,8 @@ def render_synth_eval_report(
             table.add_row(m_name, val_str, "-", "-", "[dim](info)[/dim]")
     if isinstance(informational, dict):
         for m_name, value in sorted(informational.items()):
+            if m_name in scored:
+                continue
             val_str = (
                 f"{value:.3f}" if isinstance(value, int | float) else "-"
             )

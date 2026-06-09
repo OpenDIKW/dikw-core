@@ -7,6 +7,41 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-09 — `fact_entailment_ratio` promoted to a conditional gate (Phase 2)
+
+**Change under test:** `synth/fact_entailment_ratio` moves from informational-only
+to a **gateable** synth metric. `run_synth_eval` now folds the entailment ratio
+into `threshold_results` **when the judge ran** and **drops** the threshold on a
+non-judge run (so the hermetic CI synth half / a plain `--eval synth` isn't failed
+by a never-computed metric). The packaged `mvp` dataset declares the floor at
+`0.55` + `judge.entailment_grounding_enabled: true`.
+
+**Why no fresh real-LLM run (mechanism-only change):** this PR changes only the
+**gating plumbing** (`eval/dataset.py` accepts the threshold key; `eval/runner.py`
+conditionally enforces it) + a dataset threshold + a renderer dedup. It does NOT
+touch synth generation, the entailment judge, or the cosine pipeline — a real
+re-run would reproduce the existing distribution. The threshold is calibrated
+against the prior real-LLM measurement (below), not a new one.
+
+**Calibration basis (2026-06-05 real-LLM run, reproduced here for the floor):**
+`mvp` synth eval, MiniMax-M3 (`anthropic_compat`, `llm_max_tokens_synth=16384`) +
+Qwen3-Embedding-0.6B@1024 (Gitee), `--judge --judge-sample 20`,
+`entailment_grounding_enabled: true` → **`fact_entailment_ratio` 0.775, 95% CI
+[0.65, 0.90], n=20, 0 errors, 0 no-evidence.** The honest number sits *below* the
+cosine `fact_grounding_ratio` (many claims are `partial` — gist supported, the
+added specific is not), which is the blind spot the metric exists to catch.
+
+**Floor rationale — `0.55`:** set **below the CI lower bound (0.65)** and matching
+the cosine `fact_grounding_ratio` floor, leaving ~0.10 margin under even a
+pessimistic draw to absorb MiniMax-M3's run-to-run judge noise (CI half-width
+±0.13 at n=20; gated metrics swing run-to-run as documented in the entries below).
+Karpathy's rule: the gate should false-red essentially never and bite only on a
+real collapse (a run dominated by `no`/`partial` verdicts). It bites on real-LLM
+`--judge` acceptance runs only — hermetic CI fundamentally cannot enforce it
+(FakeEmbeddings + no judge), which is the same manual-real-LLM discipline these
+baselines exist to carry. A future `--judge-sample auto` (n≥25) run can tighten
+the CI and revisit the floor; `0.55` is robust to that.
+
 ## 2026-06-09 — synth --verify --judge grounding leg (Phase 1, non-destructive)
 
 **Change under test:** `dikw client synth --verify --judge` — an optional,

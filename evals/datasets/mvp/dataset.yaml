@@ -30,6 +30,13 @@ thresholds:
   synth/duplicate_ratio_max: 0.05
   synth/wikilink_resolved_ratio: 0.55
   synth/language_fidelity: 0.95
+  # fact_entailment_ratio is a judge-only gate: enforced ONLY on real-LLM
+  # `--judge` acceptance runs (never the hermetic CI synth half, which drops
+  # it). Calibrated 2026-06-05 (BASELINES.md): observed 0.775, 95% CI
+  # [0.65, 0.90], n=20 on MiniMax-M3. Floor set conservatively below the CI
+  # lower bound (0.65) — and matching the cosine `fact_grounding_ratio` floor —
+  # to absorb run-to-run judge noise (CI ±0.13) without false-reds.
+  synth/fact_entailment_ratio: 0.55
   # expected_coverage intentionally NOT gated yet — pre-cleanup runs
   # showed >0.09 noise between two real-LLM passes, and the
   # expected_titles in expected.yaml didn't fuzzy-match the LLM's
@@ -57,3 +64,12 @@ synth:
         An observation, lesson, or material card focused on a single
         subject; must reference at least one entity or concept via a
         [[Wikilink]].
+
+judge:
+  # Opt the dataset into the fact-entailment LLM judge — the grounding leg
+  # the cosine `fact_grounding_ratio` is blind to (a fabricated specific and a
+  # supported gist sit in the same cosine band but get different verdicts). It
+  # still requires `--judge` to fire, so it costs $0 on hermetic / non-judge
+  # runs; the `synth/fact_entailment_ratio` threshold above gates it only when
+  # the judge actually ran.
+  entailment_grounding_enabled: true
