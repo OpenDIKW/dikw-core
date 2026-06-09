@@ -194,6 +194,13 @@ block — no code change needed. There is no `llm_max_tokens_query` knob;
 agent side. (The 0.2.x `llm_max_tokens_distill` knob was removed in
 the 0.3.0 W refactor; pydantic ignores it if still present in your yml.)
 
+`dikw client check`'s LLM connectivity probe also hands the model this
+same `llm_max_tokens_synth` budget (not a tiny fixed cap), so a green
+check predicts the synth path: a reasoning model whose budget is too
+small to clear its own chain-of-thought returns an empty completion and
+the probe reports it as **down** rather than green — fix the budget here,
+then re-check.
+
 ### 6. Two separate keys, on purpose
 
 The embedding leg reads `DIKW_EMBEDDING_API_KEY` **exclusively** — no

@@ -202,18 +202,23 @@ async def health(path: str | Path | None = None) -> HealthReport:
 
 
 async def _probe_llm(
-    llm: LLMProvider, model: str, target: str
+    llm: LLMProvider, model: str, target: str, *, max_tokens: int
 ) -> ProbeResult:
     started = time.perf_counter()
     try:
         resp = await llm.complete(
             system="You are a connectivity check. Reply with exactly: OK",
             user="ping",
-            # Headroom above the single "OK" token so a reasoning model isn't
-            # budget-starved into an empty visible turn (providers that drop
-            # max_tokens on the wire, e.g. codex, are unaffected).
             model=model,
-            max_tokens=32,
+            # Reuse the configured synth budget rather than a tiny fixed cap. A
+            # reasoning model's hidden chain-of-thought draws on ``max_tokens``
+            # before it emits any visible token (MiniMax-M3 needs >= 8192 — see
+            # docs/providers.md); a fixed 32 starved it into an EMPTY completion
+            # and the probe false-reported a healthy provider as down. Threading
+            # the synth budget makes a green check predict the synth path's
+            # success (providers that drop max_tokens on the wire, e.g. codex,
+            # are unaffected).
+            max_tokens=max_tokens,
             temperature=0.0,
         )
     except Exception as e:  # provider exceptions are intentionally heterogeneous
@@ -456,14 +461,19 @@ async def check_providers(
             provider_label=embed_label,
         )
 
+    llm_budget = cfg.provider.llm_max_tokens_synth
     try:
         if llm_only:
-            llm_probe = await _probe_llm(llm_inst, cfg.provider.llm_model, llm_target)
+            llm_probe = await _probe_llm(
+                llm_inst, cfg.provider.llm_model, llm_target, max_tokens=llm_budget
+            )
         elif embed_only:
             embed_probe = await _embed_leg()
         else:
             llm_probe, embed_probe = await asyncio.gather(
-                _probe_llm(llm_inst, cfg.provider.llm_model, llm_target),
+                _probe_llm(
+                    llm_inst, cfg.provider.llm_model, llm_target, max_tokens=llm_budget
+                ),
                 _embed_leg(),
             )
     finally:

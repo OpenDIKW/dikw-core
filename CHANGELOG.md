@@ -224,6 +224,17 @@ on each entry call out exactly what shape changes break.
   below it, so the higher ceiling bounds rather than pads (no extra spend). This
   is what makes the Phase 0b entailment metric trustworthy on the MiniMax
   baseline provider.
+- **`dikw client check` no longer false-fails a reasoning-model LLM.** The LLM
+  connectivity probe handed the model a fixed `max_tokens=32`; a reasoning model
+  (e.g. MiniMax-M3) spends its hidden chain-of-thought against that budget before
+  any visible token, so the probe got back an empty completion and reported a
+  perfectly healthy provider as **down** (the same empty-completion shape as the
+  issue #160 fault it was meant to catch). The probe now hands the model the
+  configured `provider.llm_max_tokens_synth` budget instead, so a green check
+  predicts the synth path's success — and a model whose budget genuinely is too
+  small to clear its own reasoning still reports down (truthful, not a false
+  red). Non-reasoning models stop at `end_turn` after `OK`, so the larger ceiling
+  bounds rather than pads.
 
 ## 0.5.1 — codex empty-final recovery + K-layer persist fault-tolerance
 
