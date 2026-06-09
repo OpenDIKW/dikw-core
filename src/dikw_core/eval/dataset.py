@@ -52,8 +52,10 @@ _RETRIEVAL_METRICS = frozenset(
 # ``fact_entailment_ratio`` is gateable but **judge-only**: it is computed
 # only under ``--judge`` + ``judge.entailment_grounding_enabled`` and lives in
 # ``informational`` (never promoted into ``metrics``). ``run_synth_eval`` folds
-# its observed value into the gate WHEN the judge produced it, and drops the
-# threshold otherwise — so declaring it doesn't fail a non-judge run. (Unlike
+# its observed value into the gate when the judge produced it, drops the
+# threshold when the judge didn't run (so declaring it doesn't fail a non-judge
+# run), and KEEPS it as a loud ``observed=None`` miss when the judge ran but
+# produced nothing (a broken / empty judge on an acceptance run). (Unlike
 # ``expected_coverage``, whose absence IS a real miss: that one needs no judge,
 # only ``expected.yaml``.) It stays in ``_GATEABLE_SYNTH_METRICS`` so a dataset
 # may declare the floor; the conditional enforcement lives in the runner.

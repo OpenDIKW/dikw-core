@@ -1290,16 +1290,24 @@ async def run_synth_eval(
         }
         # Conditional gate for the judge-only entailment metric. It lives in
         # ``informational`` (never promoted into ``metrics``), so fold its
-        # observed value into the dict the gate reads WHEN the judge produced it;
-        # otherwise drop its threshold so a non-judge run (hermetic CI, plain
-        # ``--eval synth`` without ``--judge``) isn't failed by a missing
-        # observation — ``check_thresholds`` treats a missing metric as a hard
-        # fail, which here would be wrong (it's not-applicable, not a miss).
+        # observed value into the dict the gate reads WHEN the judge produced it.
+        # The two ``ent_ratio is None`` cases are NOT the same:
+        #   * judge never ran (``entailment_summary is None`` — no ``--judge`` or
+        #     the dataset didn't opt in) → DROP the threshold; the gate is
+        #     not-applicable and a non-judge run (hermetic CI, plain
+        #     ``--eval synth``) must not be failed by a metric it never computed.
+        #   * judge ran but produced no ratio (``n_judged == 0`` — every sampled
+        #     claim errored or had no evidence) → KEEP the threshold so
+        #     ``check_thresholds`` records ``observed=None → passed=False``. A
+        #     broken / empty judge on a ``--judge`` acceptance run must fail
+        #     LOUDLY, not silently green-light (a false-green gate is worse than
+        #     no gate). The errors are otherwise visible only in
+        #     ``entailment_summary.n_errors``, which nothing else gates on.
         gate_input = dict(bundle.metrics)
         ent_ratio = bundle.informational.get("synth/fact_entailment_ratio")
         if ent_ratio is not None:
             gate_input["synth/fact_entailment_ratio"] = ent_ratio
-        else:
+        elif entailment_summary is None:
             synth_thresholds.pop("synth/fact_entailment_ratio", None)
         return SynthEvalReport(
             dataset_name=spec.name,

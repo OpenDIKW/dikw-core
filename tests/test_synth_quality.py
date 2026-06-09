@@ -694,6 +694,55 @@ async def test_entailment_threshold_dropped_when_judge_off(tmp_path: Path) -> No
     assert report.entailment_summary is None
 
 
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_when_judge_errors_every_claim(
+    tmp_path: Path,
+) -> None:
+    """False-green guard: when ``--judge`` runs the entailment leg but it errors
+    on EVERY sampled claim (n_judged == 0 — a wrong model id, auth failure, or
+    unparseable output), the declared gate must NOT be silently dropped. The
+    threshold is kept as an ``observed=None`` miss so a broken judge fails
+    loudly — distinct from a non-judge run, where the gate is dropped because it
+    is genuinely not-applicable."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    llm = _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict="not a parseable entailment verdict",  # every claim → parse error
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    # The judge ran (summary present) but judged nothing.
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged == 0
+    assert report.entailment_summary.n_errors >= 1
+    # The ratio was never mirrored into informational (n_judged == 0)...
+    assert "synth/fact_entailment_ratio" not in report.informational
+    # ...yet the gate is KEPT — a loud None miss, not a silent drop.
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed is None
+    assert row.passed is False
+    assert report.passed is False
+
+
 # ---- category-correctness judge wiring -------------------------------------
 
 

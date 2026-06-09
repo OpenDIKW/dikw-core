@@ -585,8 +585,9 @@ def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
 
 def test_synth_fact_entailment_ratio_threshold_is_gateable(tmp_path: Path) -> None:
     """``synth/fact_entailment_ratio`` is an accepted (gateable) synth threshold
-    key — it used to be rejected at load as 'not a synth metric'. The runner
-    enforces it only when the judge actually ran (conditional gate)."""
+    key — it used to be rejected at load as 'not a synth metric'. (The runner's
+    conditional enforcement is covered in ``tests/test_synth_quality.py``; this
+    test pins only that the key now LOADS.)"""
     ds = tmp_path / "ent"
     (ds / "corpus").mkdir(parents=True)
     (ds / "corpus" / "a.md").write_text("# A\n\nbody.\n", encoding="utf-8")
