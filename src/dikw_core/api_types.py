@@ -142,9 +142,10 @@ class SynthVerifyReport:
       ``broken_wikilink`` / ``duplicate_title`` resolve against every page),
       gated on the kinds that mark *defective new output*: ``broken_wikilink``
       / ``duplicate_title`` / ``non_atomic_page`` / ``uncategorized`` /
-      ``missing_provenance``. ``orphan_page`` is deliberately excluded —
-      surfaced on ``orphan_pages`` but NOT gated, because a freshly
-      synthesised page is legitimately orphan until something cites it;
+      ``missing_provenance`` / ``title_slug_quality``. ``orphan_page`` is
+      deliberately excluded — surfaced on ``orphan_pages`` but NOT gated,
+      because a freshly synthesised page is legitimately orphan until
+      something cites it;
       gating it would make ``--verify`` perpetually red on healthy runs
       (Karpathy's rule: a missed backlink is a fixable warning, not
       defective output). Known limitation: ``run_lint`` reports

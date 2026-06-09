@@ -41,6 +41,38 @@ class BrokenEmbedder:
         raise RuntimeError("embedding backend refused connection")
 
 
+class ReasoningLLM:
+    """Simulates a reasoning model whose hidden chain-of-thought consumes the
+    token budget before any visible token.
+
+    It returns a non-empty completion ONLY when handed at least
+    ``min_visible_budget`` tokens; below that the thinking eats the whole budget
+    and the visible turn comes back empty. This is the MiniMax-M3 failure mode
+    that the old fixed ``max_tokens=32`` connectivity probe tripped — see
+    ``reference_minimax_m3_synth_tokens``. ``last_max_tokens`` records what the
+    probe actually requested so a test can pin the budget threading.
+    """
+
+    def __init__(self, *, min_visible_budget: int) -> None:
+        self._min = min_visible_budget
+        self.last_max_tokens: int | None = None
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        tools: list[ToolSpec] | None = None,
+    ) -> LLMResponse:
+        _ = (system, user, model, temperature, tools)
+        self.last_max_tokens = max_tokens
+        text = "OK" if max_tokens >= self._min else ""
+        return LLMResponse(text=text, finish_reason="end_turn")
+
+
 @pytest.fixture()
 def wiki(tmp_path: Path) -> Path:
     w = tmp_path / "knowledge"
@@ -100,6 +132,40 @@ async def test_check_reports_llm_empty_completion_as_failure(wiki: Path) -> None
     assert report.llm is not None
     assert not report.llm.ok
     assert "empty" in report.llm.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_check_llm_probe_reuses_configured_synth_budget(
+    tmp_path: Path,
+) -> None:
+    """The LLM connectivity probe must hand the model the configured
+    ``llm_max_tokens_synth`` budget, not a tiny fixed cap.
+
+    A reasoning model's hidden chain-of-thought draws on ``max_tokens`` before
+    it emits any visible token (MiniMax-M3 needs >= 8192 — see
+    ``reference_minimax_m3_synth_tokens``). The old probe used a fixed
+    ``max_tokens=32``; the thinking ate the whole budget and the visible turn
+    came back empty, so ``dikw client check`` false-reported a perfectly healthy
+    provider as down. Threading the synth budget makes a green check predict the
+    synth path's success — and gives the reasoning model room to reply ``OK``.
+    """
+    import yaml
+
+    w = tmp_path / "wiki-budget"
+    api.init_base(w, description="probe-budget test wiki")
+    cfg_path = w / "dikw.yml"
+    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    raw.setdefault("provider", {})["llm_max_tokens_synth"] = 8192
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    # Needs > 32 (the old fixed cap) to produce visible text; the configured
+    # 8192 clears it, so the probe must pass once it threads the synth budget.
+    fake = ReasoningLLM(min_visible_budget=2048)
+    report = await api.check_providers(w, llm=fake, llm_only=True)
+
+    assert report.ok
+    assert report.llm is not None and report.llm.ok
+    assert fake.last_max_tokens == 8192
 
 
 def test_cli_check_exits_nonzero_on_failure(
