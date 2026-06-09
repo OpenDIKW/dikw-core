@@ -13,8 +13,8 @@ Delivery loop, made executable.
 Two companion skills are called from inside this one as they land (walking-skeleton →
 grows legs over phases):
 
-- `dikw-core-verify` — step 3 in-loop change-type router (until it exists, step 3 routes inline here).
-- `dikw-core-verify-synth` — the K-layer leg of step 3 (synth output self-check).
+- `dikw-core-verify` — step 3 in-loop change-type router (classify the diff → run only the legs that path needs); step 3's table below is the inline fallback if it's unavailable.
+- `dikw-core-verify-synth` — the K-layer leg of step 3 (synth output self-check), dispatched by `dikw-core-verify`.
 - `dikw-core-fresh-review` — step 5 fresh-agent pre-merge review (clean subagent vs diff + rubric + design); run it alongside `/code-review`.
 
 **Run autonomously.** Per `feedback_autonomy_default` + `feedback_pr_workflow`, the full
@@ -57,7 +57,7 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once `uv run pr
 | `domains/info/**`, `RetrievalConfig` | `uv run pytest tests/test_search.py tests/test_retrieval_quality.py`; real-data ablation `dikw client eval --retrieval all` on ≥1 packaged dataset, assert nDCG@10/hit@k non-regression vs the BASELINES.md row |
 | `domains/knowledge/**` (synth/lint) | run `dikw-core-verify-synth` if present; else: `uv run pytest -k "lint or synth or atomicity or wisdom"`, then synth the elon-musk subset via `openai_codex` (zero LLM cost) + `dikw client lint` on the produced vault (no new broken_wikilink/orphan/duplicate/uncategorized/title_slug_quality over baseline) + `dikw client eval --dataset mvp --eval synth` |
 | `providers/**` | provider contract harness + retry/error tests (`feedback_provider_backend_invariants`: SDK fake green ≠ backend green — confirm a sentinel fixture exists); `dikw client check` against a real/stub endpoint, assert exit 0 + sane dims |
-| `cli.py`, `server/**`, `client/**` | `uv run pytest tests/server tests/client`; `uv run pytest -v -m slow` (server-e2e); confirm `client/*` imports no `dikw_core.{api,storage,providers,server}` symbol; grep every renamed CLI verb/route/env-var across `CLAUDE.md` + `docs/**` + `CHANGELOG.md` (`feedback_grep_cli_typos_across_docs`) |
+| `cli.py`, `server/**`, `client/**` | `uv run pytest tests/server tests/client`; `uv run pytest -v -m slow` (server-e2e); confirm `client/*` imports no `dikw_core.{api,storage,providers,server,eval}` symbol (`tests/test_layering_contract.py`); grep every renamed CLI verb/route/env-var across `CLAUDE.md` + `docs/**` + `CHANGELOG.md` (`feedback_grep_cli_typos_across_docs`) |
 | `docs/**`, `*.md` only | verify every `dikw client <verb>`, `/v1/...` route, `DIKW_*` env var, and frontmatter key shown actually resolves in source; `/code-review` is still mandatory (`feedback_code_review_not_optional`) |
 
 ## 4. Codex review loop (≤ 3 rounds)
