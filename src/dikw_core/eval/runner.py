@@ -75,11 +75,13 @@ from .judge import (
     ClaimEvidence,
     EntailmentSummary,
     JudgeSummary,
+    SemanticAtomicitySummary,
     WikilinkSummary,
     WikilinkUnit,
     claim_evidence_from_grounding,
     judge_category,
     judge_entailment,
+    judge_semantic_atomicity,
     judge_synthesis,
     judge_wikilinks,
     wikilink_units_from_pages,
@@ -1030,6 +1032,7 @@ class SynthEvalReport(BaseModel):
     entailment_summary: EntailmentSummary | None = None
     category_summary: CategorySummary | None = None
     wikilink_summary: WikilinkSummary | None = None
+    semantic_atomicity_summary: SemanticAtomicitySummary | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @property
@@ -1324,6 +1327,40 @@ async def run_synth_eval(
                 total=len(bundle.wikilink_units),
             )
 
+        # Optional semantic-atomicity judge — ``atomicity_score`` is a form
+        # heuristic (length / heading / link counts) that passes a short
+        # paragraph stuffed with three unrelated concepts; this asks the
+        # semantic question (does the page develop exactly ONE concept?) over
+        # title + body alone. Same opt-in economics as the other judge legs;
+        # informational, CI on ``semantic_atomicity_summary``. ``n_judged == 0``
+        # (every sampled page errored) omits the metric rather than reporting a
+        # misleading floor.
+        semantic_atomicity_summary: SemanticAtomicitySummary | None = None
+        if judge and spec.judge.semantic_atomicity_enabled:
+            await _reporter.progress(
+                phase="synth_eval/semantic_atomicity",
+                current=0,
+                total=len(bundle.pages),
+            )
+            semantic_atomicity_summary = await judge_semantic_atomicity(
+                bundle.pages,
+                llm=llm,
+                model=spec.judge.model or effective_provider_cfg.llm_model,
+                sample=judge_sample,
+                reporter=_reporter,
+                seed=spec.name,
+            )
+            if semantic_atomicity_summary.n_judged > 0:
+                bundle.informational["synth/semantic_atomicity_ratio"] = (
+                    semantic_atomicity_summary.ratio
+                )
+            await _reporter.progress(
+                phase="synth_eval/semantic_atomicity",
+                current=semantic_atomicity_summary.n_judged
+                + semantic_atomicity_summary.n_errors,
+                total=len(bundle.pages),
+            )
+
         synth_thresholds = {
             name: thr
             for name, thr in spec.thresholds.items()
@@ -1362,6 +1399,7 @@ async def run_synth_eval(
             entailment_summary=entailment_summary,
             category_summary=category_summary,
             wikilink_summary=wikilink_summary,
+            semantic_atomicity_summary=semantic_atomicity_summary,
             warnings=warnings,
         )
 

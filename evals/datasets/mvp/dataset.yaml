@@ -78,3 +78,8 @@ judge:
   # MORE resolved, never less; this judge asks whether each resolved link
   # points at the right page. Informational (no threshold yet — calibrating).
   wikilink_correctness_enabled: true
+  # Opt into the semantic-atomicity LLM judge — `atomicity_score` is a form
+  # heuristic (length / heading / link counts) that passes a short paragraph
+  # stuffed with three unrelated concepts; this judge asks whether each page
+  # develops exactly one concept. Informational (no threshold yet — calibrating).
+  semantic_atomicity_enabled: true

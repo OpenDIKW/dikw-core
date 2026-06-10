@@ -565,10 +565,12 @@ def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:
     ds = _write_valid_dataset(tmp_path)
     spec = load_dataset(ds)
     assert spec.judge.model is None
-    # fact-entailment + category + wikilink judges are opt-in — off unless enabled.
+    # fact-entailment + category + wikilink + atomicity judges are opt-in —
+    # off unless enabled.
     assert spec.judge.entailment_grounding_enabled is False
     assert spec.judge.category_correctness_enabled is False
     assert spec.judge.wikilink_correctness_enabled is False
+    assert spec.judge.semantic_atomicity_enabled is False
 
 
 def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
@@ -634,6 +636,19 @@ def test_load_dataset_judge_category_flag_parsed(tmp_path: Path) -> None:
     )
     spec = load_dataset(ds)
     assert spec.judge.category_correctness_enabled is True
+
+
+def test_load_dataset_judge_semantic_atomicity_flag_parsed(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    (ds / "dataset.yaml").write_text(
+        (ds / "dataset.yaml").read_text(encoding="utf-8").replace(
+            "judge:\n  model: claude-sonnet\n",
+            "judge:\n  model: claude-sonnet\n  semantic_atomicity_enabled: true\n",
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    assert spec.judge.semantic_atomicity_enabled is True
 
 
 def test_load_dataset_accepts_synth_namespaced_thresholds(tmp_path: Path) -> None:

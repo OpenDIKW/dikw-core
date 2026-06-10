@@ -59,6 +59,13 @@ _RETRIEVAL_METRICS = frozenset(
 # ``expected_coverage``, whose absence IS a real miss: that one needs no judge,
 # only ``expected.yaml``.) It stays in ``_GATEABLE_SYNTH_METRICS`` so a dataset
 # may declare the floor; the conditional enforcement lives in the runner.
+#
+# The other judge-only ratios (``category_correctness_ratio``,
+# ``wikilink_correctness_ratio``, ``semantic_atomicity_ratio``) are
+# DELIBERATELY absent: they are informational-by-design while calibrating, so
+# declaring a threshold for one is rejected loudly at load instead of silently
+# never gating. Promoting one to a gate is a deliberate act — add the key here
+# AND mirror the runner's conditional entailment fold — not a default.
 _SYNTH_METRICS = frozenset(
     {
         "fact_grounding_ratio",
@@ -341,6 +348,15 @@ class JudgeSection(BaseModel):
     a wrong-referent link look *more* resolved, never less. Same opt-in
     economics: off by default, requires ``--judge``, so ``$0`` unless both are
     on.
+
+    ``semantic_atomicity_enabled`` opts the dataset into the
+    ``semantic_atomicity_ratio`` LLM judge (one call per sampled page — the
+    judge reads title + body and answers whether the page develops exactly one
+    atomic concept; see ``eval.judge.judge_semantic_atomicity``). The blind
+    spot it covers: ``atomicity_score`` is a form heuristic (length / heading /
+    link counts) that passes a short paragraph stuffed with three unrelated
+    concepts. Same opt-in economics: off by default, requires ``--judge``, so
+    ``$0`` unless both are on.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -349,6 +365,7 @@ class JudgeSection(BaseModel):
     entailment_grounding_enabled: bool = False
     category_correctness_enabled: bool = False
     wikilink_correctness_enabled: bool = False
+    semantic_atomicity_enabled: bool = False
 
 
 class ExpectedSource(BaseModel):
