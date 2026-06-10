@@ -344,6 +344,33 @@ def test_render_synth_eval_report_wikilink_summary_line() -> None:
     assert "errors 1" in out
 
 
+def test_render_synth_eval_report_semantic_atomicity_summary_line() -> None:
+    """A ``semantic_atomicity_summary`` renders as a ratio + CI line, mirroring
+    the other judge summaries."""
+    console = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        console,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [],
+            "metrics": {},
+            "informational": {},
+            "semantic_atomicity_summary": {
+                "ratio": 0.875,
+                "n_judged": 8,
+                "n_errors": 2,
+                "ci": [0.62, 1.0],
+            },
+        },
+    )
+    out = console.export_text()
+    assert "semantic atomicity" in out
+    assert "0.875" in out
+    assert "[0.62, 1.00]" in out
+    assert "judged 8" in out
+    assert "errors 2" in out
+
+
 def test_render_synth_eval_gated_metric_not_double_rendered() -> None:
     """A judge-only metric (``synth/fact_entailment_ratio``) is mirrored into
     ``informational`` AND, when the judge ran, carried in ``threshold_results``.

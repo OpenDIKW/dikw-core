@@ -9,6 +9,22 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`synth/semantic_atomicity_ratio` — LLM judge for one-concept-per-page
+  atomicity.** `atomicity_score` is a *form* heuristic (body chars, H1/H2
+  counts, distinct wikilink targets, tag domains) — blind to a short paragraph
+  stuffed with three unrelated concepts, and conversely to a thorough
+  single-concept page that trips the length counters. The new judge reads each
+  page's title + body alone and answers `yes`/`partial`/`no` (one concept /
+  dominant concept plus a developed tangent / multiple concepts bolted
+  together → `1.0`/`0.5`/`0.0`); `[[wikilink]]` references and passing
+  mentions never count against atomicity. Opt-in per dataset via
+  `judge.semantic_atomicity_enabled: true` **and** `--judge` (`$0` unless both
+  are on); informational (never gated), surfaced as
+  `SynthEvalReport.semantic_atomicity_summary` with a bootstrap 95% CI and
+  mirrored into `informational` for the A/B harness. The packaged `mvp`
+  dataset enables it. This completes the Phase 0b judge-metric set
+  (entailment / category / wikilink / atomicity).
+
 - **`synth/wikilink_correctness_ratio` — LLM judge for resolved-link referent
   correctness.** `wikilink_resolved_ratio` counts how many `[[wikilinks]]`
   resolved; it is blind to whether each resolved link points at the *right*

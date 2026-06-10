@@ -967,3 +967,127 @@ async def judge_wikilinks(
         n_errors=n_errors,
         ci=bootstrap_ci(scores, seed=f"{seed}:wikilink"),
     )
+
+
+# --- Semantic-atomicity judge ---------------------------------------------------
+#
+# ``atomicity_score`` is a *form* heuristic — body chars, H1/H2 counts, distinct
+# wikilink targets, tag domains (``check_atomicity``, shared with ``dikw client
+# lint``). It is blind in both directions: a short single paragraph stuffed with
+# three unrelated concepts passes every count, while a thorough single-concept
+# page can trip the length counters. This judge asks the semantic question the
+# counts cannot: does the page develop exactly ONE atomic concept? (The
+# four-dimension page judge does score an ``atomicity`` dim, but bundled with
+# three other dimensions in one call — halo-prone — and on a 0-5 scale that
+# can't ride the yes/partial/no ratio plumbing the other judge legs share, nor
+# their per-leg opt-in flag.) Karpathy's rule: which pages exist is
+# deterministic scoping; whether a page is one idea is the probabilistic call.
+
+
+class SemanticAtomicitySummary(BaseModel):
+    """Aggregate of semantic-atomicity verdicts across (sampled) pages:
+    ``ratio`` is the mean verdict score (one concept ``1.0`` / dominant concept
+    plus a developed tangent ``0.5`` / multiple concepts bolted together
+    ``0.0``), with a deterministic bootstrap CI. ``ratio == 0.0`` with
+    ``n_judged == 0`` means nothing was judged: the caller omits the metric
+    rather than reporting a misleading floor."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ratio: float
+    n_judged: int
+    n_errors: int
+    ci: tuple[float, float] = (0.0, 0.0)
+
+
+def _format_atomicity_prompt(*, page: KnowledgePage) -> str:
+    # Single-pass substitution, mirroring the wikilink prompt fill: both
+    # placeholders are page-authored (title AND body), so a title containing a
+    # literal ``{page_body}`` token must never have the body expanded into it.
+    mapping = {
+        "{page_title}": page.title,
+        "{page_body}": page.body,
+    }
+    pattern = re.compile("|".join(re.escape(token) for token in mapping))
+    return pattern.sub(
+        lambda m: mapping[m.group(0)], load_prompt("eval_judge_atomicity")
+    )
+
+
+_ATOMICITY_SYSTEM = (
+    "You are an atomicity judge. Decide whether the page develops exactly one "
+    "atomic concept. Return raw JSON only — no prose, no fences."
+)
+
+
+async def judge_semantic_atomicity(
+    pages: Sequence[KnowledgePage],
+    *,
+    llm: LLMProvider,
+    model: str,
+    sample: int | None = None,
+    reporter: ProgressReporter | None = None,
+    seed: str = "dikw",
+    max_tokens: int = _JUDGE_MAX_TOKENS,
+    temperature: float = 0.0,
+) -> SemanticAtomicitySummary:
+    """Score each page for semantic atomicity, aggregate to a ratio.
+
+    For every page the judge reads title + body — atomicity is intrinsic to
+    the page, no source text needed — and answers ``yes`` / ``partial`` /
+    ``no`` (``1.0`` / ``0.5`` / ``0.0``), the same verdict JSON contract as
+    the entailment judge, parsed by :func:`parse_entailment_verdict`.
+
+    ``sample`` caps the pages judged; selection is seeded via ``hashlib.sha1``
+    so repeated runs draw the same subset (``sample`` ≥ ``len(pages)`` is a
+    no-op). A per-page LLM exception or parse failure increments ``n_errors``
+    and skips the page — one bad response never kills the run.
+    """
+    _reporter: ProgressReporter = reporter or NoopReporter()
+    selected = list(pages)
+    if sample is not None and sample < len(selected):
+        rng = random.Random(hashlib.sha1(seed.encode("utf-8")).digest()[:8])
+        selected = rng.sample(selected, sample)
+
+    scores: list[float] = []
+    n_errors = 0
+
+    for idx, page in enumerate(selected):
+        await _reporter.progress(
+            phase="semantic_atomicity",
+            current=idx,
+            total=len(selected),
+            detail={"path": page.path},
+        )
+        try:
+            response = await llm.complete(
+                system=_ATOMICITY_SYSTEM,
+                user=_format_atomicity_prompt(page=page),
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.warning(
+                "semantic_atomicity: LLM call failed for %s — %s", page.path, e
+            )
+            n_errors += 1
+            continue
+        # Same ``{"verdict": yes/partial/no, "rationale"}`` contract as the
+        # entailment + wikilink judges — one parser, three judges.
+        verdict = parse_entailment_verdict(response.text)
+        if verdict is None:
+            n_errors += 1
+            continue
+        scores.append(verdict.score)
+
+    n_judged = len(scores)
+    ratio = sum(scores) / n_judged if n_judged else 0.0
+    # Seed suffix distinct from the four-dimension judge's ``:atomicity``
+    # stream so the two bootstraps stay self-documentingly independent.
+    return SemanticAtomicitySummary(
+        ratio=ratio,
+        n_judged=n_judged,
+        n_errors=n_errors,
+        ci=bootstrap_ci(scores, seed=f"{seed}:semantic_atomicity"),
+    )

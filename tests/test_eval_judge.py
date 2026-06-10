@@ -18,11 +18,13 @@ from dikw_core.eval.judge import (
     JudgeScore,
     JudgeSummary,
     PageJudgeEntry,
+    SemanticAtomicitySummary,
     WikilinkUnit,
     bootstrap_ci,
     claim_evidence_from_grounding,
     judge_category,
     judge_entailment,
+    judge_semantic_atomicity,
     judge_synthesis,
     judge_wikilinks,
     parse_category_verdict,
@@ -1073,3 +1075,124 @@ def test_wikilink_units_line_basis_matches_link_parser() -> None:
     units = wikilink_units_from_pages([alpha, beta], links)
     assert len(units) == 1
     assert "[[Alpha]]" in units[0].context
+
+
+# ---- judge_semantic_atomicity aggregation ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_averages_verdict_scores() -> None:
+    pages = [_page("A"), _page("B"), _page("C")]
+    llm = FakeLLM(responses=[_verdict("yes"), _verdict("partial"), _verdict("no")])
+    summary = await judge_semantic_atomicity(pages, llm=llm, model="x")
+    assert summary.n_judged == 3
+    assert summary.n_errors == 0
+    assert summary.ratio == pytest.approx(0.5)  # (1.0 + 0.5 + 0.0) / 3
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_empty_input_returns_zero_summary() -> None:
+    summary = await judge_semantic_atomicity([], llm=FakeLLM(), model="x")
+    assert isinstance(summary, SemanticAtomicitySummary)
+    assert summary.n_judged == 0
+    assert summary.n_errors == 0
+    assert summary.ratio == 0.0
+    assert summary.ci == (0.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_parse_failure_counted_not_raised() -> None:
+    llm = FakeLLM(responses=[_verdict("yes"), "garbage"])
+    summary = await judge_semantic_atomicity([_page("A"), _page("B")], llm=llm, model="x")
+    assert summary.n_judged == 1
+    assert summary.n_errors == 1
+    assert summary.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_llm_exception_counted_not_raised() -> None:
+    class BoomLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    summary = await judge_semantic_atomicity([_page("A")], llm=BoomLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_sample_caps_pages_seeded_stable() -> None:
+    pages = [_page(f"P{i}") for i in range(6)]
+    llm1 = FakeLLM(response_text=_verdict("yes"))
+    llm2 = FakeLLM(response_text=_verdict("yes"))
+    s1 = await judge_semantic_atomicity(pages, llm=llm1, model="x", sample=3, seed="d")
+    s2 = await judge_semantic_atomicity(pages, llm=llm2, model="x", sample=3, seed="d")
+    assert s1.n_judged == 3
+    assert llm1.call_count == 3
+    assert s1.ratio == s2.ratio
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_calls_llm_at_temperature_zero() -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    llm = CaptureLLM(response_text=_verdict("yes"))
+    await judge_semantic_atomicity([_page("A")], llm=llm, model="m")
+    assert captured["temperature"] == 0.0
+    assert "atomicity judge" in str(captured["system"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_default_max_tokens_is_reasoning_safe() -> None:
+    llm = FakeLLM(response_text=_verdict("yes"))
+    await judge_semantic_atomicity([_page("A")], llm=llm, model="m")
+    assert llm.last_max_tokens == 4096
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_prompt_carries_title_and_body() -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    page = _page("Gradient Descent", "# Gradient Descent\n\nIterative optimisation.\n")
+    await judge_semantic_atomicity(
+        [page], llm=CaptureLLM(response_text=_verdict("yes")), model="m"
+    )
+    user = str(captured["user"])
+    assert "Gradient Descent" in user
+    assert "Iterative optimisation." in user
+
+
+@pytest.mark.asyncio
+async def test_judge_semantic_atomicity_prompt_immune_to_placeholder_injection() -> None:
+    """Both injected fields are page-authored; a title containing the literal
+    ``{page_body}`` token (a templating page) must NOT have the body expanded
+    into it — the template fill is single-pass, never rescanning substituted
+    text."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    page = _page(
+        "How {page_body} expands", "UNIQUE-BODY-SENTINEL about template syntax.\n"
+    )
+    await judge_semantic_atomicity(
+        [page], llm=CaptureLLM(response_text=_verdict("yes")), model="m"
+    )
+    user = str(captured["user"])
+    # The literal token inside the page title survives un-expanded...
+    assert "How {page_body} expands" in user
+    # ...and the real body appears exactly once (no double-splice).
+    assert user.count("UNIQUE-BODY-SENTINEL") == 1

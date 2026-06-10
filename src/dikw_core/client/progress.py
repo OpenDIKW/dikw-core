@@ -1085,6 +1085,25 @@ def render_synth_eval_report(
             f"errors {wikilink.get('n_errors', 0)}"
         )
 
+    sem_atomicity = report.get("semantic_atomicity_summary")
+    if isinstance(sem_atomicity, dict):
+        ratio = sem_atomicity.get("ratio")
+        ratio_str = f"{ratio:.3f}" if isinstance(ratio, int | float) else "-"
+        ci = sem_atomicity.get("ci")
+        if (
+            isinstance(ci, list | tuple)
+            and len(ci) == 2
+            and all(isinstance(x, int | float) for x in ci)
+        ):
+            ci_str = f"95% CI [{ci[0]:.2f}, {ci[1]:.2f}]"
+        else:
+            ci_str = "95% CI [-]"
+        console.print(
+            f"semantic atomicity (LLM): {ratio_str} {ci_str} — "
+            f"judged {sem_atomicity.get('n_judged', 0)} pages, "
+            f"errors {sem_atomicity.get('n_errors', 0)}"
+        )
+
     warnings = report.get("warnings") or []
     if isinstance(warnings, list):
         for w in warnings:

@@ -176,6 +176,23 @@ or non-destructiveness. Two gates:
    `wikilink_summary`, **opt-in** under `judge.wikilink_correctness_enabled:
    true` (+ `--judge`), so `$0` by default.
 
+   **`semantic_atomicity_ratio` — does each page develop exactly one
+   concept?** `atomicity_score` is a *form* heuristic — body chars, H1/H2
+   counts, distinct wikilink targets, tag domains — blind in both directions:
+   a short single paragraph stuffed with three unrelated concepts passes
+   every count, while a thorough single-concept page can trip the length
+   counters. The judge reads each page's title + body alone (atomicity is
+   intrinsic to the page; no source text needed) and answers `yes` (one
+   concept; passing mentions and `[[wikilink]]` references don't count
+   against it) / `partial` (one dominant concept plus a substantively
+   developed tangent that deserves its own page) / `no` (multiple distinct
+   concepts bolted together) → `1.0`/`0.5`/`0.0`. The prompt's tie-breakers:
+   form never decides, and depth on one subject is not a violation.
+   Informational (never gated), bootstrap 95% CI on
+   `semantic_atomicity_summary`, **opt-in** under
+   `judge.semantic_atomicity_enabled: true` (+ `--judge`), so `$0` by
+   default.
+
    **Sizing the judge sample (`--judge-sample auto`).** A judge ratio is only as
    trustworthy as its CI is tight. The real calibrations all cleared the
    ±0.2 half-width target, but category only barely (entailment n=20 → ±0.13,

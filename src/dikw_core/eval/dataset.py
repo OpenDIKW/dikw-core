@@ -341,6 +341,15 @@ class JudgeSection(BaseModel):
     a wrong-referent link look *more* resolved, never less. Same opt-in
     economics: off by default, requires ``--judge``, so ``$0`` unless both are
     on.
+
+    ``semantic_atomicity_enabled`` opts the dataset into the
+    ``semantic_atomicity_ratio`` LLM judge (one call per sampled page — the
+    judge reads title + body and answers whether the page develops exactly one
+    atomic concept; see ``eval.judge.judge_semantic_atomicity``). The blind
+    spot it covers: ``atomicity_score`` is a form heuristic (length / heading /
+    link counts) that passes a short paragraph stuffed with three unrelated
+    concepts. Same opt-in economics: off by default, requires ``--judge``, so
+    ``$0`` unless both are on.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -349,6 +358,7 @@ class JudgeSection(BaseModel):
     entailment_grounding_enabled: bool = False
     category_correctness_enabled: bool = False
     wikilink_correctness_enabled: bool = False
+    semantic_atomicity_enabled: bool = False
 
 
 class ExpectedSource(BaseModel):
