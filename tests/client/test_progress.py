@@ -317,6 +317,33 @@ def test_render_synth_eval_report_smoke() -> None:
     assert "synth/atomicity" in out
 
 
+def test_render_synth_eval_report_wikilink_summary_line() -> None:
+    """A ``wikilink_summary`` renders as a ratio + CI line, mirroring the
+    entailment / category judge summaries."""
+    console = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        console,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [],
+            "metrics": {},
+            "informational": {},
+            "wikilink_summary": {
+                "ratio": 0.75,
+                "n_judged": 4,
+                "n_errors": 1,
+                "ci": [0.5, 1.0],
+            },
+        },
+    )
+    out = console.export_text()
+    assert "wikilink correctness" in out
+    assert "0.750" in out
+    assert "[0.50, 1.00]" in out
+    assert "judged 4" in out
+    assert "errors 1" in out
+
+
 def test_render_synth_eval_gated_metric_not_double_rendered() -> None:
     """A judge-only metric (``synth/fact_entailment_ratio``) is mirrored into
     ``informational`` AND, when the judge ran, carried in ``threshold_results``.

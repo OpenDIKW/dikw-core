@@ -7,6 +7,56 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-10 — `wikilink_correctness_ratio` LLM judge + real-LLM calibration (Phase 0b #3)
+
+**Change under test:** `synth/wikilink_correctness_ratio` — measurement tooling only,
+**no synth/retrieval generation change**. An opt-in LLM judge that reads each
+RESOLVED page→page `[[wikilink]]` in its body context next to the target page the
+engine resolved it to (the `links` table is the truth, fuzzy results included) and
+answers `yes`/`partial`/`no` (right referent / related-but-imprecise / wrong thing).
+The blind spot: `wikilink_resolved_ratio` counts resolution, and the fuzzy resolver
+makes a wrong-referent link (`[[Mercury]]` planet-context → chemical-element page)
+look *more* resolved, never less. Informational (never gated), opt-in via
+`judge.wikilink_correctness_enabled` + `--judge`, bootstrap CI on
+`SynthEvalReport.wikilink_summary`. The verdict JSON contract is shared with the
+entailment judge (one parser, two judges).
+
+**Calibration run (same-PR, live LLM):** `mvp` synth eval, MiniMax-M3
+(`anthropic_compat`, `llm_max_tokens_synth=16384`) + Qwen3-Embedding-0.6B@1024
+(Gitee), `--judge --judge-sample auto` (25). Repro:
+`uv run --env-file .env dikw client serve-and-run --base <minimax-base> -- eval --dataset mvp --eval synth --judge --judge-sample auto`.
+
+| judge      | judged | errors | result                                                       |
+|------------|--------|--------|--------------------------------------------------------------|
+| wikilink   | 16     | 0      | **`wikilink_correctness_ratio` 1.000, CI [1.00, 1.00]**      |
+| entailment | 25     | 0      | `fact_entailment_ratio` 0.700, CI [0.56, 0.84]               |
+| page (4-dim) | 15   | 0      | grounding 5.00 / atomicity 4.87 / completeness 3.47 / clarity 4.80 |
+
+**Wikilink baseline: `1.000` (n=16, zero variance → degenerate CI).** The run
+produced 15 pages with 16 resolved page→page links, every one judged a correct
+referent. Honest reading: the 3-essay Karpathy corpus has distinctive titles — no
+homonyms or same-named entities — so the failure mode this judge exists to catch
+has *zero instances here*. The value of the 1.0 baseline is directional: any
+future mvp run below 1.0 signals newly-introduced wrong-referent links. The
+judge's discriminative power on a corpus that HAS confusable titles is untested
+(follow-up: the elon-musk corpus — dense linking, recurring entity names — via
+`openai_codex`, since MiniMax moderation-blocks that text; see the Phase 2 #172
+entry for that harness).
+
+**First live exercise of the #189 conditional entailment gate:** the judge ran →
+the `synth/fact_entailment_ratio: 0.55` threshold was enforced → 0.700 passed.
+The 0.700 [0.56, 0.84] n=25 is consistent with the 2026-06-05 calibration (0.775
+[0.65, 0.90] n=20); the conservative 0.55 floor holds with margin.
+
+**Gated synth metrics this run (NOT this PR's concern):** `fact_grounding_ratio`
+0.696 (pass), `atomicity_score` 1.000 (pass), `duplicate_ratio_max` 0.000 (pass),
+`wikilink_resolved_ratio` 0.457 (**FAIL**), `language_fidelity` 1.000 (pass) →
+`passed=False` (exit 1). The resolved-ratio fail is the documented provider
+variance — floors are locked to gpt-5.5 and MiniMax-M3 swings run-to-run (0.708 /
+0.542 / 0.429 across prior entries; `fallback_ratio_max` 0.467 this run, MiniMax
+filed 10/15 pages under 未分类) — not a regression; this PR adds a judge metric
+and changes no generation path. Thresholds unchanged.
+
 ## 2026-06-09 — `fact_entailment_ratio` promoted to a conditional gate (Phase 2)
 
 **Change under test:** `synth/fact_entailment_ratio` moves from informational-only

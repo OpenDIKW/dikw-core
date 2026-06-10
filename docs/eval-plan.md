@@ -160,10 +160,29 @@ or non-destructiveness. Two gates:
    **opt-in** under `judge.category_correctness_enabled: true` (+ `--judge`), so
    `$0` by default.
 
+   **`wikilink_correctness_ratio` — does each resolved link point at the right
+   page?** `wikilink_resolved_ratio` counts resolution, and the fuzzy resolver
+   (NFKC + casefold + punctuation strip + plural stem) deliberately absorbs
+   surface variation — so a wrong-referent link (`[[Mercury]]` in a planetary
+   context resolving to the chemical-element page) makes the resolved ratio
+   look *better* while silently corrupting the graph that feeds graph-leg
+   retrieval. The judge reads each resolved page→page link in its body context
+   (the `[[wikilink]]` as written stays visible) next to the target page the
+   engine resolved it to — the `links` table is the deterministic truth, fuzzy
+   results included — and answers `yes` (right referent; resolver-absorbed
+   surface variants still count) / `partial` (related but imprecise — a
+   broader/narrower/sibling page) / `no` (a homonym or different entity) →
+   `1.0`/`0.5`/`0.0`. Informational (never gated), bootstrap 95% CI on
+   `wikilink_summary`, **opt-in** under `judge.wikilink_correctness_enabled:
+   true` (+ `--judge`), so `$0` by default.
+
    **Sizing the judge sample (`--judge-sample auto`).** A judge ratio is only as
-   trustworthy as its CI is tight. The two real calibrations both cleared the
+   trustworthy as its CI is tight. The real calibrations all cleared the
    ±0.2 half-width target, but category only barely (entailment n=20 → ±0.13,
-   category n=8 → ±0.19) — riding low score-variance, not a sufficient sample. At
+   category n=8 → ±0.19; wikilink n=16 cleared it trivially — a zero-variance
+   1.0 run whose degenerate CI says nothing about discriminative power, see
+   the 2026-06-10 BASELINES entry) — riding low score-variance, not a
+   sufficient sample. At
    n=8 the worst-case (50/50) half-width is ±0.35, so a higher-variance metric
    would have failed; we want a size that *guarantees* the target regardless of
    variance. A [0,1] ratio's bootstrap 95% CI half-width is at most

@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import random
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -27,7 +28,7 @@ from ..domains.knowledge.page import KnowledgePage
 from ..progress import NoopReporter, ProgressReporter
 from ..prompts import load as load_prompt
 from ..providers.base import LLMProvider
-from ..schemas import ChunkRecord
+from ..schemas import ChunkRecord, LinkRecord, LinkType
 from .metrics import GroundingClaim
 
 logger = logging.getLogger(__name__)
@@ -756,4 +757,213 @@ async def judge_category(
         n_judged=n_judged,
         n_errors=n_errors,
         ci=bootstrap_ci(scores, seed=f"{seed}:category"),
+    )
+
+
+# --- Wikilink-correctness judge -----------------------------------------------
+#
+# ``wikilink_resolved_ratio`` counts how many ``[[wikilinks]]`` RESOLVED — it is
+# blind to whether each resolved link points at the RIGHT page. The fuzzy
+# resolver (NFKC + casefold + punctuation strip + plural stem) deliberately
+# absorbs surface variation, so a wrong-referent link (``[[Mercury]]`` in a
+# planetary context resolving to the chemical-element page) makes the resolved
+# ratio look *better* while silently corrupting the graph. This judge reads each
+# resolved link in its body context next to the target page it landed on and
+# asks the one question the deterministic resolver cannot: is that the thing the
+# context refers to? Karpathy's rule: which links resolved to which page is
+# deterministic scoping (the ``links`` table is the engine's truth); whether the
+# referent is right is the probabilistic call.
+
+
+@dataclass(frozen=True)
+class WikilinkUnit:
+    """One resolved wikilink to judge: the referencing page's identity, the
+    body lines around the link (the ``[[...]]`` as written stays visible in
+    ``context``), and the target page the engine resolved it to."""
+
+    src_path: str
+    src_title: str
+    context: str
+    target_path: str
+    target_title: str
+    target_category: str
+    target_body: str
+
+
+class WikilinkSummary(BaseModel):
+    """Aggregate of wikilink-correctness verdicts across (sampled) resolved
+    links: ``ratio`` is the mean verdict score (right referent ``1.0`` /
+    related-but-imprecise ``0.5`` / wrong ``0.0``), with a deterministic
+    bootstrap CI. ``ratio == 0.0`` with ``n_judged == 0`` means nothing was
+    judged (e.g. the run produced no resolved page-to-page wikilink): the
+    caller omits the metric rather than reporting a misleading floor."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ratio: float
+    n_judged: int
+    n_errors: int
+    ci: tuple[float, float] = (0.0, 0.0)
+
+
+def wikilink_units_from_pages(
+    pages: Sequence[KnowledgePage],
+    links_by_src_path: Mapping[str, Sequence[LinkRecord]],
+    *,
+    context_lines: int = 1,
+    target_body_cap: int = 1200,
+) -> list[WikilinkUnit]:
+    """Pair each resolved page→page wikilink with its body context and target.
+
+    ``links_by_src_path`` maps a referencing page's path to its stored
+    ``LinkRecord`` rows (``storage.links_from`` — the engine's actual
+    resolution, fuzzy results included). Deterministic, no LLM. Skipped rows:
+
+    * non-``WIKILINK`` records (markdown / URL links aren't page references);
+    * targets outside ``pages`` (a dangling or non-knowledge ``dst_path`` —
+      broken links are ``wikilink_resolved_ratio``'s concern, not this judge's);
+    * self-links (a page referencing its own title judges nothing useful);
+    * a ``src`` path missing from ``pages`` (a deactivated doc's stale rows).
+
+    ``context`` is the link's body line ± ``context_lines`` (the record's
+    1-based body-relative line, clamped to the body's bounds so a stale line
+    number degrades to nearby context instead of raising). ``target_body`` is
+    capped at ``target_body_cap`` chars — atomic K-pages fit comfortably; the
+    cap only guards the judge prompt against a pathological page.
+    """
+    pages_by_path: dict[str, KnowledgePage] = {p.path: p for p in pages}
+    units: list[WikilinkUnit] = []
+    for src_path, records in links_by_src_path.items():
+        src = pages_by_path.get(src_path)
+        if src is None or not src.body:
+            continue
+        # Split on "\n" ONLY — the link parser's line counter
+        # (``links._line_starts``) counts just newline characters, so this is
+        # the basis ``rec.line`` was computed in. ``str.splitlines()`` would
+        # additionally split on U+2028/U+2029/\x0b/\x0c/\x85 (U+2028 is a known
+        # LLM output artifact), shifting every later index and silently handing
+        # the judge a window that no longer contains the ``[[wikilink]]``.
+        body_lines = src.body.split("\n")
+        for rec in records:
+            if rec.link_type is not LinkType.WIKILINK:
+                continue
+            if rec.dst_path == src_path:
+                continue
+            target = pages_by_path.get(rec.dst_path)
+            if target is None:
+                continue
+            # 1-based → 0-based, clamped into the body's line range.
+            center = min(max(rec.line - 1, 0), len(body_lines) - 1)
+            lo = max(center - context_lines, 0)
+            hi = min(center + context_lines + 1, len(body_lines))
+            context = "\n".join(body_lines[lo:hi])
+            units.append(
+                WikilinkUnit(
+                    src_path=src_path,
+                    src_title=src.title,
+                    context=context,
+                    target_path=rec.dst_path,
+                    target_title=target.title,
+                    target_category=target.category,
+                    target_body=target.body[:target_body_cap],
+                )
+            )
+    return units
+
+
+def _format_wikilink_prompt(*, unit: WikilinkUnit) -> str:
+    # Single-pass substitution: all five placeholders are replaced in ONE
+    # regex scan over the template, so a page-authored value (title, body,
+    # context) that itself contains a literal placeholder token — a templating
+    # page showing ``{context}`` in a code example — is never re-expanded.
+    # Chained ``str.replace`` would rescan previously injected page text; with
+    # four page-authored fields that is a real splice vector, not a theory.
+    # (Not ``str.format`` either, which would raise on any literal brace.)
+    mapping = {
+        "{src_title}": unit.src_title,
+        "{target_title}": unit.target_title,
+        "{target_category}": unit.target_category,
+        "{target_body}": unit.target_body,
+        "{context}": unit.context,
+    }
+    pattern = re.compile("|".join(re.escape(token) for token in mapping))
+    return pattern.sub(
+        lambda m: mapping[m.group(0)], load_prompt("eval_judge_wikilink")
+    )
+
+
+_WIKILINK_SYSTEM = (
+    "You are a wikilink judge. Decide whether the link in the context refers "
+    "to the target page shown. Return raw JSON only — no prose, no fences."
+)
+
+
+async def judge_wikilinks(
+    units: Sequence[WikilinkUnit],
+    *,
+    llm: LLMProvider,
+    model: str,
+    sample: int | None = None,
+    reporter: ProgressReporter | None = None,
+    seed: str = "dikw",
+    max_tokens: int = _JUDGE_MAX_TOKENS,
+    temperature: float = 0.0,
+) -> WikilinkSummary:
+    """Score each resolved wikilink for referent correctness, aggregate to a ratio.
+
+    For every unit the judge sees the link in its body context plus the target
+    page the engine resolved it to, and answers ``yes`` / ``partial`` / ``no``
+    (``1.0`` / ``0.5`` / ``0.0``) — the same verdict JSON contract as the
+    entailment judge, parsed by :func:`parse_entailment_verdict`.
+
+    ``sample`` caps the units judged; selection is seeded via ``hashlib.sha1``
+    so repeated runs draw the same subset (``sample`` ≥ ``len(units)`` is a
+    no-op). A per-unit LLM exception or parse failure increments ``n_errors``
+    and skips the unit — one bad response never kills the run.
+    """
+    _reporter: ProgressReporter = reporter or NoopReporter()
+    selected = list(units)
+    if sample is not None and sample < len(selected):
+        rng = random.Random(hashlib.sha1(seed.encode("utf-8")).digest()[:8])
+        selected = rng.sample(selected, sample)
+
+    scores: list[float] = []
+    n_errors = 0
+
+    for idx, unit in enumerate(selected):
+        await _reporter.progress(
+            phase="wikilink",
+            current=idx,
+            total=len(selected),
+            detail={"path": unit.src_path, "target": unit.target_path},
+        )
+        try:
+            response = await llm.complete(
+                system=_WIKILINK_SYSTEM,
+                user=_format_wikilink_prompt(unit=unit),
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            logger.warning(
+                "wikilink: LLM call failed for %s — %s", unit.src_path, e
+            )
+            n_errors += 1
+            continue
+        # Same ``{"verdict": yes/partial/no, "rationale"}`` contract as the
+        # entailment judge — one parser, two judges.
+        verdict = parse_entailment_verdict(response.text)
+        if verdict is None:
+            n_errors += 1
+            continue
+        scores.append(verdict.score)
+
+    n_judged = len(scores)
+    ratio = sum(scores) / n_judged if n_judged else 0.0
+    return WikilinkSummary(
+        ratio=ratio,
+        n_judged=n_judged,
+        n_errors=n_errors,
+        ci=bootstrap_ci(scores, seed=f"{seed}:wikilink"),
     )

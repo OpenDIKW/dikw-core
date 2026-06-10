@@ -565,9 +565,10 @@ def test_load_dataset_judge_section_defaults(tmp_path: Path) -> None:
     ds = _write_valid_dataset(tmp_path)
     spec = load_dataset(ds)
     assert spec.judge.model is None
-    # fact-entailment + category judges are opt-in — off unless enabled.
+    # fact-entailment + category + wikilink judges are opt-in — off unless enabled.
     assert spec.judge.entailment_grounding_enabled is False
     assert spec.judge.category_correctness_enabled is False
+    assert spec.judge.wikilink_correctness_enabled is False
 
 
 def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
@@ -581,6 +582,19 @@ def test_load_dataset_judge_entailment_flag_parsed(tmp_path: Path) -> None:
     )
     spec = load_dataset(ds)
     assert spec.judge.entailment_grounding_enabled is True
+
+
+def test_load_dataset_judge_wikilink_flag_parsed(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    (ds / "dataset.yaml").write_text(
+        (ds / "dataset.yaml").read_text(encoding="utf-8").replace(
+            "judge:\n  model: claude-sonnet\n",
+            "judge:\n  model: claude-sonnet\n  wikilink_correctness_enabled: true\n",
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    assert spec.judge.wikilink_correctness_enabled is True
 
 
 def test_synth_fact_entailment_ratio_threshold_is_gateable(tmp_path: Path) -> None:

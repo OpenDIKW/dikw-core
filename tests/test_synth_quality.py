@@ -58,6 +58,21 @@ Beta is another concept the test corpus mentions.
 </page>
 """
 
+# Beta variant whose body wikilinks [[Alpha]] — sources are synthesized in
+# name order (alpha before beta), so the Alpha page exists when this one
+# persists and the link RESOLVES into the ``links`` table, giving the
+# wikilink-correctness judge a unit to judge.
+_SYNTH_BETA_LINKED_RESPONSE = """<page path="knowledge/concepts/beta.md" type="concept">
+---
+tags: [topic/sample]
+---
+
+# Beta
+
+Beta is another concept that builds on [[Alpha]] directly.
+</page>
+"""
+
 
 def _write_synth_dataset(
     root: Path,
@@ -478,12 +493,16 @@ class _DispatchLLM:
         verdict: str,
         page_score: str,
         category: str,
+        wikilink: str | None = None,
     ) -> None:
         self._synth_pages = synth_pages
         self._synth_idx = 0
         self._verdict = verdict
         self._page_score = page_score
         self._category = category
+        # The wikilink judge shares the entailment verdict JSON contract;
+        # default to the same scripted verdict unless a test overrides it.
+        self._wikilink = wikilink if wikilink is not None else verdict
 
     async def complete(
         self,
@@ -496,6 +515,8 @@ class _DispatchLLM:
         tools: object = None,
     ) -> LLMResponse:
         s = system.lower()
+        if "wikilink judge" in s:
+            return LLMResponse(text=self._wikilink, finish_reason="end_turn")
         if "entailment judge" in s:
             return LLMResponse(text=self._verdict, finish_reason="end_turn")
         if "taxonomy judge" in s:
@@ -529,11 +550,15 @@ def _dispatch_llm() -> _DispatchLLM:
 
 
 def _enable_judge(
-    ds: Path, *, entailment: bool = False, category: bool = False
+    ds: Path,
+    *,
+    entailment: bool = False,
+    category: bool = False,
+    wikilink: bool = False,
 ) -> None:
     """Append a single ``judge:`` block enabling the requested judge legs.
 
-    One block even when both legs are requested, so the YAML never carries
+    One block even when multiple legs are requested, so the YAML never carries
     duplicate ``judge:`` keys (which a per-leg append helper would produce).
     """
     flags: list[str] = []
@@ -541,6 +566,8 @@ def _enable_judge(
         flags.append("  entailment_grounding_enabled: true")
     if category:
         flags.append("  category_correctness_enabled: true")
+    if wikilink:
+        flags.append("  wikilink_correctness_enabled: true")
     if not flags:
         return
     p = ds / "dataset.yaml"
@@ -793,3 +820,95 @@ async def test_run_synth_eval_category_off_when_flag_unset(tmp_path: Path) -> No
     assert report.judge_summary is not None  # page judge still ran
     assert report.category_summary is None
     assert "synth/category_correctness_ratio" not in report.informational
+
+
+# ---- wikilink-correctness judge wiring --------------------------------------
+
+
+def _linked_dispatch_llm() -> _DispatchLLM:
+    """Dispatch fake whose beta page wikilinks [[Alpha]] — a resolved link for
+    the wikilink judge to pick up."""
+    return _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_LINKED_RESPONSE],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_wikilink_runs_when_enabled(tmp_path: Path) -> None:
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, wikilink=True)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_linked_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.wikilink_summary is not None
+    assert report.wikilink_summary.n_judged >= 1
+    assert report.wikilink_summary.n_errors == 0
+    # All verdicts scripted "yes" → ratio 1.0.
+    assert report.wikilink_summary.ratio == 1.0
+    # Mirrored into informational (for the A/B harness + display), never gated.
+    assert "synth/wikilink_correctness_ratio" in report.informational
+    assert (
+        report.informational["synth/wikilink_correctness_ratio"]
+        == report.wikilink_summary.ratio
+    )
+    assert "synth/wikilink_correctness_ratio" not in report.metrics
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_wikilink_no_links_judges_nothing(tmp_path: Path) -> None:
+    """Flag + judge on, but the produced pages carry no resolved wikilink →
+    the judge has zero units; the ratio is omitted (n_judged == 0 means
+    nothing was measured, not a 0.0 floor)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, wikilink=True)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.wikilink_summary is not None
+    assert report.wikilink_summary.n_judged == 0
+    assert "synth/wikilink_correctness_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_wikilink_off_when_judge_off(tmp_path: Path) -> None:
+    """Flag on but ``judge=False`` → no wikilink leg (it requires --judge)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, wikilink=True)
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_linked_dispatch_llm(), embedder=FakeEmbeddings(), judge=False
+    )
+    assert report.wikilink_summary is None
+    assert "synth/wikilink_correctness_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
+async def test_run_synth_eval_wikilink_off_when_flag_unset(tmp_path: Path) -> None:
+    """``judge=True`` but the dataset didn't opt in → only the page judge runs."""
+    ds = _write_synth_dataset(tmp_path)  # no wikilink flag
+    spec = load_dataset(ds)
+
+    report = await run_synth_eval(
+        spec, llm=_linked_dispatch_llm(), embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.judge_summary is not None  # page judge still ran
+    assert report.wikilink_summary is None
+    assert "synth/wikilink_correctness_ratio" not in report.informational

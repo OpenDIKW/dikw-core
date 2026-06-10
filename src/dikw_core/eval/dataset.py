@@ -331,6 +331,16 @@ class JudgeSection(BaseModel):
     fallback and the score compares it to where synth filed the page; see
     ``eval.judge.judge_category``). Same opt-in economics as the entailment leg:
     off by default, requires ``--judge``, so ``$0`` unless both are on.
+
+    ``wikilink_correctness_enabled`` opts the dataset into the
+    ``wikilink_correctness_ratio`` LLM judge (one call per sampled resolved
+    page→page wikilink — the judge reads the link in its body context next to
+    the target page the engine resolved it to and answers whether the referent
+    is right; see ``eval.judge.judge_wikilinks``). The blind spot it covers:
+    ``wikilink_resolved_ratio`` counts resolution, and the fuzzy resolver makes
+    a wrong-referent link look *more* resolved, never less. Same opt-in
+    economics: off by default, requires ``--judge``, so ``$0`` unless both are
+    on.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -338,6 +348,7 @@ class JudgeSection(BaseModel):
     model: str | None = None
     entailment_grounding_enabled: bool = False
     category_correctness_enabled: bool = False
+    wikilink_correctness_enabled: bool = False
 
 
 class ExpectedSource(BaseModel):

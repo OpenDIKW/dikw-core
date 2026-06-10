@@ -1066,6 +1066,25 @@ def render_synth_eval_report(
             f"errors {category.get('n_errors', 0)}"
         )
 
+    wikilink = report.get("wikilink_summary")
+    if isinstance(wikilink, dict):
+        ratio = wikilink.get("ratio")
+        ratio_str = f"{ratio:.3f}" if isinstance(ratio, int | float) else "-"
+        ci = wikilink.get("ci")
+        if (
+            isinstance(ci, list | tuple)
+            and len(ci) == 2
+            and all(isinstance(x, int | float) for x in ci)
+        ):
+            ci_str = f"95% CI [{ci[0]:.2f}, {ci[1]:.2f}]"
+        else:
+            ci_str = "95% CI [-]"
+        console.print(
+            f"wikilink correctness (LLM): {ratio_str} {ci_str} — "
+            f"judged {wikilink.get('n_judged', 0)} links, "
+            f"errors {wikilink.get('n_errors', 0)}"
+        )
+
     warnings = report.get("warnings") or []
     if isinstance(warnings, list):
         for w in warnings:

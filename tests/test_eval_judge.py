@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -17,18 +18,21 @@ from dikw_core.eval.judge import (
     JudgeScore,
     JudgeSummary,
     PageJudgeEntry,
+    WikilinkUnit,
     bootstrap_ci,
     claim_evidence_from_grounding,
     judge_category,
     judge_entailment,
     judge_synthesis,
+    judge_wikilinks,
     parse_category_verdict,
     parse_entailment_verdict,
     parse_judge_response,
     recommended_judge_sample,
+    wikilink_units_from_pages,
 )
 from dikw_core.eval.metrics import GroundingClaim
-from dikw_core.schemas import ChunkRecord
+from dikw_core.schemas import ChunkRecord, LinkRecord, LinkType
 
 from .fakes import FakeLLM
 
@@ -803,3 +807,269 @@ async def test_judge_category_default_max_tokens_is_reasoning_safe() -> None:
     llm = FakeLLM(response_text=_catv("concept"))
     await judge_category([_cpage("concept")], options=_CAT_OPTS, llm=llm, model="m")
     assert llm.last_max_tokens == 4096
+
+
+# ---- wikilink-correctness judge ---------------------------------------------
+
+
+def _linked_page(title: str, body: str, *, path: str) -> KnowledgePage:
+    p = build_page(
+        title=title,
+        body=body,
+        category="concept",
+        tags=[],
+        sources=["sources/a.md"],
+        path=None,
+        extras={},
+    )
+    # build_page derives a path; the tests pin explicit paths so the
+    # links_by_src_path keys and dst_path values line up deterministically.
+    return replace(p, path=path)
+
+
+def _wlink(dst_path: str, line: int, *, kind: LinkType = LinkType.WIKILINK) -> LinkRecord:
+    return LinkRecord(
+        src_doc_id="doc-src", dst_path=dst_path, link_type=kind, anchor=None, line=line
+    )
+
+
+def _two_linked_pages() -> tuple[list[KnowledgePage], dict[str, list[LinkRecord]]]:
+    alpha = _linked_page(
+        "Alpha", "# Alpha\n\nAlpha is a concept.\n", path="knowledge/concept/alpha.md"
+    )
+    beta = _linked_page(
+        "Beta",
+        "# Beta\n\nBeta builds on [[Alpha]] heavily.\nMore beta detail.\n",
+        path="knowledge/concept/beta.md",
+    )
+    links = {
+        "knowledge/concept/beta.md": [_wlink("knowledge/concept/alpha.md", line=3)]
+    }
+    return [alpha, beta], links
+
+
+# ---- wikilink_units_from_pages ----------------------------------------------
+
+
+def test_wikilink_units_basic_unit_built_with_context() -> None:
+    pages, links = _two_linked_pages()
+    units = wikilink_units_from_pages(pages, links)
+    assert len(units) == 1
+    u = units[0]
+    assert u.src_path == "knowledge/concept/beta.md"
+    assert u.src_title == "Beta"
+    assert u.target_path == "knowledge/concept/alpha.md"
+    assert u.target_title == "Alpha"
+    assert u.target_category == "concept"
+    assert "Alpha is a concept." in u.target_body
+    # Context carries the link line plus its neighbours.
+    assert "[[Alpha]]" in u.context
+    assert "More beta detail." in u.context
+
+
+def test_wikilink_units_dangling_target_skipped() -> None:
+    pages, _ = _two_linked_pages()
+    links = {"knowledge/concept/beta.md": [_wlink("knowledge/concept/ghost.md", line=3)]}
+    assert wikilink_units_from_pages(pages, links) == []
+
+
+def test_wikilink_units_non_wikilink_records_skipped() -> None:
+    pages, _ = _two_linked_pages()
+    links = {
+        "knowledge/concept/beta.md": [
+            _wlink("knowledge/concept/alpha.md", line=3, kind=LinkType.MARKDOWN),
+            _wlink("https://example.com", line=3, kind=LinkType.URL),
+        ]
+    }
+    assert wikilink_units_from_pages(pages, links) == []
+
+
+def test_wikilink_units_self_link_skipped() -> None:
+    pages, _ = _two_linked_pages()
+    links = {"knowledge/concept/beta.md": [_wlink("knowledge/concept/beta.md", line=3)]}
+    assert wikilink_units_from_pages(pages, links) == []
+
+
+def test_wikilink_units_target_body_capped() -> None:
+    pages, links = _two_linked_pages()
+    long_alpha = replace(pages[0], body="# Alpha\n\n" + "x" * 5000)
+    units = wikilink_units_from_pages([long_alpha, pages[1]], links, target_body_cap=100)
+    assert len(units) == 1
+    assert len(units[0].target_body) <= 100
+
+
+def test_wikilink_units_out_of_range_line_clamped_not_crash() -> None:
+    # A defensive guard: a stale line number (body edited between persist and
+    # eval) must clamp to the body's bounds, never raise.
+    pages, _ = _two_linked_pages()
+    links = {"knowledge/concept/beta.md": [_wlink("knowledge/concept/alpha.md", line=999)]}
+    units = wikilink_units_from_pages(pages, links)
+    assert len(units) == 1
+    assert units[0].context  # non-empty: clamped to the last lines
+
+
+def test_wikilink_units_src_page_missing_from_pages_skipped() -> None:
+    # A links key whose src page isn't in the page set (deactivated doc) is
+    # skipped rather than KeyError-ing.
+    pages, _ = _two_linked_pages()
+    links = {"knowledge/concept/ghost.md": [_wlink("knowledge/concept/alpha.md", line=1)]}
+    assert wikilink_units_from_pages(pages, links) == []
+
+
+# ---- judge_wikilinks aggregation ---------------------------------------------
+
+
+def _unit(i: int = 0) -> WikilinkUnit:
+    return WikilinkUnit(
+        src_path=f"knowledge/concept/src{i}.md",
+        src_title=f"Src {i}",
+        context=f"Src {i} builds on [[Alpha]].",
+        target_path="knowledge/concept/alpha.md",
+        target_title="Alpha",
+        target_category="concept",
+        target_body="# Alpha\n\nAlpha is a concept.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_averages_verdict_scores() -> None:
+    units = [_unit(0), _unit(1), _unit(2)]
+    llm = FakeLLM(responses=[_verdict("yes"), _verdict("partial"), _verdict("no")])
+    summary = await judge_wikilinks(units, llm=llm, model="x")
+    assert summary.n_judged == 3
+    assert summary.n_errors == 0
+    assert summary.ratio == pytest.approx(0.5)  # (1.0 + 0.5 + 0.0) / 3
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_empty_input_returns_zero_summary() -> None:
+    summary = await judge_wikilinks([], llm=FakeLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 0
+    assert summary.ratio == 0.0
+    assert summary.ci == (0.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_parse_failure_counted_not_raised() -> None:
+    llm = FakeLLM(responses=[_verdict("yes"), "garbage"])
+    summary = await judge_wikilinks([_unit(0), _unit(1)], llm=llm, model="x")
+    assert summary.n_judged == 1
+    assert summary.n_errors == 1
+    assert summary.ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_llm_exception_counted_not_raised() -> None:
+    class BoomLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    summary = await judge_wikilinks([_unit(0)], llm=BoomLLM(), model="x")
+    assert summary.n_judged == 0
+    assert summary.n_errors == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_sample_caps_units_seeded_stable() -> None:
+    units = [_unit(i) for i in range(6)]
+    llm1 = FakeLLM(response_text=_verdict("yes"))
+    llm2 = FakeLLM(response_text=_verdict("yes"))
+    s1 = await judge_wikilinks(units, llm=llm1, model="x", sample=3, seed="d")
+    s2 = await judge_wikilinks(units, llm=llm2, model="x", sample=3, seed="d")
+    assert s1.n_judged == 3
+    assert llm1.call_count == 3
+    assert s1.ratio == s2.ratio
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_calls_llm_at_temperature_zero() -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    llm = CaptureLLM(response_text=_verdict("yes"))
+    await judge_wikilinks([_unit(0)], llm=llm, model="m")
+    assert captured["temperature"] == 0.0
+    assert "wikilink judge" in str(captured["system"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_default_max_tokens_is_reasoning_safe() -> None:
+    llm = FakeLLM(response_text=_verdict("yes"))
+    await judge_wikilinks([_unit(0)], llm=llm, model="m")
+    assert llm.last_max_tokens == 4096
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_prompt_carries_context_and_target() -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    await judge_wikilinks([_unit(0)], llm=CaptureLLM(response_text=_verdict("yes")), model="m")
+    user = str(captured["user"])
+    assert "[[Alpha]]" in user  # the context with the link as written
+    assert "Alpha is a concept." in user  # the target body
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_prompt_immune_to_placeholder_injection() -> None:
+    """Page-authored content containing a literal placeholder token (e.g. a
+    templating page whose body shows ``{context}`` in a code example) must NOT
+    be re-expanded by the template fill — the fill is single-pass, never
+    rescanning substituted text."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    unit = WikilinkUnit(
+        src_path="knowledge/concept/src.md",
+        src_title="Src",
+        context="UNIQUE-CONTEXT-SENTINEL with [[Alpha]].",
+        target_path="knowledge/concept/alpha.md",
+        target_title="Alpha",
+        target_category="concept",
+        target_body="Use {context} and {target_body} in your template.",
+    )
+    await judge_wikilinks(
+        [unit], llm=CaptureLLM(response_text=_verdict("yes")), model="m"
+    )
+    user = str(captured["user"])
+    # The literal tokens inside the page body survive un-expanded...
+    assert "Use {context} and {target_body} in your template." in user
+    # ...and the real context appears exactly once (no double-splice).
+    assert user.count("UNIQUE-CONTEXT-SENTINEL") == 1
+
+
+def test_wikilink_units_line_basis_matches_link_parser() -> None:
+    """``LinkRecord.line`` comes from a parser that counts ONLY newline
+    characters; context extraction must use the same basis. A body whose first
+    line carries two U+2028 LINE SEPARATORs (a known LLM output artifact) would
+    shift every ``str.splitlines()`` index by 2 — past the default ±1 context
+    window — so a splitlines-based window would lose the ``[[wikilink]]``."""
+    sep = chr(0x2028)  # built at runtime: the source file stays escape-free
+    alpha = _linked_page(
+        "Alpha", "# Alpha\n\nAlpha is a concept.\n", path="knowledge/concept/alpha.md"
+    )
+    beta = _linked_page(
+        "Beta",
+        "# Beta" + sep + "sub" + sep + "title\n\n"
+        "Beta builds on [[Alpha]] heavily.\nMore beta detail.\n",
+        path="knowledge/concept/beta.md",
+    )
+    links = {
+        "knowledge/concept/beta.md": [_wlink("knowledge/concept/alpha.md", line=3)]
+    }
+    units = wikilink_units_from_pages([alpha, beta], links)
+    assert len(units) == 1
+    assert "[[Alpha]]" in units[0].context
