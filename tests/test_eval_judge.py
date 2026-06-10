@@ -1017,3 +1017,59 @@ async def test_judge_wikilinks_prompt_carries_context_and_target() -> None:
     user = str(captured["user"])
     assert "[[Alpha]]" in user  # the context with the link as written
     assert "Alpha is a concept." in user  # the target body
+
+
+@pytest.mark.asyncio
+async def test_judge_wikilinks_prompt_immune_to_placeholder_injection() -> None:
+    """Page-authored content containing a literal placeholder token (e.g. a
+    templating page whose body shows ``{context}`` in a code example) must NOT
+    be re-expanded by the template fill — the fill is single-pass, never
+    rescanning substituted text."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    unit = WikilinkUnit(
+        src_path="knowledge/concept/src.md",
+        src_title="Src",
+        context="UNIQUE-CONTEXT-SENTINEL with [[Alpha]].",
+        target_path="knowledge/concept/alpha.md",
+        target_title="Alpha",
+        target_category="concept",
+        target_body="Use {context} and {target_body} in your template.",
+    )
+    await judge_wikilinks(
+        [unit], llm=CaptureLLM(response_text=_verdict("yes")), model="m"
+    )
+    user = str(captured["user"])
+    # The literal tokens inside the page body survive un-expanded...
+    assert "Use {context} and {target_body} in your template." in user
+    # ...and the real context appears exactly once (no double-splice).
+    assert user.count("UNIQUE-CONTEXT-SENTINEL") == 1
+
+
+def test_wikilink_units_line_basis_matches_link_parser() -> None:
+    """``LinkRecord.line`` comes from a parser that counts ONLY newline
+    characters; context extraction must use the same basis. A body whose first
+    line carries two U+2028 LINE SEPARATORs (a known LLM output artifact) would
+    shift every ``str.splitlines()`` index by 2 — past the default ±1 context
+    window — so a splitlines-based window would lose the ``[[wikilink]]``."""
+    sep = chr(0x2028)  # built at runtime: the source file stays escape-free
+    alpha = _linked_page(
+        "Alpha", "# Alpha\n\nAlpha is a concept.\n", path="knowledge/concept/alpha.md"
+    )
+    beta = _linked_page(
+        "Beta",
+        "# Beta" + sep + "sub" + sep + "title\n\n"
+        "Beta builds on [[Alpha]] heavily.\nMore beta detail.\n",
+        path="knowledge/concept/beta.md",
+    )
+    links = {
+        "knowledge/concept/beta.md": [_wlink("knowledge/concept/alpha.md", line=3)]
+    }
+    units = wikilink_units_from_pages([alpha, beta], links)
+    assert len(units) == 1
+    assert "[[Alpha]]" in units[0].context

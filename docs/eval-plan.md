@@ -177,9 +177,12 @@ or non-destructiveness. Two gates:
    true` (+ `--judge`), so `$0` by default.
 
    **Sizing the judge sample (`--judge-sample auto`).** A judge ratio is only as
-   trustworthy as its CI is tight. The two real calibrations both cleared the
+   trustworthy as its CI is tight. The real calibrations all cleared the
    ±0.2 half-width target, but category only barely (entailment n=20 → ±0.13,
-   category n=8 → ±0.19) — riding low score-variance, not a sufficient sample. At
+   category n=8 → ±0.19; wikilink n=16 cleared it trivially — a zero-variance
+   1.0 run whose degenerate CI says nothing about discriminative power, see
+   the 2026-06-10 BASELINES entry) — riding low score-variance, not a
+   sufficient sample. At
    n=8 the worst-case (50/50) half-width is ±0.35, so a higher-variance metric
    would have failed; we want a size that *guarantees* the target regardless of
    variance. A [0,1] ratio's bootstrap 95% CI half-width is at most

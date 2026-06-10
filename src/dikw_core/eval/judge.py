@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import random
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -834,9 +835,15 @@ def wikilink_units_from_pages(
     units: list[WikilinkUnit] = []
     for src_path, records in links_by_src_path.items():
         src = pages_by_path.get(src_path)
-        if src is None:
+        if src is None or not src.body:
             continue
-        body_lines = src.body.splitlines()
+        # Split on "\n" ONLY — the link parser's line counter
+        # (``links._line_starts``) counts just newline characters, so this is
+        # the basis ``rec.line`` was computed in. ``str.splitlines()`` would
+        # additionally split on U+2028/U+2029/\x0b/\x0c/\x85 (U+2028 is a known
+        # LLM output artifact), shifting every later index and silently handing
+        # the judge a window that no longer contains the ``[[wikilink]]``.
+        body_lines = src.body.split("\n")
         for rec in records:
             if rec.link_type is not LinkType.WIKILINK:
                 continue
@@ -844,8 +851,6 @@ def wikilink_units_from_pages(
                 continue
             target = pages_by_path.get(rec.dst_path)
             if target is None:
-                continue
-            if not body_lines:
                 continue
             # 1-based → 0-based, clamped into the body's line range.
             center = min(max(rec.line - 1, 0), len(body_lines) - 1)
@@ -867,18 +872,23 @@ def wikilink_units_from_pages(
 
 
 def _format_wikilink_prompt(*, unit: WikilinkUnit) -> str:
-    # ``str.replace`` (not ``str.format``) so body/context content containing
-    # literal ``{`` / ``}`` can't raise at format time. The page-authored
-    # fields are injected last-ish but each placeholder appears exactly once,
-    # so ordering only matters for not treating page text as a placeholder —
-    # replacing fixed tokens one at a time is safe either way.
-    return (
-        load_prompt("eval_judge_wikilink")
-        .replace("{src_title}", unit.src_title)
-        .replace("{target_title}", unit.target_title)
-        .replace("{target_category}", unit.target_category)
-        .replace("{target_body}", unit.target_body)
-        .replace("{context}", unit.context)
+    # Single-pass substitution: all five placeholders are replaced in ONE
+    # regex scan over the template, so a page-authored value (title, body,
+    # context) that itself contains a literal placeholder token — a templating
+    # page showing ``{context}`` in a code example — is never re-expanded.
+    # Chained ``str.replace`` would rescan previously injected page text; with
+    # four page-authored fields that is a real splice vector, not a theory.
+    # (Not ``str.format`` either, which would raise on any literal brace.)
+    mapping = {
+        "{src_title}": unit.src_title,
+        "{target_title}": unit.target_title,
+        "{target_category}": unit.target_category,
+        "{target_body}": unit.target_body,
+        "{context}": unit.context,
+    }
+    pattern = re.compile("|".join(re.escape(token) for token in mapping))
+    return pattern.sub(
+        lambda m: mapping[m.group(0)], load_prompt("eval_judge_wikilink")
     )
 
 
