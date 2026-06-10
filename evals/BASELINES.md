@@ -7,6 +7,55 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-10 — `semantic_atomicity_ratio` LLM judge + real-LLM calibration (Phase 0b #4, set complete)
+
+**Change under test:** `synth/semantic_atomicity_ratio` — measurement tooling only,
+**no synth/retrieval generation change**. An opt-in LLM judge that reads each
+page's title + body alone (atomicity is intrinsic to the page; no source text)
+and answers `yes`/`partial`/`no` (one concept / dominant concept plus a developed
+tangent / multiple concepts bolted together). The blind spot: `atomicity_score`
+is a *form* heuristic (body chars, H1/H2 counts, distinct wikilinks, tag domains)
+that passes a short paragraph stuffed with three unrelated concepts; the
+four-dimension page judge's `atomicity` dim is bundled with three other
+dimensions in one call (halo-prone) on a 0-5 scale. Informational (never gated),
+opt-in via `judge.semantic_atomicity_enabled` + `--judge`, bootstrap CI on
+`SynthEvalReport.semantic_atomicity_summary`. Verdict JSON contract shared with
+the entailment + wikilink judges (one parser, three judges). This completes the
+Phase 0b judge-metric set (entailment / category / wikilink / atomicity).
+
+**Calibration run (same-PR, live LLM):** `mvp` synth eval, MiniMax-M3
+(`anthropic_compat`, `llm_max_tokens_synth=16384`) + Qwen3-Embedding-0.6B@1024
+(Gitee), `--judge --judge-sample auto` (25). Repro:
+`uv run --env-file .env dikw client serve-and-run --base <minimax-base> -- eval --dataset mvp --eval synth --judge --judge-sample auto`.
+
+| judge        | judged | errors | result                                                              |
+|--------------|--------|--------|---------------------------------------------------------------------|
+| atomicity    | 13     | 0      | **`semantic_atomicity_ratio` 0.885, CI [0.73, 1.00]**               |
+| wikilink     | 13     | 0      | `wikilink_correctness_ratio` 1.000, CI [1.00, 1.00]                 |
+| entailment   | 25     | 0      | `fact_entailment_ratio` 0.680, CI [0.56, 0.80]                      |
+| page (4-dim) | 13     | 0      | grounding 4.92 / atomicity 5.00 / completeness 3.38 / clarity 5.00  |
+
+**Atomicity baseline: `0.885` (n=13, 10 yes + 3 partial, CI [0.73, 1.00]).**
+Unlike the wikilink calibration's degenerate 1.0, this judge discriminated on
+its very first run — and the same run is the empirical proof of the blind-spot
+claim: the heuristic `atomicity_score` scored **1.000** and the four-dimension
+judge's `atomicity` dim scored a saturated **5.00 (CI [5.0, 5.0])** over the
+SAME 13 pages where the dedicated judge found 3 partials. Both existing
+measures sit at their ceilings precisely where the new one finds signal.
+
+**#189 conditional entailment gate, second live exercise:** judge ran → the
+`0.55` floor enforced → 0.680 passed (n=25, consistent with 0.775 n=20 and
+0.700 n=25 prior; the conservative floor keeps holding with margin).
+
+**Gated synth metrics this run (NOT this PR's concern):** `fact_grounding_ratio`
+0.629 (pass), `atomicity_score` 1.000 (pass), `duplicate_ratio_max` 0.000 (pass),
+`wikilink_resolved_ratio` 0.310 (**FAIL**), `language_fidelity` 1.000 (pass) →
+`passed=False` (exit 1). The resolved-ratio fail is the documented MiniMax
+provider variance (0.708 / 0.542 / 0.457 / 0.310 across entries; floors locked
+to gpt-5.5) — not a regression; this PR adds a judge metric and changes no
+generation path. `fallback_ratio_max` 0.308 (4/13 pages under 未分类), same
+known MiniMax categorisation weakness. Thresholds unchanged.
+
 ## 2026-06-10 — `wikilink_correctness_ratio` LLM judge + real-LLM calibration (Phase 0b #3)
 
 **Change under test:** `synth/wikilink_correctness_ratio` — measurement tooling only,

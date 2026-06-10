@@ -59,6 +59,13 @@ _RETRIEVAL_METRICS = frozenset(
 # ``expected_coverage``, whose absence IS a real miss: that one needs no judge,
 # only ``expected.yaml``.) It stays in ``_GATEABLE_SYNTH_METRICS`` so a dataset
 # may declare the floor; the conditional enforcement lives in the runner.
+#
+# The other judge-only ratios (``category_correctness_ratio``,
+# ``wikilink_correctness_ratio``, ``semantic_atomicity_ratio``) are
+# DELIBERATELY absent: they are informational-by-design while calibrating, so
+# declaring a threshold for one is rejected loudly at load instead of silently
+# never gating. Promoting one to a gate is a deliberate act — add the key here
+# AND mirror the runner's conditional entailment fold — not a default.
 _SYNTH_METRICS = frozenset(
     {
         "fact_grounding_ratio",
