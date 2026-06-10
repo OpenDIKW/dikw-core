@@ -945,6 +945,42 @@ async def test_run_synth_eval_semantic_atomicity_runs_when_enabled(
 
 
 @pytest.mark.asyncio
+async def test_run_synth_eval_semantic_atomicity_all_errors_omits_metric(
+    tmp_path: Path,
+) -> None:
+    """Every atomicity judge call fails to parse → n_judged == 0 → the ratio is
+    omitted from ``informational`` (nothing was measured, not a 0.0 floor)."""
+    ds = _write_synth_dataset(tmp_path)
+    _enable_judge(ds, atomicity=True)
+    spec = load_dataset(ds)
+
+    llm = _DispatchLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+        atomicity="not json at all",
+    )
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+    assert report.semantic_atomicity_summary is not None
+    assert report.semantic_atomicity_summary.n_judged == 0
+    assert report.semantic_atomicity_summary.n_errors > 0
+    assert "synth/semantic_atomicity_ratio" not in report.informational
+
+
+@pytest.mark.asyncio
 async def test_run_synth_eval_semantic_atomicity_off_when_judge_off(
     tmp_path: Path,
 ) -> None:
