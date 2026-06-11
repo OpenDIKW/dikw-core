@@ -116,3 +116,24 @@ async def test_probe_embed_real_vector_passes() -> None:
     res = await _probe_embed(_CannedEmbedder([[0.1, 0.2]]), "m", "embedding target")
     assert res.ok is True
     assert "dim=2" in res.detail
+
+
+async def test_probe_multimodal_zero_dim_vectors_fail() -> None:
+    """Two zero-dim vectors pass the count check AND the dim-equality check
+    (0 == 0) — without an explicit empty guard a silently-dead multimodal
+    gateway probes green. Same contract as the text-embed probe above."""
+    from dikw_core.api_health import _probe_multimodal
+
+    res = await _probe_multimodal(_CannedEmbedder([[], []]), "m", "mm target")
+    assert res.ok is False
+    assert "EMPTY" in res.detail
+
+
+async def test_probe_multimodal_real_vectors_pass() -> None:
+    from dikw_core.api_health import _probe_multimodal
+
+    res = await _probe_multimodal(
+        _CannedEmbedder([[0.1, 0.2], [0.3, 0.4]]), "m", "mm target"
+    )
+    assert res.ok is True
+    assert "dim=2" in res.detail

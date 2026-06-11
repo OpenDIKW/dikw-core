@@ -844,9 +844,11 @@ async def _grounding_verify_leg(
     result.n_no_evidence = summary.n_no_evidence
     result.n_errors = summary.n_errors
     result.ci = summary.ci
-    # ``judge_entailment`` reports ratio 0.0 with n_judged 0 (nothing scored) —
-    # surface that as ``None`` so the report omits a misleading floor.
-    result.ratio = summary.ratio if summary.n_judged else None
+    # Surface the ratio as ``None`` both when nothing was scored (n_judged 0)
+    # and when the judge was majority-errored (``trustworthy`` — the shared
+    # rule the eval gate fold also applies): a half-dead judge's sliver must
+    # not render as "claims fully grounded". The counts above stay visible.
+    result.ratio = summary.ratio if summary.trustworthy else None
     return result
 
 

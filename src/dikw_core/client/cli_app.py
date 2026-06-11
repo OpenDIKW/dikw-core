@@ -1499,14 +1499,31 @@ def eval_cmd(
                     write_baseline=write_baseline,
                     tolerance=tolerance,
                 )
-            # Dataset-declared thresholds drive the exit code only when no
-            # baseline gate was chosen: under --against/--write-baseline the
-            # baseline IS the gate (a regression already exited 1 inside
-            # ``_handle_baseline``), so a dataset-threshold failure must not
-            # turn the printed SHIP verdict into exit 1 — same rationale as
-            # the exit-2 skip below.
-            elif not bool(payload.get("passed", True)):
-                raise typer.Exit(code=_EXIT_FAILED)
+            # Dataset-declared thresholds drive the exit code unless the user
+            # chose the --against baseline gate: there the baseline IS the
+            # gate (a regression already exited 1 inside ``_handle_baseline``),
+            # so a dataset-threshold failure must not turn the printed SHIP
+            # verdict into exit 1 — same rationale as the exit-2 skip below.
+            # It is downgraded to a WARNING, not silenced: a judge-only gate's
+            # ``observed=None`` loud miss lives only in dataset thresholds (a
+            # baseline can never pin an informational metric), so swallowing
+            # it whole would bypass the dead-judge fail-loud contract.
+            # --write-baseline gets NO exemption: its ``_handle_baseline`` arm
+            # writes the file and returns without gating anything, and exiting
+            # 0 would let a thresholds-failing run silently pin its regressed
+            # metrics as the future reference.
+            if not bool(payload.get("passed", True)):
+                if against is None:
+                    raise typer.Exit(code=_EXIT_FAILED)
+                console.print(
+                    "[yellow]warning:[/yellow] dataset-declared thresholds "
+                    "FAILED for this run (see the report above). The exit "
+                    "code reflects only the --against baseline verdict; "
+                    "judge-only gates are not pinnable in a baseline, so "
+                    "investigate the failed threshold rows before trusting "
+                    "this SHIP.",
+                    markup=True,
+                )
             # An explicit ``--eval synth`` request must have at least
             # one gated synth report — otherwise the user asked for a
             # K-layer gate run and the dataset declared no synth

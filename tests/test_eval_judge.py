@@ -580,6 +580,22 @@ async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
     assert "entailment" in str(captured["system"]).lower()
 
 
+def test_entailment_summary_trustworthy_rule() -> None:
+    """One shared reliability rule for every ratio consumer (eval gate fold,
+    synth --verify grounding leg): the ratio is usable only when at least one
+    verdict landed AND successful verdicts strictly outnumber judge errors —
+    a half-dead judge's sliver (1 yes + 1 error, or 1 yes + 19 errors) must
+    never be read as a trustworthy 1.0."""
+    ok = EntailmentSummary(ratio=1.0, n_judged=3, n_errors=1, n_no_evidence=0)
+    assert ok.trustworthy is True
+    tie = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=1, n_no_evidence=0)
+    assert tie.trustworthy is False
+    sliver = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=19, n_no_evidence=0)
+    assert sliver.trustworthy is False
+    empty = EntailmentSummary(ratio=0.0, n_judged=0, n_errors=0, n_no_evidence=0)
+    assert empty.trustworthy is False
+
+
 @pytest.mark.asyncio
 async def test_judge_entailment_prompt_immune_to_placeholder_injection() -> None:
     """A claim containing a literal ``{evidence}`` token (a K-page about

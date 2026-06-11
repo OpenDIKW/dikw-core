@@ -469,17 +469,19 @@ def render_synth_verify_report(
         table.add_row(
             "duplicate",
             "[yellow]skipped[/yellow]",
-            "no embeddings available — semantic duplicate gate did NOT run",
+            "semantic duplicate gate did NOT run",
         )
     console.print(table)
 
     if not duplicate_checked:
         console.print(
             "[yellow]warning:[/yellow] the semantic-duplicate check was "
-            "SKIPPED (no embeddings available — no embedder configured, "
-            "--no-embed, or no active embed version) — near-duplicate pages "
-            "were NOT detected. Configure DIKW_EMBEDDING_API_KEY (and run "
-            "without --no-embed) for the duplicate gate."
+            "SKIPPED — either no embeddings were available (no embedder "
+            "configured, --no-embed, or no active embed version; configure "
+            "DIKW_EMBEDDING_API_KEY and run without --no-embed) or the "
+            "leg's embed pass itself failed (a provider blip — see the "
+            "server log; the synth output is unaffected, retry --verify). "
+            "Near-duplicate pages were NOT detected."
         )
 
     # Optional report-only grounding/entailment leg (``--judge``). NOT a gate —
@@ -490,10 +492,19 @@ def render_synth_verify_report(
             ratio = verify.get("grounding_entailment_ratio")
             n_judged = int(verify.get("grounding_n_judged") or 0)
             if ratio is None:
-                console.print(
-                    "[dim]grounding (informational, not gated): no claims to "
-                    "judge on this run's pages[/dim]"
-                )
+                n_err = int(verify.get("grounding_n_errors") or 0)
+                if n_err:
+                    console.print(
+                        f"[yellow]grounding (informational, not gated): no "
+                        f"trustworthy entailment ratio — {n_err} judge "
+                        f"error(s) vs {n_judged} verdict(s); the judge "
+                        f"provider was failing, retry --judge[/yellow]"
+                    )
+                else:
+                    console.print(
+                        "[dim]grounding (informational, not gated): no claims "
+                        "to judge on this run's pages[/dim]"
+                    )
             else:
                 ci = verify.get("grounding_ci")
                 ci_s = ""

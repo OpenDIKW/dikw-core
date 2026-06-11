@@ -57,12 +57,14 @@ def _wiki_doc_id(path: str) -> str:
     return doc_id_for(Layer.KNOWLEDGE, path)
 
 
-def test_build_page_from_op_collapses_scalar_list_frontmatter() -> None:
+def test_build_page_from_op_heals_scalar_list_frontmatter() -> None:
     """Fixers pass the on-disk frontmatter through ``op.new_frontmatter``
-    verbatim; a hand-written scalar (``sources: foo.md``) must collapse to
-    ``[]`` via ``frontmatter_str_list`` — NOT be iterated char-by-char into
-    ``['f','o','o',…]`` garbage that apply then REWRITES into the user's
-    file."""
+    verbatim, and apply REWRITES the page from this value — so a hand-written
+    scalar (``sources: foo.md``) must neither be iterated char-by-char into
+    ``['f','o','o',…]`` garbage (the old bug) nor collapsed to ``[]`` (silent
+    data loss: ``sources:`` feeds ``replace_provenance_from``, and the
+    missing_provenance fixer backfills FROM frontmatter, so a cleared scalar
+    would be unrecoverable). It heals to a one-item list."""
     from dikw_core.domains.knowledge.lint_fix import _build_page_from_op
 
     op = FixOperation(
@@ -76,8 +78,8 @@ def test_build_page_from_op_collapses_scalar_list_frontmatter() -> None:
         new_body="A body.",
     )
     page = _build_page_from_op(op)
-    assert page.sources == []
-    assert page.tags == []
+    assert page.sources == ["sources/foo.md"]
+    assert page.tags == ["alpha"]
 
 
 def test_build_page_from_op_keeps_well_formed_lists() -> None:
@@ -96,6 +98,29 @@ def test_build_page_from_op_keeps_well_formed_lists() -> None:
     page = _build_page_from_op(op)
     assert page.sources == ["sources/foo.md", "sources/bar.md"]
     assert page.tags == ["alpha", "beta"]
+
+
+def test_build_page_from_op_stringifies_numeric_list_entries() -> None:
+    """A bare year tag (``tags: [2024, llm]``) parses as an int in YAML; the
+    rewrite path must preserve it as ``"2024"`` rather than dropping it (the
+    old ``list(...)`` kept it, so dropping would be a silent regression on a
+    page the fixer was only supposed to backlink). Truly shapeless values
+    (dict / None / bool) still drop."""
+    from dikw_core.domains.knowledge.lint_fix import _build_page_from_op
+
+    op = FixOperation(
+        kind="update_page",
+        path="knowledge/concept/x.md",
+        new_frontmatter={
+            "title": "X",
+            "sources": None,
+            "tags": [2024, "llm", True, {"bad": 1}],
+        },
+        new_body="A body.",
+    )
+    page = _build_page_from_op(op)
+    assert page.sources == []
+    assert page.tags == ["2024", "llm"]
 
 
 async def _seed_page(

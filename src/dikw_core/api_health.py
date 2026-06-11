@@ -273,8 +273,7 @@ async def _probe_embed(
             target=target,
             detail=(
                 f"{elapsed_ms}ms, provider returned an EMPTY embedding "
-                f"(vectors={len(vectors)}, dim="
-                f"{len(vectors[0]) if vectors else 0}) — the probe text "
+                f"(vectors={len(vectors)}, dim=0) — the probe text "
                 f"produced no usable vector; check the model/request shape"
             ),
         )
@@ -353,6 +352,19 @@ async def _probe_multimodal(
             detail=(
                 f"{elapsed_ms}ms, dim mismatch text={dim_text} image={dim_image} — "
                 f"per-modality vectors must share one space"
+            ),
+        )
+    # Two zero-dim vectors pass both the count check and the dim-equality
+    # check (0 == 0) — the same silently-dead-provider shape the text probe
+    # above rejects must fail here too.
+    if dim_text == 0:
+        return ProbeResult(
+            ok=False,
+            target=target,
+            detail=(
+                f"{elapsed_ms}ms, provider returned EMPTY embeddings "
+                f"(dim=0 for both modalities) — the probe produced no usable "
+                f"vectors; check the model/request shape"
             ),
         )
     detail = f"{elapsed_ms}ms, dim={dim_text}, modalities=text+image"

@@ -52,7 +52,6 @@ from .page import (
     KnowledgePage,
     build_page,
     category_from_path,
-    frontmatter_str_list,
     path_slug_title,
     write_page,
 )
@@ -475,6 +474,36 @@ def _op_title(op: FixOperation) -> str:
     return path_slug_title(op.path)
 
 
+def _pop_str_list(fm: dict[str, Any], key: str) -> list[str]:
+    """Defensive list read for the REWRITE path, popped so ``extras`` doesn't
+    carry the raw value out.
+
+    Fixers pass on-disk frontmatter through ``op.new_frontmatter`` verbatim,
+    and apply REWRITES the page from this value — so unlike the read-site
+    helper (``frontmatter_str_list``, which safely collapses malformed shapes
+    to ``[]``), collapsing here is destructive: a hand-written scalar
+    ``sources: foo.md`` would be erased from disk AND from the provenance
+    table (``replace_provenance_from``), unrecoverably (the
+    missing_provenance fixer backfills FROM frontmatter). Heal instead:
+
+    * scalar string → one-item list (the old ``list(...)`` char-split bug);
+    * numeric list entries (a bare year tag, ``tags: [2024]``) → stringified;
+    * truly shapeless values (dict / None / bool / nested list) → dropped.
+    """
+    raw = fm.pop(key, None)
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, (int, float)) and not isinstance(item, bool):
+                out.append(str(item))
+        return out
+    return []
+
+
 def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     """Materialise a :class:`KnowledgePage` from an op's frontmatter + body.
 
@@ -492,14 +521,8 @@ def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     title = _op_title(op)
     fm.pop("title", None)
     category = str(fm.pop("category", None) or category_from_path(op.path))
-    # Fixers pass on-disk frontmatter through ``new_frontmatter`` verbatim, so
-    # these list fields need the same defensive read every other site uses — a
-    # hand-written scalar (``sources: foo.md``) iterated bare would become
-    # ``['f','o','o',…]`` and apply would REWRITE that garbage into the file.
-    tags = frontmatter_str_list(fm, "tags")
-    sources = frontmatter_str_list(fm, "sources")
-    fm.pop("tags", None)
-    fm.pop("sources", None)
+    tags = _pop_str_list(fm, "tags")
+    sources = _pop_str_list(fm, "sources")
     page_id = fm.pop("id", None)
     created = fm.pop("created", None)
     updated = fm.pop("updated", None)

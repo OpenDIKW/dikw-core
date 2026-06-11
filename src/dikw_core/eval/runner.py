@@ -1238,16 +1238,13 @@ async def run_synth_eval(
                 seed=spec.name,
             )
             # The ratio's denominator counts only successfully-judged claims,
-            # so a majority-errored judge (19 timeouts + 1 ``yes``) would
-            # otherwise publish ratio=1.0 over a denominator of 1 and
-            # green-light the gate. Withhold the ratio when errors outnumber
-            # successful verdicts — the gate fold below then keeps the
-            # declared threshold as an ``observed=None`` loud miss, same as
-            # the ``n_judged == 0`` case.
-            if (
-                entailment_summary.n_judged > 0
-                and entailment_summary.n_errors <= entailment_summary.n_judged
-            ):
+            # so a majority-errored judge (19 timeouts + 1 ``yes``, or a 50/50
+            # tie) would otherwise publish a sliver ratio over a meaningless
+            # denominator and green-light the gate. ``trustworthy`` (successes
+            # strictly outnumber errors) withholds it — the gate fold below
+            # then keeps the declared threshold as an ``observed=None`` loud
+            # miss, same as the ``n_judged == 0`` case.
+            if entailment_summary.trustworthy:
                 bundle.informational["synth/fact_entailment_ratio"] = (
                     entailment_summary.ratio
                 )

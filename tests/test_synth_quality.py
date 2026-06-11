@@ -891,6 +891,49 @@ async def test_entailment_gate_fails_when_judge_errors_dominate(
     assert report.passed is False
 
 
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_at_error_tie_boundary(tmp_path: Path) -> None:
+    """The dominance guard is STRICT: at the tie boundary (1 ``yes`` + 1 error
+    — half the sample dead) the surviving denominator of 1 is exactly as
+    untrustworthy as the 1-vs-19 shape, so the ratio is withheld and the gate
+    fails loudly rather than green-lighting ratio=1.0."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    # Single-sentence pages → exactly 2 claims; first judges yes, second errors.
+    llm = _FirstYesThenGarbageLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged == 1
+    assert report.entailment_summary.n_errors == 1
+    assert "synth/fact_entailment_ratio" not in report.informational
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed is None
+    assert row.passed is False
+    assert report.passed is False
+
+
 # ---- category-correctness judge wiring -------------------------------------
 
 

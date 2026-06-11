@@ -336,6 +336,55 @@ def test_dataset_thresholds_still_gate_without_baseline(
     assert result.exit_code == _EXIT_FAILED, result.stdout
 
 
+def test_against_warns_when_dataset_thresholds_fail(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    patch_eval: Callable[..., None],
+    tmp_path: Path,
+) -> None:
+    """The --against exemption must not be SILENT: a failed dataset gate (e.g.
+    a dead judge's ``observed=None`` loud miss, which a baseline can never pin)
+    is surfaced as a warning even though the baseline verdict owns the exit
+    code."""
+    patch_eval({"doc/ndcg_at_10": 0.50}, passed=False)
+    patch_transport_factory()
+    base = tmp_path / "b.json"
+    base.write_text(
+        json.dumps(
+            {"dataset": "mvp", "metrics": {"doc/ndcg_at_10": 0.50}, "tolerance": 0.02}
+        ),
+        encoding="utf-8",
+    )
+    result = _run(
+        ["client", "eval", "--dataset", "mvp", "--against", str(base), "--plain"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "warning" in result.stdout.lower()
+    assert "threshold" in result.stdout.lower()
+
+
+def test_write_baseline_still_exits_1_when_thresholds_fail(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    patch_eval: Callable[..., None],
+    tmp_path: Path,
+) -> None:
+    """``--write-baseline`` gets NO exit-code exemption: nothing gated that run
+    (the write arm of ``_handle_baseline`` never compares), so a thresholds-
+    failing run must keep exiting 1 — otherwise it silently pins its regressed
+    metrics as the future reference. The baseline file is still written (the
+    pre-existing behavior), the exit code is the signal to look before
+    committing it."""
+    patch_eval({"doc/ndcg_at_10": 0.40}, passed=False)
+    patch_transport_factory()
+    out = tmp_path / "mvp.json"
+    result = _run(
+        ["client", "eval", "--dataset", "mvp", "--write-baseline", str(out), "--plain"]
+    )
+    assert result.exit_code == _EXIT_FAILED, result.stdout
+    assert out.exists()  # written, then flagged — not suppressed
+
+
 def test_against_and_write_baseline_are_mutually_exclusive(tmp_path: Path) -> None:
     # Rejected before any network call → no fixtures needed.
     result = _run(

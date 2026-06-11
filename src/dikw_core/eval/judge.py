@@ -205,6 +205,10 @@ def _fill_template(template: str, mapping: dict[str, str]) -> str:
     text — with page-authored fields that is a real splice vector, not a
     theory. (Not ``str.format`` either, which raises on any literal brace.)
     """
+    if not mapping:
+        # ``re.compile("")`` matches at every position and the replacement
+        # lambda would KeyError on ``''`` — an empty fill is a no-op.
+        return template
     pattern = re.compile("|".join(re.escape(token) for token in mapping))
     return pattern.sub(lambda m: mapping[m.group(0)], template)
 
@@ -433,6 +437,20 @@ class EntailmentSummary(BaseModel):
     n_errors: int
     n_no_evidence: int
     ci: tuple[float, float] = (0.0, 0.0)
+
+    @property
+    def trustworthy(self) -> bool:
+        """Whether ``ratio`` is statistically usable: at least one verdict
+        landed AND successful verdicts strictly outnumber judge errors.
+
+        The ratio's denominator counts only successfully-judged claims, so a
+        half-dead judge (19 timeouts + 1 ``yes``, or a 50/50 tie) reports a
+        sliver ratio over a meaningless denominator. Every consumer that
+        publishes or gates on ``ratio`` (the eval runner's conditional gate
+        fold, synth ``--verify --judge``'s grounding leg) must withhold it
+        when this is False — one shared rule, not per-call-site arithmetic.
+        """
+        return self.n_judged > 0 and self.n_judged > self.n_errors
 
 
 def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:

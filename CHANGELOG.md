@@ -233,6 +233,71 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **`openai_compat` embeddings are re-ordered by the response `index` before
+  use.** The OpenAI embeddings response carries an explicit per-item `index`
+  precisely because list order is not contractual — any compatible gateway
+  (Ollama, vLLM, TEI, …) may return items out of order, and the consumer pairs
+  vectors to chunks positionally before persisting them into the content-hash
+  embedding cache. An unsorted response silently mis-assigned vectors *and*
+  poisoned the cache. `gitee_multimodal` already sorted; `openai_compat` now
+  applies the same defence (items missing `index` keep their list order).
+- **`synth --verify` no longer fails the whole task when the duplicate leg's
+  embed pass fails.** The semantic-duplicate leg performs a verify-only second
+  embed pass over the run's page bodies; a transient 503 (or a permanent
+  provider misconfig surfacing only there) propagated uncaught and flipped a
+  synth whose pages were *all* persisted successfully into a FAILED task,
+  discarding the SynthReport. The leg now degrades to the same loud skip the
+  grounding leg already used (`duplicate_checked=False`, a warning, never a
+  silent pass); `CancelledError` still propagates.
+- **`eval --against` no longer exits 1 after printing SHIP.** Dataset-declared
+  thresholds drove the exit code even when the user chose the baseline gate,
+  so a run could print `SHIP — no regressions` and then exit 1 because an
+  unrelated dataset threshold failed — CI reading the exit code saw a phantom
+  regression. Under `--against` the exit code now reflects only the baseline
+  verdict (the mirror of the existing exit-2 skip); a failed dataset gate is
+  downgraded to a loud warning, not silenced, because judge-only gates (an
+  `observed=None` dead-judge miss) are not pinnable in a baseline.
+  `--write-baseline` keeps the exit-1: nothing gated that run, and exiting 0
+  would let a thresholds-failing run silently pin its regressed metrics as
+  the future reference (the file is still written; the exit code says look
+  before committing it).
+- **A majority-errored entailment judge no longer green-lights the gate or the
+  verify report.** The `fact_entailment_ratio` denominator counts only
+  successfully-judged claims, so a half-dead judge (19 timeouts + 1 `yes`, or
+  a 50/50 tie) published a sliver ratio over a meaningless denominator —
+  `ratio=1.0` passing the `0.55` floor. The reliability rule now lives on
+  `EntailmentSummary.trustworthy` (successful verdicts must strictly
+  outnumber judge errors) and is applied by BOTH consumers: the eval gate
+  fold withholds the ratio and keeps the declared threshold as an
+  `observed=None` loud miss (same fail-loud shape as the existing
+  `n_judged == 0` guard), and `synth --verify --judge`'s grounding leg
+  reports `None` (with the error counts visible) instead of "claims fully
+  grounded".
+- **All judge prompt fills are single-pass.** The entailment and four-field
+  synth judges filled their templates with chained `str.replace`, so a
+  page-authored value literally containing a later placeholder token (a claim
+  citing `{evidence}`) had real content spliced into it. Every judge formatter
+  now goes through one shared single-pass `_fill_template` (the wikilink and
+  atomicity judges already did this individually).
+- **`lint apply` no longer rewrites scalar `tags:`/`sources:` frontmatter as
+  per-character garbage.** `_build_page_from_op` iterated the raw frontmatter
+  lists bare, so a hand-written scalar (`sources: foo.md`) passed through a
+  fixer became `['f','o','o',…]` *on disk*. Because apply REWRITES the page
+  (and `sources:` feeds `replace_provenance_from`, where a cleared value is
+  unrecoverable — the missing_provenance fixer backfills FROM frontmatter),
+  the new read HEALS instead of collapsing: a scalar string becomes a
+  one-item list, numeric list entries (`tags: [2024]`) are stringified, and
+  only truly shapeless values (dict / null / bool) drop.
+- **`dikw client check` fails the embed probes on empty embeddings.** A text
+  probe returning no vectors (or a zero-dim one) without raising was reported
+  `ok=True` with `dim=0` buried in the detail, and the multimodal probe
+  green-lit two zero-dim vectors (they pass both the count check and the
+  dim-equality check, `0 == 0`) — a green check before an ingest whose every
+  embed call produced nothing. Both probes now fail with an explicit message,
+  matching `_probe_llm`'s empty-completion check.
+- **`tools/check_doc_refs.py` now scans `.claude/skills/**/*.md`.** Skill docs
+  cite CLI verbs and `DIKW_*` env vars the same way `docs/**` does; they were
+  outside the gate, so a typo'd verb in a skill drifted silently.
 - **LLM completions no longer time out on long reasoning-model syntheses
   (`anthropic_compat` + `openai_compat`).** Both providers' `complete()` issued a
   **non-streaming** request whose read timeout (`llm_timeout_seconds`, default
