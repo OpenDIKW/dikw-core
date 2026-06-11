@@ -312,7 +312,9 @@ async def test_judge_ratio_is_none_when_nothing_judged(
     await api.ingest(wiki, embedder=embedder)
 
     async def _empty_summary(*_a: object, **_kw: object) -> EntailmentSummary:
-        return EntailmentSummary(ratio=0.0, n_judged=0, n_errors=0, n_no_evidence=0)
+        return EntailmentSummary(
+            ratio=0.0, n_judged=0, n_errors=0, n_calls_ok=0, n_no_evidence=0
+        )
 
     # Local import in ``_grounding_verify_leg`` resolves the name at call time.
     monkeypatch.setattr("dikw_core.eval.judge.judge_entailment", _empty_summary)

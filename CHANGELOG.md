@@ -266,8 +266,10 @@ on each entry call out exactly what shape changes break.
   successfully-judged claims, so a half-dead judge (19 timeouts + 1 `yes`, or
   a 50/50 tie) published a sliver ratio over a meaningless denominator —
   `ratio=1.0` passing the `0.55` floor. The reliability rule now lives on
-  `EntailmentSummary.trustworthy` (successful verdicts must strictly
-  outnumber judge errors) and is applied by BOTH consumers: the eval gate
+  `EntailmentSummary.trustworthy` — with any judge errors, distinct
+  successful judge *calls* (`n_calls_ok`, not `n_judged`: cached duplicate
+  claims and no-evidence zeros pad `n_judged` without an LLM call) must
+  strictly outnumber them — and is applied by BOTH consumers: the eval gate
   fold withholds the ratio and keeps the declared threshold as an
   `observed=None` loud miss (same fail-loud shape as the existing
   `n_judged == 0` guard), and `synth --verify --judge`'s grounding leg

@@ -582,18 +582,40 @@ async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
 
 def test_entailment_summary_trustworthy_rule() -> None:
     """One shared reliability rule for every ratio consumer (eval gate fold,
-    synth --verify grounding leg): the ratio is usable only when at least one
-    verdict landed AND successful verdicts strictly outnumber judge errors —
-    a half-dead judge's sliver (1 yes + 1 error, or 1 yes + 19 errors) must
-    never be read as a trustworthy 1.0."""
-    ok = EntailmentSummary(ratio=1.0, n_judged=3, n_errors=1, n_no_evidence=0)
+    synth --verify grounding leg): with zero judge errors the ratio is the
+    deterministic contract (cached verdicts + no-evidence zeros included);
+    with errors, successful judge CALLS must strictly outnumber them — a
+    half-dead judge's sliver (1 yes + 1 error, or 1 yes + 19 errors) must
+    never be read as a trustworthy 1.0, and cached duplicate claims must not
+    pad the success side (they add scores without any LLM call)."""
+    ok = EntailmentSummary(
+        ratio=1.0, n_judged=3, n_errors=1, n_calls_ok=3, n_no_evidence=0
+    )
     assert ok.trustworthy is True
-    tie = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=1, n_no_evidence=0)
+    tie = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=1, n_calls_ok=1, n_no_evidence=0
+    )
     assert tie.trustworthy is False
-    sliver = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=19, n_no_evidence=0)
+    sliver = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=19, n_calls_ok=1, n_no_evidence=0
+    )
     assert sliver.trustworthy is False
-    empty = EntailmentSummary(ratio=0.0, n_judged=0, n_errors=0, n_no_evidence=0)
+    empty = EntailmentSummary(
+        ratio=0.0, n_judged=0, n_errors=0, n_calls_ok=0, n_no_evidence=0
+    )
     assert empty.trustworthy is False
+    # One duplicated claim (1 successful call reused 6x) + 4 distinct claims
+    # erroring: n_judged > n_errors, but only 1 of 5 actual calls succeeded.
+    dup_inflated = EntailmentSummary(
+        ratio=1.0, n_judged=6, n_errors=4, n_calls_ok=1, n_no_evidence=0
+    )
+    assert dup_inflated.trustworthy is False
+    # All claims unverifiable (no evidence): zero calls, zero errors — the
+    # 0.0 ratio is the deterministic contract, publishing it is fail-loud.
+    no_evidence_only = EntailmentSummary(
+        ratio=0.0, n_judged=5, n_errors=0, n_calls_ok=0, n_no_evidence=5
+    )
+    assert no_evidence_only.trustworthy is True
 
 
 def test_entailment_summary_trustworthy_serializes() -> None:
@@ -602,10 +624,36 @@ def test_entailment_summary_trustworthy_serializes() -> None:
     this module per the layering contract) decides from the dict alone whether
     to show the ratio. A plain property vanishes from the payload, so the
     client would print the very sliver ratio the gate withheld."""
-    sliver = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=19, n_no_evidence=0)
+    sliver = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=19, n_calls_ok=1, n_no_evidence=0
+    )
     assert sliver.model_dump()["trustworthy"] is False
-    ok = EntailmentSummary(ratio=1.0, n_judged=3, n_errors=1, n_no_evidence=0)
+    ok = EntailmentSummary(
+        ratio=1.0, n_judged=3, n_errors=1, n_calls_ok=3, n_no_evidence=0
+    )
     assert ok.model_dump()["trustworthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_duplicates_do_not_inflate_trust() -> None:
+    """Cached duplicate ``(claim, evidence)`` pairs append scores without an
+    LLM call, so trust must count actual successful judge calls: one ``yes``
+    reused across 3 duplicate claims + 2 distinct claims erroring is a
+    half-dead judge (1 ok call vs 2 errors), not a trustworthy ratio —
+    even though ``n_judged`` (3) outnumbers ``n_errors`` (2)."""
+    llm = FakeLLM(response_text="not a verdict", responses=[_verdict("yes")])
+    pairs = [
+        _ce("dup claim", "shared evidence"),
+        _ce("dup claim", "shared evidence"),
+        _ce("dup claim", "shared evidence"),
+        _ce("claim b", "evidence b"),
+        _ce("claim c", "evidence c"),
+    ]
+    summary = await judge_entailment(pairs, llm=llm, model="m")
+    assert summary.n_judged == 3
+    assert summary.n_errors == 2
+    assert summary.n_calls_ok == 1
+    assert summary.trustworthy is False
 
 
 @pytest.mark.asyncio

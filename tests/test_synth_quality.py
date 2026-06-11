@@ -808,8 +808,24 @@ class _FirstYesThenGarbageLLM(_DispatchLLM):
     """Entailment leg: first call parses (``yes``), every later call errors —
     the half-dead-judge shape (e.g. 19 timeouts after one success)."""
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+    def __init__(
+        self,
+        synth_pages: list[str],
+        *,
+        verdict: str,
+        page_score: str,
+        category: str,
+        wikilink: str | None = None,
+        atomicity: str | None = None,
+    ) -> None:
+        super().__init__(
+            synth_pages,
+            verdict=verdict,
+            page_score=page_score,
+            category=category,
+            wikilink=wikilink,
+            atomicity=atomicity,
+        )
         self._entailment_calls = 0
 
     async def complete(

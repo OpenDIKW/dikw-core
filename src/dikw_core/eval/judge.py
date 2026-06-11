@@ -431,7 +431,10 @@ class EntailmentSummary(BaseModel):
     ``ratio`` is the mean verdict score over ``n_judged`` claims. Claims whose
     source had no evidence chunk count as ``0.0`` (tallied in ``n_no_evidence``)
     rather than being dropped; parse / LLM failures are excluded and counted in
-    ``n_errors`` instead. ``ci`` is a deterministic bootstrap 95% interval on
+    ``n_errors`` instead. ``n_calls_ok`` counts the distinct successful judge
+    calls behind those scores — cached duplicate pairs and no-evidence claims
+    add to ``n_judged`` without an LLM call, so it can be far smaller than
+    ``n_judged``. ``ci`` is a deterministic bootstrap 95% interval on
     the ratio — the same honesty band as :class:`JudgeSummary`. ``ratio == 0.0``
     with ``n_judged == 0`` means nothing was judged: the caller omits the metric
     rather than reporting a misleading floor.
@@ -442,26 +445,36 @@ class EntailmentSummary(BaseModel):
     ratio: float
     n_judged: int
     n_errors: int
+    n_calls_ok: int
     n_no_evidence: int
     ci: tuple[float, float] = (0.0, 0.0)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def trustworthy(self) -> bool:
-        """Whether ``ratio`` is statistically usable: at least one verdict
-        landed AND successful verdicts strictly outnumber judge errors.
+        """Whether ``ratio`` is statistically usable: at least one claim was
+        scored, and — when the judge errored at all — successful judge CALLS
+        strictly outnumber the errors.
 
-        The ratio's denominator counts only successfully-judged claims, so a
+        The ratio's denominator counts only successfully-scored claims, so a
         half-dead judge (19 timeouts + 1 ``yes``, or a 50/50 tie) reports a
-        sliver ratio over a meaningless denominator. Every consumer that
-        publishes or gates on ``ratio`` (the eval runner's conditional gate
-        fold, synth ``--verify --judge``'s grounding leg) must withhold it
-        when this is False — one shared rule, not per-call-site arithmetic.
-        A ``computed_field`` (not a plain property) so the verdict survives
-        ``model_dump`` into the eval payload: the client renderer cannot
-        import this rule (layering) and must read it from the JSON dict.
+        sliver ratio over a meaningless denominator. The comparison uses
+        ``n_calls_ok``, not ``n_judged``: cached duplicate claims reuse one
+        verdict without another call, so a single ``yes`` fanned across
+        duplicates must not outvote many distinct failures. With zero errors
+        the composition (cached + no-evidence zeros) is the deterministic
+        contract and publishing it is fail-loud, not noise. Every consumer
+        that publishes or gates on ``ratio`` (the eval runner's conditional
+        gate fold, synth ``--verify --judge``'s grounding leg) must withhold
+        it when this is False — one shared rule, not per-call-site
+        arithmetic. A ``computed_field`` (not a plain property) so the
+        verdict survives ``model_dump`` into the eval payload: the client
+        renderer cannot import this rule (layering) and must read it from
+        the JSON dict.
         """
-        return self.n_judged > 0 and self.n_judged > self.n_errors
+        return self.n_judged > 0 and (
+            self.n_errors == 0 or self.n_calls_ok > self.n_errors
+        )
 
 
 def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:
@@ -552,6 +565,7 @@ async def judge_entailment(
 
     scores: list[float] = []
     n_errors = 0
+    n_calls_ok = 0
     n_no_evidence = 0
     cache: dict[str, float] = {}
 
@@ -598,6 +612,7 @@ async def judge_entailment(
             n_errors += 1
             continue
         cache[key] = verdict.score
+        n_calls_ok += 1
         scores.append(verdict.score)
 
     n_judged = len(scores)
@@ -606,6 +621,7 @@ async def judge_entailment(
         ratio=ratio,
         n_judged=n_judged,
         n_errors=n_errors,
+        n_calls_ok=n_calls_ok,
         n_no_evidence=n_no_evidence,
         ci=bootstrap_ci(scores, seed=f"{seed}:entailment"),
     )
