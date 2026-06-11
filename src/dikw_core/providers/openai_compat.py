@@ -322,8 +322,14 @@ class OpenAICompatEmbeddings:
         # vLLM, TEI, …) may return items out of order, and the consumer
         # (``info.embed``) pairs vectors to chunks positionally before
         # persisting them into the content-hash embedding cache. Sort before
-        # returning (``gitee_multimodal`` applies the same defence); a gateway
-        # that omits ``index`` falls back to 0 and the stable sort preserves
-        # its list order.
-        rows = sorted(resp.data, key=lambda r: int(getattr(r, "index", 0) or 0))
-        return [list(r.embedding) for r in rows]
+        # returning (``gitee_multimodal`` applies the same defence). A row
+        # that omits ``index`` keeps its response position as the key — a
+        # constant fallback (0) would yank unindexed rows ahead of every real
+        # index > 0 in a mixed response.
+        def _row_key(pair: tuple[int, Any]) -> int:
+            pos, row = pair
+            idx = getattr(row, "index", None)
+            return pos if idx is None else int(idx)
+
+        rows = sorted(enumerate(resp.data), key=_row_key)
+        return [list(row.embedding) for _, row in rows]
