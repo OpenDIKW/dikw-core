@@ -1080,11 +1080,12 @@ def _render_existing_section(
     two same-titled pages apart. Empty input returns ``""`` so callers can
     concatenate two sections (batch accumulator + base snapshot) and fall
     back to a single "(no existing pages …)" sentinel only when both are
-    empty.
+    empty. H3 heading — the section nests under the template's
+    ``## Knowledge-base context`` H2 instead of competing with it.
     """
     if not pages:
         return ""
-    lines = [f"## {header}", ""] + [
+    lines = [f"### {header}", ""] + [
         f"- {title} [{slug}] ({cat})" for title, slug, cat in pages
     ]
     return "\n".join(lines) + "\n"
@@ -1164,7 +1165,7 @@ def _render_priority_targets(targets: list[tuple[str, int]]) -> str:
     if not targets:
         return ""
     lines = [
-        f"## {_PRIORITY_SECTION_HEADER}",
+        f"### {_PRIORITY_SECTION_HEADER}",
         "",
         "Earlier sections of THIS source referenced these via [[wikilink]] but "
         "no page exists for them yet. If this section's content genuinely "
@@ -1232,9 +1233,9 @@ async def _synth_pages_from_source(
     freezing on the per-source counter while a multi-group LLM call runs.
 
     ``storage`` + ``text_version_id`` drive the per-group existing-pages
-    section: each group's prompt receives a ``## Already created in
+    section: each group's prompt receives a ``### Already created in
     this batch`` accumulator (per-source state, lifecycle = this call)
-    plus a ``## Existing knowledge pages`` snapshot of the base K-layer
+    plus a ``### Existing knowledge pages`` snapshot of the base K-layer
     (full list under ``synth.existing_pages_max_bytes``, retrieval-gated
     top-K above). Without this awareness the LLM regenerates pages it
     cannot see, polluting the knowledge base with semantic duplicates that PR1's

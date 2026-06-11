@@ -4,8 +4,8 @@ Each synth LLM call must receive two prompt sections so the model can
 detect semantic duplicates against pages already in the wiki AND pages
 just emitted by an earlier group within the same source:
 
-* ``## Already created in this batch:`` — per-source accumulator
-* ``## Existing knowledge pages:`` — full snapshot up to a byte threshold,
+* ``### Already created in this batch:`` — per-source accumulator
+* ``### Existing knowledge pages:`` — full snapshot up to a byte threshold,
   switching to a vec_search-gated top-K beyond that
 
 Without these sections the LLM happily regenerates pages it cannot see,
@@ -130,7 +130,7 @@ async def _seed_wiki_page(
 @pytest.mark.asyncio
 async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> None:
     """An existing K-layer page renders into the prompt's
-    ``## Existing knowledge pages`` section as ``- Title (category)``."""
+    ``### Existing knowledge pages`` section as ``- Title (category)``."""
     wiki = tmp_path / "knowledge"
     init_test_base(wiki)
     await _seed_wiki_page(wiki, title="Tesla", category="entity")
@@ -149,8 +149,9 @@ async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> N
 
     assert llm.calls, "synth must invoke the LLM at least once"
     prompt = llm.calls[0]
-    assert "## Existing knowledge pages" in prompt, (
-        "fresh-base synth must render the existing-pages section header"
+    assert "### Existing knowledge pages" in prompt, (
+        "fresh-base synth must render the existing-pages section header (H3, "
+        "nested under the template's ## Knowledge-base context heading)"
     )
     assert "- Tesla [tesla] (entity)" in prompt, (
         "the seeded page must appear as a 'Title [slug] (category)' bullet"
@@ -162,7 +163,7 @@ async def test_synth_prompt_includes_batch_accumulator_after_first_group(
     tmp_path: Path,
 ) -> None:
     """Group 2 of the same source must see the page group 1 emitted via
-    a ``## Already created in this batch`` section. Stage A 1:N fan-out
+    a ``### Already created in this batch`` section. Stage A 1:N fan-out
     runs groups serially against the same source — the second group
     needs to know what the first one already wrote so it can reference
     via ``[[Title]]`` instead of regenerating."""
@@ -193,7 +194,7 @@ async def test_synth_prompt_includes_batch_accumulator_after_first_group(
         f"got {len(llm.calls)} calls"
     )
     second_prompt = llm.calls[1]
-    assert "## Already created in this batch" in second_prompt, (
+    assert "### Already created in this batch" in second_prompt, (
         "group 2's prompt must surface the batch accumulator section"
     )
     # Group 0 emitted a page titled "Group 0 page" of type "concept".
@@ -286,7 +287,7 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
 
     assert llm.calls
     prompt = llm.calls[0]
-    assert "## Existing knowledge pages" not in prompt, (
+    assert "### Existing knowledge pages" not in prompt, (
         "force_all=True must not surface the existing-pages section; "
         "regeneration would otherwise be suppressed by the duplicate rule"
     )
@@ -326,7 +327,7 @@ async def test_synth_existing_pages_falls_back_when_knowledge_unembedded(
     await api.synthesize(wiki, llm=llm, embedder=embedder)
 
     prompt = llm.calls[0]
-    assert "## Existing knowledge pages" in prompt, (
+    assert "### Existing knowledge pages" in prompt, (
         "fallback must surface the existing-pages section, not the "
         "fresh-wiki sentinel"
     )

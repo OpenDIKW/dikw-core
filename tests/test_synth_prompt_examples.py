@@ -68,6 +68,32 @@ def test_worked_examples_cover_both_languages() -> None:
     assert has_non_cjk, "expected an English (non-CJK) worked example"
 
 
+def test_worked_examples_carry_category_attribute() -> None:
+    """Examples that omit ``category=`` teach the model to omit it, landing
+    real pages in the fallback bucket (``fallback_ratio_max`` 0.31-0.47 on the
+    MiniMax baselines). Each worked example must model the attribute with a
+    value from the default taxonomy so parsing files it OUT of the fallback."""
+    section = _section(prompts.load("synthesize"), "Example")
+    pages = parse_synthesis_response(section, source_path="prompt-example")
+    assert len(pages) >= 2
+    for page in pages:
+        assert page.category in ("entity", "concept", "note"), (
+            f"worked example {page.title!r} must carry a category= attribute "
+            f"from the default taxonomy; parsed category={page.category!r}"
+        )
+
+
+def test_template_nests_dynamic_sections_under_context_heading() -> None:
+    """The dynamic ``{existing_pages_section}`` carries both *existing-page*
+    lists and the *priority-create* directive — semantically distinct things
+    that must not sit under a heading claiming they all "exist". The template
+    introduces them with a neutral H2; the rendered sub-sections are H3
+    (see ``_render_existing_section`` / ``_render_priority_targets``)."""
+    raw = prompts.load("synthesize")
+    assert "## Knowledge-base context" in raw
+    assert "## Existing pages\n" not in raw
+
+
 def test_worked_examples_use_inline_wikilinks() -> None:
     section = _section(prompts.load("synthesize"), "Example")
     pages = parse_synthesis_response(section, source_path="prompt-example")
