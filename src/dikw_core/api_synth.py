@@ -660,12 +660,30 @@ async def _verify_synth_output(
         # page bodies (whole-body vectors — the inline-persist pass embedded
         # chunk-granularity vectors, which are not reusable for body cosine).
         # That extra cost is the price of the opt-in ``--verify`` duplicate gate.
-        duplicate_ratio = await duplicate_ratio_max(
-            pages=pages,
-            embedder=embedder,
-            embedding_model=embedding_model,
-            tau=duplicate_cosine_tau,
-        )
+        # Same resilience contract as the grounding leg below: every page is
+        # already persisted by the time verify runs, so an embed failure on
+        # this verify-only second pass (a transient 503, a permanent provider
+        # misconfig surfacing only here) must degrade to a loud skip
+        # (``duplicate_checked`` flips back to False) instead of discarding
+        # the whole SynthReport / failing the task. ``CancelledError`` (a
+        # BaseException the ``except Exception`` arm misses) re-raises so a
+        # cancel mid-leg still propagates.
+        try:
+            duplicate_ratio = await duplicate_ratio_max(
+                pages=pages,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                tau=duplicate_cosine_tau,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "synth --verify: duplicate leg FAILED (%s) — no duplicate "
+                "ratio computed; synth output is unaffected",
+                e,
+            )
+            duplicate_checked = False
 
     # Optional report-only grounding/entailment leg. Needs an embedder (the
     # per-claim argmax that selects each claim's evidence chunk is embedding-

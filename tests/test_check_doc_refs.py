@@ -178,6 +178,21 @@ def test_allowlisted_future_verb_passes(tmp_path: Path) -> None:
     assert cdr.check_doc_refs(repo) == []
 
 
+def test_claude_skills_dir_is_scanned(tmp_path: Path) -> None:
+    """Skill docs under ``.claude/skills/`` cite CLI verbs and env vars the
+    same way ``docs/**`` does — a typo'd verb there drifts silently unless the
+    gate scans them too."""
+    repo = _make_repo(tmp_path, "clean doc\n")
+    skill = repo / ".claude" / "skills" / "my-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "Run `dikw client bogus` then set `DIKW_BOGUS_VAR`.\n", encoding="utf-8"
+    )
+    findings = cdr.check_doc_refs(repo)
+    assert [f for f in findings if f.kind == "cli" and "bogus" in f.ref]
+    assert [f for f in findings if f.kind == "env" and f.ref == "DIKW_BOGUS_VAR"]
+
+
 def test_adr_dir_is_excluded(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path, "clean doc\n")
     adr = repo / "docs" / "adr"

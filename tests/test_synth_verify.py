@@ -22,9 +22,10 @@ from pathlib import Path
 import pytest
 
 from dikw_core import api, api_synth
+from dikw_core.config import dump_config_yaml, load_config
 from dikw_core.providers import LLMResponse
 
-from .fakes import FakeEmbeddings, init_test_base
+from .fakes import FakeEmbeddings, FlakyEmbedder, init_test_base
 
 FIXTURES = Path(__file__).parent / "fixtures" / "notes"
 
@@ -615,4 +616,45 @@ async def test_single_page_duplicate_leg_short_circuits(tmp_path: Path) -> None:
     assert v.pages_checked == 1
     assert v.duplicate_checked is True
     assert v.duplicate_ratio == 0.0
+    assert v.passed is True
+
+
+# ---- resilience: embed failure inside the duplicate leg -------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_leg_embed_failure_loud_skips(tmp_path: Path) -> None:
+    """An embed failure inside the verify duplicate leg must DEGRADE to a loud
+    skip (``duplicate_checked=False``), never propagate: every page is already
+    persisted by the time verify runs, and verify READS synth output, never
+    alters it — a transient 503 on the verify-only second embed pass must not
+    flip a fully-successful synth into a FAILED task. Same contract the
+    grounding leg already honours."""
+    wiki = _seed(tmp_path)
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    # Zero retry budget so the inline-persist embed skips don't sleep through
+    # the default linear backoff; the transient skip behaviour itself is
+    # pinned elsewhere (test_embed_resilient).
+    cfg_path = wiki / "dikw.yml"
+    cfg = load_config(cfg_path)
+    cfg.provider.embedding_error_retries = 0
+    cfg.provider.embedding_error_retry_backoff_seconds = 0.0
+    cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
+
+    # Every embed call from here on raises TransientProviderError: the inline
+    # persist pass skips per batch (pages stay active, vectors pending), and
+    # the duplicate leg's whole-body pass hits the same transient failure.
+    failing = FlakyEmbedder(raise_on_calls=set(range(10_000)))
+    report = await api.synthesize(
+        wiki, llm=_ScriptedLLM(_CLEAN_SCRIPT), embedder=failing, verify=True
+    )
+
+    assert not report.persist_errors
+    v = report.verify
+    assert v is not None
+    assert v.duplicate_checked is False
+    assert v.duplicate_ratio is None
+    # A skipped duplicate leg is not a failure — the clean run still passes.
+    assert v.duplicate_ok is True
     assert v.passed is True

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from dikw_core.api import _sanitize_base_url
+from dikw_core.api_health import _probe_embed
 
 
 @pytest.mark.parametrize(
@@ -78,3 +79,40 @@ def test_sanitize_base_url_strips_credentials_keeps_endpoint(
 )
 def test_sanitize_base_url_drops_unparseable_or_empty(raw: str | None) -> None:
     assert _sanitize_base_url(raw) is None
+
+
+# ---- _probe_embed: degenerate responses must fail the probe ---------------
+
+
+class _CannedEmbedder:
+    """Returns a fixed vector list — simulates degenerate provider output."""
+
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self._vectors = vectors
+
+    async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        _ = (texts, model)
+        return self._vectors
+
+
+async def test_probe_embed_no_vectors_fails() -> None:
+    """A call that returns without raising but yields NO vectors is not a
+    healthy provider — same contract as ``_probe_llm``'s empty-completion
+    check and ``_probe_multimodal``'s shape check. ``ok=True`` here let a
+    green ``dikw client check`` precede an ingest whose every embed call
+    produced nothing."""
+    res = await _probe_embed(_CannedEmbedder([]), "m", "embedding target")
+    assert res.ok is False
+    assert "EMPTY" in res.detail
+
+
+async def test_probe_embed_zero_dim_vector_fails() -> None:
+    res = await _probe_embed(_CannedEmbedder([[]]), "m", "embedding target")
+    assert res.ok is False
+    assert "EMPTY" in res.detail
+
+
+async def test_probe_embed_real_vector_passes() -> None:
+    res = await _probe_embed(_CannedEmbedder([[0.1, 0.2]]), "m", "embedding target")
+    assert res.ok is True
+    assert "dim=2" in res.detail

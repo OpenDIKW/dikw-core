@@ -262,7 +262,23 @@ async def _probe_embed(
     except Exception as e:
         return ProbeResult(ok=False, target=target, detail=f"{type(e).__name__}: {e}")
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    dim = len(vectors[0]) if vectors else 0
+    # A call that returns without raising but yields no vector (or a zero-dim
+    # one) is not a healthy provider — the embed twin of ``_probe_llm``'s
+    # empty-completion check and ``_probe_multimodal``'s shape check.
+    # Reporting ``ok`` here would green-light a ``dikw client check`` while
+    # every ingest embed call produces nothing.
+    if not vectors or not vectors[0]:
+        return ProbeResult(
+            ok=False,
+            target=target,
+            detail=(
+                f"{elapsed_ms}ms, provider returned an EMPTY embedding "
+                f"(vectors={len(vectors)}, dim="
+                f"{len(vectors[0]) if vectors else 0}) — the probe text "
+                f"produced no usable vector; check the model/request shape"
+            ),
+        )
+    dim = len(vectors[0])
     detail = f"{elapsed_ms}ms, dim={dim}"
     if provider_label:
         detail = f"{detail}, provider={provider_label}"

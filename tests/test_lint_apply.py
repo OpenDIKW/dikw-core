@@ -57,6 +57,47 @@ def _wiki_doc_id(path: str) -> str:
     return doc_id_for(Layer.KNOWLEDGE, path)
 
 
+def test_build_page_from_op_collapses_scalar_list_frontmatter() -> None:
+    """Fixers pass the on-disk frontmatter through ``op.new_frontmatter``
+    verbatim; a hand-written scalar (``sources: foo.md``) must collapse to
+    ``[]`` via ``frontmatter_str_list`` — NOT be iterated char-by-char into
+    ``['f','o','o',…]`` garbage that apply then REWRITES into the user's
+    file."""
+    from dikw_core.domains.knowledge.lint_fix import _build_page_from_op
+
+    op = FixOperation(
+        kind="update_page",
+        path="knowledge/concept/x.md",
+        new_frontmatter={
+            "title": "X",
+            "sources": "sources/foo.md",  # scalar, not a list
+            "tags": "alpha",  # scalar, not a list
+        },
+        new_body="A body.",
+    )
+    page = _build_page_from_op(op)
+    assert page.sources == []
+    assert page.tags == []
+
+
+def test_build_page_from_op_keeps_well_formed_lists() -> None:
+    from dikw_core.domains.knowledge.lint_fix import _build_page_from_op
+
+    op = FixOperation(
+        kind="update_page",
+        path="knowledge/concept/x.md",
+        new_frontmatter={
+            "title": "X",
+            "sources": ["sources/foo.md", "sources/bar.md"],
+            "tags": ["alpha", "beta"],
+        },
+        new_body="A body.",
+    )
+    page = _build_page_from_op(op)
+    assert page.sources == ["sources/foo.md", "sources/bar.md"]
+    assert page.tags == ["alpha", "beta"]
+
+
 async def _seed_page(
     *, storage: Storage, base_root: Path,
     path: str, title: str, body: str,

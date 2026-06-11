@@ -581,6 +581,56 @@ async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
 
 
 @pytest.mark.asyncio
+async def test_judge_entailment_prompt_immune_to_placeholder_injection() -> None:
+    """A claim containing a literal ``{evidence}`` token (a K-page about
+    templating, a JSON example split into a claim) must NOT be re-expanded by
+    the template fill — same single-pass contract as the wikilink judge."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    pair = _ce(
+        "Use {evidence} and {claim} in your template.",
+        "EVIDENCE-SENTINEL supporting text.",
+    )
+    await judge_entailment([pair], llm=CaptureLLM(response_text=_verdict("yes")), model="m")
+    user = str(captured["user"])
+    # The literal tokens inside the claim survive un-expanded...
+    assert "Use {evidence} and {claim} in your template." in user
+    # ...and the real evidence appears exactly once (no double-splice).
+    assert user.count("EVIDENCE-SENTINEL") == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_synthesis_prompt_immune_to_placeholder_injection() -> None:
+    """Four page-authored fields feed the synth-judge template; a body that
+    literally contains ``{source_text}`` must not splice the source into the
+    body slot (single-pass fill, mirroring the wikilink judge)."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    page = _page(
+        "Templating", body="Use {source_text} and {page_body} in your template.\n"
+    )
+    await judge_synthesis(
+        [page],
+        sources={"sources/a.md": "SOURCE-SENTINEL text."},
+        llm=CaptureLLM(responses=[_valid_payload()]),
+        model="m",
+    )
+    user = str(captured["user"])
+    assert "Use {source_text} and {page_body} in your template." in user
+    assert user.count("SOURCE-SENTINEL") == 1
+
+
+@pytest.mark.asyncio
 async def test_judge_entailment_default_max_tokens_is_reasoning_safe() -> None:
     # Reasoning LLMs (e.g. MiniMax-M3) spend a hidden thinking trace that
     # counts against max_tokens before emitting the JSON verdict; the old

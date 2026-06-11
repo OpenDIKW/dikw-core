@@ -317,4 +317,13 @@ class OpenAICompatEmbeddings:
                 f"OpenAI-compat embedding call failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
-        return [list(r.embedding) for r in resp.data]
+        # The response carries an explicit per-item ``index`` because list
+        # order is not contractual — any OpenAI-compatible gateway (Ollama,
+        # vLLM, TEI, …) may return items out of order, and the consumer
+        # (``info.embed``) pairs vectors to chunks positionally before
+        # persisting them into the content-hash embedding cache. Sort before
+        # returning (``gitee_multimodal`` applies the same defence); a gateway
+        # that omits ``index`` falls back to 0 and the stable sort preserves
+        # its list order.
+        rows = sorted(resp.data, key=lambda r: int(getattr(r, "index", 0) or 0))
+        return [list(r.embedding) for r in rows]

@@ -1499,7 +1499,13 @@ def eval_cmd(
                     write_baseline=write_baseline,
                     tolerance=tolerance,
                 )
-            if not bool(payload.get("passed", True)):
+            # Dataset-declared thresholds drive the exit code only when no
+            # baseline gate was chosen: under --against/--write-baseline the
+            # baseline IS the gate (a regression already exited 1 inside
+            # ``_handle_baseline``), so a dataset-threshold failure must not
+            # turn the printed SHIP verdict into exit 1 — same rationale as
+            # the exit-2 skip below.
+            elif not bool(payload.get("passed", True)):
                 raise typer.Exit(code=_EXIT_FAILED)
             # An explicit ``--eval synth`` request must have at least
             # one gated synth report — otherwise the user asked for a

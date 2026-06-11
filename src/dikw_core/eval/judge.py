@@ -195,13 +195,29 @@ def parse_judge_response(text: str) -> JudgeScore | None:
         return None
 
 
+def _fill_template(template: str, mapping: dict[str, str]) -> str:
+    """Single-pass placeholder substitution for judge prompts.
+
+    All placeholders are replaced in ONE regex scan over the template, so an
+    injected value that itself contains a literal placeholder token (a
+    templating page showing ``{evidence}`` in a code example) is never
+    re-expanded. Chained ``str.replace`` would rescan previously injected
+    text — with page-authored fields that is a real splice vector, not a
+    theory. (Not ``str.format`` either, which raises on any literal brace.)
+    """
+    pattern = re.compile("|".join(re.escape(token) for token in mapping))
+    return pattern.sub(lambda m: mapping[m.group(0)], template)
+
+
 def _format_prompt(*, page: KnowledgePage, source_text: str) -> str:
-    return (
-        load_prompt("eval_judge_synth")
-        .replace("{page_path}", page.path)
-        .replace("{page_title}", page.title)
-        .replace("{page_body}", page.body)
-        .replace("{source_text}", source_text)
+    return _fill_template(
+        load_prompt("eval_judge_synth"),
+        {
+            "{page_path}": page.path,
+            "{page_title}": page.title,
+            "{page_body}": page.body,
+            "{source_text}": source_text,
+        },
     )
 
 
@@ -459,13 +475,11 @@ def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:
 
 
 def _format_entailment_prompt(*, claim: str, evidence: str) -> str:
-    # ``str.replace`` (not ``str.format``) so a claim or evidence chunk
-    # containing literal ``{`` / ``}`` (a JSON snippet, code) can't raise
-    # ``KeyError`` / ``IndexError`` at format time.
-    return (
-        load_prompt("eval_judge_entailment")
-        .replace("{claim}", claim)
-        .replace("{evidence}", evidence)
+    # Both fields are page-/source-authored — a claim that literally contains
+    # ``{evidence}`` must not have the evidence spliced into it.
+    return _fill_template(
+        load_prompt("eval_judge_entailment"),
+        {"{claim}": claim, "{evidence}": evidence},
     )
 
 
@@ -673,15 +687,12 @@ def _score_category(verdict: CategoryVerdict, actual: str) -> float:
 
 
 def _format_category_prompt(*, body: str, options: Sequence[CategoryOption]) -> str:
-    # ``str.replace`` (not ``str.format``) so a page body containing literal
-    # ``{`` / ``}`` (a JSON snippet, code) can't raise at format time. Render the
-    # closed set first, then inject the body last so body content is never itself
-    # treated as a placeholder.
+    # Single-pass fill: also covers an operator-written category ``desc``
+    # that itself contains a literal ``{page_body}`` token.
     rendered = "\n".join(f"- `{o.path}`: {o.desc}" for o in options)
-    return (
-        load_prompt("eval_judge_category")
-        .replace("{categories}", rendered)
-        .replace("{page_body}", body)
+    return _fill_template(
+        load_prompt("eval_judge_category"),
+        {"{categories}": rendered, "{page_body}": body},
     )
 
 
@@ -872,23 +883,15 @@ def wikilink_units_from_pages(
 
 
 def _format_wikilink_prompt(*, unit: WikilinkUnit) -> str:
-    # Single-pass substitution: all five placeholders are replaced in ONE
-    # regex scan over the template, so a page-authored value (title, body,
-    # context) that itself contains a literal placeholder token — a templating
-    # page showing ``{context}`` in a code example — is never re-expanded.
-    # Chained ``str.replace`` would rescan previously injected page text; with
-    # four page-authored fields that is a real splice vector, not a theory.
-    # (Not ``str.format`` either, which would raise on any literal brace.)
-    mapping = {
-        "{src_title}": unit.src_title,
-        "{target_title}": unit.target_title,
-        "{target_category}": unit.target_category,
-        "{target_body}": unit.target_body,
-        "{context}": unit.context,
-    }
-    pattern = re.compile("|".join(re.escape(token) for token in mapping))
-    return pattern.sub(
-        lambda m: mapping[m.group(0)], load_prompt("eval_judge_wikilink")
+    return _fill_template(
+        load_prompt("eval_judge_wikilink"),
+        {
+            "{src_title}": unit.src_title,
+            "{target_title}": unit.target_title,
+            "{target_category}": unit.target_category,
+            "{target_body}": unit.target_body,
+            "{context}": unit.context,
+        },
     )
 
 
@@ -1001,16 +1004,9 @@ class SemanticAtomicitySummary(BaseModel):
 
 
 def _format_atomicity_prompt(*, page: KnowledgePage) -> str:
-    # Single-pass substitution, mirroring the wikilink prompt fill: both
-    # placeholders are page-authored (title AND body), so a title containing a
-    # literal ``{page_body}`` token must never have the body expanded into it.
-    mapping = {
-        "{page_title}": page.title,
-        "{page_body}": page.body,
-    }
-    pattern = re.compile("|".join(re.escape(token) for token in mapping))
-    return pattern.sub(
-        lambda m: mapping[m.group(0)], load_prompt("eval_judge_atomicity")
+    return _fill_template(
+        load_prompt("eval_judge_atomicity"),
+        {"{page_title}": page.title, "{page_body}": page.body},
     )
 
 

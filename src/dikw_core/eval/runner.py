@@ -1237,7 +1237,17 @@ async def run_synth_eval(
                 reporter=_reporter,
                 seed=spec.name,
             )
-            if entailment_summary.n_judged > 0:
+            # The ratio's denominator counts only successfully-judged claims,
+            # so a majority-errored judge (19 timeouts + 1 ``yes``) would
+            # otherwise publish ratio=1.0 over a denominator of 1 and
+            # green-light the gate. Withhold the ratio when errors outnumber
+            # successful verdicts — the gate fold below then keeps the
+            # declared threshold as an ``observed=None`` loud miss, same as
+            # the ``n_judged == 0`` case.
+            if (
+                entailment_summary.n_judged > 0
+                and entailment_summary.n_errors <= entailment_summary.n_judged
+            ):
                 bundle.informational["synth/fact_entailment_ratio"] = (
                     entailment_summary.ratio
                 )
@@ -1374,12 +1384,13 @@ async def run_synth_eval(
         #     the dataset didn't opt in) → DROP the threshold; the gate is
         #     not-applicable and a non-judge run (hermetic CI, plain
         #     ``--eval synth``) must not be failed by a metric it never computed.
-        #   * judge ran but produced no ratio (``n_judged == 0`` — every sampled
-        #     claim errored or had no evidence) → KEEP the threshold so
-        #     ``check_thresholds`` records ``observed=None → passed=False``. A
-        #     broken / empty judge on a ``--judge`` acceptance run must fail
-        #     LOUDLY, not silently green-light (a false-green gate is worse than
-        #     no gate). The errors are otherwise visible only in
+        #   * judge ran but produced no usable ratio (``n_judged == 0``, or a
+        #     majority-errored judge whose surviving sliver was withheld
+        #     above) → KEEP the threshold so ``check_thresholds`` records
+        #     ``observed=None → passed=False``. A broken / half-dead judge on
+        #     a ``--judge`` acceptance run must fail LOUDLY, not silently
+        #     green-light (a false-green gate is worse than no gate). The
+        #     errors are otherwise visible only in
         #     ``entailment_summary.n_errors``, which nothing else gates on.
         gate_input = dict(bundle.metrics)
         ent_ratio = bundle.informational.get("synth/fact_entailment_ratio")

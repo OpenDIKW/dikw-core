@@ -52,6 +52,7 @@ from .page import (
     KnowledgePage,
     build_page,
     category_from_path,
+    frontmatter_str_list,
     path_slug_title,
     write_page,
 )
@@ -491,8 +492,14 @@ def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     title = _op_title(op)
     fm.pop("title", None)
     category = str(fm.pop("category", None) or category_from_path(op.path))
-    tags = list(fm.pop("tags", []) or [])
-    sources = list(fm.pop("sources", []) or [])
+    # Fixers pass on-disk frontmatter through ``new_frontmatter`` verbatim, so
+    # these list fields need the same defensive read every other site uses — a
+    # hand-written scalar (``sources: foo.md``) iterated bare would become
+    # ``['f','o','o',…]`` and apply would REWRITE that garbage into the file.
+    tags = frontmatter_str_list(fm, "tags")
+    sources = frontmatter_str_list(fm, "sources")
+    fm.pop("tags", None)
+    fm.pop("sources", None)
     page_id = fm.pop("id", None)
     created = fm.pop("created", None)
     updated = fm.pop("updated", None)

@@ -296,6 +296,46 @@ def test_against_rejects_multiple_eval_modes(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
+def test_against_ship_wins_over_dataset_thresholds(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    patch_eval: Callable[..., None],
+    tmp_path: Path,
+) -> None:
+    """Under ``--against`` the baseline IS the gate the user chose: a
+    dataset-declared threshold failure (payload ``passed=False``) must not
+    turn a printed SHIP verdict into exit 1 — the mirror of the exit-2 skip,
+    which already defers to the baseline verdict."""
+    patch_eval({"doc/ndcg_at_10": 0.50}, passed=False)
+    patch_transport_factory()
+    base = tmp_path / "b.json"
+    base.write_text(
+        json.dumps(
+            {"dataset": "mvp", "metrics": {"doc/ndcg_at_10": 0.50}, "tolerance": 0.02}
+        ),
+        encoding="utf-8",
+    )
+    result = _run(
+        ["client", "eval", "--dataset", "mvp", "--against", str(base), "--plain"]
+    )
+    assert "SHIP" in result.stdout.upper()
+    assert result.exit_code == 0, result.stdout
+
+
+def test_dataset_thresholds_still_gate_without_baseline(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    patch_eval: Callable[..., None],
+    tmp_path: Path,
+) -> None:
+    """Without ``--against``/``--write-baseline`` the dataset thresholds remain
+    the gate — ``passed=False`` still exits 1."""
+    patch_eval({"doc/ndcg_at_10": 0.50}, passed=False)
+    patch_transport_factory()
+    result = _run(["client", "eval", "--dataset", "mvp", "--wait", "--plain"])
+    assert result.exit_code == _EXIT_FAILED, result.stdout
+
+
 def test_against_and_write_baseline_are_mutually_exclusive(tmp_path: Path) -> None:
     # Rejected before any network call → no fixtures needed.
     result = _run(
