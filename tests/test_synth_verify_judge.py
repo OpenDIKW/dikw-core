@@ -165,6 +165,61 @@ async def test_low_grounding_does_not_fail_verify(tmp_path: Path) -> None:
     assert v.passed is True
 
 
+class _FirstVerdictThenGarbageLLM(_SynthAndJudgeLLM):
+    """First entailment call parses (``yes``), every later one errors — the
+    half-dead-judge shape (e.g. provider times out after one verdict)."""
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        tools: list | None = None,
+    ) -> LLMResponse:
+        if "entailment judge" in system.lower():
+            self.entailment_calls += 1
+            if self.entailment_calls > 1:
+                return LLMResponse(
+                    text="not a parseable verdict", finish_reason="end_turn"
+                )
+        return await super().complete(
+            system=system,
+            user=user,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        )
+
+
+@pytest.mark.asyncio
+async def test_judge_majority_errors_withhold_ratio(tmp_path: Path) -> None:
+    """A half-dead judge (1 verdict + N errors) must not report its sliver as
+    the entailment ratio — ``EntailmentSummary.trustworthy``, the same rule the
+    eval gate fold applies, withholds it. The leg still counts as checked (it
+    ran), the error counts stay visible, and the ratio is ``None`` instead of a
+    misleading 1.0 over a denominator of 1."""
+    wiki = _seed(tmp_path)
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki, embedder=embedder)
+
+    llm = _FirstVerdictThenGarbageLLM(_script(), verdict="yes")
+    report = await _synth_twice(wiki, llm, embedder, judge=True)
+
+    v = report.verify
+    assert v is not None
+    assert v.grounding_checked is True
+    assert v.grounding_n_judged == 1
+    assert v.grounding_n_errors >= 1
+    assert v.grounding_n_errors >= v.grounding_n_judged
+    assert v.grounding_entailment_ratio is None
+    # Report-only leg: a withheld ratio is never a verify failure.
+    assert v.passed is True
+
+
 @pytest.mark.asyncio
 async def test_judge_off_by_default(tmp_path: Path) -> None:
     """``verify=True`` without ``judge`` leaves the grounding leg untouched — it
@@ -257,7 +312,9 @@ async def test_judge_ratio_is_none_when_nothing_judged(
     await api.ingest(wiki, embedder=embedder)
 
     async def _empty_summary(*_a: object, **_kw: object) -> EntailmentSummary:
-        return EntailmentSummary(ratio=0.0, n_judged=0, n_errors=0, n_no_evidence=0)
+        return EntailmentSummary(
+            ratio=0.0, n_judged=0, n_errors=0, n_calls_ok=0, n_no_evidence=0
+        )
 
     # Local import in ``_grounding_verify_leg`` resolves the name at call time.
     monkeypatch.setattr("dikw_core.eval.judge.judge_entailment", _empty_summary)

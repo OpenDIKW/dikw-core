@@ -160,10 +160,12 @@ class SynthVerifyReport:
       caught, and a standalone ``dikw client lint`` surfaces either case.
     * **duplicate** — semantic ``duplicate_ratio_max`` over this run's page
       bodies, gated on ``<= max_duplicate_ratio``. Requires an embedder;
-      when none was wired the leg is SKIPPED LOUDLY (``duplicate_checked``
-      is False, ``duplicate_ratio`` is None) rather than silently passing —
-      a green verify must never imply "no duplicates" when the check never
-      ran (mirrors the 0.6 loud-skip contract). A skip is NOT a failure.
+      when none was wired — or the leg's own embed pass fails (every page is
+      already persisted by then, so a verify-only provider blip must not fail
+      the task) — the leg is SKIPPED LOUDLY (``duplicate_checked`` is False,
+      ``duplicate_ratio`` is None) rather than silently passing — a green
+      verify must never imply "no duplicates" when the check never ran
+      (mirrors the 0.6 loud-skip contract). A skip is NOT a failure.
 
     ``unresolved_wikilinks`` is surfaced from ``SynthReport`` for context; its
     gated form is the lint leg's ``broken_wikilink`` (re-resolved against the
@@ -186,8 +188,10 @@ class SynthVerifyReport:
     ``judge`` was requested but either is missing the leg is SKIPPED LOUDLY
     (``grounding_requested`` True, ``grounding_checked`` False) rather than
     silently reporting nothing. ``grounding_entailment_ratio`` is ``None`` when
-    the leg did not run OR nothing was judged (no claims / all unverifiable) —
-    the renderer omits a misleading ``0.0`` floor.
+    the leg did not run, nothing was judged (no claims / all unverifiable), or
+    the judge was majority-errored (``EntailmentSummary.trustworthy`` — a
+    half-dead judge's sliver must not render as "claims fully grounded"; the
+    error counts stay visible) — the renderer omits a misleading floor.
 
     The boolean legs (``persist_ok`` / ``lint_ok`` / ``duplicate_ok`` /
     ``passed``) are stored fields, not properties, so they survive

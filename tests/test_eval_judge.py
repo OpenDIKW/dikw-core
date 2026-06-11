@@ -580,6 +580,132 @@ async def test_judge_entailment_calls_llm_at_temperature_zero() -> None:
     assert "entailment" in str(captured["system"]).lower()
 
 
+def test_entailment_summary_trustworthy_rule() -> None:
+    """One shared reliability rule for every ratio consumer (eval gate fold,
+    synth --verify grounding leg): with zero judge errors the ratio is the
+    deterministic contract (cached verdicts + no-evidence zeros included);
+    with errors, successful judge CALLS must strictly outnumber them — a
+    half-dead judge's sliver (1 yes + 1 error, or 1 yes + 19 errors) must
+    never be read as a trustworthy 1.0, and cached duplicate claims must not
+    pad the success side (they add scores without any LLM call)."""
+    ok = EntailmentSummary(
+        ratio=1.0, n_judged=3, n_errors=1, n_calls_ok=3, n_no_evidence=0
+    )
+    assert ok.trustworthy is True
+    tie = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=1, n_calls_ok=1, n_no_evidence=0
+    )
+    assert tie.trustworthy is False
+    sliver = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=19, n_calls_ok=1, n_no_evidence=0
+    )
+    assert sliver.trustworthy is False
+    empty = EntailmentSummary(
+        ratio=0.0, n_judged=0, n_errors=0, n_calls_ok=0, n_no_evidence=0
+    )
+    assert empty.trustworthy is False
+    # One duplicated claim (1 successful call reused 6x) + 4 distinct claims
+    # erroring: n_judged > n_errors, but only 1 of 5 actual calls succeeded.
+    dup_inflated = EntailmentSummary(
+        ratio=1.0, n_judged=6, n_errors=4, n_calls_ok=1, n_no_evidence=0
+    )
+    assert dup_inflated.trustworthy is False
+    # All claims unverifiable (no evidence): zero calls, zero errors — the
+    # 0.0 ratio is the deterministic contract, publishing it is fail-loud.
+    no_evidence_only = EntailmentSummary(
+        ratio=0.0, n_judged=5, n_errors=0, n_calls_ok=0, n_no_evidence=5
+    )
+    assert no_evidence_only.trustworthy is True
+
+
+def test_entailment_summary_trustworthy_serializes() -> None:
+    """``trustworthy`` must survive ``model_dump`` — the eval report crosses
+    the HTTP boundary as JSON and the client renderer (which cannot import
+    this module per the layering contract) decides from the dict alone whether
+    to show the ratio. A plain property vanishes from the payload, so the
+    client would print the very sliver ratio the gate withheld."""
+    sliver = EntailmentSummary(
+        ratio=1.0, n_judged=1, n_errors=19, n_calls_ok=1, n_no_evidence=0
+    )
+    assert sliver.model_dump()["trustworthy"] is False
+    ok = EntailmentSummary(
+        ratio=1.0, n_judged=3, n_errors=1, n_calls_ok=3, n_no_evidence=0
+    )
+    assert ok.model_dump()["trustworthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_duplicates_do_not_inflate_trust() -> None:
+    """Cached duplicate ``(claim, evidence)`` pairs append scores without an
+    LLM call, so trust must count actual successful judge calls: one ``yes``
+    reused across 3 duplicate claims + 2 distinct claims erroring is a
+    half-dead judge (1 ok call vs 2 errors), not a trustworthy ratio —
+    even though ``n_judged`` (3) outnumbers ``n_errors`` (2)."""
+    llm = FakeLLM(response_text="not a verdict", responses=[_verdict("yes")])
+    pairs = [
+        _ce("dup claim", "shared evidence"),
+        _ce("dup claim", "shared evidence"),
+        _ce("dup claim", "shared evidence"),
+        _ce("claim b", "evidence b"),
+        _ce("claim c", "evidence c"),
+    ]
+    summary = await judge_entailment(pairs, llm=llm, model="m")
+    assert summary.n_judged == 3
+    assert summary.n_errors == 2
+    assert summary.n_calls_ok == 1
+    assert summary.trustworthy is False
+
+
+@pytest.mark.asyncio
+async def test_judge_entailment_prompt_immune_to_placeholder_injection() -> None:
+    """A claim containing a literal ``{evidence}`` token (a K-page about
+    templating, a JSON example split into a claim) must NOT be re-expanded by
+    the template fill — same single-pass contract as the wikilink judge."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    pair = _ce(
+        "Use {evidence} and {claim} in your template.",
+        "EVIDENCE-SENTINEL supporting text.",
+    )
+    await judge_entailment([pair], llm=CaptureLLM(response_text=_verdict("yes")), model="m")
+    user = str(captured["user"])
+    # The literal tokens inside the claim survive un-expanded...
+    assert "Use {evidence} and {claim} in your template." in user
+    # ...and the real evidence appears exactly once (no double-splice).
+    assert user.count("EVIDENCE-SENTINEL") == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_synthesis_prompt_immune_to_placeholder_injection() -> None:
+    """Four page-authored fields feed the synth-judge template; a body that
+    literally contains ``{source_text}`` must not splice the source into the
+    body slot (single-pass fill, mirroring the wikilink judge)."""
+    captured: dict[str, object] = {}
+
+    class CaptureLLM(FakeLLM):
+        async def complete(self, **kwargs: object) -> object:  # type: ignore[override]
+            captured.update(kwargs)
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    page = _page(
+        "Templating", body="Use {source_text} and {page_body} in your template.\n"
+    )
+    await judge_synthesis(
+        [page],
+        sources={"sources/a.md": "SOURCE-SENTINEL text."},
+        llm=CaptureLLM(responses=[_valid_payload()]),
+        model="m",
+    )
+    user = str(captured["user"])
+    assert "Use {source_text} and {page_body} in your template." in user
+    assert user.count("SOURCE-SENTINEL") == 1
+
+
 @pytest.mark.asyncio
 async def test_judge_entailment_default_max_tokens_is_reasoning_safe() -> None:
     # Reasoning LLMs (e.g. MiniMax-M3) spend a hidden thinking trace that

@@ -144,9 +144,16 @@ or non-destructiveness. Two gates:
    calibrated 2026-06-05 to observed `0.775`, CI `[0.65, 0.90]`, n=20), and the
    runner enforces it **only when the judge actually ran** — a non-judge run
    (hermetic CI, plain `--eval synth`) drops the threshold rather than recording
-   a spurious miss. So the entailment gate bites on real-LLM acceptance runs
-   only; the sample size needed to trust the number is settled by the power
-   analysis below.
+   a spurious miss. A judge that ran but produced no trustworthy ratio
+   (`EntailmentSummary.trustworthy`: with any judge errors, distinct
+   successful judge calls must strictly outnumber them — a half-dead judge
+   would otherwise gate `ratio=1.0` on a denominator of 1, and cached
+   duplicate claims must not pad the success side) keeps the declared floor
+   as a loud `observed=None`
+   miss instead; `synth --verify --judge`'s grounding leg applies the same
+   rule. So the entailment gate bites on real-LLM acceptance runs only; the
+   sample size needed to trust the number is settled by the power analysis
+   below.
 
    **`category_correctness_ratio` — is each page filed under the right
    category?** `category_distribution` / `fallback_ratio_max` see *where* pages

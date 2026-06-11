@@ -228,9 +228,10 @@ near-duplicate ratio over this run's page bodies stays under
 `synth.verify_duplicate_cosine_tau`, default `0.85`). Orphan pages are surfaced
 but **not** gated — a freshly synthesised page is legitimately orphan until
 something cites it. The duplicate leg needs embeddings; when none are available
-(no embedder configured, `--no-embed`, or no active embed version yet) it is
-**skipped loudly** (a warning, not a silent pass) so a green verdict never reads
-as "no duplicates" when the check never ran.
+(no embedder configured, `--no-embed`, or no active embed version yet) — or when
+its embed pass itself fails mid-leg — it is **skipped loudly** (a warning, not a
+silent pass and never a failed task; every page is already persisted by then) so
+a green verdict never reads as "no duplicates" when the check never ran.
 
 Adding `--judge` (which implies `--verify`) runs one more, **report-only** leg:
 it samples this run's claims (`synth.verify_judge_sample`, default `25`), pairs

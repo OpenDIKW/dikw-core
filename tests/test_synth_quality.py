@@ -778,6 +778,178 @@ async def test_entailment_gate_fails_when_judge_errors_every_claim(
     assert report.passed is False
 
 
+# Multi-sentence page bodies → ≥2 claims per page, so a judge that errors on
+# every claim after the first leaves a 1-success / N-error split (the
+# majority-errored shape the dominance guard gates on).
+_SYNTH_ALPHA_TWO_CLAIMS = """<page path="knowledge/concepts/alpha.md" type="concept">
+---
+tags: [topic/sample]
+---
+
+# Alpha
+
+Alpha is a concept described in the corpus. Alpha additionally anchors the beta document narrative.
+</page>
+"""
+
+_SYNTH_BETA_TWO_CLAIMS = """<page path="knowledge/concepts/beta.md" type="concept">
+---
+tags: [topic/sample]
+---
+
+# Beta
+
+Beta is another concept the test corpus mentions. Beta extends the alpha concept with more detail.
+</page>
+"""
+
+
+class _FirstYesThenGarbageLLM(_DispatchLLM):
+    """Entailment leg: first call parses (``yes``), every later call errors —
+    the half-dead-judge shape (e.g. 19 timeouts after one success)."""
+
+    def __init__(
+        self,
+        synth_pages: list[str],
+        *,
+        verdict: str,
+        page_score: str,
+        category: str,
+        wikilink: str | None = None,
+        atomicity: str | None = None,
+    ) -> None:
+        super().__init__(
+            synth_pages,
+            verdict=verdict,
+            page_score=page_score,
+            category=category,
+            wikilink=wikilink,
+            atomicity=atomicity,
+        )
+        self._entailment_calls = 0
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        tools: object = None,
+    ) -> LLMResponse:
+        if "entailment judge" in system.lower():
+            self._entailment_calls += 1
+            if self._entailment_calls == 1:
+                return LLMResponse(
+                    text=json.dumps({"verdict": "yes", "rationale": "ok"}),
+                    finish_reason="end_turn",
+                )
+            return LLMResponse(
+                text="not a parseable entailment verdict", finish_reason="end_turn"
+            )
+        return await super().complete(
+            system=system,
+            user=user,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        )
+
+
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_when_judge_errors_dominate(
+    tmp_path: Path,
+) -> None:
+    """False-green guard, majority-error shape: the ratio denominator counts
+    only successfully-judged claims, so 1 ``yes`` + N errors would otherwise
+    yield ratio=1.0 over a denominator of 1 and green-light the 0.55 floor.
+    When errors OUTNUMBER successful verdicts the ratio is statistically
+    meaningless: it is withheld from ``informational`` and the declared gate
+    is kept as an ``observed=None`` miss — the same loud-fail shape as the
+    ``n_judged == 0`` case."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    llm = _FirstYesThenGarbageLLM(
+        [_SYNTH_ALPHA_TWO_CLAIMS, _SYNTH_BETA_TWO_CLAIMS],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged == 1
+    assert report.entailment_summary.n_errors >= 2  # errors outnumber successes
+    # The sliver ratio is withheld — not mirrored into informational...
+    assert "synth/fact_entailment_ratio" not in report.informational
+    # ...and the gate is KEPT as a loud None miss, not silently green.
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed is None
+    assert row.passed is False
+    assert report.passed is False
+
+
+@pytest.mark.asyncio
+async def test_entailment_gate_fails_at_error_tie_boundary(tmp_path: Path) -> None:
+    """The dominance guard is STRICT: at the tie boundary (1 ``yes`` + 1 error
+    — half the sample dead) the surviving denominator of 1 is exactly as
+    untrustworthy as the 1-vs-19 shape, so the ratio is withheld and the gate
+    fails loudly rather than green-lighting ratio=1.0."""
+    ds = _write_synth_dataset(tmp_path, entailment_threshold=0.55)
+    spec = load_dataset(ds)
+    # Single-sentence pages → exactly 2 claims; first judges yes, second errors.
+    llm = _FirstYesThenGarbageLLM(
+        [_SYNTH_PAGE_RESPONSE, _SYNTH_BETA_RESPONSE],
+        verdict=json.dumps({"verdict": "yes", "rationale": "ok"}),
+        page_score=json.dumps(
+            {
+                "grounding": 4,
+                "atomicity": 4,
+                "completeness": 4,
+                "clarity": 4,
+                "rationale": "ok",
+            }
+        ),
+        category=json.dumps(
+            {"chosen": "concept", "also_fits": None, "rationale": "ok"}
+        ),
+    )
+
+    report = await run_synth_eval(
+        spec, llm=llm, embedder=FakeEmbeddings(), judge=True
+    )
+
+    assert report.entailment_summary is not None
+    assert report.entailment_summary.n_judged == 1
+    assert report.entailment_summary.n_errors == 1
+    assert "synth/fact_entailment_ratio" not in report.informational
+    row = next(
+        r for r in report.threshold_results
+        if r.name == "synth/fact_entailment_ratio"
+    )
+    assert row.observed is None
+    assert row.passed is False
+    assert report.passed is False
+
+
 # ---- category-correctness judge wiring -------------------------------------
 
 

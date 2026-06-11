@@ -317,4 +317,19 @@ class OpenAICompatEmbeddings:
                 f"OpenAI-compat embedding call failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
-        return [list(r.embedding) for r in resp.data]
+        # The response carries an explicit per-item ``index`` because list
+        # order is not contractual — any OpenAI-compatible gateway (Ollama,
+        # vLLM, TEI, …) may return items out of order, and the consumer
+        # (``info.embed``) pairs vectors to chunks positionally before
+        # persisting them into the content-hash embedding cache. Sort before
+        # returning (``gitee_multimodal`` applies the same defence). A row
+        # that omits ``index`` keeps its response position as the key — a
+        # constant fallback (0) would yank unindexed rows ahead of every real
+        # index > 0 in a mixed response.
+        def _row_key(pair: tuple[int, Any]) -> int:
+            pos, row = pair
+            idx = getattr(row, "index", None)
+            return pos if idx is None else int(idx)
+
+        rows = sorted(enumerate(resp.data), key=_row_key)
+        return [list(row.embedding) for _, row in rows]

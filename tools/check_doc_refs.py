@@ -26,8 +26,9 @@ Routes (``/v1/...``) are a deliberate follow-up: FastAPI path-template
 normalization (param-name + ``:path`` converter differences) carries enough
 false-positive risk that it is not worth shipping in this first advisory pass.
 
-Doc set: ``CLAUDE.md`` + ``docs/**/*.md`` + ``README.md``. ``CHANGELOG.md`` is
-excluded — it is a historical record that intentionally cites removed verbs/vars.
+Doc set: ``CLAUDE.md`` + ``docs/**/*.md`` + ``README.md`` + ``.claude/skills/**/*.md``.
+``CHANGELOG.md`` is excluded — it is a historical record that intentionally cites
+removed verbs/vars.
 
 The pure :func:`check_doc_refs` is unit-tested in ``tests/test_check_doc_refs.py``,
 which also asserts the live repo is drift-free — so this is a **hard gate** (that
@@ -157,6 +158,10 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
     Excludes ``CHANGELOG.md`` and ``docs/adr/**`` — both are historical records
     that intentionally cite removed verbs/vars to document what changed, so
     gating them on current source would false-positive by design.
+
+    Includes ``.claude/skills/**`` — skill docs cite CLI verbs and env vars
+    the same way ``docs/**`` does, and drift there silently breaks the agent
+    workflows that follow them.
     """
     files: list[Path] = []
     claude = repo_root / "CLAUDE.md"
@@ -171,6 +176,9 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
         files.extend(
             p for p in sorted(docs_dir.rglob("*.md")) if adr_dir not in p.parents
         )
+    skills_dir = repo_root / ".claude" / "skills"
+    if skills_dir.is_dir():
+        files.extend(sorted(skills_dir.rglob("*.md")))
     return files
 
 

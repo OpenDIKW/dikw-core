@@ -22,7 +22,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    computed_field,
+    field_validator,
+)
 
 from ..domains.knowledge.page import KnowledgePage
 from ..progress import NoopReporter, ProgressReporter
@@ -195,13 +202,33 @@ def parse_judge_response(text: str) -> JudgeScore | None:
         return None
 
 
+def _fill_template(template: str, mapping: dict[str, str]) -> str:
+    """Single-pass placeholder substitution for judge prompts.
+
+    All placeholders are replaced in ONE regex scan over the template, so an
+    injected value that itself contains a literal placeholder token (a
+    templating page showing ``{evidence}`` in a code example) is never
+    re-expanded. Chained ``str.replace`` would rescan previously injected
+    text — with page-authored fields that is a real splice vector, not a
+    theory. (Not ``str.format`` either, which raises on any literal brace.)
+    """
+    if not mapping:
+        # ``re.compile("")`` matches at every position and the replacement
+        # lambda would KeyError on ``''`` — an empty fill is a no-op.
+        return template
+    pattern = re.compile("|".join(re.escape(token) for token in mapping))
+    return pattern.sub(lambda m: mapping[m.group(0)], template)
+
+
 def _format_prompt(*, page: KnowledgePage, source_text: str) -> str:
-    return (
-        load_prompt("eval_judge_synth")
-        .replace("{page_path}", page.path)
-        .replace("{page_title}", page.title)
-        .replace("{page_body}", page.body)
-        .replace("{source_text}", source_text)
+    return _fill_template(
+        load_prompt("eval_judge_synth"),
+        {
+            "{page_path}": page.path,
+            "{page_title}": page.title,
+            "{page_body}": page.body,
+            "{source_text}": source_text,
+        },
     )
 
 
@@ -404,7 +431,10 @@ class EntailmentSummary(BaseModel):
     ``ratio`` is the mean verdict score over ``n_judged`` claims. Claims whose
     source had no evidence chunk count as ``0.0`` (tallied in ``n_no_evidence``)
     rather than being dropped; parse / LLM failures are excluded and counted in
-    ``n_errors`` instead. ``ci`` is a deterministic bootstrap 95% interval on
+    ``n_errors`` instead. ``n_calls_ok`` counts the distinct successful judge
+    calls behind those scores — cached duplicate pairs and no-evidence claims
+    add to ``n_judged`` without an LLM call, so it can be far smaller than
+    ``n_judged``. ``ci`` is a deterministic bootstrap 95% interval on
     the ratio — the same honesty band as :class:`JudgeSummary`. ``ratio == 0.0``
     with ``n_judged == 0`` means nothing was judged: the caller omits the metric
     rather than reporting a misleading floor.
@@ -415,8 +445,36 @@ class EntailmentSummary(BaseModel):
     ratio: float
     n_judged: int
     n_errors: int
+    n_calls_ok: int
     n_no_evidence: int
     ci: tuple[float, float] = (0.0, 0.0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def trustworthy(self) -> bool:
+        """Whether ``ratio`` is statistically usable: at least one claim was
+        scored, and — when the judge errored at all — successful judge CALLS
+        strictly outnumber the errors.
+
+        The ratio's denominator counts only successfully-scored claims, so a
+        half-dead judge (19 timeouts + 1 ``yes``, or a 50/50 tie) reports a
+        sliver ratio over a meaningless denominator. The comparison uses
+        ``n_calls_ok``, not ``n_judged``: cached duplicate claims reuse one
+        verdict without another call, so a single ``yes`` fanned across
+        duplicates must not outvote many distinct failures. With zero errors
+        the composition (cached + no-evidence zeros) is the deterministic
+        contract and publishing it is fail-loud, not noise. Every consumer
+        that publishes or gates on ``ratio`` (the eval runner's conditional
+        gate fold, synth ``--verify --judge``'s grounding leg) must withhold
+        it when this is False — one shared rule, not per-call-site
+        arithmetic. A ``computed_field`` (not a plain property) so the
+        verdict survives ``model_dump`` into the eval payload: the client
+        renderer cannot import this rule (layering) and must read it from
+        the JSON dict.
+        """
+        return self.n_judged > 0 and (
+            self.n_errors == 0 or self.n_calls_ok > self.n_errors
+        )
 
 
 def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:
@@ -459,13 +517,11 @@ def parse_entailment_verdict(text: str) -> EntailmentVerdict | None:
 
 
 def _format_entailment_prompt(*, claim: str, evidence: str) -> str:
-    # ``str.replace`` (not ``str.format``) so a claim or evidence chunk
-    # containing literal ``{`` / ``}`` (a JSON snippet, code) can't raise
-    # ``KeyError`` / ``IndexError`` at format time.
-    return (
-        load_prompt("eval_judge_entailment")
-        .replace("{claim}", claim)
-        .replace("{evidence}", evidence)
+    # Both fields are page-/source-authored — a claim that literally contains
+    # ``{evidence}`` must not have the evidence spliced into it.
+    return _fill_template(
+        load_prompt("eval_judge_entailment"),
+        {"{claim}": claim, "{evidence}": evidence},
     )
 
 
@@ -509,6 +565,7 @@ async def judge_entailment(
 
     scores: list[float] = []
     n_errors = 0
+    n_calls_ok = 0
     n_no_evidence = 0
     cache: dict[str, float] = {}
 
@@ -555,6 +612,7 @@ async def judge_entailment(
             n_errors += 1
             continue
         cache[key] = verdict.score
+        n_calls_ok += 1
         scores.append(verdict.score)
 
     n_judged = len(scores)
@@ -563,6 +621,7 @@ async def judge_entailment(
         ratio=ratio,
         n_judged=n_judged,
         n_errors=n_errors,
+        n_calls_ok=n_calls_ok,
         n_no_evidence=n_no_evidence,
         ci=bootstrap_ci(scores, seed=f"{seed}:entailment"),
     )
@@ -673,15 +732,12 @@ def _score_category(verdict: CategoryVerdict, actual: str) -> float:
 
 
 def _format_category_prompt(*, body: str, options: Sequence[CategoryOption]) -> str:
-    # ``str.replace`` (not ``str.format``) so a page body containing literal
-    # ``{`` / ``}`` (a JSON snippet, code) can't raise at format time. Render the
-    # closed set first, then inject the body last so body content is never itself
-    # treated as a placeholder.
+    # Single-pass fill: also covers an operator-written category ``desc``
+    # that itself contains a literal ``{page_body}`` token.
     rendered = "\n".join(f"- `{o.path}`: {o.desc}" for o in options)
-    return (
-        load_prompt("eval_judge_category")
-        .replace("{categories}", rendered)
-        .replace("{page_body}", body)
+    return _fill_template(
+        load_prompt("eval_judge_category"),
+        {"{categories}": rendered, "{page_body}": body},
     )
 
 
@@ -872,23 +928,15 @@ def wikilink_units_from_pages(
 
 
 def _format_wikilink_prompt(*, unit: WikilinkUnit) -> str:
-    # Single-pass substitution: all five placeholders are replaced in ONE
-    # regex scan over the template, so a page-authored value (title, body,
-    # context) that itself contains a literal placeholder token — a templating
-    # page showing ``{context}`` in a code example — is never re-expanded.
-    # Chained ``str.replace`` would rescan previously injected page text; with
-    # four page-authored fields that is a real splice vector, not a theory.
-    # (Not ``str.format`` either, which would raise on any literal brace.)
-    mapping = {
-        "{src_title}": unit.src_title,
-        "{target_title}": unit.target_title,
-        "{target_category}": unit.target_category,
-        "{target_body}": unit.target_body,
-        "{context}": unit.context,
-    }
-    pattern = re.compile("|".join(re.escape(token) for token in mapping))
-    return pattern.sub(
-        lambda m: mapping[m.group(0)], load_prompt("eval_judge_wikilink")
+    return _fill_template(
+        load_prompt("eval_judge_wikilink"),
+        {
+            "{src_title}": unit.src_title,
+            "{target_title}": unit.target_title,
+            "{target_category}": unit.target_category,
+            "{target_body}": unit.target_body,
+            "{context}": unit.context,
+        },
     )
 
 
@@ -1001,16 +1049,9 @@ class SemanticAtomicitySummary(BaseModel):
 
 
 def _format_atomicity_prompt(*, page: KnowledgePage) -> str:
-    # Single-pass substitution, mirroring the wikilink prompt fill: both
-    # placeholders are page-authored (title AND body), so a title containing a
-    # literal ``{page_body}`` token must never have the body expanded into it.
-    mapping = {
-        "{page_title}": page.title,
-        "{page_body}": page.body,
-    }
-    pattern = re.compile("|".join(re.escape(token) for token in mapping))
-    return pattern.sub(
-        lambda m: mapping[m.group(0)], load_prompt("eval_judge_atomicity")
+    return _fill_template(
+        load_prompt("eval_judge_atomicity"),
+        {"{page_title}": page.title, "{page_body}": page.body},
     )
 
 
