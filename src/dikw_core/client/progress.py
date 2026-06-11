@@ -1051,8 +1051,15 @@ def render_synth_eval_report(
             ci_str = f"95% CI [{ci[0]:.2f}, {ci[1]:.2f}]"
         else:
             ci_str = "95% CI [-]"
+        shown = f"{ratio_str} {ci_str}"
+        # ``trustworthy`` is EntailmentSummary's serialized verdict (the
+        # shared errors-vs-verdicts rule the runner gates on); the client
+        # can't import that rule, so honor the flag from the payload. Only
+        # an explicit False withholds — an old server omits the key.
+        if entailment.get("trustworthy") is False:
+            shown = "withheld (judge errors outnumber successful verdicts)"
         console.print(
-            f"fact entailment (LLM grounding): {ratio_str} {ci_str} — "
+            f"fact entailment (LLM grounding): {shown} — "
             f"judged {entailment.get('n_judged', 0)} claims, "
             f"no-evidence {entailment.get('n_no_evidence', 0)}, "
             f"errors {entailment.get('n_errors', 0)}"

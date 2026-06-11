@@ -272,7 +272,11 @@ on each entry call out exactly what shape changes break.
   `observed=None` loud miss (same fail-loud shape as the existing
   `n_judged == 0` guard), and `synth --verify --judge`'s grounding leg
   reports `None` (with the error counts visible) instead of "claims fully
-  grounded".
+  grounded". `trustworthy` is a `computed_field`, so the verdict also
+  survives into the eval JSON payload — the client renderer (which cannot
+  import the rule) reads it from `entailment_summary` and prints
+  `withheld (judge errors outnumber successful verdicts)` instead of the
+  sliver ratio.
 - **All judge prompt fills are single-pass.** The entailment and four-field
   synth judges filled their templates with chained `str.replace`, so a
   page-authored value literally containing a later placeholder token (a claim

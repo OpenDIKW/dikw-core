@@ -596,6 +596,18 @@ def test_entailment_summary_trustworthy_rule() -> None:
     assert empty.trustworthy is False
 
 
+def test_entailment_summary_trustworthy_serializes() -> None:
+    """``trustworthy`` must survive ``model_dump`` — the eval report crosses
+    the HTTP boundary as JSON and the client renderer (which cannot import
+    this module per the layering contract) decides from the dict alone whether
+    to show the ratio. A plain property vanishes from the payload, so the
+    client would print the very sliver ratio the gate withheld."""
+    sliver = EntailmentSummary(ratio=1.0, n_judged=1, n_errors=19, n_no_evidence=0)
+    assert sliver.model_dump()["trustworthy"] is False
+    ok = EntailmentSummary(ratio=1.0, n_judged=3, n_errors=1, n_no_evidence=0)
+    assert ok.model_dump()["trustworthy"] is True
+
+
 @pytest.mark.asyncio
 async def test_judge_entailment_prompt_immune_to_placeholder_injection() -> None:
     """A claim containing a literal ``{evidence}`` token (a K-page about

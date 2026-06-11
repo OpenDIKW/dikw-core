@@ -371,6 +371,81 @@ def test_render_synth_eval_report_semantic_atomicity_summary_line() -> None:
     assert "errors 2" in out
 
 
+def test_render_synth_eval_report_entailment_untrustworthy_withheld() -> None:
+    """An ``entailment_summary`` whose serialized ``trustworthy`` flag is
+    False must NOT render its sliver ratio — the runner already withheld the
+    metric, so the human-facing line shows a withheld marker plus the error
+    counts instead of a misleading ``1.000``."""
+    console = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        console,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [],
+            "metrics": {},
+            "informational": {},
+            "entailment_summary": {
+                "ratio": 1.0,
+                "n_judged": 1,
+                "n_errors": 19,
+                "n_no_evidence": 0,
+                "ci": [1.0, 1.0],
+                "trustworthy": False,
+            },
+        },
+    )
+    out = console.export_text()
+    assert "fact entailment" in out
+    assert "1.000" not in out
+    assert "withheld" in out
+    assert "errors 19" in out
+
+
+def test_render_synth_eval_report_entailment_trustworthy_renders_ratio() -> None:
+    """The trustworthy shape keeps the ratio + CI line; an old-server payload
+    with no ``trustworthy`` key renders the same way (status quo)."""
+    console = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        console,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [],
+            "metrics": {},
+            "informational": {},
+            "entailment_summary": {
+                "ratio": 0.9,
+                "n_judged": 10,
+                "n_errors": 1,
+                "n_no_evidence": 0,
+                "ci": [0.8, 1.0],
+                "trustworthy": True,
+            },
+        },
+    )
+    out = console.export_text()
+    assert "0.900" in out
+    assert "[0.80, 1.00]" in out
+
+    legacy = Console(record=True, width=120, force_terminal=False)
+    render_synth_eval_report(
+        legacy,
+        {
+            "dataset_name": "toy-synth",
+            "threshold_results": [],
+            "metrics": {},
+            "informational": {},
+            "entailment_summary": {
+                "ratio": 0.9,
+                "n_judged": 10,
+                "n_errors": 1,
+                "n_no_evidence": 0,
+                "ci": [0.8, 1.0],
+            },
+        },
+    )
+    assert "0.900" in legacy.export_text()
+
+
 def test_render_synth_eval_gated_metric_not_double_rendered() -> None:
     """A judge-only metric (``synth/fact_entailment_ratio``) is mirrored into
     ``informational`` AND, when the judge ran, carried in ``threshold_results``.

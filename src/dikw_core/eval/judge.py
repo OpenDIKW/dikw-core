@@ -22,7 +22,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    computed_field,
+    field_validator,
+)
 
 from ..domains.knowledge.page import KnowledgePage
 from ..progress import NoopReporter, ProgressReporter
@@ -438,6 +445,7 @@ class EntailmentSummary(BaseModel):
     n_no_evidence: int
     ci: tuple[float, float] = (0.0, 0.0)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def trustworthy(self) -> bool:
         """Whether ``ratio`` is statistically usable: at least one verdict
@@ -449,6 +457,9 @@ class EntailmentSummary(BaseModel):
         publishes or gates on ``ratio`` (the eval runner's conditional gate
         fold, synth ``--verify --judge``'s grounding leg) must withhold it
         when this is False — one shared rule, not per-call-site arithmetic.
+        A ``computed_field`` (not a plain property) so the verdict survives
+        ``model_dump`` into the eval payload: the client renderer cannot
+        import this rule (layering) and must read it from the JSON dict.
         """
         return self.n_judged > 0 and self.n_judged > self.n_errors
 
