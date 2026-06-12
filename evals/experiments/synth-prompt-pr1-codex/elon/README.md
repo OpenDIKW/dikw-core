@@ -7,7 +7,7 @@ invocation; run it from this committed location instead).
 
 How each run was produced:
 
-```
+```bash
 # arm A from a main-worktree checkout, arm B from the PR branch:
 uv run --env-file .env python evals/experiments/synth-prompt-pr1-codex/elon/run_elon.py \
     --base <scratch-base> --out <arm>-<n>.json
