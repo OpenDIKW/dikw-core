@@ -1,0 +1,61 @@
+{
+  "runs": [
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.47058823529411764,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.6610161768056505,
+      "synth/duplicate_ratio_max": 0.011695906432748537,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9047619047619048,
+      "synth/source_chunk_coverage": 0.9523809523809523,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "synth/fact_entailment_ratio": 0.68,
+      "synth/wikilink_correctness_ratio": 1.0,
+      "synth/semantic_atomicity_ratio": 0.9210526315789473,
+      "judge/grounding": 4.947368421052632,
+      "judge/atomicity": 4.7894736842105265,
+      "judge/completeness": 3.3684210526315788,
+      "judge/clarity": 4.7368421052631575
+    },
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.4166666666666667,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.6802137920558974,
+      "synth/duplicate_ratio_max": 0.005847953216374269,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9047619047619048,
+      "synth/source_chunk_coverage": 0.8095238095238095,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "synth/fact_entailment_ratio": 0.6,
+      "synth/wikilink_correctness_ratio": 1.0,
+      "synth/semantic_atomicity_ratio": 0.868421052631579,
+      "judge/grounding": 4.947368421052632,
+      "judge/atomicity": 4.7894736842105265,
+      "judge/completeness": 3.526315789473684,
+      "judge/clarity": 4.7368421052631575
+    },
+    {
+      "synth/atomicity_score": 1.0,
+      "synth/wikilink_resolved_ratio": 0.14102564102564102,
+      "synth/language_fidelity": 1.0,
+      "synth/fact_grounding_ratio": 0.5406096681096682,
+      "synth/duplicate_ratio_max": 0.010526315789473684,
+      "synth/expected_coverage": 0.2222222222222222,
+      "synth/page_density": 0.9523809523809523,
+      "synth/source_chunk_coverage": 0.7142857142857143,
+      "synth/fallback_ratio_max": 0.0,
+      "synth/slug_merge_ratio_max": 0.0,
+      "synth/fact_entailment_ratio": 0.68,
+      "synth/wikilink_correctness_ratio": 0.7272727272727273,
+      "synth/semantic_atomicity_ratio": 1.0,
+      "judge/grounding": 5.0,
+      "judge/atomicity": 4.8,
+      "judge/completeness": 3.4,
+      "judge/clarity": 4.8
+    }
+  ]
+}

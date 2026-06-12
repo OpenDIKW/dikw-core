@@ -9,6 +9,31 @@ on each entry call out exactly what shape changes break.
 
 ### Changed
 
+- **Synth prompt quality pass (SP + layout, PR2).** Two structural changes on
+  top of PR1's content revisions: (1) `DEFAULT_SYNTH_SYSTEM` — the cached
+  system prompt shared by the synth fan-out leg and the non-atomic-page lint
+  splitter (the orphan-merge / broken-wikilink fixers carry their own) —
+  no longer pushes "dense [[wikilinks]]" / "favour many tightly-linked atomic
+  pages", which fought the user prompt's link-density-as-ceiling and
+  "complete, then concise" framing; it now asks for precise linking and
+  complete single-subject pages. (2) The `synthesize` template moves **every**
+  `{placeholder}` into a dynamic tail zone (`## Category list` → `## Task` →
+  `## Knowledge-base context` → source block) after the static instruction
+  sections, so the instruction prefix is byte-stable across calls and
+  OpenAI-compatible prefix caching (and codex) cover it; the system prompt
+  stays separately cached via `cache_control` on Anthropic-compatible
+  providers. Placeholder set, output markers, and the `## Knowledge-base
+  context` container requirement are all unchanged — existing
+  `synth.prompt_path` overrides keep validating. Also sweeps the PR1-deferred
+  wording fixes: the Output-format bullet no longer re-legitimizes category
+  omission ("last-resort case described under Category"), the duplicate rule
+  scopes itself to the two existing-page lists and explicitly exempts
+  `Priority targets` (pages that do **not** exist yet), and stale
+  "existing-pages section above" references are gone. Category guidance and
+  the worked examples deliberately stay in the overridable template —
+  per-base taxonomy customization goes through `synth.prompt_path` (see
+  `docs/providers.md`), never through mechanical example rewriting.
+
 - **Synth prompt quality pass (UP, PR1).** Six targeted revisions to
   `prompts/synthesize.md` + the prompt-assembly rendering, each tied to a
   measured weakness in the `evals/BASELINES.md` MiniMax-M3 runs:

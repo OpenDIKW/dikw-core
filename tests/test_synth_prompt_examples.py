@@ -21,6 +21,7 @@ from dikw_core.domains.knowledge.synthesize import (
     DEFAULT_SYNTH_SYSTEM,
     parse_synthesis_response,
 )
+from dikw_core.prompts._contract import contract_for
 
 # CJK Unified Ideographs — tells a Chinese example body from an English one.
 # (Plain non-ASCII would misfire on an em dash in otherwise-English prose.)
@@ -119,3 +120,81 @@ def test_enriched_system_prompt_is_concise_but_substantive() -> None:
     # Still must carry the language-fidelity instruction that the original
     # one-liner existed to deliver.
     assert "language" in DEFAULT_SYNTH_SYSTEM.lower()
+
+
+def test_system_prompt_carries_no_density_pressure() -> None:
+    """The UP frames link density as a *ceiling* (manufactured links dilute
+    the graph) and atomicity as "complete, then concise". The system prompt —
+    the cached channel the fan-out leg and the non-atomic-page splitter
+    share — must not push the opposite posture, or providers that weight
+    the system prompt heavily keep manufacturing links and thin pages."""
+    lowered = DEFAULT_SYNTH_SYSTEM.lower()
+    assert "dense" not in lowered, "SP must not ask for dense linking"
+    assert "favour many" not in lowered, (
+        "SP must not push many-small-pages over complete atomic pages"
+    )
+
+
+def test_system_prompt_is_byte_stable() -> None:
+    """The SP is the prompt-cache channel (anthropic ``cache_control``); it
+    must carry no ``str.format`` placeholders or other per-call variance —
+    a templated SP would silently shift bytes per call and bust the cache."""
+    assert "{" not in DEFAULT_SYNTH_SYSTEM and "}" not in DEFAULT_SYNTH_SYSTEM
+
+
+def test_template_intro_carries_no_density_pressure() -> None:
+    raw = prompts.load("synthesize")
+    assert "densely-linked" not in raw, (
+        "UP intro must match the ceiling framing of the links rules"
+    )
+
+
+def test_placeholders_render_after_static_instructions() -> None:
+    """Cache contract: every ``{placeholder}`` lives in the dynamic Task zone
+    at the template tail, AFTER all static instruction sections (anchored on
+    ``## Output format``, the last static section). The static prefix is then
+    byte-stable across calls, so OpenAI-compatible providers' automatic
+    prefix caching (and codex) cover ~the whole instruction body; only the
+    tail diverges per call."""
+    raw = prompts.load("synthesize")
+    anchor = raw.index("## Output format")
+    contract = contract_for("synthesize")
+    assert contract is not None
+    for name in sorted(contract.placeholders):
+        pos = raw.index("{" + name + "}")
+        assert pos > anchor, (
+            f"placeholder {{{name}}} renders at {pos}, before the static "
+            f"anchor at {anchor} — it busts the shared prompt-cache prefix"
+        )
+
+
+def test_category_omission_is_last_resort_everywhere() -> None:
+    """PR1 reframed category omission as a last resort, but the Output-format
+    bullet — the last thing the model reads before emitting — still offered
+    it neutrally. Both sites must carry the last-resort framing."""
+    raw = prompts.load("synthesize")
+    assert "omit the attribute entirely if none fits" not in raw
+    # Positive anchors: deleting either site outright must not pass — the
+    # Output-format bullet points back at the Category section's framing, so
+    # the Category section must keep stating it.
+    assert "last-resort case described under Category" in raw
+    assert "treat omission as a **last resort**" in raw
+
+
+def test_template_prose_references_current_section_names() -> None:
+    """Stale references to pre-PR1 section titles ("the existing-pages
+    section above") must not survive — the heading is now ``## Knowledge-base
+    context`` with H3 sub-sections."""
+    raw = prompts.load("synthesize")
+    assert "existing-pages section above" not in raw
+
+
+def test_duplicate_rule_scoped_to_existing_page_lists() -> None:
+    """"Scan the lists above" textually swept in the priority-targets list —
+    pages that do NOT exist — so a literal-minded model could suppress
+    creating the very page the priority directive asks for. The duplicate
+    rule must scope itself to the two existing-page lists and explicitly
+    exempt priority targets."""
+    raw = prompts.load("synthesize")
+    assert "scan the lists above" not in raw
+    assert "do **not** exist yet" in raw

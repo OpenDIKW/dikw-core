@@ -288,8 +288,12 @@ flagged by the `uncategorized` lint so a human can re-file it.
 You can also override the K-layer authoring prompts per base — point
 `synth.prompt_path` (and optionally `lint.fixer_prompts.{orphan_merge,broken_wikilink}`)
 at your own markdown under `<base>/prompts/`. Overrides must stay inside the base
-and carry the engine's required `{placeholders}` + `<page …>` output markers;
-`dikw client check` validates them up front:
+and carry the engine's required `{placeholders}`, the `<page …>` output markers,
+and (for `synthesize`) the `## Knowledge-base context` heading its dynamic
+sections nest under; `dikw client check` validates all of it up front. The
+override is also the designed channel for taxonomy customization — a base with
+its own category tree can rewrite the template's worked examples so their
+`category="…"` values come from its declared paths:
 
 ```yaml
 synth:
