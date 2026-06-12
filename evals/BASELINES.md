@@ -7,6 +7,113 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-12 — synth prompt pass (PR2): SP rewrite + cache-friendly UP layout A/B
+
+**Change under test:** two structural changes to the synth prompts plus the
+PR1-deferred wording sweeps (branch `feat/synth-prompt-quality-pr2`,
+evaluated at commit `7df3de5`):
+
+1. `DEFAULT_SYNTH_SYSTEM` rewrite — drops "dense [[wikilinks]]" / "favour many
+   tightly-linked atomic pages" (which fought the UP's density-as-ceiling and
+   "complete, then concise" framing); keeps the reuse + language-fidelity
+   clauses. Shared by the fan-out leg and the `non_atomic_page` split fixer
+   (orphan-merge / broken-wikilink fixers carry their own SPs).
+2. UP layout — every `{placeholder}` moves into a dynamic tail zone
+   (`## Category list` → `## Task` → `## Knowledge-base context` → source
+   block) after the static instruction sections, so the instruction prefix is
+   byte-stable across calls and OpenAI-compatible / codex prefix caching
+   covers it (previously `{existing_pages_section}` mid-template busted the
+   prefix every call). Placeholder set, output markers, and the
+   `## Knowledge-base context` container contract unchanged.
+3. Wording sweeps: Output-format bullet stops re-legitimizing category
+   omission; duplicate rule scopes itself to the two existing-page lists and
+   explicitly exempts `Priority targets`; stale cross-references swept.
+
+Prompt-only, $0 marginal cost. Hypothesis was **non-regression** (the payoff
+is cache efficiency + posture consistency), so the read below is gate-shaped
+around "no metric regresses", not "something ships".
+
+**Method** — same-day two-arm fresh on every leg (the PR1 drift lesson),
+dual corpus, dual provider. Mid-eval the fresh pre-merge review surfaced two
+template cross-reference inaccuracies; they were fixed (`7df3de5`) **before
+any intervention run started** — the already-running MiniMax intervention
+collect was killed and relaunched on the final bytes, so every intervention
+run below evaluates exactly the delivered artifact.
+
+- **`mvp@700` MiniMax-M3** (`anthropic_compat`) + Qwen3-Embedding-0.6B@1024:
+  baseline n=4 (3 PR1-intervention runs — the same code now on main, 1 day
+  old — plus 1 fresh same-day drift-check) vs intervention n=3. Raw runs +
+  `result.json` in `evals/experiments/synth-prompt-pr2-minimax/`.
+- **`elon-musk.md` 1500-line subset** via **`openai_codex` (gpt-5.5)**:
+  n=2/arm same-day fresh, plus 1 diagnostic intervention run with a
+  broken-link dump + vault snapshot (below). Driver + raw runs + diagnostic
+  tooling archived in `evals/experiments/synth-prompt-pr2-codex/elon/`.
+- **`mvp@700` codex** A/B n=2/arm, `evals/experiments/synth-prompt-pr2-codex/`.
+
+**Result — `mvp` MiniMax (n=4 vs 3): 0 ship / 0 regress.** All 17 metrics
+within noise (|Δ| ≤ 0.07, p ≥ 0.23). Directionally: clarity +0.07, grounding
++0.04, fact_grounding +0.04, page_density +0.04, resolved +0.04;
+wikilink_correctness −0.07 (p=0.52) and entailment −0.02 are single-source
+jitter. Drift-check note: the fresh same-day baseline run read
+`wikilink_resolved_ratio` 0.183 vs the historic trio's 0.338–0.352 — day
+drift again, same direction as the PR1 finding; the same-day resolved read
+(0.183 → intervention 0.141/0.417/0.471) is positive-direction but
+wide-spread.
+
+**Result — `mvp` codex (n=2/arm — directional only): 0 ship / 0 regress.**
+`wikilink_resolved_ratio` 0.667 → 0.932 (+0.265, p=0.099; per-run 0.719/0.615
+vs 1.000/0.864, non-overlapping). judge/completeness −0.175 (p=0.48) and
+entailment −0.06 (p=0.59) are within per-run spread. Everything else ≈0.
+
+**Result — `elon-musk` subset (codex; baseline n=2, intervention n=2 + 1
+diagnostic):** the one metric that moved against us, and the audit of why:
+
+| metric | baseline (main) | intervention (PR2) | Δ |
+|---|---|---|---|
+| wikilink_resolved_ratio (driver-computed, mean) | **0.946** | **0.874** | **−0.072** |
+| ├─ per-run | 0.947 / 0.946 | 0.833 / 0.886 / 0.902 | (non-overlapping) |
+| unresolved wikilinks | 13 / 12 | 43 / 24 / 22 | ↑ |
+| total wikilinks emitted (mean) | 233.5 | 231.0 | flat — not link-spray |
+| grounding entailment (n=25/run) | 0.64 / 0.62 | 0.64 / 0.64 / 0.68 | flat-to-up |
+| pages created | 75 / 75 | 73 / 72 / 73 | ≈flat |
+| orphan_page | 30 / 41 | 38 / 38 / — | flat |
+| persist_errors / slug_merge / fallback | 0 | 0 | unchanged |
+
+**Broken-link forensic audit (the ship-decision evidence):** the diagnostic
+run's 22 unresolved targets were classified one-by-one against the vault
+snapshot using the engine's own resolve rules (`classify_broken.py`,
+archived): **0 collision-refusals, 0 verbatim/near-miss title failures,
+22/22 rule-3(c) deliberate forward links** — multi-referenced, page-worthy
+entities and concepts the run did not get to create (彼得·蒂尔 ×3, 推特 ×4,
+马克斯·列夫琴 ×3, 里德·霍夫曼 ×2, NASA, AC推进公司 ×2, 第一性原理, 费米悖论,
+火星学会, tzero, …). A page sample-read confirms they sit inline at
+load-bearing references, exactly per rule 3. So the resolved-ratio drop is a
+**link-composition shift** (more whitelisted forward links on a single-source
+corpus where no later run exists to create the targets), not a linking-
+discipline regression: total links flat, grounding flat-to-up, the targets
+are the pages a Musk-biography base *should* grow next, and the
+priority-targets mechanism ranks exactly these (distinct-referencing-page
+count 2–4) for creation on any subsequent synth.
+
+**Net: ship.** The PR's goals (byte-stable cacheable prefix, SP/UP posture
+consistency) are delivered with 0 ship / 0 regress on both mvp legs, a
+non-overlapping resolved-ratio *gain* on codex mvp, flat grounding
+everywhere, and the single negative read (elon resolved −0.072) fully
+audited down to 22/22 by-design forward links. Net of PR1+PR2 the elon
+resolved ratio still sits above its pre-PR1 baseline (0.814 → 0.874).
+
+**Known limits / follow-ups:** `wikilink_resolved_ratio` under-credits
+rule-3(c) forward links by construction — on a single-source corpus every
+deliberate forward link counts against it, so a posture that links
+page-worthy entities *more faithfully* reads as a drop; splitting the metric
+(resolved vs deliberate-forward share, e.g. by checking unresolved targets
+against the priority-targets ranking) is the measurement follow-up. The
+elon intervention spread (0.833–0.902, n=3) is wide; the audit, not the
+mean, carries the verdict. mvp codex resolved +0.265 at n=2 is directional,
+not powered. The cache-efficiency claim itself (prefix-hit rate) is asserted
+from layout, not measured — providers don't surface cache-hit telemetry
+uniformly; a `usage`-field probe on openai_compat is the cheap follow-up.
+
 ## 2026-06-12 — synth UP prompt-quality pass (PR1): six targeted content revisions A/B
 
 **Change under test:** six wording/structure revisions to the synth user-prompt

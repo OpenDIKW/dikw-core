@@ -1,0 +1,35 @@
+{
+  "elapsed_s": 1032.9,
+  "created": 75,
+  "updated": 0,
+  "pages_on_disk": 75,
+  "groups_processed": 19,
+  "errors": 0,
+  "persist_errors": 0,
+  "slug_merge_count": 0,
+  "unresolved_wikilinks": 13,
+  "total_wikilinks": 245,
+  "wikilink_resolved_ratio": 0.9469387755102041,
+  "lint_by_kind": {
+    "broken_wikilink": 13,
+    "orphan_page": 30
+  },
+  "verify": {
+    "passed": false,
+    "pages_checked": 75,
+    "lint_findings": 13,
+    "lint_kinds": [
+      "broken_wikilink"
+    ],
+    "orphan_pages": 30,
+    "duplicate_checked": true,
+    "duplicate_ratio": 0.0007207207207207207,
+    "grounding_checked": true,
+    "grounding_entailment_ratio": 0.64,
+    "grounding_ci": [
+      0.46,
+      0.8
+    ],
+    "grounding_n_judged": 25
+  }
+}
