@@ -4,9 +4,11 @@ Each synth LLM call must receive two prompt sections so the model can
 detect semantic duplicates against pages already in the wiki AND pages
 just emitted by an earlier group within the same source:
 
-* ``### Already created in this batch:`` — per-source accumulator
-* ``### Existing knowledge pages:`` — full snapshot up to a byte threshold,
-  switching to a vec_search-gated top-K beyond that
+* ``### Already created in this batch (MUST reference, do NOT regenerate)``
+  — per-source accumulator
+* ``### Existing knowledge pages (reference via [[Title]] when relevant)``
+  — full snapshot up to a byte threshold, switching to a vec_search-gated
+  top-K beyond that
 
 Without these sections the LLM happily regenerates pages it cannot see,
 inflating broken-wikilink counts and polluting the wiki with semantic
@@ -153,6 +155,14 @@ async def test_synth_prompt_includes_existing_pages_section(tmp_path: Path) -> N
         "fresh-base synth must render the existing-pages section header (H3, "
         "nested under the template's ## Knowledge-base context heading)"
     )
+    # End-to-end nesting: the assembled prompt must place the H3 sub-section
+    # AFTER the template's H2 container — the renderer-side H3 literal and the
+    # template-side H2 are two halves of one contract, and only the assembled
+    # prompt proves they pair up.
+    assert "\n## Knowledge-base context" in prompt
+    assert prompt.index("## Knowledge-base context") < prompt.index(
+        "### Existing knowledge pages"
+    )
     assert "- Tesla [tesla] (entity)" in prompt, (
         "the seeded page must appear as a 'Title [slug] (category)' bullet"
     )
@@ -287,7 +297,8 @@ async def test_synth_force_all_skips_existing_pages_section(tmp_path: Path) -> N
 
     assert llm.calls
     prompt = llm.calls[0]
-    assert "### Existing knowledge pages" not in prompt, (
+    # ``## `` substring form catches a leak at either heading level.
+    assert "## Existing knowledge pages" not in prompt, (
         "force_all=True must not surface the existing-pages section; "
         "regeneration would otherwise be suppressed by the duplicate rule"
     )

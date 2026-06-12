@@ -226,16 +226,20 @@ async def test_priority_section_surfaces_unresolved_for_later_group(
 
     assert len(llm.calls) >= 2, f"expected >=2 groups, got {len(llm.calls)} calls"
     # Group 0 (first prompt) has no prior groups -> no priority section.
-    assert f"### {_PRIORITY_SECTION_HEADER}" not in llm.calls[0]
+    # The ``## `` form is a substring of the ``### `` render, so this negative
+    # catches a leak at EITHER heading level (a future H2 revert included).
+    assert f"## {_PRIORITY_SECTION_HEADER}" not in llm.calls[0]
     # Group 1 must surface the [[SpaceX]] target group 0 left unresolved,
     # rendered once with the singular count.
     assert f"### {_PRIORITY_SECTION_HEADER}" in llm.calls[1]
     assert "- [[SpaceX]] (1 prior reference)" in llm.calls[1]
-    # The priority block is PREPENDED ahead of the existing-pages sub-sections.
-    if "### Already created in this batch" in llm.calls[1]:
-        assert llm.calls[1].index(f"### {_PRIORITY_SECTION_HEADER}") < llm.calls[
-            1
-        ].index("### Already created in this batch")
+    # Group 0 created a page, so group 1's batch section MUST render — assert
+    # it outright (a conditional gate here would go vacuous if the batch
+    # accumulator ever broke) and pin the priority-block-first ordering.
+    assert "### Already created in this batch" in llm.calls[1]
+    assert llm.calls[1].index(f"### {_PRIORITY_SECTION_HEADER}") < llm.calls[1].index(
+        "### Already created in this batch"
+    )
 
 
 @pytest.mark.asyncio
@@ -265,7 +269,8 @@ async def test_priority_target_dropped_once_satisfied_by_later_group(
     # Group 1 still sees Foo as a priority (group 0 left it unresolved).
     assert "[[Foo]]" in llm.calls[1]
     # Group 2: Foo now exists in the batch -> dropped, nothing else pending.
-    assert f"### {_PRIORITY_SECTION_HEADER}" not in llm.calls[2]
+    # ``## `` substring form catches a leak at either heading level.
+    assert f"## {_PRIORITY_SECTION_HEADER}" not in llm.calls[2]
 
 
 @pytest.mark.asyncio

@@ -48,11 +48,19 @@ weakness in this file's MiniMax history:
   `evals/experiments/synth-prompt-pr1-codex/`.
 
 **Drift finding (method note):** the fresh same-day baseline run exposed
-systematic drift vs the 3 historic baseline runs on the *same* main code —
-judge/grounding 4.37–4.58 (historic) → 4.85 (fresh); `wikilink_resolved_ratio`
-0.41–0.49 → 0.329. Provider-side drift over ~5 days contaminates the pooled
-t-test, so verdicts below are reported **alongside same-day reads**; same-day
-is the honest comparison. (This is exactly what the drift-check run was for.)
+systematic drift vs the 3 historic baseline runs — judge/grounding 4.37–4.58
+(historic) → 4.85 (fresh); `wikilink_resolved_ratio` 0.41–0.49 → 0.329. The
+*synth* code path is identical, but the drift is not attributable to the
+provider alone: #192 (merged 2026-06-11, between the historic and fresh runs)
+touched the measurement pipeline (judge `_fill_template`, openai_compat
+embedding-index re-ordering), so provider- and measurement-side drift are
+confounded. Either way the pooled t-test is contaminated, so verdicts below
+are reported **alongside same-day reads**; same-day is the honest comparison.
+(This is exactly what the drift-check run was for.) Three metrics
+(`fact_entailment_ratio`, `semantic_atomicity_ratio`,
+`wikilink_correctness_ratio`) landed after Phase 2, so their baseline arm is
+the single fresh run (**n=1 vs 3** — their rows are same-day-only by
+construction, no pooled stats).
 
 **Result — `mvp` MiniMax (pooled n=4 vs 3; ship gate `p<0.05 AND Δ>0.10`):**
 
@@ -62,13 +70,19 @@ is the honest comparison. (This is exactly what the drift-check run was for.)
 | judge/clarity | 4.872 | 4.656 | −0.216 | 0.019 | REGR | **−0.14** (4.80 → 4.66) |
 | judge/completeness | 3.680 | 3.467 | −0.214 | 0.14 | noise | flat (3.50 → 3.47) |
 | synth/wikilink_resolved_ratio | 0.411 | 0.347 | −0.064 | 0.14 | noise | **+0.02** (0.329 → 0.347) |
-| synth/fact_entailment_ratio | 0.660 | 0.693 | +0.033 | 1.0 | noise | +0.03 |
-| synth/fact_grounding_ratio | 0.582 | 0.613 | +0.031 | 0.61 | noise | — |
-| 12 others (atomicity / duplicate / fallback / language / coverage / density …) | — | — | ≈0 | ≥0.20 | noise | flat |
+| synth/fact_entailment_ratio (n=1v3) | 0.660 | 0.693 | +0.033 | — | n=1, no stats | +0.03 |
+| synth/fact_grounding_ratio | 0.582 | 0.613 | +0.031 | 0.61 | noise | −0.01 (0.623 → 0.613) |
+| synth/duplicate_ratio_max | 0.0013 | 0.0113 | −0.0099 | 0.20 | noise | both ≈0 absolute |
+| synth/semantic_atomicity_ratio (n=1v3) | 0.975 | 0.926 | −0.049 | — | n=1, no stats | −0.05 |
+| synth/page_density | 0.929 | 0.873 | −0.056 | 0.21 | noise | — |
+| 8 others (judge/atomicity / atomicity_score / fallback / language / coverage / slug_merge / correctness / chunk_cov) | — | — | \|Δ\|≤0.1 | ≥0.27 | noise | — |
 
 Honest `mvp` read: **weak positive on the primary target** (grounding judge +
 entailment direction), **weak negative on clarity** (−0.14 same-day, at judge-
-noise edge on a 5-point scale), everything else flat. The pooled SHIP/REGR
+noise edge on a 5-point scale), everything else within noise — the visible
+small moves are `duplicate_ratio_max` 0.0013 → 0.0113 (one near-duplicate
+pair in one intervention run; both ≈0 in absolute terms against the 0.05-class
+gate) and `semantic_atomicity_ratio` −0.05 at n=1v3. The pooled SHIP/REGR
 labels are both partially drift artifacts.
 
 **Result — `elon-musk` 1500-line subset (codex, n=2/arm, strong signal):**
@@ -83,7 +97,7 @@ labels are both partially drift artifacts.
 | ├─ per-run (CI) | 0.62 [.44,.80] / 0.52 [.36,.66] | 0.66 [.48,.82] / 0.88 [.72,1.0] | (direction consistent) |
 | pages created | 75 / 75 | 75 / 75 | 0 |
 | orphan_page (mean) | 40 | 38.5 | flat |
-| duplicate_ratio_max | 0.0 / 0.00036 | 0.0 / 0.00036 | identical |
+| verify duplicate_ratio (sampled; ≠ eval `duplicate_ratio_max`) | 0.0 / 0.00036 | 0.0 / 0.00036 | identical |
 | persist_errors / slug_merge / fallback | 0 | 0 | unchanged |
 
 Both intervention runs beat both baseline runs on resolved ratio **and**
@@ -92,7 +106,12 @@ whitelist working as designed: manufactured links dropped, deliberate forward
 links remain (the 8–28 broken links are rule-3(c) forward references, lint-
 tracked by design). Note codex day-to-day variance: this entry's baseline arm
 (0.814) measured below the Phase-2 entry's same-code arm (0.899) — another
-reason every comparison here is same-day, both-arms.
+reason every comparison here is same-day, both-arms. Definition note: the
+elon `wikilink_resolved_ratio` is driver-computed — `(on-disk link total −
+SynthReport.unresolved_wikilinks) / on-disk total` (see the archived
+`run_elon.py`) — not the eval package's metric; the two are not directly
+comparable across tables, but both arms of *this* table share the definition,
+so the Δ stands.
 
 **Result — `mvp` codex (n=2/arm — no power, directional only; 0 ship / 0 regress):**
 
@@ -131,6 +150,35 @@ same targets and flat elsewhere; the one negative read (MiniMax clarity −0.14)
 is contradicted by codex (+0.197) and lands at judge-noise edge — watch it in
 PR2's A/B rather than block on it; $0 marginal cost (prompt-only). Raw
 evidence committed under `evals/experiments/synth-prompt-pr1-{minimax,codex}/`.
+
+**Known limits / PR2 backlog (surfaced by the review pass, none blocking):**
+both A/B corpora ran the **default** taxonomy, so the worked examples'
+hardcoded `category="concept"/"entity"` values are unmeasured on
+custom-taxonomy bases (the "illustrative — copy verbatim" parenthetical is the
+only guard; PR2 candidate: render example categories from the declared set).
+Revision 1's own target metric, `fallback_ratio_max`, is **0.000 in every arm
+of both providers** — a floor effect, so this experiment has no power on it;
+the motivating weakness is the intermittent 0.308 from the 2026-06-10 entry,
+and the revision's actual effect on fallback (and on miscategorisation, which
+`category_correctness_ratio` could measure) stays open for PR2. The
+`non_atomic_page` LLM split fixer resolves the same template (fresh-base
+sentinel), so the revisions reach that opt-in path unmeasured — and the
+truncation-defence prose specifically undercuts its `_MAX_CHILDREN_CEILING`
+guard's premise (a budget-starved model that stops *cleanly* below the
+ceiling drops topics on a path that ends in `delete_page` of the original).
+The rule-3 whitelist interacts untested with `force_all` (sentinel suppresses
+the snapshot) and with the >16 KB vec-gated top-K subset — rule 3(c) is the
+escape hatch in both; likewise "scan the lists above" textually sweeps in the
+priority-targets list (pages that do NOT exist) — the elon outcome (unresolved
+−64%) shows priority-create kept firing, but PR2 should scope the duplicate
+rule to the two existing-page lists explicitly. The "never open an
+unfinishable `<page>` block" defence trades the deterministic unclosed-tag
+retry signal for graceful tail-drop when the model complies — a
+`finish_reason == "length"` check at the synth/fixer call sites is the
+deterministic follow-up (issue to be filed). The `synthesize` override
+contract now requires the `## Knowledge-base context` container (line-anchored
+marker) so stale or demoted overrides fail `dikw client check` loudly instead
+of mis-nesting silently.
 
 ## 2026-06-10 — `semantic_atomicity_ratio` LLM judge + real-LLM calibration (Phase 0b #4, set complete)
 

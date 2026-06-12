@@ -17,6 +17,7 @@ import re
 from dikw_core import prompts
 from dikw_core.domains.knowledge.lint import check_atomicity
 from dikw_core.domains.knowledge.synthesize import (
+    DEFAULT_ALLOWED_CATEGORIES,
     DEFAULT_SYNTH_SYSTEM,
     parse_synthesis_response,
 )
@@ -77,7 +78,7 @@ def test_worked_examples_carry_category_attribute() -> None:
     pages = parse_synthesis_response(section, source_path="prompt-example")
     assert len(pages) >= 2
     for page in pages:
-        assert page.category in ("entity", "concept", "note"), (
+        assert page.category in DEFAULT_ALLOWED_CATEGORIES, (
             f"worked example {page.title!r} must carry a category= attribute "
             f"from the default taxonomy; parsed category={page.category!r}"
         )
@@ -92,8 +93,10 @@ def test_template_nests_dynamic_sections_under_context_heading() -> None:
     raw = prompts.load("synthesize")
     # Anchored at line start so a demotion to H3 ("### Knowledge-base context",
     # which still contains the H2 string) cannot sneak past a substring check.
-    assert re.search(r"^## Knowledge-base context$", raw, flags=re.MULTILINE)
-    assert "## Existing pages\n" not in raw
+    # ``\s*$`` tolerates trailing spaces and a CR if a reader ever bypasses
+    # universal-newline translation on a CRLF checkout.
+    assert re.search(r"^## Knowledge-base context\s*$", raw, flags=re.MULTILINE)
+    assert "## Existing pages" not in raw
 
 
 def test_worked_examples_use_inline_wikilinks() -> None:

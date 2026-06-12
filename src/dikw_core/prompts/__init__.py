@@ -100,10 +100,15 @@ def _validate_override(name: str, text: str, override_path: str) -> None:
             "unknown placeholder(s) the engine will not fill: "
             + ", ".join(sorted("{" + e + "}" for e in extra))
         )
+    # Markers that start with ``\n`` are line-anchored (e.g. a required
+    # ``## …`` heading must START a line — ``### …`` contains the H2 string
+    # as a substring, so a bare ``in`` would wave a demoted heading through).
+    # Prepending ``\n`` to the text makes a start-of-file heading count as a
+    # line start too; for ordinary markers the prepended char changes nothing.
     problems.extend(
-        f"missing required output-format marker {marker!r}"
+        f"missing required output-format marker {marker.lstrip()!r}"
         for marker in contract.markers
-        if marker not in text
+        if marker not in "\n" + text
     )
     if problems:
         raise PromptOverrideError(

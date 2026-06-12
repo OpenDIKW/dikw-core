@@ -45,7 +45,15 @@ _CONTRACTS: dict[str, PromptContract] = {
                 "max_pages",
             }
         ),
-        markers=_PAGE_MARKERS,
+        # Beyond the output markers, the synth renderer fills
+        # ``{existing_pages_section}`` with H3 sub-sections that assume a
+        # ``## Knowledge-base context`` H2 container in the template — an
+        # override missing it would silently nest those sections under
+        # whatever heading precedes the placeholder, so require it here and
+        # let ``dikw client check`` fail loudly instead. The leading ``\n``
+        # line-anchors the marker (``### …`` contains the H2 string as a
+        # substring; see the marker check in ``prompts.resolve``).
+        markers=(*_PAGE_MARKERS, "\n## Knowledge-base context"),
     ),
     "lint_fix_broken_wikilink_grounded": PromptContract(
         placeholders=frozenset(

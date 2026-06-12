@@ -13,7 +13,7 @@ on each entry call out exactly what shape changes break.
   `prompts/synthesize.md` + the prompt-assembly rendering, each tied to a
   measured weakness in the `evals/BASELINES.md` MiniMax-M3 runs:
   the two worked examples now model the `category=` attribute (examples that
-  omitted it taught the model to omit it → `fallback_ratio_max` 0.31–0.47) and
+  omitted it taught the model to omit it → `fallback_ratio_max` 0.308–0.47) and
   omission is framed as a last resort; every `[[wikilink]]` target must be an
   existing page, a page emitted in the same response, or a deliberately
   page-worthy forward link — passing mentions are excluded, and the 2–4 links
@@ -29,8 +29,15 @@ on each entry call out exactly what shape changes break.
   `### Priority targets (create if relevant)`) under a neutral
   `## Knowledge-base context` heading, so the priority-create *directive* no
   longer sits under a heading claiming those pages exist. Placeholder set and
-  output markers are unchanged — existing `synth.prompt_path` overrides keep
-  validating.
+  output markers are unchanged, but the `synthesize` override contract now
+  also requires the `## Knowledge-base context` container — a
+  `synth.prompt_path` override written against the old layout fails
+  `dikw client check` loudly instead of silently nesting the H3 sections
+  under the wrong parent heading; add the H2 line above
+  `{existing_pages_section}` to migrate. Note: the `non_atomic_page` lint
+  fixer's LLM split resolves the same template, so the revised guidance
+  reaches that (opt-in) path too — unmeasured by this PR's A/B, which covers
+  the synth fan-out only.
 
 ### Added
 
