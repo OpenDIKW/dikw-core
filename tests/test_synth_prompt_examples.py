@@ -125,8 +125,8 @@ def test_enriched_system_prompt_is_concise_but_substantive() -> None:
 def test_system_prompt_carries_no_density_pressure() -> None:
     """The UP frames link density as a *ceiling* (manufactured links dilute
     the graph) and atomicity as "complete, then concise". The system prompt —
-    the cached channel every synth-class call shares (fan-out AND lint
-    fixers) — must not push the opposite posture, or providers that weight
+    the cached channel the fan-out leg and the non-atomic-page splitter
+    share — must not push the opposite posture, or providers that weight
     the system prompt heavily keep manufacturing links and thin pages."""
     lowered = DEFAULT_SYNTH_SYSTEM.lower()
     assert "dense" not in lowered, "SP must not ask for dense linking"
@@ -167,6 +167,9 @@ def test_category_omission_is_last_resort_everywhere() -> None:
     it neutrally. Both sites must carry the last-resort framing."""
     raw = prompts.load("synthesize")
     assert "omit the attribute entirely if none fits" not in raw
+    # Positive anchor: deleting the bullet outright must not pass — the
+    # Output-format site has to point back at the Category section's framing.
+    assert "last-resort case described under Category" in raw
 
 
 def test_template_prose_references_current_section_names() -> None:

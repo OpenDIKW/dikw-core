@@ -11,7 +11,8 @@ on each entry call out exactly what shape changes break.
 
 - **Synth prompt quality pass (SP + layout, PR2).** Two structural changes on
   top of PR1's content revisions: (1) `DEFAULT_SYNTH_SYSTEM` — the cached
-  system prompt every synth-class call shares (fan-out and the lint fixers) —
+  system prompt shared by the synth fan-out leg and the non-atomic-page lint
+  splitter (the orphan-merge / broken-wikilink fixers carry their own) —
   no longer pushes "dense [[wikilinks]]" / "favour many tightly-linked atomic
   pages", which fought the user prompt's link-density-as-ceiling and
   "complete, then concise" framing; it now asks for precise linking and

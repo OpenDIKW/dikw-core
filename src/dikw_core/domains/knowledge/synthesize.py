@@ -268,11 +268,12 @@ def touch(page: KnowledgePage) -> KnowledgePage:
     return replace(page, updated=now_iso())
 
 
-# Shared floor for every synth-class call: the fan-out leg AND the lint
-# fixers (orphan merge / broken-wikilink / non-atomic split) all pass this as
-# the system prompt next to their own user prompts, and anthropic_compat
-# applies prompt caching (`cache_control`) to it — keep it byte-stable, free
-# of per-base/per-call content, and aligned with the user prompt's
+# Default system prompt for the synth fan-out leg; the non-atomic-page lint
+# splitter reuses it verbatim, while the orphan-merge / broken-wikilink fixers
+# carry their own (`_MERGE_SYSTEM` / `_GROUNDED_SYSTEM`) — guidance added here
+# does NOT reach those two. anthropic_compat applies prompt caching
+# (`cache_control`) to the system prompt — keep it byte-stable, free of
+# per-base/per-call content, and aligned with the user prompt's
 # link-density-as-ceiling framing (a system prompt pushing "dense" linking
 # would fight the rules the template states).
 DEFAULT_SYNTH_SYSTEM = (
