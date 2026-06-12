@@ -135,6 +135,13 @@ def test_system_prompt_carries_no_density_pressure() -> None:
     )
 
 
+def test_system_prompt_is_byte_stable() -> None:
+    """The SP is the prompt-cache channel (anthropic ``cache_control``); it
+    must carry no ``str.format`` placeholders or other per-call variance —
+    a templated SP would silently shift bytes per call and bust the cache."""
+    assert "{" not in DEFAULT_SYNTH_SYSTEM and "}" not in DEFAULT_SYNTH_SYSTEM
+
+
 def test_template_intro_carries_no_density_pressure() -> None:
     raw = prompts.load("synthesize")
     assert "densely-linked" not in raw, (
@@ -167,9 +174,11 @@ def test_category_omission_is_last_resort_everywhere() -> None:
     it neutrally. Both sites must carry the last-resort framing."""
     raw = prompts.load("synthesize")
     assert "omit the attribute entirely if none fits" not in raw
-    # Positive anchor: deleting the bullet outright must not pass — the
-    # Output-format site has to point back at the Category section's framing.
+    # Positive anchors: deleting either site outright must not pass — the
+    # Output-format bullet points back at the Category section's framing, so
+    # the Category section must keep stating it.
     assert "last-resort case described under Category" in raw
+    assert "treat omission as a **last resort**" in raw
 
 
 def test_template_prose_references_current_section_names() -> None:

@@ -76,7 +76,7 @@ diagnostic):** the one metric that moved against us, and the audit of why:
 | total wikilinks emitted (mean) | 233.5 | 231.0 | flat — not link-spray |
 | grounding entailment (n=25/run) | 0.64 / 0.62 | 0.64 / 0.64 / 0.68 | flat-to-up |
 | pages created | 75 / 75 | 73 / 72 / 73 | ≈flat |
-| orphan_page | 30 / 41 | 38 / 38 / — | flat |
+| orphan_page | 30 / 41 | 38 / 38 / 41 | flat |
 | persist_errors / slug_merge / fallback | 0 | 0 | unchanged |
 
 **Broken-link forensic audit (the ship-decision evidence):** the diagnostic
@@ -113,6 +113,12 @@ mean, carries the verdict. mvp codex resolved +0.265 at n=2 is directional,
 not powered. The cache-efficiency claim itself (prefix-hit rate) is asserted
 from layout, not measured — providers don't surface cache-hit telemetry
 uniformly; a `usage`-field probe on openai_compat is the cheap follow-up.
+The dynamic-zone ordering is also not fully cache-optimal: `{group_index}`
+(varies every call) renders under `## Task` ahead of the per-source-stable
+existing-pages snapshot, so within-source cache hits stop at the Category
+list; splitting `{existing_pages_section}` into stable/varying placeholders
+would extend them but breaks the override contract — defer until telemetry
+shows it matters.
 
 ## 2026-06-12 — synth UP prompt-quality pass (PR1): six targeted content revisions A/B
 

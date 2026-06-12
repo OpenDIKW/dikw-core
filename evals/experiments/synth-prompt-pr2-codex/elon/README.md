@@ -1,10 +1,10 @@
 # elon-musk A/B raw runs (synth prompt PR2)
 
 `run_elon.py` is the **byte-exact driver** that produced `baseline-*.json` /
-`intervention-*.json` / `diag-1.json` — identical to the PR1 copy, committed
-again so this experiment stays self-contained (its module docstring still
-shows the author's original scratch-path invocation; run it from this
-committed location instead).
+`intervention-*.json` / `diag-1.json` — content-identical to the PR1 copy
+(working-tree line endings may differ), committed again so this experiment
+stays self-contained (its module docstring still shows the author's original
+scratch-path invocation; run it from this committed location instead).
 
 How each run was produced:
 
