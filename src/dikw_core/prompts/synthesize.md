@@ -6,6 +6,7 @@ Each `<page>` block you emit must be **atomic** — one self-contained idea, ent
 
 - A body under ~200 characters is **rarely** worth its own page — a bare stub or TODO is better folded into a related page and referenced with a `[[wikilink]]` from there.
 - Typical atomic pages run **300–1500 characters**: long enough to stand alone, short enough to stay single-subject. Do not pad to reach a length; if a subject genuinely warrants only a sentence, fold it into a neighbouring page rather than emit a stub.
+- Atomic does **not** mean thin. Before closing a page, make sure it captures every substantive fact this section offers about its subject — concise means no padding, never dropped facts.
 
 ## Fan-out
 
@@ -13,13 +14,14 @@ This call sees only **section {group_index} of {group_total}** of the source. Id
 
 - Emit **zero** blocks if this section contains nothing worth a knowledge page (boilerplate, navigation, copyright notices, table of contents).
 - Emit **at most {max_pages}** blocks. If the section has fewer distinct topics, emit fewer.
+- Emit pages in **descending order of importance**, and never open a `<page>` block you cannot finish — if your output budget cuts the response short, the least important page should be the one lost.
 - Reuse the section's heading structure as a hint for natural page boundaries, but do not feel bound by it — merge two H2 sections into one page when they cover the same atomic subject, or split one H2 into multiple pages when it conflates topics.
 
-## Existing pages
+## Knowledge-base context
 
 {existing_pages_section}
 
-**Reusing an existing page is always better than regenerating similar content.** Before emitting any page, scan the list above and decide:
+**Reusing an existing page is always better than regenerating similar content.** Before emitting any page, scan the lists above and decide:
 
 - **Semantic duplicate** — the candidate states the same fact at the same granularity as a listed page. Emit **ZERO** `<page>` blocks for it; instead reference the existing page via `[[Title]]` in your other pages' bodies. Do not regenerate it.
 - **Different facet** — the candidate is a genuinely new angle, sub-topic, or finer slice. Emit a new page and link it to the related existing one. Example: if `[[Elon Musk]]` already exists, a page on `[[SpaceX reusable-rocket program]]` is a new facet, not a duplicate.
@@ -37,14 +39,14 @@ File each page under exactly one **category** — a folder path from this knowle
 {categories}
 
 - Emit the chosen path **verbatim** in the `category` attribute (e.g. `category="技术/架构"`).
-- If none of the listed categories genuinely fits the page, **omit the `category` attribute entirely** — the engine files the page under its fallback bucket for a human to reclassify. Do **not** invent a new category path.
+- Nearly every page fits one of the declared paths — treat omission as a **last resort**, not a routine choice. Only when none of the listed categories genuinely fits, omit the `category` attribute entirely (never invent a new path); the engine then files the page under its fallback bucket for a human to reclassify.
 
 ## Faithfulness and links
 
-1. Preserve facts faithfully. Do not invent claims absent from the source.
-2. Be concise. A good K-page is a few paragraphs with sharp headings, not a copy of the source.
-3. Link **inline**, where the reference occurs in the prose — never as a trailing "see also" list. Write `[[Wikilink Title]]` for any entity, concept, or page the text genuinely leans on. If the target page does not exist yet, still write the wikilink; `dikw client lint` flags it.
-4. **Link density**: aim for roughly **2–4 wikilinks per 500 characters** of body — fewer on a short page (under ~300 chars: 0–1), more on a long or entity-dense one (over ~1000 chars: 4–8). Link only when the target genuinely clarifies or supports the claim; manufactured links dilute the graph and lower grounding.
+1. Preserve facts faithfully. Every specific — number, date, proper name, quantity, causal claim — must be traceable to this section's text. When summarising, do not add precision the source does not state: if the source says "recent growth", do not write "grew 40% in 2023". Do not invent claims absent from the source.
+2. Be complete, then concise. A good K-page is a few dense paragraphs with sharp headings — not a copy of the source, and not a stub that drops facts the section provides.
+3. Link **inline**, where the reference occurs in the prose — never as a trailing "see also" list. Every `[[wikilink]]` target must be one of: **(a)** a page listed in the knowledge-base context above (write its title **verbatim**), **(b)** the title of another `<page>` you emit in this response, or **(c)** a concept or entity clearly substantial enough to deserve its own page later — a deliberate forward link that `dikw client lint` tracks until the page exists. Do **not** wikilink names, places, or terms that merely appear in passing: a link must point at something a reader would genuinely open.
+4. **Link density**: link only where the target genuinely clarifies or supports the claim. A well-linked page naturally lands around 2–4 wikilinks per 500 characters once every load-bearing reference is linked — substantially more than that usually signals manufactured links, which dilute the graph and lower grounding. When in doubt, leave plain text.
 
 ## Tags
 
@@ -62,9 +64,9 @@ Detect the dominant language of the SOURCE DOCUMENT (and the current section). E
 
 ## Example
 
-Two worked examples. Note the atomic single-subject body, the inline `[[wikilinks]]` placed exactly where the prose leans on them, and how each page stays in its source language. (These omit the `category` attribute for brevity; in real output, include the best-fitting path from the Category list above.)
+Two worked examples. Note the atomic single-subject body, the inline `[[wikilinks]]` placed exactly where the prose leans on them, and how each page stays in its source language. (The `category` values below are illustrative — in real output, copy the best-fitting path **verbatim** from the Category list above.)
 
-<page slug="transformer-architecture">
+<page category="concept" slug="transformer-architecture">
 ---
 tags: [concept, deep-learning]
 ---
@@ -76,7 +78,7 @@ The transformer is a neural-network architecture that replaces recurrence with [
 Its core block pairs multi-head [[self-attention]] with a position-wise feed-forward network, wrapped in residual connections and layer normalisation — a unit that stacks cleanly to great depth.
 </page>
 
-<page slug="qin-shi-huang">
+<page category="entity" slug="qin-shi-huang">
 ---
 tags: [entity, historical]
 ---

@@ -11,7 +11,7 @@ prompt assembly:
 * **priority-create feedback loop** — wikilink targets that an earlier
   group of THIS source referenced but that resolve to no page (existing
   snapshot OR batch) are accumulated and surfaced to later groups under
-  a ``## Priority targets (create if relevant)`` section, so a group
+  a ``### Priority targets (create if relevant)`` section, so a group
   whose content covers one creates it at the right title instead of
   leaving the graph broken. Resolution uses the SAME exact -> fuzzy ->
   collision rules ``resolve_links`` applies at persist time, so the
@@ -48,6 +48,9 @@ def test_render_existing_section_includes_slug() -> None:
         "Existing knowledge pages",
     )
     assert "- Neural Network [neural-network] (concept)" in rendered
+    # H3, not H2 — the section nests under the template's
+    # ``## Knowledge-base context`` heading instead of competing with it.
+    assert rendered.startswith("### Existing knowledge pages")
 
 
 def test_render_existing_section_empty_is_blank() -> None:
@@ -132,7 +135,8 @@ def test_render_priority_targets_empty_is_blank() -> None:
 
 def test_render_priority_targets_lists_targets_with_counts() -> None:
     rendered = _render_priority_targets([("SpaceX", 3), ("Mars", 1)])
-    assert f"## {_PRIORITY_SECTION_HEADER}" in rendered
+    # H3 for the same nesting reason as ``_render_existing_section``.
+    assert rendered.startswith(f"### {_PRIORITY_SECTION_HEADER}")
     assert "- [[SpaceX]] (3 prior references)" in rendered
     assert "- [[Mars]] (1 prior reference)" in rendered  # singular
 
@@ -222,16 +226,20 @@ async def test_priority_section_surfaces_unresolved_for_later_group(
 
     assert len(llm.calls) >= 2, f"expected >=2 groups, got {len(llm.calls)} calls"
     # Group 0 (first prompt) has no prior groups -> no priority section.
+    # The ``## `` form is a substring of the ``### `` render, so this negative
+    # catches a leak at EITHER heading level (a future H2 revert included).
     assert f"## {_PRIORITY_SECTION_HEADER}" not in llm.calls[0]
     # Group 1 must surface the [[SpaceX]] target group 0 left unresolved,
     # rendered once with the singular count.
-    assert f"## {_PRIORITY_SECTION_HEADER}" in llm.calls[1]
+    assert f"### {_PRIORITY_SECTION_HEADER}" in llm.calls[1]
     assert "- [[SpaceX]] (1 prior reference)" in llm.calls[1]
-    # The priority block is PREPENDED ahead of the existing-pages sub-sections.
-    if "## Already created in this batch" in llm.calls[1]:
-        assert llm.calls[1].index(f"## {_PRIORITY_SECTION_HEADER}") < llm.calls[
-            1
-        ].index("## Already created in this batch")
+    # Group 0 created a page, so group 1's batch section MUST render — assert
+    # it outright (a conditional gate here would go vacuous if the batch
+    # accumulator ever broke) and pin the priority-block-first ordering.
+    assert "### Already created in this batch" in llm.calls[1]
+    assert llm.calls[1].index(f"### {_PRIORITY_SECTION_HEADER}") < llm.calls[1].index(
+        "### Already created in this batch"
+    )
 
 
 @pytest.mark.asyncio
@@ -261,6 +269,7 @@ async def test_priority_target_dropped_once_satisfied_by_later_group(
     # Group 1 still sees Foo as a priority (group 0 left it unresolved).
     assert "[[Foo]]" in llm.calls[1]
     # Group 2: Foo now exists in the batch -> dropped, nothing else pending.
+    # ``## `` substring form catches a leak at either heading level.
     assert f"## {_PRIORITY_SECTION_HEADER}" not in llm.calls[2]
 
 
@@ -283,7 +292,7 @@ async def test_priority_create_runs_under_force_all(tmp_path: Path) -> None:
     await api.synthesize(wiki, llm=llm, embedder=embedder, force_all=True)
 
     assert len(llm.calls) >= 2
-    assert f"## {_PRIORITY_SECTION_HEADER}" in llm.calls[1]
+    assert f"### {_PRIORITY_SECTION_HEADER}" in llm.calls[1]
     assert "[[SpaceX]]" in llm.calls[1]
 
 

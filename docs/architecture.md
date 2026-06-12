@@ -365,13 +365,14 @@ the LLM, generating new pages without seeing the existing knowledge base, simply
 **writes a fresh `<page>` block under a different title** — a true
 semantic duplicate that no string-distance trick can absorb.
 `_synth_pages_from_source` (in `api_synth.py`) closes that loop by feeding
-two prompt sections to every group:
+two prompt sections to every group (rendered as H3 sub-sections nested
+under the template's `## Knowledge-base context` heading):
 
-1. **`## Already created in this batch`** — a per-source accumulator
+1. **`### Already created in this batch`** — a per-source accumulator
    listing the `Title [slug] (category)` of every page emitted by groups
    `0..N-1` of the SAME source. Stage A 1:N fan-out runs groups
    serially; without this, group 2 reinvents what group 1 wrote.
-2. **`## Existing knowledge pages`** — a snapshot of the base K-layer.
+2. **`### Existing knowledge pages`** — a snapshot of the base K-layer.
    Below `synth.existing_pages_max_bytes` (default 16384 B ≈ 500
    pages × ~25 B/line) we render the full list. Above that the
    prompt would balloon as the knowledge base grows, so we switch to a
@@ -385,7 +386,7 @@ Both render each page as `- Title [slug] (category)`: the kebab-case
 file stem disambiguates two same-titled pages, while the prompt still
 tells the model to write `[[Title]]` (never the slug) when linking.
 
-A third section, **`## Priority targets (create if relevant)`**, is
+A third section, **`### Priority targets (create if relevant)`**, is
 prepended for every group after the first. It lists the top-5 wikilink
 targets earlier groups of the SAME source referenced but that resolve
 to no page yet — checked against the snapshot **and** the batch with

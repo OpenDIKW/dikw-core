@@ -18,10 +18,12 @@ from dikw_core.config import DikwConfig, LintConfig, SynthConfig
 from dikw_core.prompts import PromptOverrideError
 
 # A synthesize override that satisfies the contract: every placeholder the
-# engine fills, and the four ``<page category="..." slug="...">`` output markers.
+# engine fills, the four ``<page category="..." slug="...">`` output markers,
+# and the ``## Knowledge-base context`` H2 container the renderer's H3
+# sub-sections nest under.
 SYNTH_OK = (
     "Categories:\n{categories}\n"
-    "Existing pages:\n{existing_pages_section}\n"
+    "## Knowledge-base context\n{existing_pages_section}\n"
     "Source path: {source_path}\n"
     "Source body:\n{source_body}\n"
     "Outline: {group_outline}\n"
@@ -106,6 +108,31 @@ def test_resolve_missing_output_marker_rejected(tmp_path: Path) -> None:
     bad = SYNTH_OK.replace("</page>", "")
     rel = _write(tmp_path, "prompts/nomarker.md", bad)
     with pytest.raises(PromptOverrideError, match=r"output-format marker.*</page>"):
+        prompts.resolve("synthesize", override_path=rel, base_root=tmp_path)
+
+
+def test_resolve_override_missing_context_heading_rejected(tmp_path: Path) -> None:
+    # ``_render_existing_section`` / ``_render_priority_targets`` emit H3
+    # sub-sections that assume a ``## Knowledge-base context`` H2 container in
+    # the template. An override written against the pre-0.5.x layout (its own
+    # ``## Existing pages`` heading, no container) would silently nest the
+    # dynamic sections under the wrong parent — so the contract requires the
+    # container and ``dikw client check`` fails loudly instead.
+    bad = SYNTH_OK.replace("## Knowledge-base context\n", "## Existing pages\n")
+    rel = _write(tmp_path, "prompts/old-layout.md", bad)
+    with pytest.raises(PromptOverrideError, match=r"Knowledge-base context"):
+        prompts.resolve("synthesize", override_path=rel, base_root=tmp_path)
+
+
+def test_resolve_override_demoted_context_heading_rejected(tmp_path: Path) -> None:
+    # ``### Knowledge-base context`` contains the H2 string as a SUBSTRING —
+    # a bare ``in`` check would wave the demoted heading through and the H3
+    # sub-sections would nest under an H3 parent. The marker is line-anchored.
+    bad = SYNTH_OK.replace(
+        "## Knowledge-base context\n", "### Knowledge-base context\n"
+    )
+    rel = _write(tmp_path, "prompts/demoted.md", bad)
+    with pytest.raises(PromptOverrideError, match=r"Knowledge-base context"):
         prompts.resolve("synthesize", override_path=rel, base_root=tmp_path)
 
 
