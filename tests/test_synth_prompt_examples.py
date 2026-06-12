@@ -90,7 +90,9 @@ def test_template_nests_dynamic_sections_under_context_heading() -> None:
     introduces them with a neutral H2; the rendered sub-sections are H3
     (see ``_render_existing_section`` / ``_render_priority_targets``)."""
     raw = prompts.load("synthesize")
-    assert "## Knowledge-base context" in raw
+    # Anchored at line start so a demotion to H3 ("### Knowledge-base context",
+    # which still contains the H2 string) cannot sneak past a substring check.
+    assert re.search(r"^## Knowledge-base context$", raw, flags=re.MULTILINE)
     assert "## Existing pages\n" not in raw
 
 
