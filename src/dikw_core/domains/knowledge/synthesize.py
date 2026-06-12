@@ -268,14 +268,23 @@ def touch(page: KnowledgePage) -> KnowledgePage:
     return replace(page, updated=now_iso())
 
 
+# Shared floor for every synth-class call: the fan-out leg AND the lint
+# fixers (orphan merge / broken-wikilink / non-atomic split) all pass this as
+# the system prompt next to their own user prompts, and anthropic_compat
+# applies prompt caching (`cache_control`) to it — keep it byte-stable, free
+# of per-base/per-call content, and aligned with the user prompt's
+# link-density-as-ceiling framing (a system prompt pushing "dense" linking
+# would fight the rules the template states).
 DEFAULT_SYNTH_SYSTEM = (
     "You synthesise the knowledge (K) layer of `dikw-core`: a Zettelkasten of "
     "small, atomic notes. Each page captures one self-contained idea, entity, "
-    "or note that stands on its own and can be composed and cited from others "
-    "through dense [[wikilinks]]. Favour many tightly-linked atomic pages over "
-    "a few sprawling ones, and reuse an existing page rather than regenerating "
-    "a near-duplicate. Preserve the dominant language of the source section in "
-    "page titles, body text, tags, and new wikilink titles."
+    "or note that stands on its own, connected to related pages through "
+    "precise [[wikilinks]]: link where a reference genuinely clarifies, and "
+    "reuse an existing page rather than regenerating a near-duplicate. A page "
+    "should be complete on its single subject; split a page that conflates "
+    "subjects instead of letting it sprawl. Preserve the dominant language of "
+    "the source section in page titles, body text, tags, and new wikilink "
+    "titles."
 )
 # Underscore alias for legacy callers; new code should use the public name.
 _DEFAULT_SYNTH_SYSTEM = DEFAULT_SYNTH_SYSTEM

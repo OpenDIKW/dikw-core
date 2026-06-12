@@ -589,12 +589,33 @@ load **and** by `dikw client check`):
   slug="…">…</page>` block format — the literal substrings `<page`, `category=`,
   `slug=`, and `</page>` must all appear, or the synth parser can't read the
   response.
+- **Context container (`synthesize` only).** The override must carry a
+  `## Knowledge-base context` heading at a line start — the engine fills
+  `{existing_pages_section}` with H3 sub-sections (existing pages / batch /
+  priority targets) that nest under that H2. An override missing or demoting
+  the heading is rejected rather than silently mis-nesting the sections.
 
 The placeholder/marker contract is only a *structural* check — it guarantees the
 engine can fill and parse your template, not that the wording produces good
 pages. Validate quality by running `dikw client synth` on a representative source
 and inspecting the output. A long-lived `dikw serve` re-reads the override file
 on each call, so prompt edits take effect without a restart.
+
+Two practices worth copying from the packaged template:
+
+- **Taxonomy-specific examples.** The packaged worked examples use the default
+  `entity`/`concept`/`note` taxonomy. A base with a custom `schema.categories`
+  tree gets better imitation by overriding the template and rewriting the
+  examples so their `category="…"` values are its own declared paths — the
+  override is the designed channel for category customization (the engine never
+  rewrites example categories mechanically; it cannot judge which declared path
+  semantically fits an example body).
+- **Prompt-cache-friendly layout.** The packaged template keeps every
+  `{placeholder}` in a tail zone after the static instruction sections, so the
+  instruction prefix is byte-stable across calls — OpenAI-compatible providers'
+  automatic prefix caching (and codex) then cover it; the system prompt is
+  separately cached via `cache_control` on Anthropic-compatible providers. An
+  override that interleaves placeholders with instructions gives that up.
 
 ## See also
 
