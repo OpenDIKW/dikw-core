@@ -535,12 +535,17 @@ class FakeLLM:
     downstream consumers tolerate (or surface) reasoning fragments emitted
     by reasoning-capable providers like ``OpenAICodexLLM``. Requires
     ``stream_chunks`` to also be set.
+
+    ``finish_reason`` (default ``"end_turn"``) is stamped on every returned
+    ``LLMResponse`` / ``done`` event — set it to ``"length"`` / ``"max_tokens"``
+    to exercise the synth/fixer truncation guard.
     """
 
     response_text: str = "STUB: wired up."
     responses: list[str] | None = None
     stream_chunks: list[str] | None = None
     reasoning_chunks: list[str] | None = None
+    finish_reason: str = "end_turn"
     last_system: str | None = field(default=None, init=False)
     last_user: str | None = field(default=None, init=False)
     last_max_tokens: int | None = field(default=None, init=False)
@@ -564,9 +569,9 @@ class FakeLLM:
         self.call_count += 1
         if self.responses is not None and idx < len(self.responses):
             return LLMResponse(
-                text=self.responses[idx], finish_reason="end_turn"
+                text=self.responses[idx], finish_reason=self.finish_reason
             )
-        return LLMResponse(text=self.response_text, finish_reason="end_turn")
+        return LLMResponse(text=self.response_text, finish_reason=self.finish_reason)
 
     def complete_stream(
         self,
@@ -599,7 +604,7 @@ class FakeLLM:
             yield LLMStreamEvent(
                 type="done",
                 text="".join(chunks),
-                finish_reason="end_turn",
+                finish_reason=self.finish_reason,
             )
 
         return _gen()

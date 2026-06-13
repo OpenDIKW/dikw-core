@@ -1527,6 +1527,7 @@ async def _synth_pages_from_source(
                 source_path=source_path,
                 allowed_categories=allowed_categories,
                 fallback=fallback,
+                finish_reason=response.finish_reason,
             )
         except SynthesisPartialError as pe:
             notes.append(

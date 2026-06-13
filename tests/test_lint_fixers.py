@@ -1168,6 +1168,42 @@ async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_non_atomic_page_refuses_clean_split_at_length_finish_reason(
+    tmp_path: Path,
+) -> None:
+    """Two complete <page> blocks with NO unclosed tag — but the provider
+    reports a budget cutoff (finish_reason='length'). The model obeyed
+    "never open a block you cannot finish" and dropped any further children
+    cleanly, so the unclosed-tag guard sees nothing. The destructive
+    non_atomic_page fixer must still refuse: applying would delete the
+    original after creating only the subset that fit, silently dropping the
+    cut-off children. Same body as the happy-path test — only finish_reason
+    differs. Regression guard for issue #194."""
+    from dikw_core.domains.knowledge.lint_fixers.non_atomic_page import (
+        NonAtomicPageFixer,
+    )
+
+    base_root, page, issue = _make_fat_page_on_disk(tmp_path)
+    fake = FakeLLM(response_text=_NON_ATOMIC_LLM_RESPONSE, finish_reason="length")
+    fixer = NonAtomicPageFixer()
+    proposal = await fixer.propose(
+        issue,
+        _ctx(
+            pages=[page],
+            base_root=base_root,
+            llm=fake,
+            enable_llm=True,
+            cfg=_default_cfg(),
+        ),
+        reporter=_NullReporter(),
+    )
+    assert proposal is None, (
+        "a clean-but-truncated split (finish_reason='length', no unclosed "
+        "tag) must be refused on the destructive delete_page path"
+    )
+
+
 _DETERMINISTIC_PARTIAL_RESPONSE = (
     "<page category=\"concept\" slug=\"topic-a\">\n"
     "---\ntags: [child]\n---\n\n# Topic A\n\nFirst child.\n"
