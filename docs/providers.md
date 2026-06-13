@@ -188,6 +188,13 @@ Gemini Nano endpoints) cap responses below 2048 and return 400 — shrink
 the field for those. **Reasoning models need much more**: their hidden
 chain-of-thought also draws on this budget, so MiniMax-M3 and similar
 silently emit zero pages at 3072 — set `>= 8192` (16384 recommended).
+A budget cutoff no longer strands content silently: synth reads the
+provider `finish_reason` (`"length"` on `openai_compat`/`openai_codex`,
+`"max_tokens"` on `anthropic_compat`) and, when it signals truncation,
+withholds the `synth_source_done` marker so a re-run with a bigger budget
+recovers the dropped pages (the destructive `non_atomic_page` split fixer
+refuses outright). Raising `llm_max_tokens_synth` is still the fix — this
+just makes an under-budget run loud and recoverable instead of lossy.
 Override per-base by adding the field to your `dikw.yml` `provider:`
 block — no code change needed. There is no `llm_max_tokens_query` knob;
 `retrieve` doesn't call an LLM, so the read-path budget lives on the

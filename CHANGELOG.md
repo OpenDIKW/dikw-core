@@ -290,6 +290,23 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **Synth/fixer now detect a clean-but-truncated LLM response via
+  `finish_reason`.** PR2's "never open a `<page>` block you cannot finish"
+  prompt prose lets a budget-starved model end *cleanly* — no unclosed tag —
+  so `parse_synthesis_response` saw no truncation, the source was marked
+  `synth_source_done`, and the dropped tail pages were stranded (the K layer
+  has no scan-based reindex). The destructive `non_atomic_page` split fixer had
+  the same exposure: a clean stop below `_MAX_CHILDREN_CEILING` would
+  `delete_page` the original after writing only the children that fit.
+  `parse_synthesis_response` now also consults the provider `finish_reason`,
+  treating the cross-provider truncation set `{"length", "max_tokens"}` as a
+  retry signal — note `anthropic_compat` (MiniMax-M3's provider) passes
+  Anthropic's raw `stop_reason` (`"max_tokens"`, not `"length"`) through, so a
+  literal `== "length"` check would have missed the synth workhorse. Zero
+  parsed blocks under truncation becomes a hard `SynthesisError`; surviving
+  blocks raise `SynthesisPartialError(retry=True)` so the synth fan-out
+  withholds the done-marker and the fixer refuses the split. No behavior change
+  on a clean `finish_reason`.
 - **`openai_compat` embeddings are re-ordered by the response `index` before
   use.** The OpenAI embeddings response carries an explicit per-item `index`
   precisely because list order is not contractual — any compatible gateway
