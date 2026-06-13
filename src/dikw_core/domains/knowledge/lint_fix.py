@@ -306,11 +306,12 @@ async def safe_synthesize_pages(
     should skip this issue":
 
     * ``SynthesisError`` (no usable ``<page>`` block) → ``None``.
-    * ``SynthesisPartialError`` with ``retry=True`` (max_tokens
-      truncation — re-running with a bigger budget would yield more
-      pages) → ``None``. Always — truncation is recoverable, and
-      destructive splits cannot tell whether the missing content was
-      important.
+    * ``SynthesisPartialError`` with ``retry=True`` (token-budget
+      truncation — an unclosed ``<page>`` tag or a truncation
+      ``finish_reason`` from the provider; re-running with a bigger
+      budget would yield more pages) → ``None``. Always — truncation is
+      recoverable, and destructive splits cannot tell whether the missing
+      content was important.
     * ``SynthesisPartialError`` with ``retry=False`` (deterministic
       partial — e.g. one malformed ``<page>`` block among valid ones):
       - **strict=True (destructive callers)** → ``None``. The

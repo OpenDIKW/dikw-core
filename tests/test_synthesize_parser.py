@@ -220,6 +220,104 @@ def test_parse_partial_block_failure_does_not_request_retry() -> None:
     assert excinfo.value.retry is False
 
 
+_TWO_COMPLETE_PAGES = """
+<page category="entity" slug="spacex">
+---
+tags: [aerospace]
+---
+
+# SpaceX
+
+Aerospace firm founded by Elon Musk.
+</page>
+
+<page category="entity" slug="tesla">
+---
+tags: [automotive]
+---
+
+# Tesla
+
+EV maker.
+</page>
+"""
+
+
+def test_parse_clean_blocks_with_length_finish_reason_is_partial_retry() -> None:
+    """All ``<page>`` blocks closed but the provider reports a budget cutoff
+    (OpenAI-style ``finish_reason='length'``): the model complied with the
+    "never open a block you cannot finish" prompt and dropped the tail
+    cleanly. Without consulting ``finish_reason`` the parser sees no unclosed
+    tag, the source is marked done, and the dropped pages are stranded."""
+    with pytest.raises(SynthesisPartialError) as excinfo:
+        parse_synthesis_response(
+            _TWO_COMPLETE_PAGES, source_path="src.md", finish_reason="length"
+        )
+    pe = excinfo.value
+    assert len(pe.pages) == 2  # survivors still recovered for persist
+    assert pe.retry is True
+    assert any("finish_reason" in e or "truncat" in e for e in pe.errors)
+
+
+def test_parse_clean_blocks_with_max_tokens_finish_reason_is_partial_retry() -> None:
+    """``anthropic_compat`` passes Anthropic's raw ``stop_reason`` through,
+    which is ``"max_tokens"`` (NOT ``"length"``). MiniMax-M3 — the synth
+    workhorse — runs on that provider, so a check that only knows ``"length"``
+    would miss every truncation it produces. Guard the cross-provider set."""
+    with pytest.raises(SynthesisPartialError) as excinfo:
+        parse_synthesis_response(
+            _TWO_COMPLETE_PAGES, source_path="src.md", finish_reason="max_tokens"
+        )
+    assert excinfo.value.retry is True
+    assert len(excinfo.value.pages) == 2
+
+
+def test_parse_zero_blocks_with_length_finish_reason_raises() -> None:
+    """Zero ``<page>`` blocks under a truncation ``finish_reason`` is NOT the
+    legal "no page worth writing" signal — it's a budget-starved cutoff (e.g.
+    a reasoning model spending the whole budget on hidden thinking). Must
+    raise so synth does not mark the source done."""
+    with pytest.raises(SynthesisError) as excinfo:
+        parse_synthesis_response(
+            "the model was still thinking", source_path="x", finish_reason="length"
+        )
+    assert not isinstance(excinfo.value, SynthesisPartialError)
+    assert "truncat" in str(excinfo.value).lower()
+
+
+@pytest.mark.parametrize("reason", ["stop", "end_turn", None])
+def test_parse_zero_blocks_with_clean_finish_reason_returns_empty(
+    reason: str | None,
+) -> None:
+    # A clean stop with no blocks is still the legal zero-page signal.
+    assert (
+        parse_synthesis_response("no page here", source_path="x", finish_reason=reason)
+        == []
+    )
+
+
+@pytest.mark.parametrize("reason", ["stop", "end_turn", None])
+def test_parse_clean_blocks_with_clean_finish_reason_returns_pages(
+    reason: str | None,
+) -> None:
+    # Complete blocks + a clean finish_reason → normal success, no exception.
+    pages = parse_synthesis_response(
+        _TWO_COMPLETE_PAGES, source_path="src.md", finish_reason=reason
+    )
+    assert len(pages) == 2
+
+
+@pytest.mark.parametrize("reason", ["Length", " MAX_TOKENS "])
+def test_parse_truncation_finish_reason_is_case_and_space_insensitive(
+    reason: str,
+) -> None:
+    with pytest.raises(SynthesisPartialError) as excinfo:
+        parse_synthesis_response(
+            _TWO_COMPLETE_PAGES, source_path="src.md", finish_reason=reason
+        )
+    assert excinfo.value.retry is True
+
+
 _MULTI_PAGE_RESPONSE = """
 <page category="entity" slug="elon-musk">
 ---

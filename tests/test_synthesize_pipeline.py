@@ -171,6 +171,39 @@ async def test_synth_counts_parse_failure_as_error(
 
 
 @pytest.mark.asyncio
+async def test_synth_clean_but_truncated_response_is_not_marked_done(
+    wiki_with_fixtures: Path,
+) -> None:
+    """A response whose ``<page>`` blocks are all closed but whose provider
+    ``finish_reason`` signals a budget cutoff ("length"/"max_tokens") dropped
+    its tail cleanly — no unclosed tag to detect. The pipeline must persist
+    the survivor pages yet count the group as an error so the source is NOT
+    marked synth-done, letting the next run recover the dropped tail (the K
+    layer has no scan-based reindex). Regression guard for issue #194."""
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki_with_fixtures, embedder=embedder)
+
+    valid_block = (
+        '<page category="note" slug="x">\n'
+        "---\ntags: []\n---\n\n# X\n\nbody\n"
+        "</page>"
+    )
+    llm = FakeLLM(response_text=valid_block, finish_reason="length")
+    first = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+    # The survivor page persists, but every truncated group counts as an
+    # error so the source-done marker is withheld.
+    assert first.errors == 3
+    assert first.created >= 1
+
+    # Source was NOT marked done → a second default synth re-invokes the LLM
+    # instead of skipping (contrast test_synth_is_idempotent_without_force_all,
+    # where a clean finish_reason marks the source done and groups_processed=0).
+    second = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+    assert second.groups_processed == 3
+    assert second.skipped == 0
+
+
+@pytest.mark.asyncio
 async def test_synth_prompt_preserves_source_language(
     wiki_with_fixtures: Path,
 ) -> None:

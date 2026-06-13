@@ -30,6 +30,15 @@ _PAGE_BLOCK = re.compile(
 # mid-block. Treating it as a legal "zero pages" response would silently
 # drop the truncated page AND mark the source done so it never retries.
 _PAGE_OPEN_TAG = re.compile(r"<page\b[^>]*>", flags=re.IGNORECASE)
+# finish_reason values that mean the model was cut off mid-generation rather
+# than stopping on its own. ``openai_compat`` / ``openai_codex`` normalize to
+# ``"length"``; ``anthropic_compat`` passes Anthropic's raw ``stop_reason``
+# through, which is ``"max_tokens"``. Both mean the tail was dropped — so a
+# clean-but-truncated response (the model obeyed "never open a <page> block
+# you cannot finish" and ended without an unclosed tag) is still recoverable
+# next run with a bigger budget. MiniMax-M3, the synth workhorse, runs on
+# ``anthropic_compat``, so a ``== "length"`` check alone would miss it.
+_TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
 _ATTR = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", flags=re.DOTALL)
 _ATX_TITLE = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", flags=re.MULTILINE)
@@ -47,11 +56,12 @@ class SynthesisPartialError(SynthesisError):
 
     Carries the ``pages`` that did parse so the caller can persist what
     succeeded; ``errors`` describes what was lost. ``retry=True`` means
-    the missing content can be recovered next run (e.g. the response was
-    truncated by max_tokens) — callers should bump their parse-error
-    counter so the source is NOT marked done. ``retry=False`` means the
-    failure was deterministic (e.g. malformed block) and rerunning would
-    just hit the same warning.
+    the missing content can be recovered next run (the response was
+    truncated by the token budget — either an unclosed ``<page>`` tag or a
+    truncation ``finish_reason`` reported by the provider) — callers should
+    bump their parse-error counter so the source is NOT marked done.
+    ``retry=False`` means the failure was deterministic (e.g. malformed
+    block) and rerunning would just hit the same warning.
     """
 
     def __init__(
@@ -143,12 +153,17 @@ def _parse_one_page_block(
     )
 
 
+def _is_truncation_finish_reason(reason: str | None) -> bool:
+    return reason is not None and reason.strip().lower() in _TRUNCATION_FINISH_REASONS
+
+
 def parse_synthesis_response(
     raw: str,
     *,
     source_path: str,
     allowed_categories: tuple[str, ...] | None = None,
     fallback: str = DEFAULT_FALLBACK,
+    finish_reason: str | None = None,
 ) -> list[KnowledgePage]:
     """Extract one or more ``KnowledgePage`` objects from the LLM's output.
 
@@ -164,17 +179,34 @@ def parse_synthesis_response(
     filed under ``fallback`` (``SchemaConfig.fallback``). ``None`` falls back
     to the default ``(entity, concept, note)`` so direct callers (tests, quick
     scripts) don't have to thread config through.
+
+    ``finish_reason`` is the provider's stop signal (``LLMResponse.finish_reason``).
+    When it indicates a budget cutoff (``"length"`` / ``"max_tokens"`` — see
+    :data:`_TRUNCATION_FINISH_REASONS`) the response was truncated even if every
+    ``<page>`` block is closed: the model obeyed "never open a block you cannot
+    finish" and dropped the tail cleanly, leaving no unclosed-tag signal. Treat
+    it like unclosed-tag truncation — zero parsed blocks becomes a hard
+    ``SynthesisError`` (not the legal zero-page signal), and surviving blocks
+    raise ``SynthesisPartialError(retry=True)`` so the source is not marked done.
+    ``None`` (the default) preserves the tag-only behaviour for callers that
+    don't thread it through.
     """
     blocks = list(_PAGE_BLOCK.finditer(raw))
     open_tags = len(_PAGE_OPEN_TAG.findall(raw))
     truncated = max(open_tags - len(blocks), 0)
+    length_truncated = _is_truncation_finish_reason(finish_reason)
 
     if not blocks:
-        if truncated > 0:
+        if truncated > 0 or length_truncated:
+            # Zero complete blocks under a truncation signal is a
+            # budget-starved cutoff (e.g. a reasoning model spending the
+            # whole budget on hidden thinking), NOT the legal "no page worth
+            # writing" response — raise so the source is not marked done.
             raise SynthesisError(
-                f"LLM response for {source_path} contains {truncated} "
-                f"unclosed <page> tag(s) and no complete blocks — likely "
-                f"truncated by max_tokens"
+                f"LLM response for {source_path} was truncated "
+                f"(finish_reason={finish_reason!r}, {truncated} unclosed "
+                f"<page> tag(s)) with no complete blocks — likely cut off by "
+                f"the token budget"
             )
         return []
 
@@ -204,6 +236,15 @@ def parse_synthesis_response(
         errors.append(
             f"detected {truncated} unclosed <page> tag(s) — likely truncated"
         )
+    elif length_truncated:
+        # All blocks closed but the provider reports a budget cutoff: the
+        # model dropped the tail cleanly. No unclosed tag to count, but the
+        # missing pages are just as real — flag retry so the source is not
+        # marked done.
+        errors.append(
+            f"finish_reason={finish_reason!r} — response cut off by the "
+            f"token budget; tail pages may be missing"
+        )
 
     if errors and not pages:
         raise SynthesisError(
@@ -215,7 +256,7 @@ def parse_synthesis_response(
             f"{len(errors)} issue(s) parsing <page> blocks for {source_path}",
             pages=pages,
             errors=errors,
-            retry=truncated > 0,
+            retry=truncated > 0 or length_truncated,
         )
     return pages
 
@@ -335,4 +376,5 @@ async def synthesize_pages_from_text(
         source_path=source_path,
         allowed_categories=allowed_categories,
         fallback=fallback,
+        finish_reason=response.finish_reason,
     )

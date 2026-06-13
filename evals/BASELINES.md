@@ -286,9 +286,13 @@ priority-targets list (pages that do NOT exist) — the elon outcome (unresolved
 −64%) shows priority-create kept firing, but PR2 should scope the duplicate
 rule to the two existing-page lists explicitly. The "never open an
 unfinishable `<page>` block" defence trades the deterministic unclosed-tag
-retry signal for graceful tail-drop when the model complies — a
-`finish_reason == "length"` check at the synth/fixer call sites is the
-deterministic follow-up (issue to be filed). The `synthesize` override
+retry signal for graceful tail-drop when the model complies — **resolved
+(issue #194):** `parse_synthesis_response` now also consults the provider's
+`finish_reason`, treating the cross-provider truncation set
+`{"length", "max_tokens"}` (note `anthropic_compat` — MiniMax-M3's provider —
+passes Anthropic's raw `stop_reason` through, which is `"max_tokens"`, not
+`"length"`) as a retry signal at both the synth fan-out and the destructive
+`non_atomic_page` split-fixer call sites. The `synthesize` override
 contract now requires the `## Knowledge-base context` container (line-anchored
 marker) so stale or demoted overrides fail `dikw client check` loudly instead
 of mis-nesting silently.
