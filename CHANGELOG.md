@@ -5,6 +5,39 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Changed
+
+- **Synth prompt two-tier restructure (SP spine + slim UP).** `DEFAULT_SYNTH_SYSTEM`
+  — the cached system prompt shared by the synth fan-out leg and the
+  non-atomic-page lint splitter — is rewritten from a ~100-word paragraph into a
+  structured **standing-policy spine**: six named invariants (atomicity,
+  faithfulness, reuse over regeneration, closed taxonomy, honest linking, source
+  language). It keeps the deliberate **link-density-as-ceiling** posture
+  ("precisely-linked", never "dense"), and restores two rules a prior draft had
+  dropped — *never translate a source-language concept* and *never add precision
+  the source does not state* ("recent growth" ↛ "grew 40% in 2023"). The
+  `prompts/synthesize.md` user prompt is correspondingly **slimmed**: the prose
+  that merely restated those principles (the Atomicity, Category, and
+  Faithfulness sections) is gone, leaving the operational detail each invariant
+  defers to — the quantitative length norms, the 2–4-links/500-chars ceiling, the
+  tag vocabulary, the slug/pinyin mechanics — plus the two worked examples, the
+  exact output format, and the per-call inputs. **Single source of truth:** each
+  rule now lives in exactly one tier, so the cached SP and the per-call UP cannot
+  drift (the source-language rule is the one deliberate cross-tier redundancy — a
+  second-line defence if the UP is ever truncated). The `synthesize` placeholder
+  set, output markers, and `## Knowledge-base context` container are unchanged, so
+  `synth.prompt_path` overrides keep validating and `_contract.py` is untouched.
+
+- **Synth forbids `sources`/`lint` in emitted front-matter.** The output-format
+  forbidden-key list now names `sources` and `lint` alongside
+  `title`/`id`/`category`/`created`/`updated`. The parser routes every non-`tags`
+  front-matter key into `extras`, and `page.py` applies the engine's authoritative
+  `sources` then `meta.update(extras)` — so an LLM that emitted `sources:`
+  overwrote the real provenance, and `lint:` injected a leaf-acknowledgement block
+  that suppressed lint on a fresh page. Both are now explicitly engine-owned.
+
 ## 0.5.2 — synth-quality measurement + prompt tuning + post-synth self-check
 
 ### Changed

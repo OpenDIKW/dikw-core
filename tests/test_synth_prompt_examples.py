@@ -112,11 +112,13 @@ def test_worked_examples_use_inline_wikilinks() -> None:
 
 
 def test_enriched_system_prompt_is_concise_but_substantive() -> None:
-    # Enriched from one sentence to a few; keep it under ~100 words so the
-    # model doesn't echo a verbose preamble. Lower bound guards against a
-    # future edit silently reverting to the terse original.
+    # The SP now carries the full standing policy as named invariants (the
+    # operational numbers + the output format live in the UP). Keep it under a
+    # few hundred words so it stays the cached, scannable policy spine rather
+    # than a verbose preamble. Lower bound guards against a future edit silently
+    # reverting to the terse one-liner original.
     words = DEFAULT_SYNTH_SYSTEM.split()
-    assert 20 <= len(words) <= 100, f"system prompt is {len(words)} words"
+    assert 20 <= len(words) <= 350, f"system prompt is {len(words)} words"
     # Still must carry the language-fidelity instruction that the original
     # one-liner existed to deliver.
     assert "language" in DEFAULT_SYNTH_SYSTEM.lower()
@@ -127,12 +129,53 @@ def test_system_prompt_carries_no_density_pressure() -> None:
     the graph) and atomicity as "complete, then concise". The system prompt —
     the cached channel the fan-out leg and the non-atomic-page splitter
     share — must not push the opposite posture, or providers that weight
-    the system prompt heavily keep manufacturing links and thin pages."""
+    the system prompt heavily keep manufacturing links and thin pages. The
+    word "dense" is banned outright: "densely-linked" reads as a floor, not the
+    ceiling the Honest-linking invariant intends."""
     lowered = DEFAULT_SYNTH_SYSTEM.lower()
     assert "dense" not in lowered, "SP must not ask for dense linking"
+    assert "densely" not in lowered, "SP must not call pages 'densely-linked'"
     assert "favour many" not in lowered, (
         "SP must not push many-small-pages over complete atomic pages"
     )
+
+
+def test_system_prompt_states_named_invariants() -> None:
+    """The SP is a structured standing-policy spine: an ``## Invariants``
+    section naming the load-bearing rules. Pinning the names (not their exact
+    wording) keeps the rewrite from silently collapsing back to an unstructured
+    paragraph that buries a rule the eval gate depends on."""
+    lowered = DEFAULT_SYNTH_SYSTEM.lower()
+    assert "invariant" in lowered
+    for anchor in ("atomicity", "faithfulness", "reuse", "taxonomy", "linking"):
+        assert anchor in lowered, f"SP dropped the {anchor!r} invariant"
+
+
+def test_system_prompt_preserves_source_language_rule() -> None:
+    """The dropped-then-restored rule (review must-fix): the SP must carry the
+    *don't translate* instruction, not merely the slug-is-ASCII note — losing it
+    regresses ``language_fidelity`` on the Chinese-primary corpus this engine
+    targets."""
+    lowered = DEFAULT_SYNTH_SYSTEM.lower()
+    assert "language" in lowered
+    assert "translate" in lowered, "SP must forbid translating source-language terms"
+
+
+def test_system_prompt_carries_faithfulness_precision_rule() -> None:
+    """Faithfulness in the SP must guard against *added precision* ("recent
+    growth" -> "grew 40% in 2023"), not just outright fabrication — the
+    anti-hallucination nuance the review flagged as dropped."""
+    assert "precision" in DEFAULT_SYNTH_SYSTEM.lower()
+
+
+def test_system_prompt_acknowledges_category_taxonomy() -> None:
+    """The role line must acknowledge the closed category taxonomy (the 0.5.0
+    folder tree IS the catalogue) rather than claim structure comes from
+    wikilinks "not from folders" — a line that contradicts the Closed-taxonomy
+    invariant four lines later."""
+    lowered = DEFAULT_SYNTH_SYSTEM.lower()
+    assert "not from folders" not in lowered
+    assert "taxonomy" in lowered or "category" in lowered
 
 
 def test_system_prompt_is_byte_stable() -> None:
@@ -169,16 +212,29 @@ def test_placeholders_render_after_static_instructions() -> None:
 
 
 def test_category_omission_is_last_resort_everywhere() -> None:
-    """PR1 reframed category omission as a last resort, but the Output-format
-    bullet — the last thing the model reads before emitting — still offered
-    it neutrally. Both sites must carry the last-resort framing."""
+    """Category omission must read as a last resort on both tiers: the SP's
+    Closed-taxonomy invariant (standing policy) and the UP's Output-format
+    bullet (the last thing the model reads before emitting). The ``## Category``
+    prose section is gone — its principle moved to the SP — so the old
+    cross-reference must not survive."""
     raw = prompts.load("synthesize")
     assert "omit the attribute entirely if none fits" not in raw
-    # Positive anchors: deleting either site outright must not pass — the
-    # Output-format bullet points back at the Category section's framing, so
-    # the Category section must keep stating it.
-    assert "last-resort case described under Category" in raw
-    assert "treat omission as a **last resort**" in raw
+    # The principle now lives in the SP invariant, not a UP "## Category" section.
+    assert "last resort" in DEFAULT_SYNTH_SYSTEM.lower()
+    assert "described under Category" not in raw, "stale cross-reference to a deleted section"
+    # The Output-format bullet still frames omission as a last resort inline.
+    assert "last resort" in raw.lower()
+
+
+def test_output_format_forbids_engine_owned_frontmatter_keys() -> None:
+    """C8: the engine owns ``sources`` (authoritative provenance) and ``lint``
+    (the leaf-acknowledgement block) — an LLM that emits either in front-matter
+    overwrites engine state (``page.py`` applies ``meta['sources']`` then
+    ``meta.update(extras)``). The Output-format forbidden-key list must name
+    both, alongside the originals."""
+    raw = prompts.load("synthesize").lower()
+    for key in ("title", "id", "category", "sources", "created", "updated", "lint"):
+        assert f"`{key}`" in raw, f"output-format must forbid emitting `{key}`"
 
 
 def test_template_prose_references_current_section_names() -> None:

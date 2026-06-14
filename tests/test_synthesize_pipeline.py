@@ -225,7 +225,7 @@ async def test_synth_prompt_preserves_source_language(
     assert "ASCII" in llm.last_user
 
     assert llm.last_system is not None
-    assert "Preserve the dominant language" in llm.last_system
+    assert "dominant language" in llm.last_system
 
 
 def _long_fixture_body() -> str:
