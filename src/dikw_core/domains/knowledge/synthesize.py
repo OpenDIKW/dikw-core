@@ -317,9 +317,12 @@ def touch(page: KnowledgePage) -> KnowledgePage:
 # source language) and defers every per-call input AND the operational detail
 # those rules lean on — the quantitative length/density norms, the exact output
 # format, the category list, the worked examples — to the user-prompt template
-# (`synthesize.md`). Single source of truth: each rule lives in exactly one
-# tier, so the cached SP and the per-call UP cannot drift. anthropic_compat
-# applies prompt caching (`cache_control`) to the system prompt — keep it
+# (`synthesize.md`). Each rule has one home so the cached SP and the per-call UP
+# do not drift — bar two restated in both tiers on purpose (source language, a
+# second-line defence if the UP is truncated; and category-omission-is-a-last-
+# resort, reminded at the point of emission), each pinned in both by a guard
+# test. anthropic_compat applies prompt caching (`cache_control`) to the system
+# prompt — keep it
 # byte-stable and free of per-base/per-call content (no `str.format`
 # placeholders). Link density is framed as a CEILING here and in the UP
 # (honest linking, never "dense"); a system prompt pushing dense linking would

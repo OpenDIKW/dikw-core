@@ -24,9 +24,11 @@ on each entry call out exactly what shape changes break.
   defers to — the quantitative length norms, the 2–4-links/500-chars ceiling, the
   tag vocabulary, the slug/pinyin mechanics — plus the two worked examples, the
   exact output format, and the per-call inputs. **Single source of truth:** each
-  rule now lives in exactly one tier, so the cached SP and the per-call UP cannot
-  drift (the source-language rule is the one deliberate cross-tier redundancy — a
-  second-line defence if the UP is ever truncated). The `synthesize` placeholder
+  rule now has one home, so the cached SP and the per-call UP cannot drift — bar
+  two rules deliberately restated in both tiers (the source-language rule, a
+  second-line defence if the UP is ever truncated; and "category omission is a
+  last resort", reminded at the point of emission), each pinned in both by a
+  guard test. The `synthesize` placeholder
   set, output markers, and `## Knowledge-base context` container are unchanged, so
   `synth.prompt_path` overrides keep validating and `_contract.py` is untouched.
 
