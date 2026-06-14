@@ -28,6 +28,13 @@ from .providers import (
 from .schemas import Hit, PageRef, RetrieveResult
 from .storage import Storage
 from .storage.base import NotSupported
+from .telemetry import (
+    DIKW_LAYER,
+    DIKW_OP,
+    DIKW_RETRIEVE_HIT_COUNT,
+    DIKW_RETRIEVE_LIMIT,
+    op_span,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,18 +227,23 @@ async def retrieve(
     """
     cfg, _root, storage = await _with_storage(path)
     owned_mm: MultimodalEmbeddingProvider | None = None
-    try:
-        hits, owned_mm = await _retrieve_inner(
-            storage,
-            cfg,
-            q,
-            limit=limit,
-            embedder=embedder,
-            multimodal_embedder=multimodal_embedder,
-            reporter=reporter,
-        )
-        return RetrieveResult(chunks=hits, page_refs=_build_page_refs(hits))
-    finally:
-        if owned_mm is not None and hasattr(owned_mm, "aclose"):
-            await owned_mm.aclose()
-        await storage.close()
+    with op_span(
+        "dikw.retrieve",
+        attributes={DIKW_LAYER: "info", DIKW_OP: "retrieve", DIKW_RETRIEVE_LIMIT: limit},
+    ) as span:
+        try:
+            hits, owned_mm = await _retrieve_inner(
+                storage,
+                cfg,
+                q,
+                limit=limit,
+                embedder=embedder,
+                multimodal_embedder=multimodal_embedder,
+                reporter=reporter,
+            )
+            span.set_attribute(DIKW_RETRIEVE_HIT_COUNT, len(hits))
+            return RetrieveResult(chunks=hits, page_refs=_build_page_refs(hits))
+        finally:
+            if owned_mm is not None and hasattr(owned_mm, "aclose"):
+                await owned_mm.aclose()
+            await storage.close()

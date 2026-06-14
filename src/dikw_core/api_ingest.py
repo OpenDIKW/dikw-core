@@ -60,6 +60,7 @@ from .schemas import (
     Layer,
 )
 from .storage.base import NotSupported
+from .telemetry import DIKW_LAYER, DIKW_OP, traced_op
 
 # One stderr Console for all embedding progress bars. Constructing one
 # per ingest pass would re-probe terminal capability + color system on
@@ -98,6 +99,7 @@ def _embedding_progress(
         yield lambda: progress.update(task, advance=1)
 
 
+@traced_op("dikw.ingest", attributes={DIKW_LAYER: "data", DIKW_OP: "ingest"})
 async def ingest(
     path: str | Path | None = None,
     *,

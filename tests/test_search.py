@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from dikw_core import telemetry
 from dikw_core.domains.info.search import (
     HybridSearcher,
     MultimodalSearch,
     _sanitize_fts,
+    _traced_leg,
     apply_source_diversity_penalty,
     comb_mnz_fusion,
     comb_sum_fusion,
     reciprocal_rank_fusion,
 )
+from dikw_core.storage.base import NotSupported
 from dikw_core.storage.sqlite import SQLiteStorage
 
 from .fakes import FakeEmbeddings, FakeMultimodalEmbedding, register_text_version
@@ -1044,3 +1049,248 @@ async def test_multimodal_q_vec_does_not_leak_into_text_vec_search(tmp_path) -> 
         )
     finally:
         await storage.close()
+
+
+# ---- retrieval-leg tracing spans (PR2b) -------------------------------------
+#
+# The fusion legs (bm25 / vector / graph) are pure in-process work with no
+# provider call, so they are dark to the PR2a gen_ai.* spans — these pin that
+# each leg now emits a ``dikw.retrieve.leg`` span carrying its hit count, that
+# ablation modes only open the legs they run, and (critically, since search.py
+# is eval-gated) that the instrumentation does NOT perturb retrieval results.
+
+
+@pytest.mark.asyncio
+async def test_search_emits_a_leg_span_per_active_leg_hybrid(tmp_path, span_exporter):
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    hits = await searcher.search("DIKW pyramid", limit=3, mode="hybrid")
+    assert hits
+    await storage.close()
+
+    leg_spans = [
+        s for s in span_exporter.get_finished_spans() if s.name == "dikw.retrieve.leg"
+    ]
+    legs = {s.attributes[telemetry.DIKW_RETRIEVAL_LEG] for s in leg_spans}
+    # hybrid runs bm25 + vector + graph (no asset leg without a multimodal index).
+    assert legs == {"bm25", "vector", "graph"}
+    # every leg span carries a hit count.
+    for s in leg_spans:
+        assert telemetry.DIKW_LEG_HIT_COUNT in s.attributes
+
+
+@pytest.mark.asyncio
+async def test_search_bm25_mode_opens_only_the_bm25_leg(tmp_path, span_exporter):
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    await searcher.search("DIKW pyramid", limit=3, mode="bm25")
+    await storage.close()
+
+    legs = {
+        s.attributes[telemetry.DIKW_RETRIEVAL_LEG]
+        for s in span_exporter.get_finished_spans()
+        if s.name == "dikw.retrieve.leg"
+    }
+    # bm25 ablation: vector + graph legs must not open.
+    assert legs == {"bm25"}
+
+
+@pytest.mark.asyncio
+async def test_leg_tracing_does_not_perturb_results(tmp_path, span_exporter):
+    """The OTel recording machinery does not perturb retrieval results: identical
+    (chunk_id, score) ordering whether telemetry is active (``span_exporter``
+    installs a recording provider) or torn down to a no-op
+    (``reset_telemetry_for_testing``). The ``_traced_leg`` wrapper code runs in
+    BOTH halves, so the stronger behavior-preserving guarantee for this
+    eval-gated file comes from the *pre-existing* fusion/RRF/ranking tests above
+    (untouched, purely additive diff) + the eval-gate ``no-baseline-needed``
+    claim; this pins that span recording itself is side-effect-free."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+
+    traced = await searcher.search("DIKW pyramid", limit=5, mode="hybrid")
+    # Tear down the recording provider → get_tracer() goes back to no-op.
+    telemetry.reset_telemetry_for_testing()
+    untraced = await searcher.search("DIKW pyramid", limit=5, mode="hybrid")
+    await storage.close()
+
+    assert [(h.chunk_id, h.score) for h in traced] == [
+        (h.chunk_id, h.score) for h in untraced
+    ]
+
+
+def _leg_spans(exporter):
+    return [s for s in exporter.get_finished_spans() if s.name == "dikw.retrieve.leg"]
+
+
+@pytest.mark.asyncio
+async def test_search_asset_leg_emits_span(tmp_path, span_exporter):
+    """The multimodal/asset leg — the one whose NotSupported handling moved into
+    _traced_leg — emits its own ``dikw.retrieve.leg`` span ("asset")."""
+    import time
+
+    from dikw_core.schemas import (
+        ChunkRecord,
+        DocumentRecord,
+        EmbeddingRow,
+        EmbeddingVersion,
+        Layer,
+    )
+
+    storage = SQLiteStorage(tmp_path / "asset.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    try:
+        text_v = await register_text_version(storage, dim=64, model="text-fake")
+        mm_v = await storage.upsert_embed_version(
+            EmbeddingVersion(
+                provider="fake_mm", model="mm-fake", dim=4,
+                normalize=True, distance="cosine", modality="multimodal",
+            )
+        )
+        await storage.upsert_document(
+            DocumentRecord(
+                doc_id="d1", path="sources/d.md", title="d", hash="h",
+                mtime=time.time(), layer=Layer.SOURCE,
+            )
+        )
+        cids = await storage.replace_chunks(
+            "d1", [ChunkRecord(doc_id="d1", seq=0, start=0, end=5, text="alpha")]
+        )
+        await storage.upsert_embeddings(
+            [EmbeddingRow(chunk_id=cids[0], version_id=text_v, embedding=[1.0] + [0.0] * 63)]
+        )
+
+        # Stub both vec legs (return []) — the asset leg span emits whenever the
+        # asset task is created (multimodal configured), regardless of hits, and
+        # stubbing dodges the known concurrent-sqlite race when two real vec
+        # legs hit to_thread at once (see the T5 test above).
+        async def stub_vec(emb, **kwargs):
+            return []
+
+        async def stub_assets(emb, **kwargs):
+            return []
+
+        storage.vec_search = stub_vec  # type: ignore[method-assign]
+        storage.vec_search_assets = stub_assets  # type: ignore[method-assign]
+        searcher = HybridSearcher(
+            storage, FakeEmbeddings(), embedding_model="text-fake",
+            text_version_id=text_v,
+            multimodal=MultimodalSearch(
+                embedder=FakeMultimodalEmbedding(dim=4), model="mm-fake",
+                asset_version_id=mm_v,
+            ),
+        )
+        await searcher.search("alpha", limit=3, mode="hybrid")
+
+        legs = {s.attributes[telemetry.DIKW_RETRIEVAL_LEG] for s in _leg_spans(span_exporter)}
+        assert "asset" in legs, legs
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_graceful_leg_swallows_notsupported_to_empty_leg(tmp_path, span_exporter):
+    """A graceful leg (vector/asset, graceful_notsupported=True) degrades to an
+    empty leg on a backend that raises NotSupported — span ends OK with
+    hit_count 0, search returns the surviving (fts/graph) results, no raise."""
+    from opentelemetry.trace import StatusCode
+
+    storage = SQLiteStorage(tmp_path / "ns.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    async def raise_ns(*args, **kwargs):
+        raise NotSupported("vec_search unavailable")
+
+    storage.vec_search = raise_ns  # type: ignore[method-assign]
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    hits = await searcher.search("DIKW pyramid", limit=3, mode="hybrid")
+    assert hits, "fts/graph legs should still return hits when vector degrades"
+    await storage.close()
+
+    vec_legs = [
+        s for s in _leg_spans(span_exporter)
+        if s.attributes[telemetry.DIKW_RETRIEVAL_LEG] == "vector"
+    ]
+    assert len(vec_legs) == 1
+    assert vec_legs[0].attributes[telemetry.DIKW_LEG_HIT_COUNT] == 0
+    # graceful degradation is NOT an error — the backend simply lacks the leg.
+    assert vec_legs[0].status.status_code != StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_fts_leg_does_not_swallow_notsupported(tmp_path, span_exporter):
+    """The always-available FTS leg keeps graceful_notsupported=False: a
+    NotSupported propagates (matches main, where the fts await had no except)
+    and the leg span is marked ERROR."""
+    from opentelemetry.trace import StatusCode
+
+    storage = SQLiteStorage(tmp_path / "fts-ns.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    async def raise_ns(*args, **kwargs):
+        raise NotSupported("fts_search unavailable")
+
+    storage.fts_search = raise_ns  # type: ignore[method-assign]
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    with pytest.raises(NotSupported):
+        await searcher.search("DIKW pyramid", limit=3, mode="bm25")
+    await storage.close()
+
+    bm25_legs = [
+        s for s in _leg_spans(span_exporter)
+        if s.attributes[telemetry.DIKW_RETRIEVAL_LEG] == "bm25"
+    ]
+    assert len(bm25_legs) == 1
+    assert bm25_legs[0].status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_traced_leg_cancel_marks_span_cancelled(span_exporter):
+    """Cancelling a leg task mid-await (the _traced_leg create_task seam): the
+    leg span opened INSIDE that task ends flagged dikw.cancelled, status UNSET,
+    not ERROR — and the contextvars Token closes in the same task it opened in."""
+    from opentelemetry.trace import StatusCode
+
+    started = asyncio.Event()
+
+    async def _hang() -> list[int]:
+        started.set()
+        await asyncio.Event().wait()  # never completes
+        return []
+
+    task = asyncio.create_task(_traced_leg("bm25", _hang()))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    leg = _leg_spans(span_exporter)
+    assert len(leg) == 1
+    assert leg[0].attributes[telemetry.DIKW_CANCELLED] is True
+    assert leg[0].status.status_code == StatusCode.UNSET

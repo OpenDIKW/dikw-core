@@ -23,11 +23,12 @@ the ``ProgressReporter`` event stream over NDJSON. Don't confuse the two.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 
 if TYPE_CHECKING:
     from opentelemetry.metrics import Meter
@@ -62,9 +63,15 @@ DIKW_TASK_ID: Final = "dikw.task_id"  # the uuid4 from TaskManager.submit
 DIKW_BASE_ID: Final = "dikw.base_id"  # _base_scope_id(root)
 DIKW_SOURCE_PATH: Final = "dikw.source_path"
 DIKW_CATEGORY: Final = "dikw.category"
-DIKW_RETRIEVAL_LEG: Final = "dikw.retrieval.leg"  # bm25 | vector | graph | rrf
+DIKW_RETRIEVAL_LEG: Final = "dikw.retrieval.leg"  # bm25 | vector | asset | graph
 DIKW_EMBED_VERSION_ID: Final = "dikw.embed.version_id"
 DIKW_CANCELLED: Final = "dikw.cancelled"  # task/span ended by cooperative cancel
+# Engine op-span detail attributes (PR2b — set on the per-op spans opened via
+# :func:`op_span`; trace-tree structure, not aggregate metrics — those land in
+# the metrics PR).
+DIKW_RETRIEVE_LIMIT: Final = "dikw.retrieve.limit"
+DIKW_RETRIEVE_HIT_COUNT: Final = "dikw.retrieve.hit_count"
+DIKW_LEG_HIT_COUNT: Final = "dikw.retrieve.leg.hit_count"
 
 # gen_ai.* semantic-convention keys (OTel standard — NOT under the dikw.*
 # namespace). Set on the per-call provider span by :func:`gen_ai_span`.
@@ -391,6 +398,81 @@ def task_span(
         yield _TaskSpanHandle(span)
 
 
+@contextmanager
+def op_span(
+    name: str, *, attributes: dict[str, str | int | float | bool] | None = None
+) -> Iterator[Span]:
+    """Open a current engine-operation span (e.g. ``dikw.ingest``, ``dikw.synth``).
+
+    The generic seam for the engine op-level trace tree: opened as a normal
+    ``with op_span(...) as span:`` around an existing async/sync body, it stays
+    current across ``await`` points in the SAME task (contextvars propagate), so
+    nested ``op_span`` / provider spans become its children. Set open-time
+    dimensions via ``attributes``; set post-hoc detail (hit counts, …) by calling
+    ``span.set_attribute(...)`` inside the block.
+
+    Outcome handling mirrors :func:`gen_ai_span`: an ``asyncio.CancelledError``
+    is a graceful cancel (flagged ``dikw.cancelled``, status left UNSET, not
+    ERROR); a ``GeneratorExit`` (early close of a wrapping generator) is likewise
+    graceful; any other exception sets ``StatusCode.ERROR`` + records it; a clean
+    exit sets ``OK``. No-op (zero spans) when telemetry is inactive.
+
+    Engine op spans do NOT set ``dikw.base_id`` — they nest under the task root
+    span (:func:`task_span`), which carries it, so it is inherited via the trace.
+    """
+    if not OTEL_AVAILABLE:
+        yield cast("Span", _NOOP_SPAN)
+        return
+    tracer = _otel_trace.get_tracer(_INSTRUMENTATION_NAME)
+    with tracer.start_as_current_span(
+        name, record_exception=False, set_status_on_exception=False
+    ) as span:
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
+        try:
+            yield span
+        except asyncio.CancelledError:
+            span.set_attribute(DIKW_CANCELLED, True)
+            raise
+        except GeneratorExit:
+            raise
+        except BaseException as exc:
+            span.record_exception(exc)
+            span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+            raise
+        else:
+            span.set_status(_Status(_StatusCode.OK))
+
+
+_AsyncFn = TypeVar("_AsyncFn", bound=Callable[..., Awaitable[Any]])
+
+
+def traced_op(
+    name: str, *, attributes: dict[str, str | int | float | bool] | None = None
+) -> Callable[[_AsyncFn], _AsyncFn]:
+    """Decorator: wrap an async engine-op entry in an :func:`op_span`.
+
+    The zero-re-indent way to give a large facade coroutine (``ingest``,
+    ``synthesize``, ``lint_propose``, …) its op-level span: the span opens
+    around the whole awaited call and stays current so the op's provider /
+    nested spans become its children. Cancel / error / OK outcome handling is
+    :func:`op_span`'s. No-op when telemetry is inactive. For ops that also want
+    a post-hoc detail attribute off the result (e.g. ``retrieve``'s hit count),
+    open :func:`op_span` inline instead so the result is in scope.
+    """
+
+    def decorate(fn: _AsyncFn) -> _AsyncFn:
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with op_span(name, attributes=attributes):
+                return await fn(*args, **kwargs)
+
+        return cast("_AsyncFn", wrapper)
+
+    return decorate
+
+
 # ---- SDK bootstrap (entry-point only) ----------------------------------
 
 _configured = False
@@ -569,8 +651,11 @@ __all__ = [
     "DIKW_CATEGORY",
     "DIKW_EMBED_VERSION_ID",
     "DIKW_LAYER",
+    "DIKW_LEG_HIT_COUNT",
     "DIKW_OP",
     "DIKW_RETRIEVAL_LEG",
+    "DIKW_RETRIEVE_HIT_COUNT",
+    "DIKW_RETRIEVE_LIMIT",
     "DIKW_SOURCE_PATH",
     "DIKW_TASK_ID",
     "GEN_AI_CACHE_CREATION_INPUT_TOKENS",
@@ -589,8 +674,10 @@ __all__ = [
     "gen_ai_span",
     "get_meter",
     "get_tracer",
+    "op_span",
     "shutdown_telemetry",
     "task_span",
     "telemetry_should_activate",
     "trace_llm_stream",
+    "traced_op",
 ]

@@ -9,6 +9,24 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **OpenTelemetry tracing — engine op-level spans (PR2b of the OTel arc).**
+  The engine verbs now open their own op span so a trace shows the full tree —
+  and so direct / eval callers (which have no server task span) still get a
+  root. `ingest` / `synthesize` / `lint propose` / `lint apply` open a
+  `dikw.{ingest,synth,lint.propose,lint.apply}` span (carrying `dikw.layer` +
+  `dikw.op`); `retrieve` opens `dikw.retrieve` (`dikw.retrieve.limit` +
+  `dikw.retrieve.hit_count`). Inside hybrid search, **each fusion leg** (BM25,
+  vector, asset, graph) now emits a `dikw.retrieve.leg` span with
+  `dikw.retrieval.leg` + `dikw.retrieve.leg.hit_count` — the legs are pure
+  in-process work with no provider call, so they were dark to the PR2a
+  `gen_ai.*` spans; the span opens inside each leg's own task for accurate
+  concurrent-leg timing. New `op_span` / `traced_op` telemetry seams centralise
+  the cancel (`dikw.cancelled`, not error) / `GeneratorExit` / error / OK
+  outcome handling. All no-ops when the `[otel]` extra is absent, and purely
+  span-wrapping — retrieval results and synth output are byte-identical with
+  telemetry on or off. Per-source / per-group / per-batch sub-spans are
+  deferred (they are largely covered by the PR2a `gen_ai.*` provider spans);
+  the client→server `traceparent` leg follows in PR2c.
 - **OpenTelemetry tracing — task linking + provider spans (PR2 of the OTel arc).**
   Building on the PR1 no-op-safe seam, `configure_telemetry()` now registers the
   global **httpx instrumentation**, so every server-side provider HTTP call is
