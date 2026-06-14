@@ -163,6 +163,29 @@ in-memory state is gone.
   ingests / failed synth runs. Persists across server restart (backed
   by the same storage adapter as the base itself).
 
+#### OpenTelemetry export
+
+Optional, **off by default**, and a zero-overhead no-op unless the `[otel]`
+extra is installed (`uv pip install 'dikw-core[otel]'`). Turn it on with a
+`telemetry:` section in `dikw.yml`:
+
+```yaml
+telemetry:
+  enabled: true
+  endpoint: http://collector:4318   # OTLP/HTTP; /v1/traces appended for you
+  service_name: dikw-core
+  sample_ratio: 1.0                 # ParentBased(TraceIdRatio) head sampling
+```
+
+The standard `OTEL_SDK_DISABLED` kill-switch is honoured, and an unset
+`endpoint` falls back to `OTEL_EXPORTER_OTLP_ENDPOINT`. The server bootstraps
+the SDK from its lifespan (after config load) and traces are exported to any
+OTLP backend (Jaeger/Tempo, Grafana, Datadog, …). Today this surfaces every
+`/v1/*` request as an HTTP server span; tracing of the ingest/synth/retrieve/
+provider seams, GenAI token metrics, and `trace_id`/`span_id` log correlation
+land in subsequent releases. The remote `dikw client` CLI has no base config,
+so its telemetry — if wanted — is driven purely by `OTEL_*` env vars.
+
 ### Client config
 
 Per-machine defaults live at `~/.config/dikw/client.toml`

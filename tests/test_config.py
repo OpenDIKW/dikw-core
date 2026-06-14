@@ -13,6 +13,7 @@ from dikw_core.config import (
     RetrievalConfig,
     SchemaConfig,
     SQLiteStorageConfig,
+    TelemetryConfig,
     default_config,
     dump_config_yaml,
     find_config,
@@ -397,3 +398,72 @@ sources: []
 def test_lint_config_rejects_unknown_fixer_prompt_key() -> None:
     with pytest.raises(Exception, match="fixer_prompts"):
         LintConfig(fixer_prompts={"not_a_fixer": "./x.md"})
+
+
+# ---- telemetry (OTel export config) ------------------------------------
+
+
+def test_telemetry_config_defaults_are_off() -> None:
+    """Default install is telemetry-off so a fresh ``dikw serve`` never tries
+    to export to a non-existent collector."""
+    cfg = TelemetryConfig()
+    assert cfg.enabled is False
+    assert cfg.endpoint is None
+    assert cfg.service_name == "dikw-core"
+    assert cfg.sample_ratio == 1.0
+
+
+def test_dikw_config_telemetry_block_omitted_fills_defaults(tmp_path: Path) -> None:
+    """A dikw.yml predating this feature loads cleanly with telemetry off."""
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+sources: []
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.telemetry.enabled is False
+    assert cfg.telemetry.service_name == "dikw-core"
+
+
+def test_telemetry_config_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+telemetry:
+  enabled: true
+  endpoint: http://collector:4318
+  service_name: my-dikw
+  sample_ratio: 0.25
+sources: []
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.telemetry.enabled is True
+    assert cfg.telemetry.endpoint == "http://collector:4318"
+    assert cfg.telemetry.service_name == "my-dikw"
+    assert cfg.telemetry.sample_ratio == 0.25
+
+    # dump → reload is stable
+    path.write_text(dump_config_yaml(cfg), encoding="utf-8")
+    cfg2 = load_config(path)
+    assert cfg2.telemetry.enabled is True
+    assert cfg2.telemetry.endpoint == "http://collector:4318"
+    assert cfg2.telemetry.sample_ratio == 0.25
+
+
+def test_telemetry_config_rejects_out_of_range_sample_ratio() -> None:
+    with pytest.raises(Exception, match="sample_ratio"):
+        TelemetryConfig(sample_ratio=1.5)

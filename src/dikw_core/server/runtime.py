@@ -25,9 +25,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from .. import __version__
 from ..api import _assert_base_upgraded
 from ..config import CONFIG_FILENAME, DikwConfig, load_config
 from ..storage import Storage, build_storage
+from ..telemetry import configure_telemetry, shutdown_telemetry
 from .auth import AuthConfig
 from .tasks import (
     SqliteTaskStore,
@@ -197,16 +199,35 @@ async def lifespan(
         )
     rt: ServerRuntime = await factory()
     app.state.runtime = rt
+    # SDK bootstrap is an entry-point concern (cf. ``init_logging``); do it here
+    # — after cfg load so the ``telemetry:`` section is available — rather than
+    # in the engine. No-op unless ``telemetry.enabled`` and the ``[otel]`` extra
+    # is installed. FastAPI auto-instrumentation (wired in ``build_app``) then
+    # starts producing real server spans for subsequent requests.
+    telemetry_on = configure_telemetry(
+        enabled=rt.cfg.telemetry.enabled,
+        endpoint=rt.cfg.telemetry.endpoint,
+        service_name=rt.cfg.telemetry.service_name,
+        sample_ratio=rt.cfg.telemetry.sample_ratio,
+        version=__version__,
+    )
     logger.info(
-        "dikw server ready  base=%s storage=%s auth=%s",
+        "dikw server ready  base=%s storage=%s auth=%s telemetry=%s",
         rt.root,
         rt.cfg.storage.backend,
         "token" if rt.auth.required else "off",
+        "on" if telemetry_on else "off",
     )
     try:
         yield
     finally:
-        await teardown_runtime(rt)
+        # shutdown_telemetry must run even if teardown raises — otherwise a
+        # storage/manager close error would leak the BatchSpanProcessor export
+        # thread and strand the _configured latch for any in-process restart.
+        try:
+            await teardown_runtime(rt)
+        finally:
+            shutdown_telemetry()
 
 
 def get_runtime(app: FastAPI) -> ServerRuntime:

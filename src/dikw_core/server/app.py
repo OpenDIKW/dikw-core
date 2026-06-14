@@ -14,7 +14,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from ..config import CONFIG_FILENAME, load_config
 from ..logging import init_logging
+from ..telemetry import telemetry_should_activate
 from .auth import AuthConfig, load_auth_config, make_dependency
 from .errors import install_handlers
 from .routes_assets import make_router as make_assets_router
@@ -31,6 +33,7 @@ def build_app(
     *,
     runtime_factory: Callable[[], Awaitable[ServerRuntime]],
     auth: AuthConfig,
+    instrument_telemetry: bool = False,
 ) -> FastAPI:
     """Assemble the FastAPI app around an already-resolved auth config.
 
@@ -38,6 +41,10 @@ def build_app(
     reload picks up cfg changes without manual orchestration; tests
     wanting an in-memory engine pass a factory that returns a
     pre-stubbed ``ServerRuntime``.
+
+    ``instrument_telemetry`` wires OTel HTTP server-span instrumentation.
+    ``build_app_from_disk`` resolves it from the base's ``telemetry:`` config;
+    it defaults off so test apps (and a disabled server) carry no middleware.
     """
     init_logging()
     app = FastAPI(
@@ -46,6 +53,25 @@ def build_app(
         lifespan=lifespan,
     )
     app.state.runtime_factory = runtime_factory
+
+    # OTel HTTP server-span instrumentation. Lives here (server code may import
+    # FastAPI) not in ``telemetry.py`` (engine root, must not depend on the web
+    # framework). Gated on the *resolved telemetry setting*, not just package
+    # availability: a disabled server must carry no middleware — otherwise it
+    # pays per-request cost and could emit spans to a foreign global provider
+    # (e.g. external auto-instrumentation) despite telemetry being configured
+    # off. Resolved at build time because the middleware can't be added later in
+    # the lifespan (the app's middleware stack is already built by then). The
+    # inner guard handles a partial install (api present, instrumentation-fastapi
+    # absent) — still serve, with HTTP spans degraded off, mirroring
+    # ``configure_telemetry``.
+    if instrument_telemetry:
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        except ImportError:
+            pass  # partial OTel install; install the [otel] extra for HTTP spans
+        else:
+            FastAPIInstrumentor.instrument_app(app)
 
     install_handlers(app)
     auth_dep = make_dependency(auth)
@@ -73,7 +99,24 @@ def build_app_from_disk(
     async def _factory() -> ServerRuntime:
         return await build_runtime(root=base_root, auth=auth)
 
-    return build_app(runtime_factory=_factory, auth=auth)
+    # Resolve the telemetry-instrumentation decision now (build time) from the
+    # base config — FastAPI middleware can't be added once the app's stack is
+    # built (i.e. not in the lifespan).
+    try:
+        cfg = load_config(base_root / CONFIG_FILENAME)
+        instrument_telemetry = telemetry_should_activate(cfg.telemetry.enabled)
+    except Exception:
+        # Best-effort only: a missing/invalid config (or version mismatch) is
+        # surfaced with the proper error by build_runtime when the lifespan
+        # starts. Here we just need the instrument flag, so any failure simply
+        # leaves it off rather than crashing app construction.
+        instrument_telemetry = False
+
+    return build_app(
+        runtime_factory=_factory,
+        auth=auth,
+        instrument_telemetry=instrument_telemetry,
+    )
 
 
 __all__ = ["build_app", "build_app_from_disk"]

@@ -48,6 +48,31 @@ postgres = ["psycopg[binary,pool]>=3.3", "pgvector>=0.4"]
 # or `uv pip install 'dikw-core[cjk]'` before flipping
 # `retrieval.cjk_tokenizer: jieba` in dikw.yml.
 cjk = ["jieba>=0.42"]
+# OpenTelemetry observability. Optional so the default install stays
+# dependency-light (alpha, minimal-deps philosophy): without it, the
+# ``telemetry`` module degrades to zero-overhead no-ops. Install with
+# `uv sync --extra otel` (CI installs it via `uv sync --all-extras`) or
+# `uv pip install 'dikw-core[otel]'`, then enable the `telemetry:` section
+# in dikw.yml (or set OTEL_* env vars) to export traces/metrics/logs to any
+# OTLP backend (Jaeger/Tempo, Prometheus, Grafana, Datadog, …). The
+# instrumentation packages track the 0.NNbM line (separate from the stable
+# 1.NN API/SDK); OTLP/HTTP avoids the heavy grpcio wheel.
+#
+# The full set is declared once here for the 5-PR observability arc rather
+# than churning this user-facing install contract per PR — the same
+# Phase-0 forward-declaration the core `dependencies` above used for the
+# fastapi/uvicorn client/server arc. PR1 wires `instrumentation-fastapi`
+# (HTTP server spans); `instrumentation-httpx` is wired in PR2 (provider /
+# client spans + traceparent propagation) and `instrumentation-logging` in
+# PR4 (trace_id/span_id log correlation).
+otel = [
+    "opentelemetry-api>=1.30",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
+    "opentelemetry-instrumentation-httpx>=0.51b0",
+    "opentelemetry-instrumentation-logging>=0.51b0",
+]
 
 [dependency-groups]
 dev = [
@@ -117,6 +142,18 @@ explicit_package_bases = true
 module = [
     "sqlite_vec.*", "frontmatter.*", "markdown_it.*", "pgvector.*", "jieba.*",
 ]
+ignore_missing_imports = true
+
+# OpenTelemetry lives behind the optional ``[otel]`` extra, so the documented
+# default-install ``uv run mypy src`` / pre-commit path (which doesn't install
+# the extra) must not error on its imports — same treatment as the [postgres]
+# (psycopg/pgvector) and [cjk] (jieba) optional deps above. ``ignore_missing_imports``
+# only suppresses the *module-not-found* error: when the extra IS installed
+# (CI's ``uv sync --all-extras``), mypy uses the real api/sdk types and still
+# catches real type errors in our otel usage; the instrumentation-* packages
+# (incomplete py.typed) fall back to Any either way.
+[[tool.mypy.overrides]]
+module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

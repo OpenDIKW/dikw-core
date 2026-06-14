@@ -492,6 +492,31 @@ class LintConfig(BaseModel):
         return v
 
 
+class TelemetryConfig(BaseModel):
+    """OpenTelemetry export config for ``dikw serve`` (server-side).
+
+    Read by the server lifespan from ``dikw.yml`` and handed to
+    ``telemetry.configure_telemetry``. Requires the ``[otel]`` extra to be
+    installed; without it every field is inert and telemetry stays no-op.
+
+    Standard ``OTEL_*`` env vars are still honoured: ``OTEL_SDK_DISABLED``
+    force-disables regardless of ``enabled``, and ``endpoint`` left null falls
+    back to ``OTEL_EXPORTER_OTLP_ENDPOINT``. The remote client CLI
+    (``dikw client …``) has no base config, so its telemetry — if wanted —
+    is driven purely by ``OTEL_*`` env vars, not this section.
+    """
+
+    enabled: bool = False
+    # OTLP/HTTP base URL (e.g. ``http://collector:4318``); when set, the
+    # per-signal ``/v1/traces`` path is appended for you. Null → the SDK reads
+    # the standard ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var (and appends the
+    # path itself).
+    endpoint: str | None = None
+    service_name: str = "dikw-core"
+    # ParentBased(TraceIdRatio) head sampling. 1.0 = sample everything.
+    sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
 class DikwConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=_default_provider_config)
     storage: StorageConfig = Field(default_factory=SQLiteStorageConfig)
@@ -501,6 +526,7 @@ class DikwConfig(BaseModel):
     assets: AssetsConfig = Field(default_factory=AssetsConfig)
     synth: SynthConfig = Field(default_factory=SynthConfig)
     lint: LintConfig = Field(default_factory=LintConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     model_config = {"populate_by_name": True}
 
