@@ -62,8 +62,8 @@ cjk = ["jieba>=0.42"]
 # than churning this user-facing install contract per PR — the same
 # Phase-0 forward-declaration the core `dependencies` above used for the
 # fastapi/uvicorn client/server arc. PR1 wires `instrumentation-fastapi`
-# (HTTP server spans); `instrumentation-httpx` is wired in PR2 (provider /
-# client spans + traceparent propagation) and `instrumentation-logging` in
+# (HTTP server spans); PR2 wires `instrumentation-httpx` (provider outbound
+# spans + traceparent propagation); `instrumentation-logging` is wired in
 # PR4 (trace_id/span_id log correlation).
 otel = [
     "opentelemetry-api>=1.30",

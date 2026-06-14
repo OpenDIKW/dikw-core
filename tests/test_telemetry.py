@@ -188,6 +188,20 @@ def test_configure_telemetry_activates_and_is_idempotent() -> None:
     telemetry.shutdown_telemetry()
 
 
+@pytest.mark.skipif(not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra")
+def test_configure_telemetry_instruments_httpx_and_shutdown_unwinds() -> None:
+    """Activation globally patches httpx (provider outbound spans + W3C
+    traceparent); shutdown un-patches it so a fresh in-process lifespan
+    re-activates from a clean state rather than double-wrapping."""
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    assert HTTPXClientInstrumentor()._is_instrumented_by_opentelemetry is False
+    assert telemetry.configure_telemetry(enabled=True, **_KW) is True
+    assert HTTPXClientInstrumentor()._is_instrumented_by_opentelemetry is True
+    telemetry.shutdown_telemetry()
+    assert HTTPXClientInstrumentor()._is_instrumented_by_opentelemetry is False
+
+
 def test_shutdown_telemetry_safe_when_inactive() -> None:
     telemetry.shutdown_telemetry()  # no provider — must not raise
 

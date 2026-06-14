@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..telemetry import trace_llm_stream
 from ._http import build_no_keepalive_async_client
 from .base import (
     LLMResponse,
@@ -438,4 +439,13 @@ class OpenAICodexLLM:
                 usage=usage,
             )
 
-        return _gen()
+        # Wrap in a gen_ai.chat span (gen_ai.system="openai"); token usage +
+        # outbound httpx wire span nest under it. The generator body, including
+        # the codex reducer-bug fallback, is unchanged.
+        return trace_llm_stream(
+            _gen(),
+            system="openai",
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )

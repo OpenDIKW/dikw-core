@@ -9,6 +9,24 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **OpenTelemetry tracing — task linking + provider spans (PR2 of the OTel arc).**
+  Building on the PR1 no-op-safe seam, `configure_telemetry()` now registers the
+  global **httpx instrumentation**, so every server-side provider HTTP call is
+  auto-traced and carries the W3C `traceparent` header. Each background task
+  opens a `dikw.task.<op>` **root span linked** back to the submitting request
+  span (the OTel idiom for request-triggered fire-and-forget work — the detached
+  task outlives the request span), held current across the run so downstream
+  spans nest under it, stamped with `dikw.op` / `dikw.task_id` / `dikw.base_id`;
+  a user-requested cancel is recorded as `dikw.cancelled` rather than an error
+  status, and a consumer that breaks out of a streamed call early
+  (`GeneratorExit`) is likewise a graceful terminal, not an error. Every LLM
+  provider (`openai_compat`, `anthropic_compat`,
+  `openai_codex`) emits a `gen_ai.chat` span carrying `gen_ai.request.model` +
+  `gen_ai.usage.{input,output}_tokens` (surfacing the token usage the synth call
+  site previously discarded, plus Anthropic `cache_read`/`cache_creation`
+  tokens), and both embedders emit a `gen_ai.embeddings` span. All no-ops when
+  the `[otel]` extra is absent. Engine op-level spans (ingest/synth/retrieve/
+  lint sub-spans) and the client→server `traceparent` leg follow in the next PRs.
 - **OpenTelemetry observability foundations (PR1 of a 5-PR arc).** New optional
   `[otel]` extra (`uv sync --extra otel`) and a `dikw_core.telemetry` seam:
   `get_tracer()` / `get_meter()` accessors that instrument against the OTel API

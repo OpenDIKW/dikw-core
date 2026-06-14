@@ -11,6 +11,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from ..telemetry import gen_ai_span, trace_llm_stream
 from ._http import build_no_keepalive_async_client
 from .base import (
     LLMResponse,
@@ -241,7 +242,15 @@ class OpenAICompatLLM:
                 usage=usage,
             )
 
-        return _gen()
+        # Wrap the stream in a gen_ai.chat span (token usage + outbound httpx
+        # wire span nest under it). The generator body above is unchanged.
+        return trace_llm_stream(
+            _gen(),
+            system="openai",
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
 
 class OpenAICompatEmbeddings:
@@ -274,62 +283,72 @@ class OpenAICompatEmbeddings:
     async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
         if not texts:
             return []
-        client = self._get_client()
-        kwargs: dict[str, Any] = {"model": model, "input": texts}
-        if self._default_dimensions is not None:
-            kwargs["dimensions"] = self._default_dimensions
-        # Wrap OpenAI SDK exceptions and classify into transient vs.
-        # permanent so the embed-batch retry-skip in
-        # ``info.embed._run_batch_with_retry`` retries transient API
-        # failures (timeouts, rate limits, 5xx, connect drops) but
-        # propagates permanent misconfig (401, model-not-found, 4xx
-        # other than 408/429) instead of silently retrying-then-
-        # skipping. Without classification, missing-key / auth /
-        # invalid-model errors get swallowed and the call reports
-        # "success, 0 vectors embedded" — a silent corruption.
-        # Codex review finding, 0.4.0.
-        from openai import (
-            APIConnectionError,
-            APIStatusError,
-            APITimeoutError,
-            OpenAIError,
-        )
-        try:
-            resp = await client.embeddings.create(**kwargs)
-        except (APITimeoutError, APIConnectionError) as exc:
-            raise TransientProviderError(
-                f"OpenAI-compat embedding call timed out / connection failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        except APIStatusError as exc:
-            status = getattr(exc, "status_code", None)
-            err = (
-                TransientProviderError
-                if status is not None and (status >= 500 or status in (408, 429))
-                else ProviderError
+        # Span the whole call (covers all batches' httpx wire spans as children
+        # + carries gen_ai.embeddings semantics + error status). Opened after
+        # the empty-input early return so a no-op embed emits no network span.
+        with gen_ai_span(operation="embeddings", system="openai", model=model) as span:
+            client = self._get_client()
+            kwargs: dict[str, Any] = {"model": model, "input": texts}
+            if self._default_dimensions is not None:
+                kwargs["dimensions"] = self._default_dimensions
+            # Wrap OpenAI SDK exceptions and classify into transient vs.
+            # permanent so the embed-batch retry-skip in
+            # ``info.embed._run_batch_with_retry`` retries transient API
+            # failures (timeouts, rate limits, 5xx, connect drops) but
+            # propagates permanent misconfig (401, model-not-found, 4xx
+            # other than 408/429) instead of silently retrying-then-
+            # skipping. Without classification, missing-key / auth /
+            # invalid-model errors get swallowed and the call reports
+            # "success, 0 vectors embedded" — a silent corruption.
+            # Codex review finding, 0.4.0.
+            from openai import (
+                APIConnectionError,
+                APIStatusError,
+                APITimeoutError,
+                OpenAIError,
             )
-            raise err(
-                f"OpenAI-compat embedding call failed with status {status}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        except OpenAIError as exc:
-            raise ProviderError(
-                f"OpenAI-compat embedding call failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        # The response carries an explicit per-item ``index`` because list
-        # order is not contractual — any OpenAI-compatible gateway (Ollama,
-        # vLLM, TEI, …) may return items out of order, and the consumer
-        # (``info.embed``) pairs vectors to chunks positionally before
-        # persisting them into the content-hash embedding cache. Sort before
-        # returning (``gitee_multimodal`` applies the same defence). A row
-        # that omits ``index`` keeps its response position as the key — a
-        # constant fallback (0) would yank unindexed rows ahead of every real
-        # index > 0 in a mixed response.
-        def _row_key(pair: tuple[int, Any]) -> int:
-            pos, row = pair
-            idx = getattr(row, "index", None)
-            return pos if idx is None else int(idx)
+            try:
+                resp = await client.embeddings.create(**kwargs)
+            except (APITimeoutError, APIConnectionError) as exc:
+                raise TransientProviderError(
+                    f"OpenAI-compat embedding call timed out / connection failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            except APIStatusError as exc:
+                status = getattr(exc, "status_code", None)
+                err = (
+                    TransientProviderError
+                    if status is not None and (status >= 500 or status in (408, 429))
+                    else ProviderError
+                )
+                raise err(
+                    f"OpenAI-compat embedding call failed with status {status}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            except OpenAIError as exc:
+                raise ProviderError(
+                    f"OpenAI-compat embedding call failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            # Real OpenAI carries usage.prompt_tokens on the embeddings
+            # response; gateways (Ollama/TEI/vLLM) may omit it — guard so a
+            # missing field never breaks the call.
+            prompt_tokens = getattr(getattr(resp, "usage", None), "prompt_tokens", None)
+            if prompt_tokens is not None:
+                span.set_response(usage={"input_tokens": int(prompt_tokens)})
+            # The response carries an explicit per-item ``index`` because list
+            # order is not contractual — any OpenAI-compatible gateway (Ollama,
+            # vLLM, TEI, …) may return items out of order, and the consumer
+            # (``info.embed``) pairs vectors to chunks positionally before
+            # persisting them into the content-hash embedding cache. Sort before
+            # returning (``gitee_multimodal`` applies the same defence). A row
+            # that omits ``index`` keeps its response position as the key — a
+            # constant fallback (0) would yank unindexed rows ahead of every real
+            # index > 0 in a mixed response.
+            def _row_key(pair: tuple[int, Any]) -> int:
+                pos, row = pair
+                idx = getattr(row, "index", None)
+                return pos if idx is None else int(idx)
 
-        rows = sorted(enumerate(resp.data), key=_row_key)
-        return [list(row.embedding) for _, row in rows]
+            rows = sorted(enumerate(resp.data), key=_row_key)
+            return [list(row.embedding) for _, row in rows]
