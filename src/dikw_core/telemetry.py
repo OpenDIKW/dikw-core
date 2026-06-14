@@ -500,6 +500,33 @@ def telemetry_should_activate(enabled: bool) -> bool:
     return enabled and OTEL_AVAILABLE and not _otel_sdk_disabled()
 
 
+def _adopt_provider(provider: Any) -> bool:
+    """Register ``provider`` as the global ``TracerProvider``, honouring OTel's
+    process-once ``set_tracer_provider``.
+
+    Returns ``True`` when dikw's provider won registration. When a provider is
+    already registered (a prior in-process bootstrap, or external
+    auto-instrumentation), ``set_tracer_provider`` silently no-ops — so release
+    the built provider's background exporter thread and return ``False`` rather
+    than claim success with a provider that was never installed (spans would
+    flow to the other one and dikw's exporter would receive nothing). Shared by
+    the server (:func:`configure_telemetry`) and client
+    (:func:`configure_client_telemetry_from_env`) bootstraps; each caller then
+    instruments httpx + flips the latch only on a ``True`` return.
+    """
+    _otel_trace.set_tracer_provider(provider)
+    if _otel_trace.get_tracer_provider() is provider:
+        return True
+    shutdown = getattr(provider, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
+    logger.warning(
+        "telemetry not activated: a TracerProvider is already registered in "
+        "this process; skipping dikw OTel bootstrap"
+    )
+    return False
+
+
 def configure_telemetry(
     *,
     enabled: bool,
@@ -558,22 +585,7 @@ def configure_telemetry(
         else OTLPSpanExporter()
     )
     provider.add_span_processor(BatchSpanProcessor(exporter))
-    _otel_trace.set_tracer_provider(provider)
-    if _otel_trace.get_tracer_provider() is not provider:
-        # OTel's set_tracer_provider is process-once: it silently ignores the
-        # call (no exception) when a provider is already registered — a prior
-        # dikw lifespan in this process, or external auto-instrumentation. Don't
-        # claim success with a provider that was never installed (spans would
-        # flow to the old/already-shut-down one and our exporter would receive
-        # nothing). Release the built provider's background exporter thread and
-        # report inactive.
-        shutdown = getattr(provider, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-        logger.warning(
-            "telemetry not activated: a TracerProvider is already registered in "
-            "this process; skipping dikw OTel bootstrap"
-        )
+    if not _adopt_provider(provider):
         return False
 
     # Global httpx patch — covers every server-side provider httpx client
@@ -582,6 +594,86 @@ def configure_telemetry(
     # so spans never leak to a foreign global, and only AFTER the process-once
     # guard passes — if dikw didn't win provider registration it must not have
     # globally patched httpx either. Unwound in :func:`shutdown_telemetry`.
+    HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+
+    _provider = provider
+    _configured = True
+    return True
+
+
+def _otel_endpoint_configured() -> bool:
+    """True when an OTLP export endpoint is set via the standard env vars — the
+    generic ``OTEL_EXPORTER_OTLP_ENDPOINT`` or the per-signal
+    ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` (the SDK exporter reads either)."""
+    return bool(
+        os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
+    )
+
+
+def configure_client_telemetry_from_env(*, version: str) -> bool:
+    """Env-only OTel bootstrap for the ``dikw client`` CLI (no ``dikw.yml``).
+
+    The remote client has no base config (cf. ``config.TelemetryConfig``), so its
+    telemetry is driven purely by the standard ``OTEL_*`` env vars. Activates
+    ONLY when an OTLP endpoint is configured (:func:`_otel_endpoint_configured`),
+    the ``[otel]`` extra is installed, and ``OTEL_SDK_DISABLED`` is unset — so a
+    plain ``dikw client`` invocation with no OTEL_* env pays zero cost. Wires a
+    ``TracerProvider`` (``service.name`` from ``OTEL_SERVICE_NAME``, default
+    ``dikw-client``; sampler + exporter endpoint/headers read from the SDK's own
+    ``OTEL_*`` env; transport is fixed to OTLP/HTTP) and the global httpx
+    instrumentation, so the
+    client's outbound request auto-injects the W3C ``traceparent`` header and the
+    ``dikw serve`` FastAPI instrumentation adopts it as the parent — one trace
+    spans client → server → task → provider.
+
+    Idempotent (process-once); shares the latch + ``_provider`` slot with
+    :func:`configure_telemetry` — only one runs per process (client vs. server),
+    and :func:`shutdown_telemetry` tears either down. Returns ``True`` when
+    activated, ``False`` on every no-op path. The caller (the CLI entry)
+    registers an ``atexit`` flush on a ``True`` return — the short-lived client
+    process would otherwise exit before the ``BatchSpanProcessor`` timer flushes.
+    """
+    global _configured, _provider
+    if _configured:
+        return True
+    if not OTEL_AVAILABLE or _otel_sdk_disabled() or not _otel_endpoint_configured():
+        return False
+
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError as e:
+        # opentelemetry-api present but the SDK/exporter/instrumentation is not —
+        # a non-standard partial install. Never crash the CLI: degrade to no-op.
+        logger.warning(
+            "client telemetry requested via OTEL_* env but the OTel SDK/exporter/"
+            "instrumentation is not installed (%s); install the [otel] extra. "
+            "Continuing without telemetry.",
+            e,
+        )
+        return False
+
+    service_name = os.getenv("OTEL_SERVICE_NAME", "").strip() or "dikw-client"
+    resource = Resource.create(
+        {"service.name": service_name, "service.version": version}
+    )
+    # No explicit sampler: the SDK reads OTEL_TRACES_SAMPLER (default
+    # parentbased_always_on) — env-faithful for a client. Bare OTLPSpanExporter:
+    # it reads OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT/HEADERS itself (the import
+    # pins transport to OTLP/HTTP — OTEL_EXPORTER_OTLP_PROTOCOL is not honoured,
+    # matching the server's configure_telemetry).
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    if not _adopt_provider(provider):
+        return False
+
+    # Global httpx patch (pinned to dikw's provider, only after the process-once
+    # guard passes) — the client's outbound Transport request then carries a
+    # traceparent header. Unwound in :func:`shutdown_telemetry`.
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
 
     _provider = provider
@@ -670,6 +762,7 @@ __all__ = [
     "GEN_AI_USAGE_OUTPUT_TOKENS",
     "OTEL_AVAILABLE",
     "capture_otel_context",
+    "configure_client_telemetry_from_env",
     "configure_telemetry",
     "gen_ai_span",
     "get_meter",

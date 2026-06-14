@@ -193,8 +193,30 @@ auto-traced via httpx with W3C `traceparent` propagation. (The `dikw.<op>`
 engine spans are also the root for direct / eval callers, which have no task
 span.) Finer per-source / per-group / per-batch sub-spans, GenAI token
 **metrics**, and `trace_id`/`span_id` log correlation land in subsequent
-releases. The remote `dikw client` CLI has no base config, so its telemetry —
-if wanted — is driven purely by `OTEL_*` env vars.
+releases.
+
+The remote `dikw client` CLI has no base config (no `dikw.yml`), so its
+telemetry is driven purely by the standard `OTEL_*` env vars. Set
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or the per-signal
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) before a `dikw client …` command and —
+with the `[otel]` extra installed and `OTEL_SDK_DISABLED` unset — the CLI
+auto-instruments its outbound httpx calls, injecting a W3C `traceparent` that
+the server adopts as the parent. The result is **one trace** from the client
+process through the HTTP server span, the background task, the engine op, and
+the provider call:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+export OTEL_SERVICE_NAME=dikw-client   # optional; defaults to dikw-client
+dikw client ingest                     # this trace now stitches to dikw serve
+```
+
+The bootstrap fires only for the `client` subgroup — local `version` / `init` /
+`serve` / `auth` commands make no HTTP calls and pay zero cost, and `serve`
+keeps wiring its own server-side telemetry from the `telemetry:` section above.
+A plain `dikw client` invocation with no `OTEL_*` env is a no-op. Because the
+CLI is short-lived, spans are flushed when it exits (an `atexit` hook drains the
+`BatchSpanProcessor`), so even a sub-second command exports its span.
 
 ### Client config
 

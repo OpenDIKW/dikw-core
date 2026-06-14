@@ -81,6 +81,57 @@ def test_serve_help_lists_options(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--port" in out
 
 
+def test_root_bootstraps_client_telemetry_only_for_client_subgroup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``_root`` callback must invoke the env-only client OTel bootstrap
+    ONLY for the ``client`` subgroup. Local commands (version/init/auth) make no
+    httpx calls, and ``serve`` wires its OWN telemetry in the server lifespan —
+    bootstrapping a client provider for it would lose OTel's process-once
+    set_tracer_provider race and silently disable server telemetry.
+    """
+    import dikw_core.cli as cli_mod
+
+    calls: list[str] = []
+
+    def _spy(*, version: str) -> bool:
+        calls.append(version)
+        return False  # report inactive so no atexit/provider side effects fire
+
+    monkeypatch.setattr(cli_mod, "configure_client_telemetry_from_env", _spy)
+
+    # non-client subcommands never bootstrap client telemetry
+    for args in (["version"], ["init", "--help"], ["serve", "--help"], ["auth", "--help"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, (args, result.stdout)
+    assert calls == [], f"client telemetry bootstrapped for a non-client command: {calls}"
+
+    # the client subgroup bootstraps exactly once (--help still runs _root first)
+    result = runner.invoke(app, ["client", "--help"])
+    assert result.exit_code == 0, result.stdout
+    assert len(calls) == 1
+
+
+def test_root_registers_atexit_flush_when_client_telemetry_activates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a successful client-telemetry activation, ``_root`` must register an
+    ``atexit`` flush — the short-lived CLI would otherwise exit before the
+    BatchSpanProcessor drains its queue, dropping the client span (and with it
+    the client→server stitch)."""
+    import dikw_core.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "configure_client_telemetry_from_env", lambda *, version: True
+    )
+    registered: list[object] = []
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda fn: registered.append(fn))
+
+    result = runner.invoke(app, ["client", "--help"])
+    assert result.exit_code == 0, result.stdout
+    assert cli_mod.shutdown_telemetry in registered
+
+
 def test_top_level_app_registers_only_local_commands() -> None:
     """The top-level Typer app must register exactly the four local-only
     commands + the ``client`` subgroup — never any HTTP-bound verb.

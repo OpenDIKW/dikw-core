@@ -15,6 +15,7 @@ Top-level commands fall into two groups:
 
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,7 @@ from . import __version__, api
 from .auth_cli import app as auth_app
 from .client.cli_app import app as client_app
 from .logging import init_logging
+from .telemetry import configure_client_telemetry_from_env, shutdown_telemetry
 
 app = typer.Typer(
     name="dikw",
@@ -37,9 +39,25 @@ console = Console()
 
 @app.callback()
 def _root(ctx: typer.Context) -> None:
-    """Configure logging from DIKW_LOG_LEVEL before any subcommand runs."""
-    _ = ctx
+    """Configure logging (+ client-side OTel for ``dikw client``) before any
+    subcommand runs."""
     init_logging()
+    # Client-side OTel is env-only (the remote client has no dikw.yml). Gate to
+    # the ``client`` subgroup: local commands (version/init/auth) make no httpx
+    # calls, and ``serve`` wires its OWN telemetry in the server lifespan — a
+    # provider registered here would lose OTel's process-once
+    # set_tracer_provider race and silently disable server telemetry. No-op
+    # unless OTEL_* env is set and the [otel] extra is installed. Subgroup
+    # granularity is the only safe seam (a ``client/`` callback can't import
+    # telemetry without breaking the standalone-wheel boundary), so a ``client``
+    # command that issues no httpx call — bare ``dikw client`` help, or
+    # ``serve-and-run``'s outer process — pays a one-off, atexit-flushed provider
+    # init when OTEL_* is set; harmless, and only on the opt-in path.
+    if ctx.invoked_subcommand == "client" and configure_client_telemetry_from_env(
+        version=__version__
+    ):
+        # Short-lived CLI: flush the BatchSpanProcessor before the process exits.
+        atexit.register(shutdown_telemetry)
 
 
 # ---- local-only commands ------------------------------------------------
