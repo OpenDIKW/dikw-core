@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from ..logging import init_logging
+from ..telemetry import OTEL_AVAILABLE
 from .auth import AuthConfig, load_auth_config, make_dependency
 from .errors import install_handlers
 from .routes_assets import make_router as make_assets_router
@@ -46,6 +47,16 @@ def build_app(
         lifespan=lifespan,
     )
     app.state.runtime_factory = runtime_factory
+
+    # OTel HTTP server-span instrumentation. Lives here (server code may import
+    # FastAPI) not in ``telemetry.py`` (engine root, must not depend on the web
+    # framework). Wired unconditionally when the ``[otel]`` extra is present; it
+    # uses the global tracer provider, so spans are no-op until the lifespan's
+    # ``configure_telemetry`` registers one.
+    if OTEL_AVAILABLE:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
 
     install_handlers(app)
     auth_dep = make_dependency(auth)

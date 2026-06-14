@@ -7,6 +7,24 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Added
+
+- **OpenTelemetry observability foundations (PR1 of a 5-PR arc).** New optional
+  `[otel]` extra (`uv sync --extra otel`) and a `dikw_core.telemetry` seam:
+  `get_tracer()` / `get_meter()` accessors that instrument against the OTel API
+  and degrade to **zero-overhead no-ops** when the extra is absent, the
+  `dikw.*` semantic-convention attribute keys, and an idempotent
+  `configure_telemetry()` SDK bootstrap (TracerProvider + OTLP/HTTP exporter,
+  `ParentBased(TraceIdRatio)` sampling). A new `telemetry:` section in
+  `dikw.yml` (`enabled` / `endpoint` / `service_name` / `sample_ratio`, all
+  **off by default**) drives server-side export; the standard `OTEL_SDK_DISABLED`
+  kill-switch and `OTEL_EXPORTER_OTLP_ENDPOINT` fallback are honoured. `dikw serve`
+  bootstraps it from the lifespan (after cfg load) and auto-instruments FastAPI so
+  every `/v1/*` request becomes an HTTP server span. **No engine spans/metrics
+  yet** — this PR only lands the no-op-safe wiring; tracing of the ingest/synth/
+  retrieve/provider seams, GenAI token metrics, and log↔trace correlation follow
+  in later PRs.
+
 ### Changed
 
 - **Synth prompt two-tier restructure (SP spine + slim UP).** `DEFAULT_SYNTH_SYSTEM`

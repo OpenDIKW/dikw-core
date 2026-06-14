@@ -48,6 +48,23 @@ postgres = ["psycopg[binary,pool]>=3.3", "pgvector>=0.4"]
 # or `uv pip install 'dikw-core[cjk]'` before flipping
 # `retrieval.cjk_tokenizer: jieba` in dikw.yml.
 cjk = ["jieba>=0.42"]
+# OpenTelemetry observability. Optional so the default install stays
+# dependency-light (alpha, minimal-deps philosophy): without it, the
+# ``telemetry`` module degrades to zero-overhead no-ops. Install with
+# `uv sync --extra otel` (CI installs it via `uv sync --all-extras`) or
+# `uv pip install 'dikw-core[otel]'`, then enable the `telemetry:` section
+# in dikw.yml (or set OTEL_* env vars) to export traces/metrics/logs to any
+# OTLP backend (Jaeger/Tempo, Prometheus, Grafana, Datadog, …). The
+# instrumentation packages track the 0.NNbM line (separate from the stable
+# 1.NN API/SDK); OTLP/HTTP avoids the heavy grpcio wheel.
+otel = [
+    "opentelemetry-api>=1.30",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
+    "opentelemetry-instrumentation-httpx>=0.51b0",
+    "opentelemetry-instrumentation-logging>=0.51b0",
+]
 
 [dependency-groups]
 dev = [
@@ -117,6 +134,14 @@ explicit_package_bases = true
 module = [
     "sqlite_vec.*", "frontmatter.*", "markdown_it.*", "pgvector.*", "jieba.*",
 ]
+ignore_missing_imports = true
+
+# The opentelemetry-instrumentation-* packages ship incomplete py.typed
+# coverage; the stable opentelemetry-api / -sdk do not need this. Scoped to
+# the instrumentation namespace so real type errors in our own otel use still
+# surface.
+[[tool.mypy.overrides]]
+module = ["opentelemetry.instrumentation.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
