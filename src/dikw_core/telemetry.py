@@ -68,11 +68,20 @@ DIKW_EMBED_VERSION_ID: Final = "dikw.embed.version_id"
 
 
 class _NoopSpan:
-    def set_attribute(self, key: str, value: object) -> None: ...
-    def set_status(self, *args: object, **kwargs: object) -> None: ...
-    def record_exception(self, *args: object, **kwargs: object) -> None: ...
-    def add_event(self, *args: object, **kwargs: object) -> None: ...
-    def end(self, *args: object, **kwargs: object) -> None: ...
+    def set_attribute(self, key: str, value: object) -> None:
+        pass
+
+    def set_status(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def record_exception(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def add_event(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def end(self, *args: object, **kwargs: object) -> None:
+        pass
 
 
 class _NoopTracer:
@@ -87,8 +96,11 @@ class _NoopTracer:
 
 
 class _NoopInstrument:
-    def add(self, amount: float, *args: object, **kwargs: object) -> None: ...
-    def record(self, amount: float, *args: object, **kwargs: object) -> None: ...
+    def add(self, amount: float, *args: object, **kwargs: object) -> None:
+        pass
+
+    def record(self, amount: float, *args: object, **kwargs: object) -> None:
+        pass
 
 
 class _NoopMeter:
@@ -137,6 +149,19 @@ def _otel_sdk_disabled() -> bool:
     return os.getenv("OTEL_SDK_DISABLED", "").strip().lower() in ("1", "true", "yes")
 
 
+def telemetry_should_activate(enabled: bool) -> bool:
+    """Whether telemetry should be wired: requested in config AND the ``[otel]``
+    extra is installed AND not killed via ``OTEL_SDK_DISABLED``.
+
+    Shared by :func:`configure_telemetry` (the SDK bootstrap) and the server's
+    build-time decision to wire FastAPI instrumentation, so the two never
+    diverge — the HTTP-span middleware must not be added when telemetry is off
+    (it can't be added later in the lifespan), else a disabled server would
+    still pay middleware cost and could emit spans to a foreign global provider.
+    """
+    return enabled and OTEL_AVAILABLE and not _otel_sdk_disabled()
+
+
 def configure_telemetry(
     *,
     enabled: bool,
@@ -161,7 +186,7 @@ def configure_telemetry(
     global _configured, _provider
     if _configured:
         return True
-    if not enabled or not OTEL_AVAILABLE or _otel_sdk_disabled():
+    if not telemetry_should_activate(enabled):
         return False
 
     try:
@@ -276,4 +301,5 @@ __all__ = [
     "get_meter",
     "get_tracer",
     "shutdown_telemetry",
+    "telemetry_should_activate",
 ]

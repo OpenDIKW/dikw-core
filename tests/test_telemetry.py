@@ -61,6 +61,20 @@ def test_get_meter_instruments_are_usable() -> None:
     hist.record(0.5, {"k": "v"})
 
 
+def test_telemetry_should_activate_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared gate the SDK bootstrap and the FastAPI-instrumentation
+    decision both read — they must never diverge."""
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    assert telemetry.telemetry_should_activate(False) is False
+    if telemetry.OTEL_AVAILABLE:
+        assert telemetry.telemetry_should_activate(True) is True
+        monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+        assert telemetry.telemetry_should_activate(True) is False
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    monkeypatch.setattr(telemetry, "OTEL_AVAILABLE", False)
+    assert telemetry.telemetry_should_activate(True) is False
+
+
 def test_configure_telemetry_noop_when_disabled() -> None:
     assert telemetry.configure_telemetry(enabled=False, **_KW) is False
 

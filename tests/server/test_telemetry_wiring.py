@@ -31,6 +31,10 @@ class _Blocker:
         return None
 
 
+async def _no_factory() -> ServerRuntime:
+    raise AssertionError("runtime factory must not run during build")
+
+
 @pytest.mark.skipif(not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra")
 def test_build_app_survives_missing_fastapi_instrumentation(
     monkeypatch: pytest.MonkeyPatch,
@@ -39,14 +43,30 @@ def test_build_app_survives_missing_fastapi_instrumentation(
     blocker = _Blocker()
     sys.meta_path.insert(0, blocker)
     try:
-        async def _factory() -> ServerRuntime:
-            raise AssertionError("runtime factory must not run during build")
-
+        # instrument_telemetry=True forces the import path so the guard is
+        # actually exercised (not skipped because telemetry is off).
         app = build_app(
-            runtime_factory=_factory,
+            runtime_factory=_no_factory,
             auth=AuthConfig(host="127.0.0.1", token=None),
+            instrument_telemetry=True,
         )
         assert app is not None
     finally:
         sys.meta_path.remove(blocker)
         sys.modules.pop(_BLOCKED, None)
+
+
+@pytest.mark.skipif(not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra")
+def test_build_app_instruments_only_when_telemetry_enabled() -> None:
+    """The FastAPI HTTP-span middleware is wired only when telemetry is on, so a
+    disabled server carries no middleware (no per-request cost, no spans to a
+    foreign provider)."""
+    auth = AuthConfig(host="127.0.0.1", token=None)
+    off = build_app(
+        runtime_factory=_no_factory, auth=auth, instrument_telemetry=False
+    )
+    assert getattr(off, "_is_instrumented_by_opentelemetry", False) is False
+    on = build_app(
+        runtime_factory=_no_factory, auth=auth, instrument_telemetry=True
+    )
+    assert getattr(on, "_is_instrumented_by_opentelemetry", False) is True
