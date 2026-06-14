@@ -221,8 +221,13 @@ async def lifespan(
     try:
         yield
     finally:
-        await teardown_runtime(rt)
-        shutdown_telemetry()
+        # shutdown_telemetry must run even if teardown raises — otherwise a
+        # storage/manager close error would leak the BatchSpanProcessor export
+        # thread and strand the _configured latch for any in-process restart.
+        try:
+            await teardown_runtime(rt)
+        finally:
+            shutdown_telemetry()
 
 
 def get_runtime(app: FastAPI) -> ServerRuntime:

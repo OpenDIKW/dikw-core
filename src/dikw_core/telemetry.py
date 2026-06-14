@@ -152,10 +152,11 @@ def configure_telemetry(
     set). Called once from the server lifespan after cfg load — never from
     engine code.
 
-    ``endpoint`` is the OTLP/HTTP base URL (e.g. ``http://collector:4318``);
-    the per-signal path (``/v1/traces``) is appended automatically. Left
-    ``None``, the exporter falls back to the standard
-    ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var.
+    ``endpoint`` is the OTLP/HTTP base URL (e.g. ``http://collector:4318``).
+    When set, dikw appends the per-signal ``/v1/traces`` path; when ``None``,
+    the exporter is constructed bare and the SDK's own
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` env handling applies (which appends the
+    path itself).
     """
     global _configured, _provider
     if _configured:
@@ -259,6 +260,8 @@ def reset_telemetry_for_testing() -> None:
             pass
 
 
+# ``reset_telemetry_for_testing`` is intentionally NOT exported — it's a
+# test-only helper that reaches into OTel internals, not public API.
 __all__ = [
     "DIKW_BASE_ID",
     "DIKW_CATEGORY",
@@ -272,6 +275,5 @@ __all__ = [
     "configure_telemetry",
     "get_meter",
     "get_tracer",
-    "reset_telemetry_for_testing",
     "shutdown_telemetry",
 ]

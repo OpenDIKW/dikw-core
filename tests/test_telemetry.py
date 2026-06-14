@@ -8,7 +8,9 @@ staying a zero-side-effect no-op otherwise.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
@@ -80,6 +82,56 @@ def test_configure_telemetry_noop_when_otel_absent(
     with telemetry.get_tracer().start_as_current_span("x"):
         pass
     telemetry.get_meter().create_counter("c").add(1)
+
+
+@pytest.mark.skipif(
+    not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra"
+)
+def test_configure_telemetry_degrades_when_sdk_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """opentelemetry-api present but the SDK/exporter absent (a partial /
+    manual install) → warn + return False, never crash. Exercises the
+    ImportError arm inside configure_telemetry by blocking opentelemetry.sdk.trace."""
+    blocked = "opentelemetry.sdk.trace"
+    monkeypatch.delitem(sys.modules, blocked, raising=False)
+
+    class _Blocker:
+        def find_spec(self, name: str, path: Any = None, target: Any = None) -> None:
+            if name == blocked:
+                raise ModuleNotFoundError(blocked)
+            return None
+
+    blocker = _Blocker()
+    sys.meta_path.insert(0, blocker)
+    try:
+        assert telemetry.configure_telemetry(enabled=True, **_KW) is False
+        assert telemetry._configured is False
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.pop(blocked, None)
+
+
+def test_noop_shim_methods_are_all_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under a minimal install the hand-rolled no-op shim is the safety net,
+    so exercise every method engine code may emit to. CI runs with [otel]
+    installed, so force the otel-absent branch to reach the shim (the real
+    OTel no-ops cover this path when the extra IS present)."""
+    monkeypatch.setattr(telemetry, "OTEL_AVAILABLE", False)
+    tracer = telemetry.get_tracer()
+    with tracer.start_as_current_span("s") as span:
+        span.set_attribute(telemetry.DIKW_OP, "ingest")
+        span.set_status("ok")
+        span.record_exception(ValueError("boom"))
+        span.add_event("evt")
+        span.end()
+    out_of_band = tracer.start_span("s2")
+    out_of_band.set_attribute("k", "v")
+    out_of_band.end()
+    meter = telemetry.get_meter()
+    meter.create_counter("dikw.test.counter").add(1, {"k": "v"})
+    meter.create_up_down_counter("dikw.test.gauge").add(-1)
+    meter.create_histogram("dikw.test.hist").record(1.5, {"k": "v"})
 
 
 def test_configure_telemetry_disabled_does_not_latch() -> None:

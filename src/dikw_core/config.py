@@ -507,9 +507,10 @@ class TelemetryConfig(BaseModel):
     """
 
     enabled: bool = False
-    # OTLP/HTTP base URL (e.g. ``http://collector:4318``); the per-signal
-    # ``/v1/traces`` path is appended automatically. Null → fall back to the
-    # standard ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var.
+    # OTLP/HTTP base URL (e.g. ``http://collector:4318``); when set, the
+    # per-signal ``/v1/traces`` path is appended for you. Null → the SDK reads
+    # the standard ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var (and appends the
+    # path itself).
     endpoint: str | None = None
     service_name: str = "dikw-core"
     # ParentBased(TraceIdRatio) head sampling. 1.0 = sample everything.

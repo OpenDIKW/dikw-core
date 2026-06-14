@@ -57,6 +57,14 @@ cjk = ["jieba>=0.42"]
 # OTLP backend (Jaeger/Tempo, Prometheus, Grafana, Datadog, …). The
 # instrumentation packages track the 0.NNbM line (separate from the stable
 # 1.NN API/SDK); OTLP/HTTP avoids the heavy grpcio wheel.
+#
+# The full set is declared once here for the 5-PR observability arc rather
+# than churning this user-facing install contract per PR — the same
+# Phase-0 forward-declaration the core `dependencies` above used for the
+# fastapi/uvicorn client/server arc. PR1 wires `instrumentation-fastapi`
+# (HTTP server spans); `instrumentation-httpx` is wired in PR2 (provider /
+# client spans + traceparent propagation) and `instrumentation-logging` in
+# PR4 (trace_id/span_id log correlation).
 otel = [
     "opentelemetry-api>=1.30",
     "opentelemetry-sdk>=1.30",
