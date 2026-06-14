@@ -183,14 +183,18 @@ the SDK from its lifespan (after config load) and traces are exported to any
 OTLP backend (Jaeger/Tempo, Grafana, Datadog, …). A single trace now spans:
 the `/v1/*` HTTP server span → a `dikw.task.<op>` span for the background task
 it submits (a **root span linked** back to the request, since the detached task
-outlives it) → a `gen_ai.chat` span per LLM call carrying the model + token
-usage (incl. Anthropic prompt-cache tokens) and a `gen_ai.embeddings` span per
-embedding call → the outbound provider HTTP call, auto-traced via httpx with
-W3C `traceparent` propagation. Engine op-level spans (per-source / per-group /
-retrieval-leg), GenAI token **metrics**, and `trace_id`/`span_id` log
-correlation land in subsequent releases. The remote `dikw client` CLI has no
-base config, so its telemetry — if wanted — is driven purely by `OTEL_*` env
-vars.
+outlives it) → a `dikw.<op>` engine span (`dikw.ingest` / `dikw.synth` /
+`dikw.retrieve` / `dikw.lint.{propose,apply}`) carrying `dikw.layer` — for a
+retrieve, this also has a `dikw.retrieve.leg` child span per fusion leg (BM25,
+vector, asset, graph) with its hit count → a `gen_ai.chat` span per LLM call
+carrying the model + token usage (incl. Anthropic prompt-cache tokens) and a
+`gen_ai.embeddings` span per embedding call → the outbound provider HTTP call,
+auto-traced via httpx with W3C `traceparent` propagation. (The `dikw.<op>`
+engine spans are also the root for direct / eval callers, which have no task
+span.) Finer per-source / per-group / per-batch sub-spans, GenAI token
+**metrics**, and `trace_id`/`span_id` log correlation land in subsequent
+releases. The remote `dikw client` CLI has no base config, so its telemetry —
+if wanted — is driven purely by `OTEL_*` env vars.
 
 ### Client config
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Hashable
+from collections.abc import Awaitable, Hashable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -45,7 +45,42 @@ from ...schemas import (
     VecHit,
 )
 from ...storage.base import NotSupported, Storage
+from ...telemetry import DIKW_LEG_HIT_COUNT, DIKW_RETRIEVAL_LEG, op_span
 from .tokenize import WORD_OR_CJK_CHARS, CjkTokenizer, preprocess_for_fts
+
+
+async def _traced_leg[LegHitT](
+    leg: str,
+    coro: Awaitable[list[LegHitT]],
+    *,
+    graceful_notsupported: bool = False,
+) -> list[LegHitT]:
+    """Run one retrieval leg's storage coroutine inside a ``dikw.retrieve.leg``
+    span, returning its hits.
+
+    The span is opened AND ended inside this coroutine, so it lives entirely in
+    the leg's own asyncio task (``search`` dispatches the legs via
+    ``create_task``): the OTel context copied at task-creation parents it to the
+    active ``dikw.retrieve`` span, and the same-task open/close keeps the
+    contextvars Token clean. Approximate-timing pitfalls of wrapping the bare
+    ``await`` are avoided — the span measures the leg's real concurrent run.
+
+    ``graceful_notsupported`` mirrors the call site's own pre-existing handling:
+    the vec / asset legs degrade to an empty leg on a backend that doesn't
+    implement them (NOT an error), while the always-available FTS leg lets a
+    ``NotSupported`` propagate exactly as before. No-op when telemetry is off.
+    """
+    with op_span("dikw.retrieve.leg", attributes={DIKW_RETRIEVAL_LEG: leg}) as span:
+        if graceful_notsupported:
+            try:
+                hits = await coro
+            except NotSupported:
+                span.set_attribute(DIKW_LEG_HIT_COUNT, 0)
+                return []
+        else:
+            hits = await coro
+        span.set_attribute(DIKW_LEG_HIT_COUNT, len(hits))
+        return hits
 
 
 class RetrievalConfigLike(Protocol):
@@ -365,46 +400,54 @@ class HybridSearcher:
         fts_task: asyncio.Task[list[FTSHit]] | None = None
         vec_task: asyncio.Task[list[VecHit]] | None = None
         asset_task: asyncio.Task[list[AssetVecHit]] | None = None
+        # Each leg runs inside ``_traced_leg`` so its ``dikw.retrieve.leg`` span
+        # opens + closes within the leg's own task (accurate concurrent timing,
+        # clean span context). The vec / asset legs degrade to an empty leg on a
+        # backend that lacks them — that handling moved into ``_traced_leg``, so
+        # the await sites below no longer need their own ``except NotSupported``.
         if run_fts:
             fts_task = asyncio.create_task(
-                self._storage.fts_search(
-                    _sanitize_fts(q, cjk_tokenizer=self._cjk_tokenizer),
-                    limit=per_leg_limit,
-                    layer=layer,
+                _traced_leg(
+                    "bm25",
+                    self._storage.fts_search(
+                        _sanitize_fts(q, cjk_tokenizer=self._cjk_tokenizer),
+                        limit=per_leg_limit,
+                        layer=layer,
+                    ),
                 )
             )
         if q_vec_text is not None:
             vec_task = asyncio.create_task(
-                self._storage.vec_search(
-                    q_vec_text,
-                    version_id=self._text_version_id,
-                    limit=per_leg_limit,
-                    layer=layer,
+                _traced_leg(
+                    "vector",
+                    self._storage.vec_search(
+                        q_vec_text,
+                        version_id=self._text_version_id,
+                        limit=per_leg_limit,
+                        layer=layer,
+                    ),
+                    graceful_notsupported=True,
                 )
             )
         if q_vec_mm is not None and self._mm is not None:
             asset_task = asyncio.create_task(
-                self._storage.vec_search_assets(
-                    q_vec_mm,
-                    version_id=self._mm.asset_version_id,
-                    limit=per_leg_limit,
-                    layer=layer,
+                _traced_leg(
+                    "asset",
+                    self._storage.vec_search_assets(
+                        q_vec_mm,
+                        version_id=self._mm.asset_version_id,
+                        limit=per_leg_limit,
+                        layer=layer,
+                    ),
+                    graceful_notsupported=True,
                 )
             )
 
         fts_hits: list[FTSHit] = await fts_task if fts_task is not None else []
-        vec_hits: list[VecHit] = []
-        if vec_task is not None:
-            try:
-                vec_hits = await vec_task
-            except NotSupported:
-                vec_hits = []
-        asset_hits: list[AssetVecHit] = []
-        if asset_task is not None:
-            try:
-                asset_hits = await asset_task
-            except NotSupported:
-                asset_hits = []
+        vec_hits: list[VecHit] = await vec_task if vec_task is not None else []
+        asset_hits: list[AssetVecHit] = (
+            await asset_task if asset_task is not None else []
+        )
 
         # Asset hits promote the chunks that reference them. The first
         # asset that surfaces a chunk wins its rank slot. Score fusion
@@ -454,9 +497,13 @@ class HybridSearcher:
         # against published baselines.
         graph_neighbors: list[ChunkNeighborRecord] = []
         if mode == "hybrid":
-            graph_neighbors = await self._collect_graph_neighbors(
-                vec_ranked, fts_ranked, per_leg_limit, layer=layer
-            )
+            with op_span(
+                "dikw.retrieve.leg", attributes={DIKW_RETRIEVAL_LEG: "graph"}
+            ) as graph_span:
+                graph_neighbors = await self._collect_graph_neighbors(
+                    vec_ranked, fts_ranked, per_leg_limit, layer=layer
+                )
+                graph_span.set_attribute(DIKW_LEG_HIT_COUNT, len(graph_neighbors))
 
         # Asset channel rides the vector weight — same family of signal
         # (semantic similarity in the multimodal space), distinct only in

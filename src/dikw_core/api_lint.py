@@ -37,6 +37,7 @@ from .domains.knowledge.lint_fix import (
 from .progress import NoopReporter, ProgressReporter
 from .providers import EmbeddingProvider, build_embedder, build_llm
 from .schemas import Layer
+from .telemetry import DIKW_LAYER, DIKW_OP, traced_op
 
 
 async def lint(path: str | Path | None = None) -> LintReport:
@@ -48,6 +49,7 @@ async def lint(path: str | Path | None = None) -> LintReport:
         await storage.close()
 
 
+@traced_op("dikw.lint.propose", attributes={DIKW_LAYER: "knowledge", DIKW_OP: "lint.propose"})
 async def lint_propose(
     path: str | Path | None = None,
     *,
@@ -138,6 +140,7 @@ async def lint_propose(
         await storage.close()
 
 
+@traced_op("dikw.lint.apply", attributes={DIKW_LAYER: "knowledge", DIKW_OP: "lint.apply"})
 async def lint_apply(
     path: str | Path | None = None,
     *,

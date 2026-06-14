@@ -201,3 +201,106 @@ async def test_trace_llm_stream_is_noop_without_otel(
 
     seen = [ev async for ev in telemetry.trace_llm_stream(_stream(), system="x", model="m")]
     assert [e.type for e in seen] == ["done"]
+
+
+# --------------------------------------------------------------------------- #
+# op_span — the generic engine op-level span helper (PR2b)
+# --------------------------------------------------------------------------- #
+
+
+def test_op_span_sets_open_and_posthoc_attributes_and_ok(span_exporter: Any) -> None:
+    from opentelemetry.trace import StatusCode
+
+    with telemetry.op_span(
+        "dikw.ingest",
+        attributes={telemetry.DIKW_LAYER: "data", telemetry.DIKW_OP: "ingest"},
+    ) as span:
+        span.set_attribute(telemetry.DIKW_SOURCE_PATH, "sources/a.md")
+
+    s = _one_span(span_exporter)
+    assert s.name == "dikw.ingest"
+    assert s.attributes[telemetry.DIKW_LAYER] == "data"
+    assert s.attributes[telemetry.DIKW_OP] == "ingest"
+    assert s.attributes[telemetry.DIKW_SOURCE_PATH] == "sources/a.md"
+    assert s.status.status_code == StatusCode.OK
+
+
+def test_op_span_marks_error_status(span_exporter: Any) -> None:
+    from opentelemetry.trace import StatusCode
+
+    with pytest.raises(ValueError, match="boom"):
+        with telemetry.op_span("dikw.synth"):
+            raise ValueError("boom")
+
+    s = _one_span(span_exporter)
+    assert s.status.status_code == StatusCode.ERROR
+    assert telemetry.DIKW_CANCELLED not in s.attributes
+    assert any(ev.name == "exception" for ev in s.events)
+
+
+def test_op_span_marks_cancel_not_error(span_exporter: Any) -> None:
+    from opentelemetry.trace import StatusCode
+
+    with pytest.raises(asyncio.CancelledError):
+        with telemetry.op_span("dikw.synth"):
+            raise asyncio.CancelledError
+
+    s = _one_span(span_exporter)
+    assert s.attributes[telemetry.DIKW_CANCELLED] is True
+    assert s.status.status_code == StatusCode.UNSET
+
+
+def test_op_span_nests_child_under_parent(span_exporter: Any) -> None:
+    with telemetry.op_span("dikw.synth"):
+        with telemetry.op_span(
+            "dikw.synth.source",
+            attributes={telemetry.DIKW_SOURCE_PATH: "sources/a.md"},
+        ):
+            pass
+
+    spans = {s.name: s for s in span_exporter.get_finished_spans()}
+    parent, child = spans["dikw.synth"], spans["dikw.synth.source"]
+    assert child.parent is not None
+    assert child.parent.span_id == parent.context.span_id
+
+
+def test_op_span_is_noop_without_otel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telemetry, "OTEL_AVAILABLE", False)
+    with telemetry.op_span(
+        "dikw.ingest", attributes={telemetry.DIKW_LAYER: "data"}
+    ) as span:
+        span.set_attribute(telemetry.DIKW_SOURCE_PATH, "x")
+
+
+async def test_traced_op_wraps_async_fn_and_nests_children(span_exporter: Any) -> None:
+    from opentelemetry.trace import StatusCode
+
+    @telemetry.traced_op(
+        "dikw.ingest",
+        attributes={telemetry.DIKW_LAYER: "data", telemetry.DIKW_OP: "ingest"},
+    )
+    async def _do(x: int) -> int:
+        # A provider / nested op span opened in the body must become a child.
+        with telemetry.op_span("dikw.ingest.inner"):
+            pass
+        return x * 2
+
+    assert await _do(21) == 42
+
+    spans = {s.name: s for s in span_exporter.get_finished_spans()}
+    outer, inner = spans["dikw.ingest"], spans["dikw.ingest.inner"]
+    assert outer.attributes[telemetry.DIKW_LAYER] == "data"
+    assert outer.attributes[telemetry.DIKW_OP] == "ingest"
+    assert outer.status.status_code == StatusCode.OK
+    assert inner.parent is not None
+    assert inner.parent.span_id == outer.context.span_id
+
+
+async def test_traced_op_is_noop_without_otel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telemetry, "OTEL_AVAILABLE", False)
+
+    @telemetry.traced_op("dikw.synth")
+    async def _do() -> str:
+        return "ok"
+
+    assert await _do() == "ok"

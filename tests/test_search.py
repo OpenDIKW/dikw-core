@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from dikw_core import telemetry
 from dikw_core.domains.info.search import (
     HybridSearcher,
     MultimodalSearch,
@@ -1044,3 +1045,84 @@ async def test_multimodal_q_vec_does_not_leak_into_text_vec_search(tmp_path) -> 
         )
     finally:
         await storage.close()
+
+
+# ---- retrieval-leg tracing spans (PR2b) -------------------------------------
+#
+# The fusion legs (bm25 / vector / graph) are pure in-process work with no
+# provider call, so they are dark to the PR2a gen_ai.* spans — these pin that
+# each leg now emits a ``dikw.retrieve.leg`` span carrying its hit count, that
+# ablation modes only open the legs they run, and (critically, since search.py
+# is eval-gated) that the instrumentation does NOT perturb retrieval results.
+
+
+@pytest.mark.asyncio
+async def test_search_emits_a_leg_span_per_active_leg_hybrid(tmp_path, span_exporter):
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    hits = await searcher.search("DIKW pyramid", limit=3, mode="hybrid")
+    assert hits
+    await storage.close()
+
+    leg_spans = [
+        s for s in span_exporter.get_finished_spans() if s.name == "dikw.retrieve.leg"
+    ]
+    legs = {s.attributes[telemetry.DIKW_RETRIEVAL_LEG] for s in leg_spans}
+    # hybrid runs bm25 + vector + graph (no asset leg without a multimodal index).
+    assert legs == {"bm25", "vector", "graph"}
+    # every leg span carries a hit count.
+    for s in leg_spans:
+        assert telemetry.DIKW_LEG_HIT_COUNT in s.attributes
+
+
+@pytest.mark.asyncio
+async def test_search_bm25_mode_opens_only_the_bm25_leg(tmp_path, span_exporter):
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    await searcher.search("DIKW pyramid", limit=3, mode="bm25")
+    await storage.close()
+
+    legs = {
+        s.attributes[telemetry.DIKW_RETRIEVAL_LEG]
+        for s in span_exporter.get_finished_spans()
+        if s.name == "dikw.retrieve.leg"
+    }
+    # bm25 ablation: vector + graph legs must not open.
+    assert legs == {"bm25"}
+
+
+@pytest.mark.asyncio
+async def test_leg_tracing_does_not_perturb_results(tmp_path, span_exporter):
+    """Behavior-preserving guard (search.py is eval-gated): the leg spans wrap
+    existing control flow only — identical (chunk_id, score) ordering whether
+    telemetry is active (``span_exporter`` installs a recording provider) or a
+    no-op (after ``reset_telemetry_for_testing``)."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+
+    traced = await searcher.search("DIKW pyramid", limit=5, mode="hybrid")
+    # Tear down the recording provider → get_tracer() goes back to no-op.
+    telemetry.reset_telemetry_for_testing()
+    untraced = await searcher.search("DIKW pyramid", limit=5, mode="hybrid")
+    await storage.close()
+
+    assert [(h.chunk_id, h.score) for h in traced] == [
+        (h.chunk_id, h.score) for h in untraced
+    ]

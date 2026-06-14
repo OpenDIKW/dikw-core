@@ -73,9 +73,12 @@ from .schemas import (
 )
 from .storage import Storage
 from .storage.base import NotSupported
+from .telemetry import DIKW_LAYER, DIKW_OP, traced_op
 
 logger = logging.getLogger(__name__)
 
+
+@traced_op("dikw.synth", attributes={DIKW_LAYER: "knowledge", DIKW_OP: "synth"})
 async def synthesize(
     path: str | Path | None = None,
     *,
