@@ -37,8 +37,10 @@ from dikw_core.providers.base import (
     TransientProviderError,
 )
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
+from dikw_core.providers.gitee_multimodal import GiteeMultimodalEmbedding
 from dikw_core.providers.openai_codex import _FINISH_REASON_MAP, OpenAICodexLLM
-from dikw_core.providers.openai_compat import OpenAICompatLLM
+from dikw_core.providers.openai_compat import OpenAICompatEmbeddings, OpenAICompatLLM
+from dikw_core.schemas import MultimodalInput
 
 from .fakes import (
     CodexResponsesStreamStub,
@@ -533,6 +535,68 @@ async def test_complete_emits_gen_ai_chat_span_with_usage(
     assert attrs[telemetry.GEN_AI_SYSTEM] in ("openai", "anthropic")
     assert attrs[telemetry.GEN_AI_USAGE_INPUT_TOKENS] == 11
     assert attrs[telemetry.GEN_AI_USAGE_OUTPUT_TOKENS] == 22
+
+
+# The embedding providers (openai_compat + gitee_multimodal) have no shared
+# harness, so the gen_ai.embeddings span is pinned per-backend here — the other
+# half of the gen_ai_span call sites the chat test above does not reach.
+
+
+async def test_openai_embed_emits_gen_ai_embeddings_span_with_usage(
+    span_exporter: Any,
+) -> None:
+    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+
+    async def _create(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])],
+            usage=SimpleNamespace(prompt_tokens=7),
+        )
+
+    embedder._client_cache = SimpleNamespace(  # type: ignore[assignment]
+        embeddings=SimpleNamespace(create=_create)
+    )
+    await embedder.embed(["hello"], model="text-embed-3")
+
+    spans = [
+        s
+        for s in span_exporter.get_finished_spans()
+        if s.name == "embeddings text-embed-3"
+    ]
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    assert attrs[telemetry.GEN_AI_OPERATION_NAME] == "embeddings"
+    assert attrs[telemetry.GEN_AI_SYSTEM] == "openai"
+    assert attrs[telemetry.GEN_AI_REQUEST_MODEL] == "text-embed-3"
+    assert attrs[telemetry.GEN_AI_USAGE_INPUT_TOKENS] == 7
+
+
+async def test_gitee_embed_emits_gen_ai_embeddings_span(span_exporter: Any) -> None:
+    embedder = GiteeMultimodalEmbedding(base_url="https://example.test/v1", api_key="k")
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"data": [{"index": 0, "embedding": [0.3, 0.4]}]}
+
+    async def _post(_url: str, *, json: dict[str, Any]) -> _Resp:
+        return _Resp()
+
+    embedder._client = SimpleNamespace(post=_post)  # type: ignore[assignment]
+    await embedder.embed([MultimodalInput(text="hi")], model="qwen-vl")
+
+    spans = [
+        s for s in span_exporter.get_finished_spans() if s.name == "embeddings qwen-vl"
+    ]
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    assert attrs[telemetry.GEN_AI_OPERATION_NAME] == "embeddings"
+    assert attrs[telemetry.GEN_AI_SYSTEM] == "gitee"
+    assert attrs[telemetry.GEN_AI_REQUEST_MODEL] == "qwen-vl"
+    # Gitee's response carries no usage block — no token attributes set.
+    assert telemetry.GEN_AI_USAGE_INPUT_TOKENS not in attrs
 
 
 # --------------------------------------------------------------------------- #

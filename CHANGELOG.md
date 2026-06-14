@@ -18,7 +18,9 @@ on each entry call out exactly what shape changes break.
   task outlives the request span), held current across the run so downstream
   spans nest under it, stamped with `dikw.op` / `dikw.task_id` / `dikw.base_id`;
   a user-requested cancel is recorded as `dikw.cancelled` rather than an error
-  status. Every LLM provider (`openai_compat`, `anthropic_compat`,
+  status, and a consumer that breaks out of a streamed call early
+  (`GeneratorExit`) is likewise a graceful terminal, not an error. Every LLM
+  provider (`openai_compat`, `anthropic_compat`,
   `openai_codex`) emits a `gen_ai.chat` span carrying `gen_ai.request.model` +
   `gen_ai.usage.{input,output}_tokens` (surfacing the token usage the synth call
   site previously discarded, plus Anthropic `cache_read`/`cache_creation`

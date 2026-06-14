@@ -85,9 +85,17 @@ def test_gen_ai_span_marks_cancel_not_error(span_exporter: Any) -> None:
             raise asyncio.CancelledError
 
     s = _one_span(span_exporter)
-    # A cancel is a graceful terminal — flagged, but NOT an error status.
+    # A cancel is a graceful terminal — flagged, with the status left UNSET
+    # (not ERROR, and not falsely OK).
     assert s.attributes[telemetry.DIKW_CANCELLED] is True
-    assert s.status.status_code != StatusCode.ERROR
+    assert s.status.status_code == StatusCode.UNSET
+
+
+def test_capture_otel_context_returns_none_without_active_span(span_exporter: Any) -> None:
+    """OTEL installed + an active provider, but no current span: the
+    ``is_valid == False`` branch returns None, so a task submitted outside any
+    request span gets no back-link (rather than a bogus invalid-span link)."""
+    assert telemetry.capture_otel_context() is None
 
 
 async def test_trace_llm_stream_passes_events_and_reads_done(span_exporter: Any) -> None:
@@ -137,6 +145,37 @@ async def test_trace_llm_stream_marks_error_on_provider_failure(
             pass
 
     assert _one_span(span_exporter).status.status_code == StatusCode.ERROR
+
+
+async def test_trace_llm_stream_early_break_is_graceful_not_error(
+    span_exporter: Any,
+) -> None:
+    """A consumer that stops pulling after ``done`` and closes the stream is a
+    graceful early-close (GeneratorExit), not an LLM failure — the span must end
+    UNSET with no recorded exception, not ERROR."""
+    from opentelemetry.trace import StatusCode
+
+    async def _fake_stream() -> Any:
+        yield LLMStreamEvent(type="token", delta="he")
+        yield LLMStreamEvent(
+            type="done", text="he", finish_reason="stop", usage={"input_tokens": 1}
+        )
+        yield LLMStreamEvent(type="token", delta="never-pulled")
+
+    stream = telemetry.trace_llm_stream(_fake_stream(), system="openai", model="m")
+    async for ev in stream:
+        if ev.type == "done":
+            break
+    # Breaking out of an ``async for`` does NOT auto-close the generator;
+    # aclose() throws GeneratorExit into the suspended span body.
+    await stream.aclose()
+
+    s = _one_span(span_exporter)
+    assert s.status.status_code == StatusCode.UNSET
+    assert s.status.status_code != StatusCode.ERROR
+    assert not any(ev.name == "exception" for ev in s.events)
+    # The terminal ``done`` was processed before the break.
+    assert s.attributes[telemetry.GEN_AI_RESPONSE_FINISH_REASONS] == ("stop",)
 
 
 def test_span_helpers_are_noops_without_otel(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -103,6 +103,31 @@ async def test_task_span_marks_cancel_not_error(
 
     await _wait_terminal(store, row.task_id)
     span = await _wait_for_span(span_exporter, "dikw.task.echo")
-    # A user cancel is a graceful terminal — flagged, not an error status.
+    # A user cancel is a graceful terminal — flagged, with the status left
+    # UNSET (not ERROR, and not falsely OK).
     assert span.attributes[telemetry.DIKW_CANCELLED] is True
-    assert span.status.status_code != StatusCode.ERROR
+    assert span.status.status_code == StatusCode.UNSET
+
+
+async def test_task_span_marks_runner_exception_as_error(
+    manager_only: tuple[TaskManager, SqliteTaskStore],
+    span_exporter: Any,
+) -> None:
+    """A runner that raises drives the manager's ``except Exception`` arm →
+    ``record_error`` → the root task span gets StatusCode.ERROR + an exception
+    event. ``use_span`` is opened with ``set_status_on_exception=False`` /
+    ``record_exception=False``, so ``record_error`` is the ONLY path that marks
+    a failed task span — pin it against the exporter."""
+    from opentelemetry.trace import StatusCode
+
+    manager, store = manager_only
+
+    async def _boom(reporter: ProgressReporter) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    row = await manager.submit(op="echo", runner=_boom, base_id="b")
+    await _wait_terminal(store, row.task_id)
+    span = await _wait_for_span(span_exporter, "dikw.task.echo")
+    assert span.status.status_code == StatusCode.ERROR
+    assert any(ev.name == "exception" for ev in span.events)
+    assert telemetry.DIKW_CANCELLED not in span.attributes

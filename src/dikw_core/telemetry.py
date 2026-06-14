@@ -220,9 +220,12 @@ def gen_ai_span(
     calling ``span.set_response(finish_reason=..., usage=...)`` before the
     terminal event. The span name follows the GenAI semconv (``<op> <model>``).
     An ``asyncio.CancelledError`` is recorded as a cancel (``dikw.cancelled``),
-    NOT an error, so cancels don't pollute error-rate dashboards; any other
-    exception sets ``StatusCode.ERROR`` + records it. No-op when telemetry is
-    inactive. The underlying httpx wire call nests as a child via the active
+    NOT an error, so cancels don't pollute error-rate dashboards; a
+    ``GeneratorExit`` (a consumer breaking out of / ``aclose``-ing a wrapped
+    generator early) is likewise a graceful terminal — re-raised without a
+    status so an abandoned stream isn't mis-reported as an LLM failure; any
+    other exception sets ``StatusCode.ERROR`` + records it. No-op when telemetry
+    is inactive. The underlying httpx wire call nests as a child via the active
     OTel context (httpx auto-instrumentation, wired in
     :func:`configure_telemetry`).
     """
@@ -246,6 +249,14 @@ def gen_ai_span(
             yield _GenAISpanHandle(span)
         except asyncio.CancelledError:
             span.set_attribute(DIKW_CANCELLED, True)
+            raise
+        except GeneratorExit:
+            # A consumer that breaks out of (or aclose()s) a wrapped generator
+            # early throws GeneratorExit in at the suspended ``yield``. It is a
+            # graceful close, NOT a failure — re-raise leaving the status UNSET
+            # so an abandoned stream isn't recorded as an LLM error. (Must
+            # precede ``except BaseException``: GeneratorExit is a BaseException
+            # but not an Exception or CancelledError.)
             raise
         except BaseException as exc:
             span.record_exception(exc)
@@ -272,6 +283,13 @@ async def trace_llm_stream[StreamEventT](
     ``return trace_llm_stream(_gen(), ...)`` — the generator body is untouched.
     Duck-typed on the event (``.type`` / ``.finish_reason`` / ``.usage``) so
     this module needs no import from ``providers`` (which would be a cycle).
+
+    Contract: the returned generator must be driven to completion (or
+    ``aclose``-d) in the SAME asyncio task that started its first ``__anext__``
+    — :func:`gen_ai_span` attaches the OTel context (a ``contextvars`` Token)
+    on first pull, and closing it from a different task would log
+    "Failed to detach context". Every in-tree consumer is a single-coroutine
+    ``async for`` drain, so this holds today.
     """
     with gen_ai_span(
         operation="chat",

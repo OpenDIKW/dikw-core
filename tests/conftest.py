@@ -238,6 +238,16 @@ def span_exporter() -> Iterator[Any]:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
+    # If reset_telemetry_for_testing's best-effort latch reset silently failed
+    # (OTel internal-API drift), set_tracer_provider would no-op and this test —
+    # and every later span_exporter test in the process — would assert against an
+    # empty exporter. Fail loudly here instead of producing a confusing
+    # cross-test order dependency. Mirrors the production guard in
+    # configure_telemetry.
+    assert trace.get_tracer_provider() is provider, (
+        "reset_telemetry_for_testing failed to clear the process-once tracer-"
+        "provider latch (OTel internal-API drift?)"
+    )
     try:
         yield exporter
     finally:
