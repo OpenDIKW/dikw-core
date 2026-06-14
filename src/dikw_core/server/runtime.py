@@ -100,6 +100,10 @@ class ServerRuntime:
     task_store: TaskStore
     manager: TaskManager
     auth: AuthConfig
+    # Stable id for the base this server is bound to (``_base_scope_id``);
+    # stamped on task spans as ``dikw.base_id``. Resolved once at build time
+    # (it does file I/O) and reused for the task-store scope.
+    base_id: str = ""
     # Serializes base-mutating ops (currently ingest) so two concurrent
     # tasks can't interleave their staging-commit + on-disk writes and
     # leave the sources/ tree as a mix of both. Held for the entire ingest
@@ -136,9 +140,8 @@ async def build_runtime(
     await storage.connect()
     await storage.migrate()
 
-    task_store = build_task_store(
-        cfg, root=root, instance_id=_base_scope_id(root)
-    )
+    base_id = _base_scope_id(root)
+    task_store = build_task_store(cfg, root=root, instance_id=base_id)
     await task_store.init()
 
     manager = TaskManager(store=task_store)
@@ -175,6 +178,7 @@ async def build_runtime(
         task_store=task_store,
         manager=manager,
         auth=auth,
+        base_id=base_id,
     )
 
 

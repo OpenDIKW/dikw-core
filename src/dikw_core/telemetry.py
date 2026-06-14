@@ -22,21 +22,26 @@ the ``ProgressReporter`` event stream over NDJSON. Don't confuse the two.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
     from opentelemetry.metrics import Meter
-    from opentelemetry.trace import Tracer
+    from opentelemetry.trace import Span, SpanContext, Tracer
 
 logger = logging.getLogger(__name__)
 
 try:
+    from opentelemetry import context as _otel_context
     from opentelemetry import metrics as _otel_metrics
     from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import Link as _Link
+    from opentelemetry.trace import Status as _Status
+    from opentelemetry.trace import StatusCode as _StatusCode
 
     OTEL_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised in the no-otel install
@@ -59,6 +64,21 @@ DIKW_SOURCE_PATH: Final = "dikw.source_path"
 DIKW_CATEGORY: Final = "dikw.category"
 DIKW_RETRIEVAL_LEG: Final = "dikw.retrieval.leg"  # bm25 | vector | graph | rrf
 DIKW_EMBED_VERSION_ID: Final = "dikw.embed.version_id"
+DIKW_CANCELLED: Final = "dikw.cancelled"  # task/span ended by cooperative cancel
+
+# gen_ai.* semantic-convention keys (OTel standard — NOT under the dikw.*
+# namespace). Set on the per-call provider span by :func:`gen_ai_span`.
+GEN_AI_OPERATION_NAME: Final = "gen_ai.operation.name"  # chat | embeddings
+GEN_AI_SYSTEM: Final = "gen_ai.system"  # openai | anthropic | gitee
+GEN_AI_REQUEST_MODEL: Final = "gen_ai.request.model"
+GEN_AI_REQUEST_MAX_TOKENS: Final = "gen_ai.request.max_tokens"
+GEN_AI_REQUEST_TEMPERATURE: Final = "gen_ai.request.temperature"
+GEN_AI_RESPONSE_FINISH_REASONS: Final = "gen_ai.response.finish_reasons"
+GEN_AI_USAGE_INPUT_TOKENS: Final = "gen_ai.usage.input_tokens"
+GEN_AI_USAGE_OUTPUT_TOKENS: Final = "gen_ai.usage.output_tokens"
+# Anthropic-only prompt-cache accounting (vendor-namespaced; absent elsewhere).
+GEN_AI_CACHE_READ_INPUT_TOKENS: Final = "gen_ai.anthropic.cache_read_input_tokens"
+GEN_AI_CACHE_CREATION_INPUT_TOKENS: Final = "gen_ai.anthropic.cache_creation_input_tokens"
 
 
 # ---- no-op fallbacks (used only when [otel] is NOT installed) -----------
@@ -135,6 +155,224 @@ def get_meter() -> Meter:
     return _NOOP_METER
 
 
+# ---- span helpers ------------------------------------------------------
+# Engine (providers) + server (task subsystem) call these; the OTel-specific
+# machinery (Link / Status / context, root vs child span shape) lives here so
+# callers import ``telemetry`` only and never ``opentelemetry`` directly — that
+# keeps the ``[otel]`` extra optional (these degrade to no-ops when it's
+# absent) and the no-op + active paths sharing one gate.
+
+
+class _GenAISpanHandle:
+    """Lets a provider stamp response attributes on its in-flight gen_ai span.
+
+    Wraps a real span when telemetry is active, or :data:`_NOOP_SPAN` otherwise
+    (whose ``set_attribute`` is a no-op) — one class covers both paths because
+    ``set_response`` only ever calls ``set_attribute``.
+    """
+
+    __slots__ = ("_span",)
+
+    def __init__(self, span: Span) -> None:
+        self._span = span
+
+    def set_response(
+        self,
+        *,
+        finish_reason: str | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> None:
+        span = self._span
+        if finish_reason is not None:
+            span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, (finish_reason,))
+        if usage:
+            if "input_tokens" in usage:
+                span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, int(usage["input_tokens"]))
+            if "output_tokens" in usage:
+                span.set_attribute(
+                    GEN_AI_USAGE_OUTPUT_TOKENS, int(usage["output_tokens"])
+                )
+            # Anthropic-only; other providers never populate these keys.
+            if usage.get("cache_read_input_tokens"):
+                span.set_attribute(
+                    GEN_AI_CACHE_READ_INPUT_TOKENS,
+                    int(usage["cache_read_input_tokens"]),
+                )
+            if usage.get("cache_creation_input_tokens"):
+                span.set_attribute(
+                    GEN_AI_CACHE_CREATION_INPUT_TOKENS,
+                    int(usage["cache_creation_input_tokens"]),
+                )
+
+
+@contextmanager
+def gen_ai_span(
+    *,
+    operation: str,
+    system: str,
+    model: str,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> Iterator[_GenAISpanHandle]:
+    """Wrap one LLM/embedding provider call in a ``gen_ai.*`` span.
+
+    Use as ``with gen_ai_span(...) as span:`` around the provider's request,
+    calling ``span.set_response(finish_reason=..., usage=...)`` before the
+    terminal event. The span name follows the GenAI semconv (``<op> <model>``).
+    An ``asyncio.CancelledError`` is recorded as a cancel (``dikw.cancelled``),
+    NOT an error, so cancels don't pollute error-rate dashboards; any other
+    exception sets ``StatusCode.ERROR`` + records it. No-op when telemetry is
+    inactive. The underlying httpx wire call nests as a child via the active
+    OTel context (httpx auto-instrumentation, wired in
+    :func:`configure_telemetry`).
+    """
+    if not OTEL_AVAILABLE:
+        yield _GenAISpanHandle(cast("Span", _NOOP_SPAN))
+        return
+    tracer = _otel_trace.get_tracer(_INSTRUMENTATION_NAME)
+    with tracer.start_as_current_span(
+        f"{operation} {model}",
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        span.set_attribute(GEN_AI_OPERATION_NAME, operation)
+        span.set_attribute(GEN_AI_SYSTEM, system)
+        span.set_attribute(GEN_AI_REQUEST_MODEL, model)
+        if max_tokens is not None:
+            span.set_attribute(GEN_AI_REQUEST_MAX_TOKENS, int(max_tokens))
+        if temperature is not None:
+            span.set_attribute(GEN_AI_REQUEST_TEMPERATURE, float(temperature))
+        try:
+            yield _GenAISpanHandle(span)
+        except asyncio.CancelledError:
+            span.set_attribute(DIKW_CANCELLED, True)
+            raise
+        except BaseException as exc:
+            span.record_exception(exc)
+            span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+            raise
+        else:
+            span.set_status(_Status(_StatusCode.OK))
+
+
+async def trace_llm_stream[StreamEventT](
+    events: AsyncIterator[StreamEventT],
+    *,
+    system: str,
+    model: str,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> AsyncIterator[StreamEventT]:
+    """Wrap a provider's ``complete_stream`` generator in a ``chat`` gen_ai span.
+
+    Opens the span around iteration so the provider's SDK call (run lazily on
+    first pull, inside this span) and its outbound httpx wire span nest under
+    it, reads token usage + finish_reason off the terminal ``done`` event, and
+    propagates cancel/error exactly like :func:`gen_ai_span`. Providers call
+    ``return trace_llm_stream(_gen(), ...)`` — the generator body is untouched.
+    Duck-typed on the event (``.type`` / ``.finish_reason`` / ``.usage``) so
+    this module needs no import from ``providers`` (which would be a cycle).
+    """
+    with gen_ai_span(
+        operation="chat",
+        system=system,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    ) as span:
+        async for event in events:
+            if getattr(event, "type", None) == "done":
+                span.set_response(
+                    finish_reason=getattr(event, "finish_reason", None),
+                    usage=getattr(event, "usage", None),
+                )
+            yield event
+
+
+class _TaskSpanHandle:
+    """Status sink for a background task span (see :func:`task_span`).
+
+    The task runner swallows ``asyncio.CancelledError`` (a graceful terminal),
+    so the span CM cannot infer the outcome from a propagating exception — the
+    caller sets it explicitly via ``ok()`` / ``cancelled()`` / ``record_error()``.
+    Guards the ``Status`` construction on :data:`OTEL_AVAILABLE` so the same
+    class is reusable on the no-op path.
+    """
+
+    __slots__ = ("_span",)
+
+    def __init__(self, span: Span) -> None:
+        self._span = span
+
+    def ok(self) -> None:
+        if OTEL_AVAILABLE:
+            self._span.set_status(_Status(_StatusCode.OK))
+
+    def cancelled(self) -> None:
+        # A user-requested cancel is a graceful terminal, not a failure —
+        # mark it (queryable) but leave the status UNSET, not ERROR.
+        self._span.set_attribute(DIKW_CANCELLED, True)
+
+    def record_error(self, exc: BaseException) -> None:
+        if OTEL_AVAILABLE:
+            self._span.record_exception(exc)
+            self._span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+
+
+def capture_otel_context() -> SpanContext | None:
+    """Capture the current span's context for later linking from a detached
+    task. Returns the ``SpanContext`` or ``None`` when there's no valid active
+    span / the ``[otel]`` extra is absent.
+
+    Called at task-submit time (inside the HTTP request span); the returned
+    context is a lightweight immutable value safe to hold across the
+    ``asyncio.create_task`` boundary — it does NOT keep the request span open.
+    """
+    if not OTEL_AVAILABLE:
+        return None
+    span_context = _otel_trace.get_current_span().get_span_context()
+    if not span_context.is_valid:
+        return None
+    return span_context
+
+
+@contextmanager
+def task_span(
+    op: str,
+    *,
+    task_id: str,
+    link: SpanContext | None = None,
+    base_id: str | None = None,
+) -> Iterator[_TaskSpanHandle]:
+    """Open the root span for one background task, kept current across the run.
+
+    The task runs in a detached ``asyncio.create_task`` coroutine that outlives
+    the HTTP request span, so this is a NEW ROOT span (parent ignored) LINKED
+    back to the submitting request's context — the OTel idiom for
+    request-triggered fire-and-forget work. Held current for the whole runner
+    await so downstream engine/provider spans nest under it. No-op when
+    telemetry is inactive.
+    """
+    if not OTEL_AVAILABLE:
+        yield _TaskSpanHandle(cast("Span", _NOOP_SPAN))
+        return
+    tracer = _otel_trace.get_tracer(_INSTRUMENTATION_NAME)
+    links = [_Link(link)] if link is not None else None
+    # Force a root span: ``create_task`` copied the request context, but the
+    # request span has already ended — link, don't parent.
+    span = tracer.start_span(
+        f"dikw.task.{op}", context=_otel_context.Context(), links=links
+    )
+    span.set_attribute(DIKW_OP, op)
+    span.set_attribute(DIKW_TASK_ID, task_id)
+    if base_id:
+        span.set_attribute(DIKW_BASE_ID, base_id)
+    with _otel_trace.use_span(
+        span, end_on_exit=True, record_exception=False, set_status_on_exception=False
+    ):
+        yield _TaskSpanHandle(span)
+
+
 # ---- SDK bootstrap (entry-point only) ----------------------------------
 
 _configured = False
@@ -191,17 +429,18 @@ def configure_telemetry(
 
     try:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
     except ImportError as e:
-        # opentelemetry-api present but the SDK / OTLP exporter is not — a
-        # non-standard partial install (the ``[otel]`` extra bundles them
-        # together). Telemetry must never crash the server: degrade to no-op.
+        # opentelemetry-api present but the SDK / OTLP exporter / instrumentation
+        # is not — a non-standard partial install (the ``[otel]`` extra bundles
+        # them together). Telemetry must never crash the server: degrade to no-op.
         logger.warning(
-            "telemetry enabled but the OTel SDK/exporter is not installed (%s); "
-            "install the [otel] extra. Continuing without telemetry.",
+            "telemetry enabled but the OTel SDK/exporter/instrumentation is not "
+            "installed (%s); install the [otel] extra. Continuing without telemetry.",
             e,
         )
         return False
@@ -237,6 +476,14 @@ def configure_telemetry(
         )
         return False
 
+    # Global httpx patch — covers every server-side provider httpx client
+    # (built lazily on first synth/embed, always after this point) for outbound
+    # gen_ai wire spans + W3C traceparent propagation. Pin it to dikw's provider
+    # so spans never leak to a foreign global, and only AFTER the process-once
+    # guard passes — if dikw didn't win provider registration it must not have
+    # globally patched httpx either. Unwound in :func:`shutdown_telemetry`.
+    HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+
     _provider = provider
     _configured = True
     return True
@@ -259,6 +506,17 @@ def shutdown_telemetry() -> None:
     _configured = False
     if provider is None:
         return
+    # Symmetric unwind of the global httpx patch so a fresh in-process lifespan
+    # re-runs configure_telemetry from a clean, unpatched state (without this a
+    # second instrument() would double-wrap). Best-effort: a partial install or
+    # SDK drift may make this raise, but teardown must never propagate into the
+    # lifespan finally.
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().uninstrument()
+    except Exception:  # pragma: no cover - defensive teardown guard
+        pass
     shutdown = getattr(provider, "shutdown", None)
     if callable(shutdown):
         shutdown()
@@ -289,6 +547,7 @@ def reset_telemetry_for_testing() -> None:
 # test-only helper that reaches into OTel internals, not public API.
 __all__ = [
     "DIKW_BASE_ID",
+    "DIKW_CANCELLED",
     "DIKW_CATEGORY",
     "DIKW_EMBED_VERSION_ID",
     "DIKW_LAYER",
@@ -296,10 +555,24 @@ __all__ = [
     "DIKW_RETRIEVAL_LEG",
     "DIKW_SOURCE_PATH",
     "DIKW_TASK_ID",
+    "GEN_AI_CACHE_CREATION_INPUT_TOKENS",
+    "GEN_AI_CACHE_READ_INPUT_TOKENS",
+    "GEN_AI_OPERATION_NAME",
+    "GEN_AI_REQUEST_MAX_TOKENS",
+    "GEN_AI_REQUEST_MODEL",
+    "GEN_AI_REQUEST_TEMPERATURE",
+    "GEN_AI_RESPONSE_FINISH_REASONS",
+    "GEN_AI_SYSTEM",
+    "GEN_AI_USAGE_INPUT_TOKENS",
+    "GEN_AI_USAGE_OUTPUT_TOKENS",
     "OTEL_AVAILABLE",
+    "capture_otel_context",
     "configure_telemetry",
+    "gen_ai_span",
     "get_meter",
     "get_tracer",
     "shutdown_telemetry",
+    "task_span",
     "telemetry_should_activate",
+    "trace_llm_stream",
 ]

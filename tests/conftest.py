@@ -18,7 +18,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -209,6 +209,40 @@ def make_codex_cli_auth_store(
     auth_path = home / "auth.json"
     auth_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return auth_path
+
+
+@pytest.fixture()
+def span_exporter() -> Iterator[Any]:
+    """In-memory OTel span capture for tracing tests (PR2 OTel arc).
+
+    Resets telemetry, installs a fresh GLOBAL ``TracerProvider`` with a
+    synchronous ``SimpleSpanProcessor`` → ``InMemorySpanExporter`` (sync export
+    so ``get_finished_spans()`` sees spans immediately — no flush race under
+    ``asyncio_mode=auto``), and tears it down. ``telemetry.get_tracer()`` reads
+    this global provider, so engine / provider / task spans land in the
+    returned exporter. Skips when the ``[otel]`` extra is absent.
+    """
+    from dikw_core import telemetry
+
+    if not telemetry.OTEL_AVAILABLE:
+        pytest.skip("requires the [otel] extra")
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    telemetry.reset_telemetry_for_testing()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    try:
+        yield exporter
+    finally:
+        provider.shutdown()
+        telemetry.reset_telemetry_for_testing()
 
 
 @pytest.fixture()

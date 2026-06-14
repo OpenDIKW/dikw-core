@@ -180,11 +180,17 @@ telemetry:
 The standard `OTEL_SDK_DISABLED` kill-switch is honoured, and an unset
 `endpoint` falls back to `OTEL_EXPORTER_OTLP_ENDPOINT`. The server bootstraps
 the SDK from its lifespan (after config load) and traces are exported to any
-OTLP backend (Jaeger/Tempo, Grafana, Datadog, …). Today this surfaces every
-`/v1/*` request as an HTTP server span; tracing of the ingest/synth/retrieve/
-provider seams, GenAI token metrics, and `trace_id`/`span_id` log correlation
-land in subsequent releases. The remote `dikw client` CLI has no base config,
-so its telemetry — if wanted — is driven purely by `OTEL_*` env vars.
+OTLP backend (Jaeger/Tempo, Grafana, Datadog, …). A single trace now spans:
+the `/v1/*` HTTP server span → a `dikw.task.<op>` span for the background task
+it submits (a **root span linked** back to the request, since the detached task
+outlives it) → a `gen_ai.chat` span per LLM call carrying the model + token
+usage (incl. Anthropic prompt-cache tokens) and a `gen_ai.embeddings` span per
+embedding call → the outbound provider HTTP call, auto-traced via httpx with
+W3C `traceparent` propagation. Engine op-level spans (per-source / per-group /
+retrieval-leg), GenAI token **metrics**, and `trace_id`/`span_id` log
+correlation land in subsequent releases. The remote `dikw client` CLI has no
+base config, so its telemetry — if wanted — is driven purely by `OTEL_*` env
+vars.
 
 ### Client config
 

@@ -16,6 +16,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from ..telemetry import trace_llm_stream
 from .base import (
     LLMResponse,
     LLMStreamEvent,
@@ -226,4 +227,12 @@ class AnthropicCompatLLM:
                 usage=usage,
             )
 
-        return _gen()
+        # Wrap in a gen_ai.chat span; the done event's usage (incl. Anthropic
+        # cache_read/creation tokens) lands on the span. Body is unchanged.
+        return trace_llm_stream(
+            _gen(),
+            system="anthropic",
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )

@@ -353,6 +353,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             op="echo",
             runner=runner,
             params={"count": count, "delay_ms": delay_ms},
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -371,6 +372,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             op="ingest",
             runner=runner,
             params={"no_embed": body.no_embed},
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -396,6 +398,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "verify": body.verify,
                 "judge": body.judge,
             },
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -419,6 +422,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "limit": body.limit,
                 "enable_llm": body.enable_llm,
             },
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -443,6 +447,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "pick": body.pick,
                 "skip": body.skip,
             },
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -471,6 +476,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "author": body.author,
                 "no_embed": body.no_embed,
             },
+            base_id=rt.base_id,
         )
         return _handle(row)
 
@@ -519,6 +525,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "judge": body.judge,
                 "judge_sample": judge_sample,
             },
+            base_id=rt.base_id,
         )
         return _handle(row)
 

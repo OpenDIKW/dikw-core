@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ...progress import CancelToken, ProgressReporter
+from ...telemetry import capture_otel_context, task_span
 from .._time import isoformat_utc_ms as _isoformat
 from .store import TaskRow, TaskStatus, TaskStore
 
@@ -215,11 +216,17 @@ class TaskManager:
         op: str,
         runner: TaskRunner,
         params: dict[str, Any] | None = None,
+        base_id: str | None = None,
     ) -> TaskRow:
         """Insert a PENDING task row, register it on the bus, and start the
         runner under an ``asyncio.create_task`` we hold a handle to. The
         coroutine performs status transitions and emits the ``task_started``
         / ``final`` envelope events. Returns the persisted row immediately.
+
+        ``base_id`` (the server's ``_base_scope_id``) is stamped on the task
+        span for multi-base dashboards; it's a kwarg rather than read here
+        because base identity is a server concern and ``TaskManager`` is
+        base-agnostic infrastructure.
         """
         task_id = str(uuid.uuid4())
         now = _isoformat()
@@ -237,6 +244,11 @@ class TaskManager:
         self._conditions[task_id] = asyncio.Condition()
 
         token = CancelToken()
+
+        # Capture the live request span context HERE (submit runs inside the
+        # FastAPI request span); the detached ``_run`` task links its root span
+        # back to it. A pure in-memory read — no-op + None when telemetry is off.
+        parent_ctx = capture_otel_context()
 
         async def _notify() -> None:
             await self._notify_task(task_id)
@@ -257,60 +269,71 @@ class TaskManager:
             # crash mode (row terminal but tape missing ``final``) is
             # easier to recover than ``restart_cleanup`` appending a
             # second terminal event over a still-RUNNING row.
-            try:
-                started_at = _isoformat()
-                await self._store.update_status(
-                    task_id, TaskStatus.RUNNING, started_at=started_at
-                )
-                await reporter.emit_raw(
-                    {"type": "task_started", "task_id": task_id, "op": op}
-                )
-                result = await runner(reporter)
-                finished_at = _isoformat()
-                await self._store.update_status(
-                    task_id,
-                    TaskStatus.SUCCEEDED,
-                    finished_at=finished_at,
-                    result=result,
-                )
-                await reporter.emit_raw(
-                    {"type": "final", "status": "succeeded", "result": result}
-                )
-            except asyncio.CancelledError:
-                finished_at = _isoformat()
-                await self._store.update_status(
-                    task_id, TaskStatus.CANCELLED, finished_at=finished_at
-                )
-                await reporter.emit_raw(
-                    {"type": "final", "status": "cancelled"}
-                )
-                # Don't re-raise: the manager owns the task lifecycle and a
-                # graceful "cancelled" final is the contract.
-            except Exception as e:
-                finished_at = _isoformat()
-                error = {
-                    "code": e.__class__.__name__,
-                    "message": str(e),
-                    "traceback": traceback.format_exc(),
-                }
-                await self._store.update_status(
-                    task_id,
-                    TaskStatus.FAILED,
-                    finished_at=finished_at,
-                    error=error,
-                )
-                await reporter.emit_raw(
-                    {"type": "final", "status": "failed", "error": error}
-                )
-            finally:
-                # Belt-and-braces: even though every emit path already
-                # notifies, the terminal-status update writes the row
-                # before the final ``emit_raw`` — a long-poll handler
-                # that polled in that window must wake on the final
-                # notify here so the terminal status surfaces.
-                await self._notify_task(task_id)
-                async with self._lock:
-                    self._running.pop(task_id, None)
+            #
+            # The task span is the engine-side root for this run: opened here
+            # (not in submit, which returns before _run executes) and held
+            # current across ``await runner(reporter)`` so every downstream
+            # engine/provider span nests under it. ``_run`` swallows
+            # CancelledError, so the span outcome is set explicitly per arm
+            # (the CM can't infer it from a propagating exception).
+            with task_span(
+                op, task_id=task_id, link=parent_ctx, base_id=base_id
+            ) as tspan:
+                try:
+                    started_at = _isoformat()
+                    await self._store.update_status(
+                        task_id, TaskStatus.RUNNING, started_at=started_at
+                    )
+                    await reporter.emit_raw(
+                        {"type": "task_started", "task_id": task_id, "op": op}
+                    )
+                    result = await runner(reporter)
+                    finished_at = _isoformat()
+                    await self._store.update_status(
+                        task_id,
+                        TaskStatus.SUCCEEDED,
+                        finished_at=finished_at,
+                        result=result,
+                    )
+                    await reporter.emit_raw(
+                        {"type": "final", "status": "succeeded", "result": result}
+                    )
+                    tspan.ok()
+                except asyncio.CancelledError:
+                    finished_at = _isoformat()
+                    await self._store.update_status(
+                        task_id, TaskStatus.CANCELLED, finished_at=finished_at
+                    )
+                    await reporter.emit_raw({"type": "final", "status": "cancelled"})
+                    tspan.cancelled()
+                    # Don't re-raise: the manager owns the task lifecycle and a
+                    # graceful "cancelled" final is the contract.
+                except Exception as e:
+                    finished_at = _isoformat()
+                    error = {
+                        "code": e.__class__.__name__,
+                        "message": str(e),
+                        "traceback": traceback.format_exc(),
+                    }
+                    await self._store.update_status(
+                        task_id,
+                        TaskStatus.FAILED,
+                        finished_at=finished_at,
+                        error=error,
+                    )
+                    await reporter.emit_raw(
+                        {"type": "final", "status": "failed", "error": error}
+                    )
+                    tspan.record_error(e)
+                finally:
+                    # Belt-and-braces: even though every emit path already
+                    # notifies, the terminal-status update writes the row
+                    # before the final ``emit_raw`` — a long-poll handler
+                    # that polled in that window must wake on the final
+                    # notify here so the terminal status surfaces.
+                    await self._notify_task(task_id)
+                    async with self._lock:
+                        self._running.pop(task_id, None)
 
         asyncio_task = asyncio.create_task(_run(), name=f"dikw-task-{task_id}")
         async with self._lock:

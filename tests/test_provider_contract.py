@@ -28,6 +28,7 @@ from typing import Any, Protocol
 import httpx
 import pytest
 
+from dikw_core import telemetry
 from dikw_core.providers.anthropic_compat import AnthropicCompatLLM
 from dikw_core.providers.base import (
     LLMProvider,
@@ -503,6 +504,35 @@ async def test_stream_done_event_carries_usage(harness: _Harness) -> None:
     done = events[-1]
     assert done.usage["input_tokens"] == 11
     assert done.usage["output_tokens"] == 22
+
+
+# --------------------------------------------------------------------------- #
+# Contract: gen_ai.* tracing span (PR2 OTel arc)
+#
+# Every LLMProvider's call must emit ONE gen_ai.chat span carrying the model,
+# the gen_ai.system, and the token usage off the done event — the operator-side
+# observability the synth/query paths rely on. One case auto-covers all three
+# providers via the parametrised harness.
+# --------------------------------------------------------------------------- #
+
+
+async def test_complete_emits_gen_ai_chat_span_with_usage(
+    harness: _Harness, span_exporter: Any
+) -> None:
+    harness.arrange_complete(
+        _CompleteScript(finish_reason="stop", input_tokens=11, output_tokens=22)
+    )
+    provider = harness.make()
+    await provider.complete(system="s", user="u", model="m")
+
+    spans = [s for s in span_exporter.get_finished_spans() if s.name == "chat m"]
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    assert attrs[telemetry.GEN_AI_OPERATION_NAME] == "chat"
+    assert attrs[telemetry.GEN_AI_REQUEST_MODEL] == "m"
+    assert attrs[telemetry.GEN_AI_SYSTEM] in ("openai", "anthropic")
+    assert attrs[telemetry.GEN_AI_USAGE_INPUT_TOKENS] == 11
+    assert attrs[telemetry.GEN_AI_USAGE_OUTPUT_TOKENS] == 22
 
 
 # --------------------------------------------------------------------------- #
