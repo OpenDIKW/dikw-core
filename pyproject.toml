@@ -136,12 +136,16 @@ module = [
 ]
 ignore_missing_imports = true
 
-# The opentelemetry-instrumentation-* packages ship incomplete py.typed
-# coverage; the stable opentelemetry-api / -sdk do not need this. Scoped to
-# the instrumentation namespace so real type errors in our own otel use still
-# surface.
+# OpenTelemetry lives behind the optional ``[otel]`` extra, so the documented
+# default-install ``uv run mypy src`` / pre-commit path (which doesn't install
+# the extra) must not error on its imports — same treatment as the [postgres]
+# (psycopg/pgvector) and [cjk] (jieba) optional deps above. ``ignore_missing_imports``
+# only suppresses the *module-not-found* error: when the extra IS installed
+# (CI's ``uv sync --all-extras``), mypy uses the real api/sdk types and still
+# catches real type errors in our otel usage; the instrumentation-* packages
+# (incomplete py.typed) fall back to Any either way.
 [[tool.mypy.overrides]]
-module = ["opentelemetry.instrumentation.*"]
+module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

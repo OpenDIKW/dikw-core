@@ -147,3 +147,26 @@ def test_shutdown_resets_configured_latch() -> None:
     telemetry.shutdown_telemetry()
     assert telemetry._configured is False
     assert telemetry._provider is None
+
+
+@pytest.mark.skipif(
+    not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra"
+)
+def test_configure_after_shutdown_reports_inactive_not_false_on() -> None:
+    """OTel's set_tracer_provider is process-once. After a shutdown leaves the
+    global provider stuck, a second activation can't re-register — it must
+    report ``False`` (honest) rather than ``True`` with a dead provider."""
+    kw = dict(  # noqa: C408
+        enabled=True,
+        endpoint=None,
+        service_name="dikw-core-test",
+        sample_ratio=1.0,
+        version="0.0.0+test",
+    )
+    assert telemetry.configure_telemetry(**kw) is True  # type: ignore[arg-type]
+    telemetry.shutdown_telemetry()  # global provider stays registered (set-once)
+    # second activation: latch reset lets it proceed, but the provider install
+    # is ignored by OTel → honest inactive, not a misleading telemetry=on
+    assert telemetry.configure_telemetry(**kw) is False  # type: ignore[arg-type]
+    assert telemetry._configured is False
+    assert telemetry._provider is None

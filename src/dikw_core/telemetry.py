@@ -194,6 +194,22 @@ def configure_telemetry(
     )
     provider.add_span_processor(BatchSpanProcessor(exporter))
     _otel_trace.set_tracer_provider(provider)
+    if _otel_trace.get_tracer_provider() is not provider:
+        # OTel's set_tracer_provider is process-once: it silently ignores the
+        # call (no exception) when a provider is already registered — a prior
+        # dikw lifespan in this process, or external auto-instrumentation. Don't
+        # claim success with a provider that was never installed (spans would
+        # flow to the old/already-shut-down one and our exporter would receive
+        # nothing). Release the built provider's background exporter thread and
+        # report inactive.
+        shutdown = getattr(provider, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        logger.warning(
+            "telemetry not activated: a TracerProvider is already registered in "
+            "this process; skipping dikw OTel bootstrap"
+        )
+        return False
 
     _provider = provider
     _configured = True
