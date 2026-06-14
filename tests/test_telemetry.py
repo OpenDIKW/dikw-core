@@ -124,3 +124,26 @@ def test_configure_telemetry_activates_and_is_idempotent() -> None:
 
 def test_shutdown_telemetry_safe_when_inactive() -> None:
     telemetry.shutdown_telemetry()  # no provider — must not raise
+
+
+@pytest.mark.skipif(
+    not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra"
+)
+def test_shutdown_resets_configured_latch() -> None:
+    """Post-shutdown state must be honest: a stale ``_configured=True`` would
+    make a fresh lifespan in the same process short-circuit and log
+    ``telemetry=on`` while exporting nothing."""
+    assert (
+        telemetry.configure_telemetry(
+            enabled=True,
+            endpoint=None,
+            service_name="dikw-core-test",
+            sample_ratio=1.0,
+            version="0.0.0+test",
+        )
+        is True
+    )
+    assert telemetry._configured is True
+    telemetry.shutdown_telemetry()
+    assert telemetry._configured is False
+    assert telemetry._provider is None

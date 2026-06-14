@@ -50,13 +50,19 @@ def build_app(
 
     # OTel HTTP server-span instrumentation. Lives here (server code may import
     # FastAPI) not in ``telemetry.py`` (engine root, must not depend on the web
-    # framework). Wired unconditionally when the ``[otel]`` extra is present; it
-    # uses the global tracer provider, so spans are no-op until the lifespan's
-    # ``configure_telemetry`` registers one.
+    # framework). Wired when present; it uses the global tracer provider, so
+    # spans are no-op until the lifespan's ``configure_telemetry`` registers one.
+    # The instrumentation package is guarded independently of ``OTEL_AVAILABLE``
+    # (which only checks the OTel API): a partial install — api present but
+    # ``opentelemetry-instrumentation-fastapi`` absent — must still serve, with
+    # HTTP-span instrumentation degraded off, mirroring ``configure_telemetry``.
     if OTEL_AVAILABLE:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-        FastAPIInstrumentor.instrument_app(app)
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        except ImportError:
+            pass  # partial OTel install; install the [otel] extra for HTTP spans
+        else:
+            FastAPIInstrumentor.instrument_app(app)
 
     install_handlers(app)
     auth_dep = make_dependency(auth)

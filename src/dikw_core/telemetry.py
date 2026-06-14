@@ -201,15 +201,25 @@ def configure_telemetry(
 
 
 def shutdown_telemetry() -> None:
-    """Flush + shut down the SDK providers. Safe to call when inactive."""
-    global _provider
+    """Flush + shut down the SDK providers. Safe to call when inactive.
+
+    Clears the idempotency latch too, so the post-shutdown state is honest
+    (telemetry is no longer active) and a fresh lifespan in the same process
+    re-attempts activation rather than short-circuiting on a stale ``True``.
+    Note: re-registering a provider after shutdown is still bounded by OTel's
+    process-once ``set_tracer_provider`` — the production path is one
+    activation per process; tests get a clean slate via
+    :func:`reset_telemetry_for_testing`.
+    """
+    global _configured, _provider
     provider = _provider
+    _provider = None
+    _configured = False
     if provider is None:
         return
     shutdown = getattr(provider, "shutdown", None)
     if callable(shutdown):
         shutdown()
-    _provider = None
 
 
 def reset_telemetry_for_testing() -> None:
