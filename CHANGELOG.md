@@ -9,6 +9,20 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **OpenTelemetry tracing — client→server `traceparent` propagation (PR2c of the
+  OTel arc).** The `dikw client` CLI now joins the same trace as the server it
+  calls. Because the remote client has no `dikw.yml`, its telemetry is **env-only**:
+  set the standard `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`)
+  before a `dikw client …` command and — when the `[otel]` extra is installed and
+  `OTEL_SDK_DISABLED` is unset — the CLI wires a `TracerProvider` (`service.name`
+  from `OTEL_SERVICE_NAME`, default `dikw-client`) and the global httpx
+  instrumentation, so the outbound request injects a W3C `traceparent` header that
+  `dikw serve`'s FastAPI instrumentation adopts as the parent span — one trace now
+  spans client → HTTP server → background task → engine op → provider call. The
+  bootstrap is gated to the `client` subgroup (local `version` / `init` / `serve` /
+  `auth` commands pay zero cost, and `serve` keeps wiring its own server-side
+  telemetry from `dikw.yml`) and a plain `dikw client` invocation with no `OTEL_*`
+  env stays a no-op. A short-lived CLI flushes the exporter via an `atexit` hook.
 - **OpenTelemetry tracing — engine op-level spans (PR2b of the OTel arc).**
   The engine verbs now open their own op span so a trace shows the full tree —
   and so direct / eval callers (which have no server task span) still get a

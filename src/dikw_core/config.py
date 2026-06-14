@@ -503,7 +503,10 @@ class TelemetryConfig(BaseModel):
     force-disables regardless of ``enabled``, and ``endpoint`` left null falls
     back to ``OTEL_EXPORTER_OTLP_ENDPOINT``. The remote client CLI
     (``dikw client …``) has no base config, so its telemetry — if wanted —
-    is driven purely by ``OTEL_*`` env vars, not this section.
+    is driven purely by ``OTEL_*`` env vars, not this section; see
+    ``telemetry.configure_client_telemetry_from_env`` (``OTEL_SERVICE_NAME``
+    default ``dikw-client``, gated on the ``[otel]`` extra) and the client
+    section of ``docs/server.md``.
     """
 
     enabled: bool = False
