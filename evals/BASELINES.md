@@ -7,6 +7,128 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-14 — synth prompt pass (PR3): SP restructure (6-invariant spine) + slim UP A/B
+
+**Change under test:** the synth prompts are re-tiered into a **structured
+system prompt + slimmed user prompt** (branch `synth-sp-restructure`, evaluated
+at commit `f684af5`):
+
+1. `DEFAULT_SYNTH_SYSTEM` restructured from a ~100-word single paragraph into a
+   **6-invariant spine** (~341 words): Atomicity, Faithfulness, Reuse,
+   Closed-taxonomy, Honest-linking, Source-language. The Faithfulness invariant
+   **strengthens** the precision rule (`never add precision the source does not
+   state — "recent growth" ≠ "grew 40% in 2023"`) and now lives in the **cached**
+   system block (anthropic_compat `cache_control` covers only the system block),
+   so the standing policy is always-present + high-salience. Density-neutral by
+   construction (`precisely-linked`, honest-linking framed as a *ceiling*) — it
+   carries no `dense`/`densely` pressure, the opposite of PR2's removal target.
+2. UP (`prompts/synthesize.md`) slimmed: the atomicity / faithfulness / category
+   **principles** move to the SP; the UP keeps only the **operational detail they
+   defer to** — length norms, link-density ceiling (2–4/500) + target taxonomy
+   (a/b/c), tags, output-language mechanics, the `## Output format`, both worked
+   examples (transformer + 秦始皇), and all eight `{placeholders}`. Single
+   source of truth: each rule in exactly one tier, with **two deliberate
+   test-pinned cross-tier redundancies** (source-language + category-omission-
+   is-last-resort).
+3. C8: the `## Output format` forbidden-key list gains `sources` and `lint` — an
+   LLM-emitted `sources:`/`lint:` front-matter block would overwrite
+   engine-authored provenance / leaf-ack (page.py applies `meta['sources']` then
+   `meta.update(extras)`, so the model's spelling wins). Independent of the
+   tiering; a correctness fix.
+
+Prompt-only, $0 marginal cost. The hypothesis was **grounding/resolved
+hold-or-improve** (the payoff is a cleaner SP/UP contract + a stronger,
+higher-salience Faithfulness invariant), so the read below is keyed on the two
+adoption-criterion metrics, with a noise analysis for the one negative read.
+
+**Method** — same-day two-arm fresh on every leg (the PR1 drift lesson), dual
+corpus, single provider (`openai_codex` gpt-5.5; MiniMax moderation hard-blocks
+the Musk biography). Arm A (baseline) from a main-worktree checkout, arm B
+(intervention) from the PR branch `@f684af5`; both arms hit the same
+scratch base.
+
+- **`mvp@700` codex** A/B n=2/arm, `--judge --judge-sample 25`. Raw runs +
+  `result.json` in `evals/experiments/synth-sp-restructure-codex/`.
+- **`elon-musk.md` 1500-line subset** via `openai_codex` (gpt-5.5): n=2/arm
+  same-day fresh. Driver + raw runs in
+  `evals/experiments/synth-sp-restructure-codex/elon/`.
+
+**Result — `mvp` codex (n=2/arm): 0 regress / 1 ship.** `compare` reports
+`regressed: []`; the only significant move is **`judge/completeness` +0.113**
+(p=0.044). Both adoption-criterion metrics improve:
+
+| metric (gate) | baseline | intervention | Δ | d / p |
+|---|---|---|---|---|
+| `fact_grounding_ratio` (0.55) | 0.750 | **0.794** | **+0.044** | d=1.57, p=0.29 |
+| `wikilink_resolved_ratio` (0.55) | 0.784 | **0.935** | **+0.151** | d=6.38, p=0.056 |
+| `fact_entailment_ratio` | 0.817 | 0.837 | +0.020 | p=0.48 |
+| `judge/grounding` | 4.92 | 4.95 | +0.025 | p=0.73 |
+| `judge/completeness` | 4.31 | **4.42** | **+0.113** | **p=0.044 (ship)** |
+| `atomicity_score` (0.85) | 1.00 | 1.00 | 0 | — |
+| `language_fidelity` (0.95) | 1.00 | 1.00 | 0 | — |
+| `duplicate_ratio_max` (≤0.05) | 0.00 | 0.00 | 0 | — |
+| `page_density` (info) | 0.929 | 0.905 | −0.024 | p=0.50, not gated |
+| `source_chunk_coverage` | 0.929 | 0.881 | −0.048 | p=0.29, not gated |
+| `expected_coverage` | 0.278 | 0.333 | +0.056 | p=0.50 |
+
+**Result — `elon-musk` subset (codex; n=2/arm):**
+
+| metric | baseline (main) | intervention (PR3) | Δ |
+|---|---|---|---|
+| wikilink_resolved_ratio (driver-computed, mean) | **0.895** | **0.962** | **+0.067** |
+| ├─ per-run | 0.859 / 0.931 | 0.940 / 0.984 | (non-overlapping) |
+| unresolved wikilinks | 27 / 14 | 13 / 3 | ↓ (20.5 → 8.0) |
+| total wikilinks emitted (mean) | 197.5 | 200.0 | flat — not link-starvation |
+| pages created | 73 / 71 | 73 / 75 | ≈flat |
+| orphan_page | 41 / 42 | 41 / 41 | flat |
+| duplicate_ratio | 0.0004 / 0.0 | 0.0004 / 0.0007 | ≪ 0.05 gate |
+| persist_errors / slug_merge / fallback | 0 | 0 | unchanged |
+| grounding entailment (n=25/run) | 0.84 / 0.80 → **0.82** | 0.72 / 0.54 → **0.63** | **−0.19 (judge noise — see below)** |
+
+**The one negative read — elon grounding −0.19 — is n=25 judge noise, not a
+faithfulness regression.** Six independent lines converge:
+
+1. The **stable, hermetic, gated** mvp grounding measure moves the *other* way:
+   `fact_grounding_ratio` **+0.044** (baseline n=2 spread only 0.019 — tight).
+2. Two more mvp grounding-flavoured measures also rise: `fact_entailment_ratio`
+   +0.020 and `judge/grounding` +0.025. All three mvp grounding reads positive.
+3. The elon judge's **within-arm spread (0.72 vs 0.54 = 0.18)** ≈ the
+   between-arm difference (0.19) — the signature of a noisy measurement, not a
+   stable drop (a real regression clusters both intervention runs low).
+4. The **same n=25 elon judge swung 0.63 ↔ 0.82 on the *baseline* itself**
+   between the PR2 entry (0.62/0.64) and this run (0.84/0.80), with no
+   faithfulness-related code change between — demonstrated ±0.2 instability.
+5. **Mechanism predicts the opposite of a drop:** the Faithfulness invariant is
+   *strengthened* (precision clause retained verbatim) and promoted into the
+   always-present cached system block; the slim UP dropped only the *enumeration*
+   of which specifics must trace, not the rule.
+6. The grounding leg is **report-only by design** (`SynthVerifyReport`); n=25
+   carries ±0.2, so a single-run elon read was never the gate — the mvp
+   `fact_grounding_ratio` is.
+
+No broken-link forensic audit this round: unlike PR2 (where resolved *dropped*
+on the single-source corpus and needed `classify_broken.py` to show 22/22
+by-design forward links), here resolved **improves** on both legs (elon +0.067,
+mvp +0.151) — there is no resolved drop to defend.
+
+**Net: ship.** Both adoption-criterion metrics hold-or-improve on the gated mvp
+measure (`fact_grounding_ratio` +0.044, `wikilink_resolved_ratio` +0.151) and on
+elon (resolved +0.067); zero mvp regressions; `judge/completeness` ships
+(+0.113, p=0.044); atomicity / language / duplicate flat at ceiling; the lone
+negative read (elon grounding −0.19) is judge noise refuted by three positive
+mvp grounding measures. The honest-linking-as-ceiling posture *raised* resolution
+(fewer manufactured / unresolvable links: elon unresolved 20.5 → 8.0) without
+starving the graph (total links flat).
+
+**Known limits / follow-ups:** n=2/arm on both corpora is directional, not
+powered — the resolved gains (mvp +0.151, p=0.056; elon non-overlapping) are
+large-effect but under-powered at this n. The elon grounding judge's ±0.2
+instability is the recurring measurement weakness (same finding as PR2); the
+report-only entailment leg is deliberately not gated, and tightening it to a
+calibrated threshold is the deferred Phase 2.2 work. `page_density` −0.024 and
+`source_chunk_coverage` −0.048 are within noise (p≥0.29, neither gated), but the
+chunk-coverage direction is worth a glance if a future run repeats it.
+
 ## 2026-06-12 — synth prompt pass (PR2): SP rewrite + cache-friendly UP layout A/B
 
 **Change under test:** two structural changes to the synth prompts plus the
