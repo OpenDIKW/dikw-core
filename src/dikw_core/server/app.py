@@ -101,14 +101,16 @@ def build_app_from_disk(
 
     # Resolve the telemetry-instrumentation decision now (build time) from the
     # base config — FastAPI middleware can't be added once the app's stack is
-    # built (i.e. not in the lifespan). A missing/invalid config is surfaced
-    # properly by build_runtime when the lifespan starts, so default to off here.
-    instrument_telemetry = False
+    # built (i.e. not in the lifespan).
     try:
         cfg = load_config(base_root / CONFIG_FILENAME)
         instrument_telemetry = telemetry_should_activate(cfg.telemetry.enabled)
     except Exception:
-        pass
+        # Best-effort only: a missing/invalid config (or version mismatch) is
+        # surfaced with the proper error by build_runtime when the lifespan
+        # starts. Here we just need the instrument flag, so any failure simply
+        # leaves it off rather than crashing app construction.
+        instrument_telemetry = False
 
     return build_app(
         runtime_factory=_factory,
