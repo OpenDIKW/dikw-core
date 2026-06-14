@@ -250,6 +250,27 @@ def test_op_span_marks_cancel_not_error(span_exporter: Any) -> None:
     assert s.status.status_code == StatusCode.UNSET
 
 
+def test_op_span_generatorexit_is_graceful(span_exporter: Any) -> None:
+    """A GeneratorExit thrown into op_span (a wrapping generator closed early —
+    reachable since _traced_leg runs op_span inside a create_task'd coroutine) is
+    a graceful close: status left UNSET, no exception event, not ERROR."""
+    from opentelemetry.trace import StatusCode
+
+    def _gen() -> Any:
+        with telemetry.op_span("dikw.synth"):
+            yield 1
+            yield 2  # never pulled — consumer closes after the first
+
+    g = _gen()
+    next(g)  # enter the op_span, suspend at the first yield
+    g.close()  # throws GeneratorExit into the suspended `with op_span`
+
+    s = _one_span(span_exporter)
+    assert s.status.status_code == StatusCode.UNSET
+    assert telemetry.DIKW_CANCELLED not in s.attributes
+    assert not any(ev.name == "exception" for ev in s.events)
+
+
 def test_op_span_nests_child_under_parent(span_exporter: Any) -> None:
     with telemetry.op_span("dikw.synth"):
         with telemetry.op_span(

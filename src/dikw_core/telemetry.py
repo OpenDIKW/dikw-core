@@ -72,9 +72,6 @@ DIKW_CANCELLED: Final = "dikw.cancelled"  # task/span ended by cooperative cance
 DIKW_RETRIEVE_LIMIT: Final = "dikw.retrieve.limit"
 DIKW_RETRIEVE_HIT_COUNT: Final = "dikw.retrieve.hit_count"
 DIKW_LEG_HIT_COUNT: Final = "dikw.retrieve.leg.hit_count"
-DIKW_GROUP_INDEX: Final = "dikw.synth.group_index"
-DIKW_GROUP_TOTAL: Final = "dikw.synth.group_total"
-DIKW_BATCH_INDEX: Final = "dikw.embed.batch_index"
 
 # gen_ai.* semantic-convention keys (OTel standard — NOT under the dikw.*
 # namespace). Set on the per-call provider span by :func:`gen_ai_span`.
@@ -650,12 +647,9 @@ def reset_telemetry_for_testing() -> None:
 # test-only helper that reaches into OTel internals, not public API.
 __all__ = [
     "DIKW_BASE_ID",
-    "DIKW_BATCH_INDEX",
     "DIKW_CANCELLED",
     "DIKW_CATEGORY",
     "DIKW_EMBED_VERSION_ID",
-    "DIKW_GROUP_INDEX",
-    "DIKW_GROUP_TOTAL",
     "DIKW_LAYER",
     "DIKW_LEG_HIT_COUNT",
     "DIKW_OP",

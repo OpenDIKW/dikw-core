@@ -17,7 +17,7 @@ import pytest
 
 from dikw_core import api, telemetry
 
-from .fakes import FakeEmbeddings, init_test_base
+from .fakes import FakeEmbeddings, FakeLLM, init_test_base
 
 
 def _spans_named(exporter: Any, name: str) -> list[Any]:
@@ -79,6 +79,42 @@ async def test_retrieve_emits_facade_span_with_legs_nested(
     for leg in leg_spans:
         assert leg.parent is not None
         assert leg.parent.span_id == span.context.span_id
+        assert telemetry.DIKW_LEG_HIT_COUNT in leg.attributes
+    # Pin the leg set THROUGH the facade (not just one layer down) so a leg-span
+    # regression that only manifests via api.retrieve is caught.
+    legs = {leg.attributes[telemetry.DIKW_RETRIEVAL_LEG] for leg in leg_spans}
+    assert legs == {"bm25", "vector", "graph"}
+
+
+@pytest.mark.asyncio
+async def test_synthesize_emits_dikw_synth_span(
+    tmp_path: Path, span_exporter: Any
+) -> None:
+    wiki = tmp_path / "base"
+    init_test_base(wiki)
+    # No sources → no LLM call (zero active SOURCE docs); the facade span still
+    # opens, verifying the @traced_op decoration + its attribute strings.
+    await api.synthesize(wiki, llm=FakeLLM())
+
+    span = _one(span_exporter, "dikw.synth")
+    assert span.attributes[telemetry.DIKW_LAYER] == "knowledge"
+    assert span.attributes[telemetry.DIKW_OP] == "synth"
+
+
+@pytest.mark.asyncio
+async def test_lint_apply_emits_dikw_lint_apply_span(
+    tmp_path: Path, span_exporter: Any
+) -> None:
+    wiki = tmp_path / "base"
+    init_test_base(wiki)
+    # Empty base → lint_propose yields an empty report → lint_apply does no
+    # mutation, but the facade span still opens.
+    report = await api.lint_propose(wiki)
+    await api.lint_apply(wiki, proposal_report=report)
+
+    span = _one(span_exporter, "dikw.lint.apply")
+    assert span.attributes[telemetry.DIKW_LAYER] == "knowledge"
+    assert span.attributes[telemetry.DIKW_OP] == "lint.apply"
 
 
 @pytest.mark.asyncio
