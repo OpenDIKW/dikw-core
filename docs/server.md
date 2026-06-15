@@ -172,7 +172,7 @@ extra is installed (`uv pip install 'dikw-core[otel]'`). Turn it on with a
 ```yaml
 telemetry:
   enabled: true
-  endpoint: http://collector:4318   # OTLP/HTTP; /v1/traces appended for you
+  endpoint: http://collector:4318   # OTLP/HTTP; /v1/traces + /v1/metrics appended for you
   service_name: dikw-core
   sample_ratio: 1.0                 # ParentBased(TraceIdRatio) head sampling
 ```
@@ -191,9 +191,24 @@ carrying the model + token usage (incl. Anthropic prompt-cache tokens) and a
 `gen_ai.embeddings` span per embedding call → the outbound provider HTTP call,
 auto-traced via httpx with W3C `traceparent` propagation. (The `dikw.<op>`
 engine spans are also the root for direct / eval callers, which have no task
-span.) Finer per-source / per-group / per-batch sub-spans, GenAI token
-**metrics**, and `trace_id`/`span_id` log correlation land in subsequent
-releases.
+span.)
+
+Alongside traces, the server also exports **GenAI metrics** over OTLP/HTTP
+(`/v1/metrics`, on a periodic timer). Every LLM/embedding call — completed or
+failed — emits two histograms from the same span seam, so no provider-specific
+metric code exists:
+
+* `gen_ai.client.token.usage` (`{token}`) — one point per token class, tagged
+  `gen_ai.token.type` (`input` / `output`, plus `cache_read` / `cache_creation`
+  for Anthropic prompt caching), `gen_ai.operation.name` (`chat` / `embeddings`),
+  `gen_ai.system`, and `gen_ai.request.model`.
+* `gen_ai.client.operation.duration` (`s`) — request latency, tagged
+  `error.type` on a failed call. A cancelled / abandoned stream records no point
+  (its cut-short time would skew the latency series).
+
+FastAPI HTTP-server metrics flow for free from the same meter provider. Finer
+per-source / per-group / per-batch sub-spans, dikw-domain counters, and
+`trace_id`/`span_id` log correlation land in subsequent releases.
 
 The remote `dikw client` CLI has no base config (no `dikw.yml`), so its
 telemetry is driven purely by the standard `OTEL_*` env vars. Set
