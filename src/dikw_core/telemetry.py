@@ -262,6 +262,12 @@ def gen_ai_span(
     is inactive. The underlying httpx wire call nests as a child via the active
     OTel context (httpx auto-instrumentation, wired in
     :func:`configure_telemetry`).
+
+    On a real terminal — a completed call or a hard error — it also emits the
+    GenAI metrics (``gen_ai.client.token.usage`` from the reported usage +
+    ``gen_ai.client.operation.duration``); a cancel / ``GeneratorExit`` records
+    no metric (see :func:`_record_gen_ai_metrics`). So this one seam gives every
+    provider both the span and the metrics with no per-provider code.
     """
     if not OTEL_AVAILABLE:
         yield _GenAISpanHandle(cast("Span", _NOOP_SPAN))
@@ -282,6 +288,7 @@ def gen_ai_span(
         if temperature is not None:
             span.set_attribute(GEN_AI_REQUEST_TEMPERATURE, float(temperature))
         handle = _GenAISpanHandle(span)
+        completed = False  # gate on a real terminal: OK or hard error, not cancel
         try:
             yield handle
         except asyncio.CancelledError:
@@ -299,23 +306,28 @@ def gen_ai_span(
             error_type = type(exc).__name__
             span.record_exception(exc)
             span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+            completed = True
             raise
         else:
             span.set_status(_Status(_StatusCode.OK))
+            completed = True
         finally:
-            # Record the GenAI metrics from inside the still-open span so the
-            # SDK can attach an exemplar back to this trace. ``error_type`` is
-            # set only on the hard-error arm — a cancel / GeneratorExit is a
-            # graceful terminal and records duration WITHOUT an error tag, so it
-            # doesn't pollute failure-rate dashboards (mirrors the span status).
-            _record_gen_ai_metrics(
-                operation=operation,
-                system=system,
-                model=model,
-                usage=handle.usage,
-                duration_seconds=time.perf_counter() - start,
-                error_type=error_type,
-            )
+            # Record metrics only for a real terminal — a completed call (OK) or
+            # a hard error (tagged ``error.type``) — and from inside the
+            # still-open span so the SDK can attach an exemplar back to this
+            # trace. A cancel / GeneratorExit is a graceful, partial abandonment
+            # (the span carries ``dikw.cancelled``); recording its cut-short
+            # elapsed time would skew the operation-duration latency series with
+            # a point indistinguishable from a successful call, so it is skipped.
+            if completed:
+                _record_gen_ai_metrics(
+                    operation=operation,
+                    system=system,
+                    model=model,
+                    usage=handle.usage,
+                    duration_seconds=time.perf_counter() - start,
+                    error_type=error_type,
+                )
 
 
 async def trace_llm_stream[StreamEventT](
@@ -578,43 +590,56 @@ def _record_gen_ai_metrics(
     """Emit the OTel GenAI metrics for one provider call: always the operation
     duration (tagged ``error.type`` on failure), plus one token-usage point per
     populated token class when the call reported usage. No-op when metrics are
-    inactive."""
-    instruments = _gen_ai_instruments()
-    if instruments is None:
-        return
-    token_usage, op_duration = instruments
-    base = {
-        GEN_AI_OPERATION_NAME: operation,
-        GEN_AI_SYSTEM: system,
-        GEN_AI_REQUEST_MODEL: model,
-    }
-    duration_attrs = base if error_type is None else {**base, ERROR_TYPE: error_type}
-    op_duration.record(duration_seconds, duration_attrs)
-    if not usage:
-        return
-    if "input_tokens" in usage:
-        token_usage.record(int(usage["input_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "input"})
-    if "output_tokens" in usage:
-        token_usage.record(
-            int(usage["output_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "output"}
-        )
-    # Anthropic prompt caching reports cache-read / cache-creation tokens
-    # SEPARATELY from ``input_tokens`` (each a distinct cost tier — reads bill at
-    # ~0.1x, creation at ~1.25x). Emit them as their own ``gen_ai.token.type``
-    # series rather than folding into ``input``: a metrics-only dashboard
-    # (Prometheus/Grafana, where the span's cache_* attributes are invisible) can
-    # then sum input + cache_read + cache_creation for total input volume AND
-    # keep the cost tiers distinct. Absent for every non-Anthropic provider.
-    if usage.get("cache_read_input_tokens"):
-        token_usage.record(
-            int(usage["cache_read_input_tokens"]),
-            {**base, GEN_AI_TOKEN_TYPE: "cache_read"},
-        )
-    if usage.get("cache_creation_input_tokens"):
-        token_usage.record(
-            int(usage["cache_creation_input_tokens"]),
-            {**base, GEN_AI_TOKEN_TYPE: "cache_creation"},
-        )
+    inactive.
+
+    This runs from :func:`gen_ai_span`'s ``finally``, which sits in the cancel /
+    error re-raise path of every LLM/embedding call, so the whole body is wrapped
+    defensively: telemetry must never crash the engine (the module-wide stance —
+    cf. the ImportError + teardown guards), and a stray exception here would
+    *replace* the in-flight cancel/error being propagated. OTel's ``record`` logs
+    rather than raises today; the guard makes that independent of SDK drift."""
+    try:
+        instruments = _gen_ai_instruments()
+        if instruments is None:
+            return
+        token_usage, op_duration = instruments
+        base = {
+            GEN_AI_OPERATION_NAME: operation,
+            GEN_AI_SYSTEM: system,
+            GEN_AI_REQUEST_MODEL: model,
+        }
+        duration_attrs = base if error_type is None else {**base, ERROR_TYPE: error_type}
+        op_duration.record(duration_seconds, duration_attrs)
+        if not usage:
+            return
+        if "input_tokens" in usage:
+            token_usage.record(
+                int(usage["input_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "input"}
+            )
+        if "output_tokens" in usage:
+            token_usage.record(
+                int(usage["output_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "output"}
+            )
+        # Anthropic prompt caching reports cache-read / cache-creation tokens
+        # SEPARATELY from ``input_tokens`` (each a distinct cost tier — reads bill
+        # at ~0.1x, creation at ~1.25x). Emit them as their own
+        # ``gen_ai.token.type`` series rather than folding into ``input``: a
+        # metrics-only dashboard (Prometheus/Grafana, where the span's cache_*
+        # attributes are invisible) can then sum input + cache_read +
+        # cache_creation for total input volume AND keep the cost tiers distinct.
+        # Absent for every non-Anthropic provider.
+        if usage.get("cache_read_input_tokens"):
+            token_usage.record(
+                int(usage["cache_read_input_tokens"]),
+                {**base, GEN_AI_TOKEN_TYPE: "cache_read"},
+            )
+        if usage.get("cache_creation_input_tokens"):
+            token_usage.record(
+                int(usage["cache_creation_input_tokens"]),
+                {**base, GEN_AI_TOKEN_TYPE: "cache_creation"},
+            )
+    except Exception:  # pragma: no cover - telemetry must never break the engine
+        logger.debug("failed to record gen_ai metrics", exc_info=True)
 
 
 def _otel_sdk_disabled() -> bool:
@@ -934,14 +959,10 @@ def reset_telemetry_for_testing() -> None:
     process. Best-effort on the otel internals — wrapped so SDK version
     drift can only cost test isolation, never production behaviour.
     """
-    global _configured, _provider, _meter_provider
-    global _gen_ai_token_usage, _gen_ai_op_duration
+    # ``shutdown_telemetry`` already nulls every dikw module global + the
+    # idempotency latch; this only adds what it can't reach — OTel's own
+    # process-once latches, so a second activation in-process can re-register.
     shutdown_telemetry()
-    _configured = False
-    _provider = None
-    _meter_provider = None
-    _gen_ai_token_usage = None
-    _gen_ai_op_duration = None
     if OTEL_AVAILABLE:
         try:
             _otel_trace._TRACER_PROVIDER_SET_ONCE = (

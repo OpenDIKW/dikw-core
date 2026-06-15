@@ -167,9 +167,12 @@ def test_gen_ai_span_records_error_type_on_failure() -> None:
     assert _histogram_points(reader, "gen_ai.client.token.usage") == []
 
 
-def test_gen_ai_span_cancel_is_not_an_error_in_metrics() -> None:
-    """A cooperative cancel is a graceful terminal: duration is recorded WITHOUT
-    an ``error.type`` tag (it must not pollute the failure dashboards)."""
+def test_gen_ai_span_cancel_records_no_metric() -> None:
+    """A cooperative cancel is a graceful, partial abandonment — NOT a completed
+    operation — so it records no duration (and no token) point: its cut-short
+    elapsed time would skew the operation-duration latency series with a point
+    indistinguishable from a real completion. The span still carries
+    ``dikw.cancelled`` for trace-level visibility."""
     import asyncio
 
     reader = _install_inmemory_meter()
@@ -179,9 +182,8 @@ def test_gen_ai_span_cancel_is_not_an_error_in_metrics() -> None:
     ):
         raise asyncio.CancelledError
 
-    durations = _histogram_points(reader, "gen_ai.client.operation.duration")
-    dur_point = _point_for(durations, **{telemetry.GEN_AI_OPERATION_NAME: "chat"})
-    assert telemetry.ERROR_TYPE not in dict(dur_point.attributes)
+    assert _histogram_points(reader, "gen_ai.client.operation.duration") == []
+    assert _histogram_points(reader, "gen_ai.client.token.usage") == []
 
 
 async def test_trace_llm_stream_records_metrics_from_done_event() -> None:
@@ -217,6 +219,32 @@ def test_no_metrics_recorded_when_meter_provider_absent() -> None:
         span.set_response(usage={"input_tokens": 5})
     assert telemetry._gen_ai_op_duration is None
     assert telemetry._gen_ai_token_usage is None
+
+
+def test_adopt_meter_provider_loses_race_and_degrades() -> None:
+    """When a MeterProvider is already registered (process-once), dikw's bid is
+    ignored: ``_adopt_meter_provider`` must shut down the orphan it built and
+    report False, so the PeriodicExportingMetricReader thread doesn't leak and
+    metrics never flow to a foreign provider."""
+    from opentelemetry import metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    foreign = MeterProvider()
+    metrics.set_meter_provider(foreign)  # wins the process-once race
+
+    ours = MeterProvider()
+    shutdowns: list[bool] = []
+    original_shutdown = ours.shutdown
+
+    def _spy_shutdown(*args: Any, **kwargs: Any) -> Any:
+        shutdowns.append(True)
+        return original_shutdown(*args, **kwargs)
+
+    ours.shutdown = _spy_shutdown  # type: ignore[method-assign]
+
+    assert telemetry._adopt_meter_provider(ours) is False
+    assert shutdowns == [True]  # orphan torn down
+    assert metrics.get_meter_provider() is foreign  # foreign provider untouched
 
 
 def test_shutdown_unwinds_meter_provider() -> None:
