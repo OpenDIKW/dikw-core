@@ -123,6 +123,34 @@ def test_gen_ai_span_records_token_usage_and_duration() -> None:
     assert telemetry.ERROR_TYPE not in dict(dur_point.attributes)
 
 
+def test_anthropic_cache_tokens_get_their_own_token_type_series() -> None:
+    """Anthropic prompt-cache tokens are a separate cost tier from fresh input,
+    so they land on distinct ``gen_ai.token.type`` series (``cache_read`` /
+    ``cache_creation``) — not folded into ``input`` — preserving both total
+    volume (summable) and the cost-tier breakdown for metrics-only dashboards."""
+    reader = _install_inmemory_meter()
+
+    with telemetry.gen_ai_span(
+        operation="chat", system="anthropic", model="claude-x"
+    ) as span:
+        span.set_response(
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 100,
+                "cache_creation_input_tokens": 7,
+            }
+        )
+
+    tokens = _histogram_points(reader, "gen_ai.client.token.usage")
+    assert _point_for(tokens, **{telemetry.GEN_AI_TOKEN_TYPE: "input"}).sum == 10
+    assert _point_for(tokens, **{telemetry.GEN_AI_TOKEN_TYPE: "output"}).sum == 5
+    assert _point_for(tokens, **{telemetry.GEN_AI_TOKEN_TYPE: "cache_read"}).sum == 100
+    assert (
+        _point_for(tokens, **{telemetry.GEN_AI_TOKEN_TYPE: "cache_creation"}).sum == 7
+    )
+
+
 def test_gen_ai_span_records_error_type_on_failure() -> None:
     """A failed call tags the duration point with ``error.type`` and records NO
     token usage (there is none)."""

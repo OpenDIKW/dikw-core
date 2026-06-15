@@ -576,8 +576,9 @@ def _record_gen_ai_metrics(
     error_type: str | None,
 ) -> None:
     """Emit the OTel GenAI metrics for one provider call: always the operation
-    duration (tagged ``error.type`` on failure), plus an input + output token
-    point when the call reported usage. No-op when metrics are inactive."""
+    duration (tagged ``error.type`` on failure), plus one token-usage point per
+    populated token class when the call reported usage. No-op when metrics are
+    inactive."""
     instruments = _gen_ai_instruments()
     if instruments is None:
         return
@@ -589,15 +590,31 @@ def _record_gen_ai_metrics(
     }
     duration_attrs = base if error_type is None else {**base, ERROR_TYPE: error_type}
     op_duration.record(duration_seconds, duration_attrs)
-    if usage:
-        if "input_tokens" in usage:
-            token_usage.record(
-                int(usage["input_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "input"}
-            )
-        if "output_tokens" in usage:
-            token_usage.record(
-                int(usage["output_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "output"}
-            )
+    if not usage:
+        return
+    if "input_tokens" in usage:
+        token_usage.record(int(usage["input_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "input"})
+    if "output_tokens" in usage:
+        token_usage.record(
+            int(usage["output_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "output"}
+        )
+    # Anthropic prompt caching reports cache-read / cache-creation tokens
+    # SEPARATELY from ``input_tokens`` (each a distinct cost tier — reads bill at
+    # ~0.1x, creation at ~1.25x). Emit them as their own ``gen_ai.token.type``
+    # series rather than folding into ``input``: a metrics-only dashboard
+    # (Prometheus/Grafana, where the span's cache_* attributes are invisible) can
+    # then sum input + cache_read + cache_creation for total input volume AND
+    # keep the cost tiers distinct. Absent for every non-Anthropic provider.
+    if usage.get("cache_read_input_tokens"):
+        token_usage.record(
+            int(usage["cache_read_input_tokens"]),
+            {**base, GEN_AI_TOKEN_TYPE: "cache_read"},
+        )
+    if usage.get("cache_creation_input_tokens"):
+        token_usage.record(
+            int(usage["cache_creation_input_tokens"]),
+            {**base, GEN_AI_TOKEN_TYPE: "cache_creation"},
+        )
 
 
 def _otel_sdk_disabled() -> bool:
