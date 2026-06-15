@@ -73,7 +73,7 @@ from .schemas import (
 )
 from .storage import Storage
 from .storage.base import NotSupported
-from .telemetry import DIKW_LAYER, DIKW_OP, traced_op
+from .telemetry import DIKW_LAYER, DIKW_OP, record_synth_metrics, traced_op
 
 logger = logging.getLogger(__name__)
 
@@ -566,6 +566,15 @@ async def synthesize(
                     judge_sample=cfg.synth.verify_judge_sample,
                 ),
             )
+        # Domain counters from the final report (no-op when telemetry is
+        # inactive). One emission at the single success return; a cancel / hard
+        # error raises before here, mirroring the GenAI-metric terminal contract.
+        record_synth_metrics(
+            created=report.created,
+            updated=report.updated,
+            unresolved_wikilinks=report.unresolved_wikilinks,
+            persist_errors=len(report.persist_errors),
+        )
         return report
     finally:
         await storage.close()

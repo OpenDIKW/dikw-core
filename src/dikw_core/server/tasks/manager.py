@@ -23,13 +23,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ...progress import CancelToken, ProgressReporter
-from ...telemetry import capture_otel_context, task_span
+from ...telemetry import capture_otel_context, record_task_duration, task_span
 from .._time import isoformat_utc_ms as _isoformat
 from .store import TaskRow, TaskStatus, TaskStore
 
@@ -276,6 +277,14 @@ class TaskManager:
             # engine/provider span nests under it. ``_run`` swallows
             # CancelledError, so the span outcome is set explicitly per arm
             # (the CM can't infer it from a propagating exception).
+            #
+            # ``dikw.task.duration`` is recorded once in the finally, tagged with
+            # the terminal status. Unlike the GenAI op-duration metric (cancel
+            # records nothing), a cancelled task is a meaningful terminal kept on
+            # its own ``dikw.status`` series; ``status`` defaults to ``error`` so
+            # a BaseException that escapes the typed arms still lands honestly.
+            start = time.perf_counter()
+            status = "error"
             with task_span(
                 op, task_id=task_id, link=parent_ctx, base_id=base_id
             ) as tspan:
@@ -299,6 +308,7 @@ class TaskManager:
                         {"type": "final", "status": "succeeded", "result": result}
                     )
                     tspan.ok()
+                    status = "ok"
                 except asyncio.CancelledError:
                     finished_at = _isoformat()
                     await self._store.update_status(
@@ -306,6 +316,7 @@ class TaskManager:
                     )
                     await reporter.emit_raw({"type": "final", "status": "cancelled"})
                     tspan.cancelled()
+                    status = "cancelled"
                     # Don't re-raise: the manager owns the task lifecycle and a
                     # graceful "cancelled" final is the contract.
                 except Exception as e:
@@ -326,6 +337,10 @@ class TaskManager:
                     )
                     tspan.record_error(e)
                 finally:
+                    # Task wall-clock + terminal status (no-op when telemetry is
+                    # inactive; the helper is internally exception-safe so it
+                    # never disrupts the cleanup below).
+                    record_task_duration(op, status, time.perf_counter() - start)
                     # Belt-and-braces: even though every emit path already
                     # notifies, the terminal-status update writes the row
                     # before the final ``emit_raw`` — a long-poll handler

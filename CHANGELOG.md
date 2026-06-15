@@ -9,6 +9,32 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **OpenTelemetry dikw-domain metrics (PR3b of the OTel arc).** The engine now
+  emits domain counters + duration histograms mapped from the per-call report
+  DTOs and existing instrumentation, so a Prometheus/Grafana dashboard sees
+  ingest/synth/embed/retrieve/task volume without parsing logs. All flow through
+  the same `_meter_provider` gate as the PR3a GenAI metrics (no-op when the
+  `[otel]` extra is absent or telemetry is off) via five `record_*` helpers in
+  `telemetry.py` that take plain scalars (so the seam stays decoupled from the
+  DTOs):
+  - `dikw.ingest.files` (tag `dikw.result` = `added`/`updated`/`unchanged`),
+    `dikw.ingest.chunks`, `dikw.ingest.errors` (tag `dikw.error.kind`) —
+    emitted once at `ingest`'s return.
+  - `dikw.synth.pages` (tag `dikw.result` = `created`/`updated`),
+    `dikw.synth.unresolved_wikilinks`, `dikw.synth.persist_errors` — at
+    `synthesize`'s return.
+  - `dikw.embed.chunks` / `dikw.embed.skipped` / `dikw.embed.retries` — from the
+    shared chunk-embed consume seam (`consume_embedding_stream`), so they cover
+    every layer's inline embed (D/K/W), not just ingest.
+  - `dikw.retrieve.leg.duration` (`s`, tag `dikw.retrieval.leg`) — each fusion
+    leg's wall-clock, recorded from the existing `dikw.retrieve.leg` span seam.
+  - `dikw.task.duration` (`s`, tags `dikw.op` + `dikw.status` =
+    `ok`/`error`/`cancelled`) — one point per background task; unlike the GenAI
+    op-duration metric, a cancelled task keeps its duration on its own status
+    series.
+  Purely additive instrumentation — retrieval results and synth output are
+  byte-identical with telemetry on or off (the leg-duration wrapper only times
+  the existing await).
 - **OpenTelemetry GenAI metrics (PR3a of the OTel arc).** The server now exports
   GenAI metrics over OTLP/HTTP (`/v1/metrics`) alongside traces — surfacing the
   LLM/embedding token usage that was previously discarded. `configure_telemetry`
