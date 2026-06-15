@@ -26,6 +26,7 @@ import asyncio
 import functools
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
@@ -86,6 +87,28 @@ GEN_AI_USAGE_OUTPUT_TOKENS: Final = "gen_ai.usage.output_tokens"
 # Anthropic-only prompt-cache accounting (vendor-namespaced; absent elsewhere).
 GEN_AI_CACHE_READ_INPUT_TOKENS: Final = "gen_ai.anthropic.cache_read_input_tokens"
 GEN_AI_CACHE_CREATION_INPUT_TOKENS: Final = "gen_ai.anthropic.cache_creation_input_tokens"
+# Metric-only attribute keys (set on the GenAI metric data points emitted by
+# :func:`_record_gen_ai_metrics`, NOT on spans). ``gen_ai.token.type`` splits the
+# token-usage histogram into input/output series; ``error.type`` (OTel standard)
+# tags the duration histogram on a failed call.
+GEN_AI_TOKEN_TYPE: Final = "gen_ai.token.type"  # input | output
+ERROR_TYPE: Final = "error.type"  # exception class name on a failed operation
+
+# ---- metric instrument identities (OTel GenAI semconv) -----------------
+# Histogram NAMES (not attribute keys) — kept private; the meter creates these
+# once in :func:`_gen_ai_instruments`. Explicit bucket boundaries follow the
+# semconv's advice: the SDK default histogram buckets top out at 10k, useless
+# for token counts (tens of thousands) and sub-second-to-minute LLM latencies.
+_METRIC_GEN_AI_TOKEN_USAGE: Final = "gen_ai.client.token.usage"
+_METRIC_GEN_AI_OP_DURATION: Final = "gen_ai.client.operation.duration"
+_GEN_AI_TOKEN_BUCKETS: Final = [
+    1, 4, 16, 64, 256, 1024, 4096, 16384, 65536,
+    262144, 1048576, 4194304, 16777216, 67108864,
+]  # fmt: skip
+_GEN_AI_DURATION_BUCKETS: Final = [
+    0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28,
+    2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+]  # fmt: skip
 
 
 # ---- no-op fallbacks (used only when [otel] is NOT installed) -----------
@@ -175,13 +198,16 @@ class _GenAISpanHandle:
 
     Wraps a real span when telemetry is active, or :data:`_NOOP_SPAN` otherwise
     (whose ``set_attribute`` is a no-op) — one class covers both paths because
-    ``set_response`` only ever calls ``set_attribute``.
+    ``set_response`` only ever calls ``set_attribute``. Also stashes the reported
+    ``usage`` so the enclosing :func:`gen_ai_span` can record the token-usage
+    metric at span close (the metric needs the same data the span attributes do).
     """
 
-    __slots__ = ("_span",)
+    __slots__ = ("_span", "usage")
 
     def __init__(self, span: Span) -> None:
         self._span = span
+        self.usage: dict[str, int] | None = None
 
     def set_response(
         self,
@@ -193,6 +219,7 @@ class _GenAISpanHandle:
         if finish_reason is not None:
             span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, (finish_reason,))
         if usage:
+            self.usage = usage
             if "input_tokens" in usage:
                 span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, int(usage["input_tokens"]))
             if "output_tokens" in usage:
@@ -235,11 +262,19 @@ def gen_ai_span(
     is inactive. The underlying httpx wire call nests as a child via the active
     OTel context (httpx auto-instrumentation, wired in
     :func:`configure_telemetry`).
+
+    On a real terminal — a completed call or a hard error — it also emits the
+    GenAI metrics (``gen_ai.client.token.usage`` from the reported usage +
+    ``gen_ai.client.operation.duration``); a cancel / ``GeneratorExit`` records
+    no metric (see :func:`_record_gen_ai_metrics`). So this one seam gives every
+    provider both the span and the metrics with no per-provider code.
     """
     if not OTEL_AVAILABLE:
         yield _GenAISpanHandle(cast("Span", _NOOP_SPAN))
         return
     tracer = _otel_trace.get_tracer(_INSTRUMENTATION_NAME)
+    start = time.perf_counter()
+    error_type: str | None = None
     with tracer.start_as_current_span(
         f"{operation} {model}",
         record_exception=False,
@@ -252,8 +287,10 @@ def gen_ai_span(
             span.set_attribute(GEN_AI_REQUEST_MAX_TOKENS, int(max_tokens))
         if temperature is not None:
             span.set_attribute(GEN_AI_REQUEST_TEMPERATURE, float(temperature))
+        handle = _GenAISpanHandle(span)
+        completed = False  # gate on a real terminal: OK or hard error, not cancel
         try:
-            yield _GenAISpanHandle(span)
+            yield handle
         except asyncio.CancelledError:
             span.set_attribute(DIKW_CANCELLED, True)
             raise
@@ -266,11 +303,31 @@ def gen_ai_span(
             # but not an Exception or CancelledError.)
             raise
         except BaseException as exc:
+            error_type = type(exc).__name__
             span.record_exception(exc)
             span.set_status(_Status(_StatusCode.ERROR, str(exc)))
+            completed = True
             raise
         else:
             span.set_status(_Status(_StatusCode.OK))
+            completed = True
+        finally:
+            # Record metrics only for a real terminal — a completed call (OK) or
+            # a hard error (tagged ``error.type``) — and from inside the
+            # still-open span so the SDK can attach an exemplar back to this
+            # trace. A cancel / GeneratorExit is a graceful, partial abandonment
+            # (the span carries ``dikw.cancelled``); recording its cut-short
+            # elapsed time would skew the operation-duration latency series with
+            # a point indistinguishable from a successful call, so it is skipped.
+            if completed:
+                _record_gen_ai_metrics(
+                    operation=operation,
+                    system=system,
+                    model=model,
+                    usage=handle.usage,
+                    duration_seconds=time.perf_counter() - start,
+                    error_type=error_type,
+                )
 
 
 async def trace_llm_stream[StreamEventT](
@@ -480,6 +537,109 @@ _configured = False
 # + shut it down cleanly. Typed loosely (object) to avoid importing the SDK
 # type at module scope — the SDK lives behind the optional extra.
 _provider: object | None = None
+# The SDK MeterProvider (server-side metrics). Set ONLY when dikw's provider
+# won registration in :func:`configure_telemetry`; the client bootstrap leaves
+# it None (the remote client makes no LLM/embedding calls — there's nothing to
+# meter). Doubles as the gate for :func:`_gen_ai_instruments`: instruments are
+# created only when our provider is the global one, so gen_ai metrics never leak
+# to a foreign meter provider.
+_meter_provider: object | None = None
+# Lazily-created (once) GenAI metric instruments, cached so each record is a
+# cheap lookup. Typed ``Any`` because the SDK Histogram type lives behind the
+# optional extra. Cleared by shutdown / reset so a fresh lifespan re-binds.
+_gen_ai_token_usage: Any = None
+_gen_ai_op_duration: Any = None
+
+
+def _gen_ai_instruments() -> tuple[Any, Any] | None:
+    """Return the (token-usage, operation-duration) histograms, or ``None`` when
+    metrics are inactive (no dikw meter provider wired).
+
+    Creating an instrument is meant to be done once and reused; gate on our own
+    :data:`_meter_provider` (not the global, which a foreign auto-instrumentation
+    could own) so metrics flow only to dikw's exporter. The instruments bind to
+    the active meter on first use, after the provider is registered.
+    """
+    global _gen_ai_token_usage, _gen_ai_op_duration
+    if _meter_provider is None:
+        return None
+    if _gen_ai_op_duration is None:
+        meter = get_meter()
+        _gen_ai_token_usage = meter.create_histogram(
+            _METRIC_GEN_AI_TOKEN_USAGE,
+            unit="{token}",
+            description="Number of input/output tokens used per GenAI request.",
+        )
+        _gen_ai_op_duration = meter.create_histogram(
+            _METRIC_GEN_AI_OP_DURATION,
+            unit="s",
+            description="Duration of a GenAI client operation (chat / embeddings).",
+        )
+    return _gen_ai_token_usage, _gen_ai_op_duration
+
+
+def _record_gen_ai_metrics(
+    *,
+    operation: str,
+    system: str,
+    model: str,
+    usage: dict[str, int] | None,
+    duration_seconds: float,
+    error_type: str | None,
+) -> None:
+    """Emit the OTel GenAI metrics for one provider call: always the operation
+    duration (tagged ``error.type`` on failure), plus one token-usage point per
+    populated token class when the call reported usage. No-op when metrics are
+    inactive.
+
+    This runs from :func:`gen_ai_span`'s ``finally``, which sits in the cancel /
+    error re-raise path of every LLM/embedding call, so the whole body is wrapped
+    defensively: telemetry must never crash the engine (the module-wide stance —
+    cf. the ImportError + teardown guards), and a stray exception here would
+    *replace* the in-flight cancel/error being propagated. OTel's ``record`` logs
+    rather than raises today; the guard makes that independent of SDK drift."""
+    try:
+        instruments = _gen_ai_instruments()
+        if instruments is None:
+            return
+        token_usage, op_duration = instruments
+        base = {
+            GEN_AI_OPERATION_NAME: operation,
+            GEN_AI_SYSTEM: system,
+            GEN_AI_REQUEST_MODEL: model,
+        }
+        duration_attrs = base if error_type is None else {**base, ERROR_TYPE: error_type}
+        op_duration.record(duration_seconds, duration_attrs)
+        if not usage:
+            return
+        if "input_tokens" in usage:
+            token_usage.record(
+                int(usage["input_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "input"}
+            )
+        if "output_tokens" in usage:
+            token_usage.record(
+                int(usage["output_tokens"]), {**base, GEN_AI_TOKEN_TYPE: "output"}
+            )
+        # Anthropic prompt caching reports cache-read / cache-creation tokens
+        # SEPARATELY from ``input_tokens`` (each a distinct cost tier — reads bill
+        # at ~0.1x, creation at ~1.25x). Emit them as their own
+        # ``gen_ai.token.type`` series rather than folding into ``input``: a
+        # metrics-only dashboard (Prometheus/Grafana, where the span's cache_*
+        # attributes are invisible) can then sum input + cache_read +
+        # cache_creation for total input volume AND keep the cost tiers distinct.
+        # Absent for every non-Anthropic provider.
+        if usage.get("cache_read_input_tokens"):
+            token_usage.record(
+                int(usage["cache_read_input_tokens"]),
+                {**base, GEN_AI_TOKEN_TYPE: "cache_read"},
+            )
+        if usage.get("cache_creation_input_tokens"):
+            token_usage.record(
+                int(usage["cache_creation_input_tokens"]),
+                {**base, GEN_AI_TOKEN_TYPE: "cache_creation"},
+            )
+    except Exception:  # pragma: no cover - telemetry must never break the engine
+        logger.debug("failed to record gen_ai metrics", exc_info=True)
 
 
 def _otel_sdk_disabled() -> bool:
@@ -527,6 +687,32 @@ def _adopt_provider(provider: Any) -> bool:
     return False
 
 
+def _adopt_meter_provider(provider: Any) -> bool:
+    """Register ``provider`` as the global ``MeterProvider``, honouring OTel's
+    process-once ``set_meter_provider`` — the metrics analogue of
+    :func:`_adopt_provider`.
+
+    Returns ``True`` when dikw's meter provider won registration. If one is
+    already registered (``set_meter_provider`` then silently no-ops), shut down
+    the orphan's ``PeriodicExportingMetricReader`` thread and return ``False`` —
+    metrics degrade rather than leak to a foreign provider, while tracing (which
+    won its own race above) stays up. Realistically this loses only if external
+    auto-instrumentation pre-registered a meter provider, in which case the
+    tracer race above would already have failed and we'd never reach here.
+    """
+    _otel_metrics.set_meter_provider(provider)
+    if _otel_metrics.get_meter_provider() is provider:
+        return True
+    shutdown = getattr(provider, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
+    logger.warning(
+        "metrics not activated: a MeterProvider is already registered in this "
+        "process; dikw traces are still active but metrics are disabled"
+    )
+    return False
+
+
 def configure_telemetry(
     *,
     enabled: bool,
@@ -535,7 +721,8 @@ def configure_telemetry(
     sample_ratio: float,
     version: str,
 ) -> bool:
-    """Register the OTel SDK providers + OTLP/HTTP exporter. Idempotent.
+    """Register the OTel SDK providers (tracer + meter) + OTLP/HTTP exporters.
+    Idempotent.
 
     Returns ``True`` when telemetry is activated, ``False`` for every no-op
     path (disabled in config, ``[otel]`` not installed, or ``OTEL_SDK_DISABLED``
@@ -543,20 +730,32 @@ def configure_telemetry(
     engine code.
 
     ``endpoint`` is the OTLP/HTTP base URL (e.g. ``http://collector:4318``).
-    When set, dikw appends the per-signal ``/v1/traces`` path; when ``None``,
-    the exporter is constructed bare and the SDK's own
+    When set, dikw appends the per-signal ``/v1/traces`` and ``/v1/metrics``
+    paths; when ``None``, the exporters are constructed bare and the SDK's own
     ``OTEL_EXPORTER_OTLP_ENDPOINT`` env handling applies (which appends the
-    path itself).
+    paths itself). ``sample_ratio`` governs trace sampling only — metrics are
+    not sampled. The tracer race is decisive: if dikw loses it the whole
+    bootstrap reports inactive; a lost meter race (near-impossible once the
+    tracer race is won) degrades metrics alone and keeps traces up.
     """
-    global _configured, _provider
+    global _configured, _provider, _meter_provider
     if _configured:
         return True
     if not telemetry_should_activate(enabled):
         return False
 
     try:
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+            OTLPMetricExporter,
+        )
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.sdk.metrics.view import (
+            ExplicitBucketHistogramAggregation,
+            View,
+        )
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -595,6 +794,34 @@ def configure_telemetry(
     # guard passes — if dikw didn't win provider registration it must not have
     # globally patched httpx either. Unwound in :func:`shutdown_telemetry`.
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+
+    # Meter provider: a PeriodicExportingMetricReader pushes to the OTLP/HTTP
+    # metrics endpoint on a timer. Views pin the two GenAI histograms to the
+    # semconv-advised bucket boundaries (the SDK defaults are useless for token
+    # counts / LLM latencies). A lost meter race degrades metrics only.
+    metric_exporter = (
+        OTLPMetricExporter(endpoint=endpoint.rstrip("/") + "/v1/metrics")
+        if endpoint
+        else OTLPMetricExporter()
+    )
+    meter_provider = MeterProvider(
+        resource=resource,
+        metric_readers=[PeriodicExportingMetricReader(metric_exporter)],
+        views=[
+            View(
+                instrument_name=_METRIC_GEN_AI_TOKEN_USAGE,
+                aggregation=ExplicitBucketHistogramAggregation(_GEN_AI_TOKEN_BUCKETS),
+            ),
+            View(
+                instrument_name=_METRIC_GEN_AI_OP_DURATION,
+                aggregation=ExplicitBucketHistogramAggregation(
+                    _GEN_AI_DURATION_BUCKETS
+                ),
+            ),
+        ],
+    )
+    if _adopt_meter_provider(meter_provider):
+        _meter_provider = meter_provider
 
     _provider = provider
     _configured = True
@@ -692,11 +919,16 @@ def shutdown_telemetry() -> None:
     activation per process; tests get a clean slate via
     :func:`reset_telemetry_for_testing`.
     """
-    global _configured, _provider
+    global _configured, _provider, _meter_provider
+    global _gen_ai_token_usage, _gen_ai_op_duration
     provider = _provider
+    meter_provider = _meter_provider
     _provider = None
+    _meter_provider = None
+    _gen_ai_token_usage = None
+    _gen_ai_op_duration = None
     _configured = False
-    if provider is None:
+    if provider is None and meter_provider is None:
         return
     # Symmetric unwind of the global httpx patch so a fresh in-process lifespan
     # re-runs configure_telemetry from a clean, unpatched state (without this a
@@ -709,9 +941,15 @@ def shutdown_telemetry() -> None:
         HTTPXClientInstrumentor().uninstrument()
     except Exception:  # pragma: no cover - defensive teardown guard
         pass
-    shutdown = getattr(provider, "shutdown", None)
-    if callable(shutdown):
-        shutdown()
+    # Shut down both providers — the meter provider's shutdown also stops the
+    # PeriodicExportingMetricReader's background timer thread + flushes a final
+    # export, so a short-lived process drops no metrics.
+    for active in (provider, meter_provider):
+        if active is None:
+            continue
+        shutdown = getattr(active, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
 
 def reset_telemetry_for_testing() -> None:
@@ -721,16 +959,27 @@ def reset_telemetry_for_testing() -> None:
     process. Best-effort on the otel internals — wrapped so SDK version
     drift can only cost test isolation, never production behaviour.
     """
-    global _configured, _provider
+    # ``shutdown_telemetry`` already nulls every dikw module global + the
+    # idempotency latch; this only adds what it can't reach — OTel's own
+    # process-once latches, so a second activation in-process can re-register.
     shutdown_telemetry()
-    _configured = False
-    _provider = None
     if OTEL_AVAILABLE:
         try:
             _otel_trace._TRACER_PROVIDER_SET_ONCE = (
                 _otel_trace._TRACER_PROVIDER_SET_ONCE.__class__()
             )
             _otel_trace._TRACER_PROVIDER = None
+        except Exception:  # pragma: no cover - internal-API drift guard
+            pass
+        try:
+            # Metrics has its own process-once latch + global, in the internal
+            # module (not re-exported at ``opentelemetry.metrics`` top level).
+            from opentelemetry.metrics import _internal as _metrics_internal
+
+            _metrics_internal._METER_PROVIDER_SET_ONCE = (
+                _metrics_internal._METER_PROVIDER_SET_ONCE.__class__()
+            )
+            _metrics_internal._METER_PROVIDER = None
         except Exception:  # pragma: no cover - internal-API drift guard
             pass
 
@@ -750,6 +999,7 @@ __all__ = [
     "DIKW_RETRIEVE_LIMIT",
     "DIKW_SOURCE_PATH",
     "DIKW_TASK_ID",
+    "ERROR_TYPE",
     "GEN_AI_CACHE_CREATION_INPUT_TOKENS",
     "GEN_AI_CACHE_READ_INPUT_TOKENS",
     "GEN_AI_OPERATION_NAME",
@@ -758,6 +1008,7 @@ __all__ = [
     "GEN_AI_REQUEST_TEMPERATURE",
     "GEN_AI_RESPONSE_FINISH_REASONS",
     "GEN_AI_SYSTEM",
+    "GEN_AI_TOKEN_TYPE",
     "GEN_AI_USAGE_INPUT_TOKENS",
     "GEN_AI_USAGE_OUTPUT_TOKENS",
     "OTEL_AVAILABLE",

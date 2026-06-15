@@ -9,6 +9,25 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **OpenTelemetry GenAI metrics (PR3a of the OTel arc).** The server now exports
+  GenAI metrics over OTLP/HTTP (`/v1/metrics`) alongside traces — surfacing the
+  LLM/embedding token usage that was previously discarded. `configure_telemetry`
+  registers a `MeterProvider` + `PeriodicExportingMetricReader` + OTLP/HTTP metric
+  exporter (with semconv-advised histogram bucket views), and every provider call
+  (chat + embeddings) emits two histograms straight from the existing
+  `gen_ai_span` / `trace_llm_stream` seam, so **no provider-side code changed**:
+  - `gen_ai.client.token.usage` (`{token}`) — one point per token class, tagged
+    `gen_ai.token.type` (`input` / `output`, plus `cache_read` / `cache_creation`
+    for Anthropic prompt caching), `gen_ai.operation.name`, `gen_ai.system`,
+    `gen_ai.request.model`.
+  - `gen_ai.client.operation.duration` (`s`) — request latency, tagged
+    `error.type` on a failed call; a cancelled / abandoned stream records no point
+    (its cut-short time would skew the latency series).
+  FastAPI HTTP-server metrics flow for free from the same meter provider. All a
+  no-op when the `[otel]` extra is absent or telemetry is off; the remote `dikw
+  client` stays trace-only (it makes no LLM calls). dikw-domain counters land in a
+  follow-up (PR3b). Touches only `telemetry.py` — behavior-preserving for the
+  existing span paths.
 - **OpenTelemetry tracing — client→server `traceparent` propagation (PR2c of the
   OTel arc).** The `dikw client` CLI now joins the same trace as the server it
   calls. Because the remote client has no `dikw.yml`, its telemetry is **env-only**:
