@@ -91,6 +91,9 @@ class _JsonFormatter(logging.Formatter):
                 and key not in payload
             ):
                 payload[key] = value
+        # ``default=str`` stringifies any non-JSON-serializable extra rather than
+        # raising — a formatter that crashes is worse than one that over-stringifies
+        # an exotic value (the module-wide "logging never breaks the caller" stance).
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
