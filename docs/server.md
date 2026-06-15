@@ -206,9 +206,25 @@ metric code exists:
   `error.type` on a failed call. A cancelled / abandoned stream records no point
   (its cut-short time would skew the latency series).
 
-FastAPI HTTP-server metrics flow for free from the same meter provider. Finer
-per-source / per-group / per-batch sub-spans, dikw-domain counters, and
-`trace_id`/`span_id` log correlation land in subsequent releases.
+FastAPI HTTP-server metrics flow for free from the same meter provider.
+
+The engine also exports **dikw-domain metrics** mapped from the per-call report
+DTOs + existing instrumentation, so a dashboard sees pipeline volume without
+parsing logs (same meter provider, all no-ops when telemetry is off):
+
+* `dikw.ingest.files` (tag `dikw.result`), `dikw.ingest.chunks`,
+  `dikw.ingest.errors` (tag `dikw.error.kind`) — counters from the final
+  `IngestReport`.
+* `dikw.synth.pages` (tag `dikw.result`), `dikw.synth.unresolved_wikilinks`,
+  `dikw.synth.persist_errors` — counters from the final `SynthReport`.
+* `dikw.embed.chunks` / `dikw.embed.skipped` / `dikw.embed.retries` — chunk-embed
+  volume + durability, from the shared consume seam (covers D/K/W inline embed).
+* `dikw.retrieve.leg.duration` (`s`, tag `dikw.retrieval.leg`) — per-leg latency.
+* `dikw.task.duration` (`s`, tags `dikw.op` + `dikw.status`) — background-task
+  wall-clock per terminal outcome.
+
+Finer per-source / per-group / per-batch sub-spans and `trace_id`/`span_id` log
+correlation land in subsequent releases.
 
 The remote `dikw client` CLI has no base config (no `dikw.yml`), so its
 telemetry is driven purely by the standard `OTEL_*` env vars. Set

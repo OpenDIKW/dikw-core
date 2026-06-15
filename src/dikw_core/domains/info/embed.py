@@ -39,6 +39,7 @@ from ...schemas import (
     MultimodalInput,
 )
 from ...storage.base import NotSupported, Storage
+from ...telemetry import record_embed_metrics
 from ..data.backends.markdown import content_hash
 
 logger = logging.getLogger(__name__)
@@ -541,6 +542,9 @@ async def consume_embedding_stream(
     batches_done = 0
     batches_skipped = 0
     chunks_skipped = 0
+    # Transient retry attempts across all batches this stream (``attempts`` is
+    # 1 for a first-try success, so ``attempts - 1`` is the retries spent).
+    retries = 0
     errors: list[str] = []
     async for result in stream:
         if result.rows:
@@ -550,6 +554,7 @@ async def consume_embedding_stream(
             batches_skipped += 1
             chunks_skipped += len(result.skipped_chunk_ids)
             errors.append(result.error)
+        retries += max(0, result.attempts - 1)
         batches_done += 1
         if on_batch is not None:
             on_batch()
@@ -558,6 +563,13 @@ async def consume_embedding_stream(
                 phase=phase, current=batches_done, total=total
             )
             reporter.cancel_token().raise_if_cancelled()
+    # Chunk-embed counters from this shared consume seam (covers ingest + synth/
+    # lint-apply + wisdom inline embed): vectors written, chunks left without a
+    # vector after exhausted retries, and transient retry attempts spent. No-op
+    # when telemetry is inactive.
+    record_embed_metrics(
+        embedded=embedded, chunks_skipped=chunks_skipped, retries=retries
+    )
     return EmbedConsumeResult(
         embedded=embedded,
         batches_skipped=batches_skipped,

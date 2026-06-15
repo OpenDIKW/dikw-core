@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import dataclasses
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,7 @@ from .schemas import (
     Layer,
 )
 from .storage.base import NotSupported
-from .telemetry import DIKW_LAYER, DIKW_OP, traced_op
+from .telemetry import DIKW_LAYER, DIKW_OP, record_ingest_metrics, traced_op
 
 # One stderr Console for all embedding progress bars. Constructing one
 # per ingest pass would re-probe terminal capability + color system on
@@ -532,6 +533,18 @@ async def ingest(
             # references resolve at query/render time.
             report = _replace(report, assets=len(new_assets_by_id))
 
+        # Domain counters from the final report (no-op when telemetry is
+        # inactive). One emission at the single success return — a cancel /
+        # hard error raises before here and records nothing, mirroring the
+        # GenAI-metric terminal contract. Embedded-chunk volume is metered at
+        # the embed seam (``consume_embedding_stream``), not from the report.
+        record_ingest_metrics(
+            added=report.added,
+            updated=report.updated,
+            unchanged=report.unchanged,
+            chunks=report.chunks,
+            errors_by_kind=dict(Counter(e.kind for e in report.errors)),
+        )
         return report
     finally:
         if owned_mm is not None and hasattr(owned_mm, "aclose"):

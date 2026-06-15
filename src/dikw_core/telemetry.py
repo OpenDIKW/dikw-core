@@ -29,6 +29,7 @@ import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 
 if TYPE_CHECKING:
@@ -94,6 +95,16 @@ GEN_AI_CACHE_CREATION_INPUT_TOKENS: Final = "gen_ai.anthropic.cache_creation_inp
 GEN_AI_TOKEN_TYPE: Final = "gen_ai.token.type"  # input | output
 ERROR_TYPE: Final = "error.type"  # exception class name on a failed operation
 
+# dikw-domain metric attribute keys (PR3b) — set on the data points emitted by
+# the ``record_*`` helpers below, NOT on spans. ``dikw.result`` splits the file
+# / page counters by outcome; ``dikw.error.kind`` tags the ingest-error counter
+# by :data:`api_types.IngestErrorKind`; ``dikw.status`` tags the task-duration
+# histogram (ok | error | cancelled). ``dikw.op`` / ``dikw.retrieval.leg``
+# (above) double as the op / leg tags so the metric and span dimensions match.
+DIKW_RESULT: Final = "dikw.result"  # added | updated | unchanged | created
+DIKW_ERROR_KIND: Final = "dikw.error.kind"  # parse_error | read_error | storage_error
+DIKW_STATUS: Final = "dikw.status"  # ok | error | cancelled
+
 # ---- metric instrument identities (OTel GenAI semconv) -----------------
 # Histogram NAMES (not attribute keys) — kept private; the meter creates these
 # once in :func:`_gen_ai_instruments`. Explicit bucket boundaries follow the
@@ -108,6 +119,31 @@ _GEN_AI_TOKEN_BUCKETS: Final = [
 _GEN_AI_DURATION_BUCKETS: Final = [
     0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28,
     2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+]  # fmt: skip
+
+# ---- dikw-domain metric identities (PR3b) ------------------------------
+# Counter NAMES (monotonic ``add``) mapped from the per-call report DTOs +
+# embed bookkeeping, and two duration Histograms. All private — created once in
+# :func:`_domain_metrics`. The histograms get explicit-bucket Views in
+# :func:`configure_telemetry`: retrieve legs are sub-millisecond-to-seconds,
+# tasks run seconds-to-an-hour, and the SDK default buckets (top 10k) fit
+# neither.
+_METRIC_DIKW_INGEST_FILES: Final = "dikw.ingest.files"
+_METRIC_DIKW_INGEST_CHUNKS: Final = "dikw.ingest.chunks"
+_METRIC_DIKW_INGEST_ERRORS: Final = "dikw.ingest.errors"
+_METRIC_DIKW_EMBED_CHUNKS: Final = "dikw.embed.chunks"
+_METRIC_DIKW_EMBED_SKIPPED: Final = "dikw.embed.skipped"
+_METRIC_DIKW_EMBED_RETRIES: Final = "dikw.embed.retries"
+_METRIC_DIKW_SYNTH_PAGES: Final = "dikw.synth.pages"
+_METRIC_DIKW_SYNTH_UNRESOLVED: Final = "dikw.synth.unresolved_wikilinks"
+_METRIC_DIKW_SYNTH_PERSIST_ERRORS: Final = "dikw.synth.persist_errors"
+_METRIC_DIKW_RETRIEVE_LEG_DURATION: Final = "dikw.retrieve.leg.duration"
+_METRIC_DIKW_TASK_DURATION: Final = "dikw.task.duration"
+_RETRIEVE_LEG_DURATION_BUCKETS: Final = [
+    0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+]  # fmt: skip
+_TASK_DURATION_BUCKETS: Final = [
+    0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600,
 ]  # fmt: skip
 
 
@@ -549,6 +585,10 @@ _meter_provider: object | None = None
 # optional extra. Cleared by shutdown / reset so a fresh lifespan re-binds.
 _gen_ai_token_usage: Any = None
 _gen_ai_op_duration: Any = None
+# Lazily-created (once) dikw-domain instruments (PR3b), same gate + lifecycle as
+# the GenAI ones. Bundled in one holder so the ~11 instruments are one cached
+# lookup, not eleven module globals.
+_domain_instruments: _DomainInstruments | None = None
 
 
 def _gen_ai_instruments() -> tuple[Any, Any] | None:
@@ -640,6 +680,221 @@ def _record_gen_ai_metrics(
             )
     except Exception:  # pragma: no cover - telemetry must never break the engine
         logger.debug("failed to record gen_ai metrics", exc_info=True)
+
+
+@dataclass(frozen=True)
+class _DomainInstruments:
+    """Holder for the dikw-domain instruments, created once in
+    :func:`_domain_metrics`. Fields are ``Any`` because the SDK Counter /
+    Histogram types live behind the optional ``[otel]`` extra."""
+
+    ingest_files: Any  # Counter, tag dikw.result
+    ingest_chunks: Any  # Counter
+    ingest_errors: Any  # Counter, tag dikw.error.kind
+    embed_chunks: Any  # Counter
+    embed_skipped: Any  # Counter
+    embed_retries: Any  # Counter
+    synth_pages: Any  # Counter, tag dikw.result
+    synth_unresolved: Any  # Counter
+    synth_persist_errors: Any  # Counter
+    retrieve_leg_duration: Any  # Histogram (s), tag dikw.retrieval.leg
+    task_duration: Any  # Histogram (s), tag dikw.op + dikw.status
+
+
+def _domain_metrics() -> _DomainInstruments | None:
+    """Return the dikw-domain instruments, or ``None`` when metrics are inactive
+    (no dikw meter provider wired). Same gate as :func:`_gen_ai_instruments`: pin
+    on our own :data:`_meter_provider` so domain metrics never leak to a foreign
+    auto-instrumentation provider, and create the instruments once on first use.
+    """
+    global _domain_instruments
+    if _meter_provider is None:
+        return None
+    if _domain_instruments is None:
+        meter = get_meter()
+        _domain_instruments = _DomainInstruments(
+            ingest_files=meter.create_counter(
+                _METRIC_DIKW_INGEST_FILES,
+                unit="{file}",
+                description="Source files processed by ingest, by result.",
+            ),
+            ingest_chunks=meter.create_counter(
+                _METRIC_DIKW_INGEST_CHUNKS,
+                unit="{chunk}",
+                description="Chunks written to storage by ingest.",
+            ),
+            ingest_errors=meter.create_counter(
+                _METRIC_DIKW_INGEST_ERRORS,
+                unit="{error}",
+                description="Per-file ingest failures, by kind.",
+            ),
+            embed_chunks=meter.create_counter(
+                _METRIC_DIKW_EMBED_CHUNKS,
+                unit="{chunk}",
+                description="Chunk vectors written this run.",
+            ),
+            embed_skipped=meter.create_counter(
+                _METRIC_DIKW_EMBED_SKIPPED,
+                unit="{chunk}",
+                description="Chunks left without a vector after exhausted retries.",
+            ),
+            embed_retries=meter.create_counter(
+                _METRIC_DIKW_EMBED_RETRIES,
+                unit="{retry}",
+                description="Transient embed-batch retry attempts.",
+            ),
+            synth_pages=meter.create_counter(
+                _METRIC_DIKW_SYNTH_PAGES,
+                unit="{page}",
+                description="Knowledge pages persisted by synth, by result.",
+            ),
+            synth_unresolved=meter.create_counter(
+                _METRIC_DIKW_SYNTH_UNRESOLVED,
+                unit="{link}",
+                description="Outgoing wikilinks from this run that resolved to no page.",
+            ),
+            synth_persist_errors=meter.create_counter(
+                _METRIC_DIKW_SYNTH_PERSIST_ERRORS,
+                unit="{error}",
+                description="Pages deactivated by a mid-pipeline persist failure.",
+            ),
+            retrieve_leg_duration=meter.create_histogram(
+                _METRIC_DIKW_RETRIEVE_LEG_DURATION,
+                unit="s",
+                description="Wall-clock duration of one retrieval leg, by leg.",
+            ),
+            task_duration=meter.create_histogram(
+                _METRIC_DIKW_TASK_DURATION,
+                unit="s",
+                description="Background-task wall-clock duration, by op + status.",
+            ),
+        )
+    return _domain_instruments
+
+
+def _never_raises[F: Callable[..., None]](fn: F) -> F:
+    """Wrap a ``record_*`` helper so a telemetry failure logs at debug and never
+    propagates into the engine — the module-wide stance.
+
+    The domain recorders run in the ``finally`` / return path of ingest / synth /
+    task, where a stray exception would *replace* the real outcome being
+    propagated. Funnelling the guard through one decorator keeps that load-bearing
+    "telemetry must never break the engine" contract in a single place across all
+    five recorders (the same reason :func:`_record_gen_ai_metrics` is wrapped),
+    instead of copy-pasting the try/except into each body.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            fn(*args, **kwargs)
+        except Exception:  # pragma: no cover - telemetry must never break the engine
+            logger.debug("failed to record metric via %s", fn.__name__, exc_info=True)
+
+    return cast("F", wrapper)
+
+
+@_never_raises
+def record_ingest_metrics(
+    *,
+    added: int,
+    updated: int,
+    unchanged: int,
+    chunks: int,
+    errors_by_kind: dict[str, int],
+) -> None:
+    """Emit the ingest-report domain counters (files by result, total chunks,
+    per-kind errors). No-op when metrics are inactive.
+
+    Called once at ``api.ingest``'s return site from the final ``IngestReport``;
+    takes plain scalars (not the DTO) so ``telemetry`` stays decoupled from
+    ``api_types``. Embedded-chunk volume is NOT here — it is metered at the embed
+    seam (:func:`record_embed_metrics`), which covers every layer's inline embed
+    (D/K/W), not just ingest. Zero-valued series are skipped to keep cardinality
+    honest."""
+    m = _domain_metrics()
+    if m is None:
+        return
+    for result, n in (("added", added), ("updated", updated), ("unchanged", unchanged)):
+        if n:
+            m.ingest_files.add(n, {DIKW_RESULT: result})
+    if chunks:
+        m.ingest_chunks.add(chunks)
+    for kind, n in errors_by_kind.items():
+        if n:
+            m.ingest_errors.add(n, {DIKW_ERROR_KIND: kind})
+
+
+@_never_raises
+def record_synth_metrics(
+    *,
+    created: int,
+    updated: int,
+    unresolved_wikilinks: int,
+    persist_errors: int,
+) -> None:
+    """Emit the synth-report domain counters. No-op when metrics are inactive.
+
+    Called once at ``api.synthesize``'s return site from the final
+    ``SynthReport`` (plain scalars, not the DTO)."""
+    m = _domain_metrics()
+    if m is None:
+        return
+    for result, n in (("created", created), ("updated", updated)):
+        if n:
+            m.synth_pages.add(n, {DIKW_RESULT: result})
+    if unresolved_wikilinks:
+        m.synth_unresolved.add(unresolved_wikilinks)
+    if persist_errors:
+        m.synth_persist_errors.add(persist_errors)
+
+
+@_never_raises
+def record_embed_metrics(*, embedded: int, chunks_skipped: int, retries: int) -> None:
+    """Emit the chunk-embed counters from the shared consume path: vectors
+    written (``dikw.embed.chunks``), chunks left without a vector after exhausted
+    retries (``dikw.embed.skipped``), and transient retry attempts spent
+    (``dikw.embed.retries``). No-op when inactive.
+
+    Recorded at ``consume_embedding_stream`` — the single chunk-embed seam shared
+    by ingest + synth / lint-apply + wisdom inline embed — so all three counts
+    cover every layer rather than splitting embed volume (ingest-only) from
+    durability (cross-layer). Asset-embed rides a different streaming path and is
+    not metered here."""
+    m = _domain_metrics()
+    if m is None:
+        return
+    if embedded:
+        m.embed_chunks.add(embedded)
+    if chunks_skipped:
+        m.embed_skipped.add(chunks_skipped)
+    if retries:
+        m.embed_retries.add(retries)
+
+
+@_never_raises
+def record_retrieve_leg_duration(leg: str, duration_seconds: float) -> None:
+    """Record one retrieval leg's wall-clock duration, tagged by leg. No-op when
+    metrics are inactive. Called from ``_traced_leg`` / the graph-leg span in
+    ``domains/info/search.py`` — it only times the existing await, never alters
+    the hits."""
+    m = _domain_metrics()
+    if m is None:
+        return
+    m.retrieve_leg_duration.record(duration_seconds, {DIKW_RETRIEVAL_LEG: leg})
+
+
+@_never_raises
+def record_task_duration(op: str, status: str, duration_seconds: float) -> None:
+    """Record one background task's wall-clock duration, tagged by op + status
+    (ok | error | cancelled). No-op when metrics are inactive. Unlike the GenAI
+    operation-duration metric (where a cancel records nothing), a cancelled task
+    is a meaningful terminal whose duration is kept on its own ``dikw.status``
+    series, so it never skews the ``ok`` latency."""
+    m = _domain_metrics()
+    if m is None:
+        return
+    m.task_duration.record(duration_seconds, {DIKW_OP: op, DIKW_STATUS: status})
 
 
 def _otel_sdk_disabled() -> bool:
@@ -818,6 +1073,18 @@ def configure_telemetry(
                     _GEN_AI_DURATION_BUCKETS
                 ),
             ),
+            View(
+                instrument_name=_METRIC_DIKW_RETRIEVE_LEG_DURATION,
+                aggregation=ExplicitBucketHistogramAggregation(
+                    _RETRIEVE_LEG_DURATION_BUCKETS
+                ),
+            ),
+            View(
+                instrument_name=_METRIC_DIKW_TASK_DURATION,
+                aggregation=ExplicitBucketHistogramAggregation(
+                    _TASK_DURATION_BUCKETS
+                ),
+            ),
         ],
     )
     if _adopt_meter_provider(meter_provider):
@@ -920,13 +1187,14 @@ def shutdown_telemetry() -> None:
     :func:`reset_telemetry_for_testing`.
     """
     global _configured, _provider, _meter_provider
-    global _gen_ai_token_usage, _gen_ai_op_duration
+    global _gen_ai_token_usage, _gen_ai_op_duration, _domain_instruments
     provider = _provider
     meter_provider = _meter_provider
     _provider = None
     _meter_provider = None
     _gen_ai_token_usage = None
     _gen_ai_op_duration = None
+    _domain_instruments = None
     _configured = False
     if provider is None and meter_provider is None:
         return
@@ -991,13 +1259,16 @@ __all__ = [
     "DIKW_CANCELLED",
     "DIKW_CATEGORY",
     "DIKW_EMBED_VERSION_ID",
+    "DIKW_ERROR_KIND",
     "DIKW_LAYER",
     "DIKW_LEG_HIT_COUNT",
     "DIKW_OP",
+    "DIKW_RESULT",
     "DIKW_RETRIEVAL_LEG",
     "DIKW_RETRIEVE_HIT_COUNT",
     "DIKW_RETRIEVE_LIMIT",
     "DIKW_SOURCE_PATH",
+    "DIKW_STATUS",
     "DIKW_TASK_ID",
     "ERROR_TYPE",
     "GEN_AI_CACHE_CREATION_INPUT_TOKENS",
@@ -1019,6 +1290,11 @@ __all__ = [
     "get_meter",
     "get_tracer",
     "op_span",
+    "record_embed_metrics",
+    "record_ingest_metrics",
+    "record_retrieve_leg_duration",
+    "record_synth_metrics",
+    "record_task_duration",
     "shutdown_telemetry",
     "task_span",
     "telemetry_should_activate",

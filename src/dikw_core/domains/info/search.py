@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Hashable
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -45,7 +46,12 @@ from ...schemas import (
     VecHit,
 )
 from ...storage.base import NotSupported, Storage
-from ...telemetry import DIKW_LEG_HIT_COUNT, DIKW_RETRIEVAL_LEG, op_span
+from ...telemetry import (
+    DIKW_LEG_HIT_COUNT,
+    DIKW_RETRIEVAL_LEG,
+    op_span,
+    record_retrieve_leg_duration,
+)
 from .tokenize import WORD_OR_CJK_CHARS, CjkTokenizer, preprocess_for_fts
 
 
@@ -71,16 +77,26 @@ async def _traced_leg[LegHitT](
     ``NotSupported`` propagate exactly as before. No-op when telemetry is off.
     """
     with op_span("dikw.retrieve.leg", attributes={DIKW_RETRIEVAL_LEG: leg}) as span:
-        if graceful_notsupported:
-            try:
+        # Record the leg's wall-clock from a single ``finally`` so EVERY exit is
+        # timed once — the graceful NotSupported-empty return, the normal return,
+        # AND a hard error propagating out (a leg that runs for seconds then
+        # raises would otherwise contribute no latency sample, biasing the
+        # histogram low exactly when retrieval is unhealthy). No-op when metrics
+        # are off; the record never swallows the in-flight exception.
+        start = time.perf_counter()
+        try:
+            if graceful_notsupported:
+                try:
+                    hits = await coro
+                except NotSupported:
+                    span.set_attribute(DIKW_LEG_HIT_COUNT, 0)
+                    return []
+            else:
                 hits = await coro
-            except NotSupported:
-                span.set_attribute(DIKW_LEG_HIT_COUNT, 0)
-                return []
-        else:
-            hits = await coro
-        span.set_attribute(DIKW_LEG_HIT_COUNT, len(hits))
-        return hits
+            span.set_attribute(DIKW_LEG_HIT_COUNT, len(hits))
+            return hits
+        finally:
+            record_retrieve_leg_duration(leg, time.perf_counter() - start)
 
 
 class RetrievalConfigLike(Protocol):
@@ -500,10 +516,20 @@ class HybridSearcher:
             with op_span(
                 "dikw.retrieve.leg", attributes={DIKW_RETRIEVAL_LEG: "graph"}
             ) as graph_span:
-                graph_neighbors = await self._collect_graph_neighbors(
-                    vec_ranked, fts_ranked, per_leg_limit, layer=layer
-                )
-                graph_span.set_attribute(DIKW_LEG_HIT_COUNT, len(graph_neighbors))
+                # Same single-``finally`` timing contract as ``_traced_leg`` so a
+                # graph leg that errors is still timed once.
+                graph_start = time.perf_counter()
+                try:
+                    graph_neighbors = await self._collect_graph_neighbors(
+                        vec_ranked, fts_ranked, per_leg_limit, layer=layer
+                    )
+                    graph_span.set_attribute(
+                        DIKW_LEG_HIT_COUNT, len(graph_neighbors)
+                    )
+                finally:
+                    record_retrieve_leg_duration(
+                        "graph", time.perf_counter() - graph_start
+                    )
 
         # Asset channel rides the vector weight — same family of signal
         # (semantic similarity in the multimodal space), distinct only in
