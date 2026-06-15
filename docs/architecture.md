@@ -116,7 +116,7 @@ src/dikw_core/
 ├── server/                FastAPI app + auth + sync/task/import/retrieve/pages/assets/graph routes + task subsystem
 ├── client/                Remote Typer CLI + httpx transport + NDJSON progress + sources importer + converter dispatch
 ├── auth_cli.py            local `dikw auth {login,import,status,list,logout}` for the per-base OAuth store
-├── logging.py             init_logging() — DIKW_LOG_LEVEL + httpx/httpcore/urllib3 clamp
+├── logging.py             init_logging() — DIKW_LOG_LEVEL + DIKW_LOG_FORMAT (text/json) + httpx/httpcore/urllib3 clamp
 ├── md_inspect.py          standalone markdown preflight (frontmatter + image-ref extraction)
 └── cli.py                 top-level Typer app: version, init, serve, auth subgroup, client subgroup
                            (HTTP-bound commands live exclusively under `dikw client <verb>` — there

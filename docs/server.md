@@ -223,8 +223,18 @@ parsing logs (same meter provider, all no-ops when telemetry is off):
 * `dikw.task.duration` (`s`, tags `dikw.op` + `dikw.status`) — background-task
   wall-clock per terminal outcome.
 
-Finer per-source / per-group / per-batch sub-spans and `trace_id`/`span_id` log
-correlation land in subsequent releases.
+**Log ↔ trace correlation.** Set `DIKW_LOG_FORMAT=json` (default `text` keeps the
+human-readable terminal line byte-for-byte) and every log line becomes one JSON
+object (`ts` / `level` / `logger` / `message`, plus any `extra={…}` fields and an
+`exception` traceback). When telemetry is active, records emitted inside a span
+also carry `trace_id` / `span_id` / `service`, so a log aggregator can pivot from
+a log line straight to its trace. The OTel `LoggingInstrumentor` injects those ids
+via a log hook (`init_logging` keeps handler + format ownership; no OTLP log
+*export* handler is attached — that stays deferred). The same `DIKW_LOG_FORMAT`
+applies to the `dikw client` CLI, whose records correlate to the client side of
+the trace below.
+
+Finer per-source / per-group / per-batch sub-spans land in subsequent releases.
 
 The remote `dikw client` CLI has no base config (no `dikw.yml`), so its
 telemetry is driven purely by the standard `OTEL_*` env vars. Set
