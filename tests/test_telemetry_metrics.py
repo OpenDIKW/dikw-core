@@ -78,6 +78,15 @@ class _Event:
     usage: dict[str, int] | None = None
 
 
+def _raise_in_gen_ai_span(exc: BaseException) -> None:
+    """Run a ``gen_ai_span`` whose body raises ``exc``. Factored out so the
+    test's ``pytest.raises`` wraps a CALL — a single ``with`` (no ruff SIM117
+    nudge to combine) whose post-block stays reachable to static analysis —
+    rather than a bare ``raise`` inside a combined ``with``."""
+    with telemetry.gen_ai_span(operation="chat", system="openai", model="gpt-x"):
+        raise exc
+
+
 def test_configure_telemetry_wires_meter_provider() -> None:
     """``configure_telemetry`` must register an SDK MeterProvider alongside the
     tracer provider so server-side GenAI + HTTP metrics flow to the OTLP
@@ -156,10 +165,8 @@ def test_gen_ai_span_records_error_type_on_failure() -> None:
     token usage (there is none)."""
     reader = _install_inmemory_meter()
 
-    with pytest.raises(ValueError), telemetry.gen_ai_span(
-        operation="chat", system="openai", model="gpt-x"
-    ):
-        raise ValueError("boom")
+    with pytest.raises(ValueError):
+        _raise_in_gen_ai_span(ValueError("boom"))
 
     durations = _histogram_points(reader, "gen_ai.client.operation.duration")
     dur_point = _point_for(durations, **{telemetry.ERROR_TYPE: "ValueError"})
@@ -177,10 +184,8 @@ def test_gen_ai_span_cancel_records_no_metric() -> None:
 
     reader = _install_inmemory_meter()
 
-    with pytest.raises(asyncio.CancelledError), telemetry.gen_ai_span(
-        operation="chat", system="openai", model="gpt-x"
-    ):
-        raise asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        _raise_in_gen_ai_span(asyncio.CancelledError())
 
     assert _histogram_points(reader, "gen_ai.client.operation.duration") == []
     assert _histogram_points(reader, "gen_ai.client.token.usage") == []
