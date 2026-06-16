@@ -5,6 +5,30 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Fixed
+
+- **Synth front-matter is whitelisted to `tags`; `write_page` guards reserved
+  keys.** Enforces in code the forbidden-key policy 0.5.3 added to the synth prompt
+  (the *"Synth forbids `sources`/`lint` in emitted front-matter"* entry below):
+  that change only reworded the prompt — the parser still routed every non-`tags`
+  key into `extras` and `write_page` merged it over the engine's authoritative
+  fields, so a disobedient LLM (or a hand-edited file flowing through lint-apply's
+  `update_page`) could still override `sources`/`category`/`id`, inject a `lint:`
+  block that suppressed lint on a fresh page, or — via a `handler`/`content` key
+  colliding with `frontmatter.Post(**meta)` — silently collapse the whole file to a
+  literal string. Now: the synth parser (`_parse_one_page_block`) drops every
+  non-`tags` front-matter key the LLM emits (`title` comes from the body `# H1`,
+  `category`/`slug` from the `<page>` attributes, the rest engine-managed), covering
+  every LLM-sourced page (synth fan-out + the lint grounded/split/merge fixers that
+  share the parser) at one point; and the shared `write_page` sink filters caller
+  `extras` against `_RESERVED_FRONTMATTER_KEYS` and assigns metadata via
+  `post.metadata.update`, mirroring the W-layer `write_wisdom_file` guard. User
+  `extras` (e.g. an Obsidian `aliases:` list) still pass through, and the `lint:`
+  block written by `orphan_page.mark_as_leaf` is deliberately not reserved.
+  Behaviour-preserving for conformant synth output (which emits only `tags`).
+
 ## 0.5.3 — OpenTelemetry observability arc (traces + metrics + logs) + synth prompt restructure
 
 ### Added
@@ -177,34 +201,11 @@ on each entry call out exactly what shape changes break.
 
 - **Synth forbids `sources`/`lint` in emitted front-matter.** The output-format
   forbidden-key list now names `sources` and `lint` alongside
-  `title`/`id`/`category`/`created`/`updated`. The prompt change alone did not
-  enforce this — the parser still routed every non-`tags` front-matter key into
-  `extras`, which `page.py` merged after the engine's authoritative `sources`, so a
-  disobedient LLM that emitted `sources:` could overwrite the real provenance and
-  `lint:` could inject a leaf-acknowledgement block that suppressed lint on a fresh
-  page. Code enforcement (parser whitelist + `write_page` reserved-key guard) landed
-  separately — see *Fixed* below.
-
-### Fixed
-
-- **Synth front-matter is whitelisted to `tags`; `write_page` guards reserved
-  keys.** Enforces in code the forbidden-key policy the prompt states (see
-  *Changed* above). The synth parser (`_parse_one_page_block`) now drops every
-  non-`tags` front-matter key the LLM emits instead of routing it into `extras`
-  (`title` comes from the body `# H1`, `category`/`slug` from the `<page>`
-  attributes, `id`/`sources`/`created`/`updated` are engine-managed), so it covers
-  every LLM-sourced page (synth fan-out + the lint grounded/split/merge fixers that
-  share the parser) at one point. The shared `write_page` sink now filters caller
-  `extras` against `_RESERVED_FRONTMATTER_KEYS` and assigns metadata via
-  `post.metadata.update` instead of `frontmatter.Post(**meta)`, mirroring the
-  W-layer `write_wisdom_file` guard. Previously a disobedient LLM — or a hand-edited
-  file flowing through lint-apply's `update_page` — could override the engine's
-  authoritative `sources`/`category`/`id`, inject a `lint:` block that suppressed
-  lint on a fresh page, or, via a `handler`/`content` key colliding with the `Post`
-  constructor, silently collapse the entire file to a literal string. User `extras`
-  (e.g. an Obsidian `aliases:` list) still pass through, and the `lint:` block
-  written by `orphan_page.mark_as_leaf` is deliberately not reserved.
-  Behaviour-preserving for conformant synth output (which emits only `tags`).
+  `title`/`id`/`category`/`created`/`updated`. The parser routes every non-`tags`
+  front-matter key into `extras`, and `page.py` applies the engine's authoritative
+  `sources` then `meta.update(extras)` — so an LLM that emitted `sources:`
+  overwrote the real provenance, and `lint:` injected a leaf-acknowledgement block
+  that suppressed lint on a fresh page. Both are now explicitly engine-owned.
 
 ## 0.5.2 — synth-quality measurement + prompt tuning + post-synth self-check
 
