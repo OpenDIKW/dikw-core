@@ -324,20 +324,14 @@ async def _propose_llm_grounded(
 
     # ``parse_synthesis_response`` unconditionally stamps
     # ``sources=[source_path]`` (the K-page that referenced the broken
-    # wikilink) onto every parsed page; LLM-emitted ``sources:`` in
-    # frontmatter lands in ``extras`` instead and would override the
-    # ``page.sources`` field downstream in ``page_to_op_frontmatter``
-    # via ``fm.update(extras)``. For a grounded repair both behaviors
-    # are wrong — the page was built from D-layer evidence, not the
-    # referrer — so we replace ``sources`` with the distinct hit paths
-    # AND strip any ``sources`` key from extras so the override lands.
+    # wikilink) onto every parsed page. For a grounded repair that is wrong —
+    # the page was built from D-layer evidence, not the referrer — so we
+    # replace ``sources`` with the distinct hit paths. The parser drops every
+    # non-``tags`` front-matter key the LLM emits, so ``page.extras`` is empty
+    # and can't smuggle a conflicting ``sources:`` into ``page_to_op_frontmatter``.
     evidence_sources = _evidence_source_paths(hits)
     if evidence_sources:
-        page = dataclasses.replace(
-            page,
-            sources=evidence_sources,
-            extras={k: v for k, v in page.extras.items() if k != "sources"},
-        )
+        page = dataclasses.replace(page, sources=evidence_sources)
 
     op = FixOperation(
         kind="create_page",

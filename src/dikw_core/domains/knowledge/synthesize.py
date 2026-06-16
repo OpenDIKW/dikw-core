@@ -10,7 +10,6 @@ surfaced from multiple calls collapses into one page.
 
 from __future__ import annotations
 
-import logging
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -21,8 +20,6 @@ import yaml
 
 from ...providers.base import LLMProvider
 from .page import KnowledgePage, build_page, default_page_path, now_iso
-
-logger = logging.getLogger(__name__)
 
 _PAGE_BLOCK = re.compile(
     r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
@@ -140,20 +137,13 @@ def _parse_one_page_block(
     # produces. ``title`` comes from the body H1, ``category``/``slug`` from the
     # <page> attributes, and ``id``/``sources``/``created``/``updated`` are
     # engine-managed — the prompt tells the model not to emit them. Drop
-    # everything else it emitted regardless: left in ``extras`` it would
-    # override the engine fields in ``write_page`` (and ``handler``/``content``
-    # would corrupt the file). Enforcing the whitelist here — the single parse
-    # entry shared by synth fan-out AND the lint grounded/split/merge fixers —
-    # covers every LLM-sourced page at one point. ``write_page`` keeps its own
-    # reserved-key guard as defense in depth for non-LLM callers.
-    if frontmatter_yaml:
-        logger.debug(
-            "synth: dropping %d engine-managed front-matter key(s) the LLM "
-            "emitted for %s: %s",
-            len(frontmatter_yaml),
-            source_path,
-            ", ".join(sorted(frontmatter_yaml)),
-        )
+    # everything else it emitted (``extras={}`` below) regardless: left in
+    # ``extras`` it would override the engine fields in ``write_page`` (and
+    # ``handler``/``content`` would corrupt the file). Enforcing the whitelist
+    # here — the single parse entry shared by synth fan-out AND the lint
+    # grounded/split/merge fixers — covers every LLM-sourced page at one point.
+    # ``write_page`` keeps its own reserved-key guard as defense in depth for
+    # non-LLM callers.
 
     # The engine owns path construction: ``knowledge/<category>/<slug>.md``.
     # ``category`` is a config-validated closed-set value (or the validated
