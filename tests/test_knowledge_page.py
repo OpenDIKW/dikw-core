@@ -104,6 +104,68 @@ def test_user_aliases_frontmatter_survives_roundtrip(tmp_path: Path) -> None:
     assert read_back.extras.get("aliases") == ["Musk", "Elon R. Musk"]
 
 
+def test_write_page_extras_cannot_override_engine_keys(tmp_path: Path) -> None:
+    # write_page is a shared sink (synth output, lint-apply, future writers).
+    # ``extras`` must not override the engine-managed front-matter keys (id /
+    # category / title / created / updated / tags / sources) — mirrors the
+    # W-layer ``_RESERVED_FRONTMATTER_KEYS`` guard in write_wisdom_file. A
+    # non-reserved user key (``aliases``) still passes through.
+    page = build_page(
+        title="Real Title",
+        body="# Real Title\n\nReal body.",
+        category="concept",
+        tags=["real-tag"],
+        sources=["sources/real.md"],
+        extras={
+            "id": "K-evil",
+            "category": "假分类",
+            "title": "EVIL Title",
+            "created": "1999-01-01",
+            "updated": "1999-01-01",
+            "tags": ["evil-tag"],
+            "sources": ["sources/EVIL.md"],
+            "aliases": ["ok-passthrough"],
+        },
+    )
+    write_page(tmp_path, page)
+    read_back = read_page(tmp_path, page.path)
+    assert read_back.title == "Real Title"
+    assert read_back.category == "concept"
+    assert read_back.id == page.id
+    assert "real-tag" in read_back.tags
+    assert "evil-tag" not in read_back.tags
+    assert read_back.sources == ["sources/real.md"]
+    # Non-reserved user key survives the round-trip.
+    assert read_back.extras.get("aliases") == ["ok-passthrough"]
+    # None of the EVIL overrides reached disk.
+    text = (tmp_path / page.path).read_text(encoding="utf-8")
+    assert "EVIL Title" not in text
+    assert "假分类" not in text
+    assert "sources/EVIL.md" not in text
+
+
+def test_write_page_extras_cannot_corrupt_file_via_post_kwargs(tmp_path: Path) -> None:
+    # A key colliding with ``frontmatter.Post(content, handler=None, **meta)`` —
+    # ``handler`` / ``content`` from a disobedient LLM or a hand-edited file
+    # flowing through lint — must not corrupt the file. With the naive ``**meta``
+    # expansion, extras={"handler": "evil"} collapses the whole file to the
+    # literal string "evil". Mirrors the W-layer guard.
+    page = build_page(
+        title="Real Title",
+        body="# Real Title\n\nReal body content.",
+        category="concept",
+        extras={"handler": "evil", "content": "also evil"},
+    )
+    write_page(tmp_path, page)
+    text = (tmp_path / page.path).read_text(encoding="utf-8")
+    assert "Real Title" in text
+    assert "Real body content." in text
+    assert "evil" not in text
+    # And the page still round-trips cleanly.
+    read_back = read_page(tmp_path, page.path)
+    assert read_back.title == "Real Title"
+
+
 @pytest.mark.parametrize("bad_path", ["../escaped.md", "knowledge/../../escaped.md"])
 def test_write_page_rejects_path_escape(tmp_path: Path, bad_path: str) -> None:
     # A page.path that escapes the base must be refused before any disk

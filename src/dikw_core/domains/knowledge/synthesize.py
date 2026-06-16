@@ -133,6 +133,18 @@ def _parse_one_page_block(
     if not isinstance(tags, list):
         tags = []
 
+    # Whitelist: ``tags`` is the ONLY front-matter the LLM legitimately
+    # produces. ``title`` comes from the body H1, ``category``/``slug`` from the
+    # <page> attributes, and ``id``/``sources``/``created``/``updated`` are
+    # engine-managed — the prompt tells the model not to emit them. Drop
+    # everything else it emitted (``extras={}`` below) regardless: left in
+    # ``extras`` it would override the engine fields in ``write_page`` (and
+    # ``handler``/``content`` would corrupt the file). Enforcing the whitelist
+    # here — the single parse entry shared by synth fan-out AND the lint
+    # grounded/split/merge fixers — covers every LLM-sourced page at one point.
+    # ``write_page`` keeps its own reserved-key guard as defense in depth for
+    # non-LLM callers.
+
     # The engine owns path construction: ``knowledge/<category>/<slug>.md``.
     # ``category`` is a config-validated closed-set value (or the validated
     # ``fallback``) so it is filesystem-safe by construction; ``slug`` is run
@@ -149,7 +161,7 @@ def _parse_one_page_block(
         tags=[str(t) for t in tags],
         sources=[source_path],
         path=path,
-        extras={k: v for k, v in frontmatter_yaml.items() if k not in {"tags"}},
+        extras={},
     )
 
 

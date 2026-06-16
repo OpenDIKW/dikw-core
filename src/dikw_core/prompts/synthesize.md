@@ -82,7 +82,7 @@ Body paragraphs here. Use [[Wikilinks]] for references.
 - `category` is one path copied **verbatim** from the Category list below; omitting the attribute is a **last resort**, per the Closed-taxonomy invariant (the engine then files the page under its fallback bucket for a human to reclassify).
 - `slug` is lowercase, kebab-case, ASCII-only. The engine files the page at `knowledge/<category>/<slug>.md`.
 - The first line of the body must be an ATX `# Page Title` matching the page title you choose.
-- Do **not** include `title`, `id`, `category`, `sources`, `created`, `updated`, or `lint` in the front-matter — the engine manages those.
+- In the front-matter, emit **only** `tags`. Do **not** add `title`, `id`, `category`, `sources`, `created`, `updated`, or `lint` — the engine manages those and silently ignores them if you include them (`title` comes from the body `# Page Title`; `category` and `slug` from the `<page>` attributes).
 
 ## Category list
 

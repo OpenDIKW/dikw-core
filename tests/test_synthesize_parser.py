@@ -46,6 +46,47 @@ def test_parse_single_page_returns_one_element_list() -> None:
     assert page.sources == ["sources/notes/dikw.md"]
 
 
+def test_parse_drops_non_tags_llm_frontmatter() -> None:
+    # The LLM is told to emit ONLY ``tags`` in front-matter; everything else is
+    # engine-managed (``title`` from the body H1, ``category``/``slug`` from the
+    # <page> attributes, ``id``/``sources``/``created``/``updated`` by the
+    # engine). A disobedient model that also emits those keys — or a
+    # Post-collision key like ``handler``/``content`` — must have them dropped
+    # at parse time so they never reach ``extras`` and can neither override the
+    # engine fields nor corrupt the file on write. Enforcing the whitelist here
+    # covers every LLM-sourced page (synth fan-out + the lint grounded/split/
+    # merge fixers that share this parser) at one point.
+    raw = (
+        '<page category="concept" slug="dikw-pyramid">\n'
+        "---\n"
+        "tags: [dikw, model]\n"
+        "id: K-llm-fake\n"
+        "title: EVIL Title\n"
+        "category: 假分类\n"
+        "sources: [sources/HALLUCINATED.md]\n"
+        "created: '1999-01-01'\n"
+        "updated: '1999-01-01'\n"
+        "lint: {skip: [orphan_page]}\n"
+        "handler: evil\n"
+        "content: evil\n"
+        "---\n\n"
+        "# DIKW pyramid\n\n"
+        "Body.\n"
+        "</page>"
+    )
+    pages = parse_synthesis_response(raw, source_path="sources/notes/dikw.md")
+    assert len(pages) == 1
+    page = pages[0]
+    # Only ``tags`` survives from the LLM front-matter; extras is empty.
+    assert page.tags == ["dikw", "model"]
+    assert page.extras == {}
+    # Engine-managed fields keep their engine-derived values, NOT the LLM's.
+    assert page.sources == ["sources/notes/dikw.md"]
+    assert page.category == "concept"
+    assert page.title == "DIKW pyramid"
+    assert page.path == "knowledge/concept/dikw-pyramid.md"
+
+
 def test_parse_no_block_returns_empty_list() -> None:
     # Stage A: a section with nothing worth a knowledge page legitimately
     # responds with zero <page> blocks. This used to raise — verify the

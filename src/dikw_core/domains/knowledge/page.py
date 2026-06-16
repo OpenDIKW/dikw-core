@@ -36,6 +36,20 @@ _SLUG_ILLEGAL = re.compile(r"[^a-z0-9]+")
 # without copy-pasting the literal.
 SLUG_FALLBACK = "untitled"
 
+# Front-matter keys ``write_page`` owns from the typed ``KnowledgePage`` fields.
+# ``extras`` is a passthrough for caller-supplied / user-authored front-matter
+# (e.g. an Obsidian ``aliases:`` list), but it is denied write access to these
+# keys so a caller — synth LLM output, a hand-edited file flowing through
+# lint-apply — can't desync the on-disk front-matter from the typed values (and,
+# for ``content``/``handler``, can't collide with ``frontmatter.Post.__init__``
+# and corrupt the file). Mirrors ``domains.wisdom.page._RESERVED_FRONTMATTER_KEYS``;
+# the K set differs (``id``/``created``/``updated`` are wiki-only conventions).
+# ``lint`` is deliberately NOT reserved — ``lint_fixers.orphan_page.mark_as_leaf``
+# writes a ``lint: {skip, reason}`` block through ``extras``.
+_RESERVED_FRONTMATTER_KEYS = frozenset(
+    {"id", "category", "title", "created", "updated", "tags", "sources", "content", "handler"}
+)
+
 
 def category_from_path(path: str) -> str:
     """Reverse-derive a page's ``category`` (folder path) from its base-relative path.
@@ -176,8 +190,15 @@ def write_page(root: Path, page: KnowledgePage) -> Path:
         meta["tags"] = page.tags
     if page.sources:
         meta["sources"] = page.sources
-    meta.update(page.extras)
-    post = frontmatter.Post(page.body.rstrip() + "\n", **meta)
+    # Merge only the non-reserved extras so they can't override the engine
+    # fields above, and assign via ``post.metadata`` rather than ``**meta`` so a
+    # ``content``/``handler`` key can't collide with ``Post.__init__`` and
+    # corrupt the file. Mirrors ``domains.wisdom.page.write_wisdom_file``.
+    meta.update(
+        {k: v for k, v in page.extras.items() if k not in _RESERVED_FRONTMATTER_KEYS}
+    )
+    post = frontmatter.Post(page.body.rstrip() + "\n")
+    post.metadata.update(meta)
     serialized = frontmatter.dumps(post)
     abs_path.write_text(serialized + "\n", encoding="utf-8")
     return abs_path
