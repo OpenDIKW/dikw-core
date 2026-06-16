@@ -9,6 +9,21 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **Observability docs + validation stack (PR5 of the OTel arc — arc complete).**
+  New [`docs/observability.md`](docs/observability.md) operator cookbook: the full
+  span/metric/log inventory, how to enable telemetry at server (`dikw.yml`
+  `telemetry:` section) and client (`OTEL_*` env) ends, the `DIKW_LOG_FORMAT=json`
+  log↔trace correlation, a dashboard PromQL cookbook (GenAI token spend, LLM
+  latency, Anthropic cache hit-ratio, pipeline volume), and the zero-cost-when-off
+  guarantee. New `docs/observability/` validation stack — a `docker-compose.yml`
+  wiring **OTel Collector (`:4318`) → Jaeger (traces) + Prometheus (metrics) →
+  Grafana (dashboards)** with pre-provisioned datasources, so an operator can run
+  one `docker compose up -d`, point dikw at `http://localhost:4318`, and see a full
+  client → server → task → engine → provider trace end to end. `telemetry.py` is
+  now in the module maps (CLAUDE.md + `docs/architecture.md`) with a fourth "seam
+  on purpose"; `docs/providers.md` documents GenAI token metering. Docs-only — no
+  code change, no behavior change. This closes the five-PR OpenTelemetry arc
+  (traces + metrics + logs across server and client).
 - **Log ↔ trace correlation + JSON logging (PR4 of the OTel arc).** New
   `DIKW_LOG_FORMAT` env var: the default `text` keeps the human-readable terminal
   formatter byte-for-byte; `json` opts into one JSON object per log record

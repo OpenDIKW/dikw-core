@@ -346,6 +346,20 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   `relogin_required` (e.g., another client rotated the token, or you
   manually revoked the session), re-run `dikw auth login openai-codex`.
 
+### 9. Token usage is metered when telemetry is on
+
+Every LLM / embedding call's reported `usage` — previously assembled and
+discarded — is surfaced as the OTel GenAI metric `gen_ai.client.token.usage`
+(plus `gen_ai.client.operation.duration`) whenever the `[otel]` extra is
+installed and telemetry is enabled, tagged by `gen_ai.system`,
+`gen_ai.request.model`, and `gen_ai.token.type` (`input` / `output`). The
+`anthropic_compat` leg additionally emits `cache_read` / `cache_creation`
+token-type series (prompt caching reports those tiers separately — reads bill
+at ~0.1×, creation at ~1.25×), so a cost dashboard can split them from raw
+input. This is the right place to watch per-model spend across providers; it
+is a pure no-op without the `[otel]` extra. See
+[`observability.md`](observability.md) for the dashboard query cookbook.
+
 ## Public-benchmark calibration with Gitee AI
 
 Reproducible workflow for running BEIR / CMTEB benchmarks against
