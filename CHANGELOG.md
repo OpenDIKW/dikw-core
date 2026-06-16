@@ -9,6 +9,21 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **Log ↔ trace correlation + JSON logging (PR4 of the OTel arc).** New
+  `DIKW_LOG_FORMAT` env var: the default `text` keeps the human-readable terminal
+  formatter byte-for-byte; `json` opts into one JSON object per log record
+  (`ts`/`level`/`logger`/`message`, plus any `extra={…}` fields and an
+  `exception` traceback) — the machine-readable form a log aggregator parses.
+  When telemetry is active, records emitted inside a span also carry
+  `trace_id`/`span_id`/`service`, so a log line pivots straight to its trace.
+  `configure_telemetry` (server) and `configure_client_telemetry_from_env`
+  (client) wire the OTel `LoggingInstrumentor` via a log hook with
+  `set_logging_format=False` + `enable_log_auto_instrumentation=False`, so
+  `init_logging` keeps full handler/format ownership and no OTLP log-export
+  handler is bolted onto the root logger (log export stays deferred). Degrades
+  gracefully without the `[otel]` extra or outside a span (no trace fields, no
+  crash); the `text` default is unchanged. Like `DIKW_LOG_LEVEL`, it's an env var
+  (CLI parses before any base loads), not a `dikw.yml` field.
 - **OpenTelemetry dikw-domain metrics (PR3b of the OTel arc).** The engine now
   emits domain counters + duration histograms mapped from the per-call report
   DTOs and existing instrumentation, so a Prometheus/Grafana dashboard sees

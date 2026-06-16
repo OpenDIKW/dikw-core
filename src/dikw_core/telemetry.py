@@ -897,6 +897,31 @@ def record_task_duration(op: str, status: str, duration_seconds: float) -> None:
     m.task_duration.record(duration_seconds, {DIKW_OP: op, DIKW_STATUS: status})
 
 
+def _make_log_correlation_hook(service_name: str) -> Callable[[Any, Any], None]:
+    """Return a LoggingInstrumentor ``log_hook`` that stamps
+    ``otelTraceID`` / ``otelSpanID`` / ``otelServiceName`` onto a log record
+    created inside a span (which ``logging._JsonFormatter`` surfaces).
+
+    A hook with ``set_logging_format=False`` is deliberate over
+    ``set_logging_format=True``: in this instrumentation version the record
+    factory injects the otel fields ONLY under ``set_logging_format=True`` —
+    which also calls ``logging.basicConfig`` — but format ownership must stay in
+    ``init_logging`` (logging.py). The hook fires only when a span is in scope,
+    so a record outside any span carries no otel fields (the JSON formatter
+    degrades gracefully) and ``init_logging``'s handler + format are untouched.
+    Pure (no otel import) so it lives at module scope and is shared by the server
+    + client bootstraps; the library wraps the call in its own try/except, so a
+    stray failure here can never break logging."""
+
+    def _hook(span: Any, record: Any) -> None:
+        ctx = span.get_span_context()
+        record.otelTraceID = format(ctx.trace_id, "032x")
+        record.otelSpanID = format(ctx.span_id, "016x")
+        record.otelServiceName = service_name
+
+    return _hook
+
+
 def _otel_sdk_disabled() -> bool:
     """Honour the standard ``OTEL_SDK_DISABLED`` kill-switch."""
     return os.getenv("OTEL_SDK_DISABLED", "").strip().lower() in ("1", "true", "yes")
@@ -1005,6 +1030,7 @@ def configure_telemetry(
         )
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.instrumentation.logging import LoggingInstrumentor
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         from opentelemetry.sdk.metrics.view import (
@@ -1041,6 +1067,12 @@ def configure_telemetry(
     provider.add_span_processor(BatchSpanProcessor(exporter))
     if not _adopt_provider(provider):
         return False
+    # Record ownership the moment we win the provider race — BEFORE instrumenting
+    # httpx/logging or building the meter provider — so that if any of those
+    # raises, :func:`shutdown_telemetry` can still unwind whatever was patched
+    # (its no-op early-return keys off ``_provider``). ``_configured`` stays
+    # False until the tail, so a mid-bootstrap raise propagates honestly.
+    _provider = provider
 
     # Global httpx patch — covers every server-side provider httpx client
     # (built lazily on first synth/embed, always after this point) for outbound
@@ -1049,6 +1081,25 @@ def configure_telemetry(
     # guard passes — if dikw didn't win provider registration it must not have
     # globally patched httpx either. Unwound in :func:`shutdown_telemetry`.
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+
+    # Correlate logs with traces: a LoggingInstrumentor ``log_hook`` stamps
+    # otelTraceID/otelSpanID/otelServiceName on each record created inside a span
+    # (see :func:`_make_log_correlation_hook` for why a hook, not
+    # ``set_logging_format=True``). ``set_logging_format=False`` keeps the handler
+    # format owned by ``init_logging`` (logging.py) so the text default stays
+    # byte-stable, and ``enable_log_auto_instrumentation=False`` suppresses the
+    # SDK's deprecated OTLP LoggingHandler that ``instrument()`` would otherwise
+    # bolt onto the root logger (a second handler + a global basicConfig
+    # monkeypatch we never asked for — OTLP log *export* is intentionally
+    # deferred). So this installs ONLY the record factory + hook. Pinned to
+    # dikw's provider + only past the process-once guard, like httpx above.
+    # Unwound in :func:`shutdown_telemetry`.
+    LoggingInstrumentor().instrument(
+        tracer_provider=provider,
+        set_logging_format=False,
+        enable_log_auto_instrumentation=False,
+        log_hook=_make_log_correlation_hook(service_name),
+    )
 
     # Meter provider: a PeriodicExportingMetricReader pushes to the OTLP/HTTP
     # metrics endpoint on a timer. Views pin the two GenAI histograms to the
@@ -1090,7 +1141,6 @@ def configure_telemetry(
     if _adopt_meter_provider(meter_provider):
         _meter_provider = meter_provider
 
-    _provider = provider
     _configured = True
     return True
 
@@ -1137,6 +1187,7 @@ def configure_client_telemetry_from_env(*, version: str) -> bool:
     try:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.instrumentation.logging import LoggingInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -1164,13 +1215,26 @@ def configure_client_telemetry_from_env(*, version: str) -> bool:
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     if not _adopt_provider(provider):
         return False
+    # Own the provider before instrumenting (see configure_telemetry) so a raise
+    # in either instrument() leaves a shutdown-recoverable state.
+    _provider = provider
 
     # Global httpx patch (pinned to dikw's provider, only after the process-once
     # guard passes) — the client's outbound Transport request then carries a
     # traceparent header. Unwound in :func:`shutdown_telemetry`.
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
 
-    _provider = provider
+    # Correlate the client's own logs with its trace (same log hook as the
+    # server bootstrap; ``set_logging_format=False`` leaves the format to
+    # ``init_logging``, ``enable_log_auto_instrumentation=False`` suppresses the
+    # SDK's OTLP LoggingHandler). Unwound in :func:`shutdown_telemetry`.
+    LoggingInstrumentor().instrument(
+        tracer_provider=provider,
+        set_logging_format=False,
+        enable_log_auto_instrumentation=False,
+        log_hook=_make_log_correlation_hook(service_name),
+    )
+
     _configured = True
     return True
 
@@ -1207,6 +1271,14 @@ def shutdown_telemetry() -> None:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
         HTTPXClientInstrumentor().uninstrument()
+    except Exception:  # pragma: no cover - defensive teardown guard
+        pass
+    # Symmetric unwind of the LoggingInstrumentor record factory (own try so a
+    # failing httpx uninstrument above can't skip it). Best-effort, like httpx.
+    try:
+        from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
+        LoggingInstrumentor().uninstrument()
     except Exception:  # pragma: no cover - defensive teardown guard
         pass
     # Shut down both providers — the meter provider's shutdown also stops the

@@ -202,6 +202,52 @@ def test_configure_telemetry_instruments_httpx_and_shutdown_unwinds() -> None:
     assert HTTPXClientInstrumentor()._is_instrumented_by_opentelemetry is False
 
 
+@pytest.mark.skipif(not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra")
+def test_configure_telemetry_instruments_logging_and_shutdown_unwinds() -> None:
+    """Activation installs the LoggingInstrumentor record factory (trace_id /
+    span_id log correlation) but NOT the SDK's deprecated OTLP LoggingHandler —
+    ``enable_log_auto_instrumentation=False`` keeps handler/format ownership in
+    ``init_logging`` (no rogue handler bolted onto root). Shutdown un-installs
+    so a fresh in-process lifespan re-activates from a clean state."""
+    import logging as _logging
+
+    from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
+    root = _logging.getLogger()
+    n_handlers_before = len(root.handlers)
+    assert LoggingInstrumentor()._is_instrumented_by_opentelemetry is False
+    assert telemetry.configure_telemetry(enabled=True, **_KW) is True
+    assert LoggingInstrumentor()._is_instrumented_by_opentelemetry is True
+    # No second handler on root — the auto OTLP LoggingHandler is suppressed.
+    assert len(root.handlers) == n_handlers_before
+    telemetry.shutdown_telemetry()
+    assert LoggingInstrumentor()._is_instrumented_by_opentelemetry is False
+
+
+@pytest.mark.skipif(not telemetry.OTEL_AVAILABLE, reason="requires the [otel] extra")
+def test_log_record_carries_trace_id_under_active_span() -> None:
+    """The point of PR4: with telemetry active a log record created INSIDE a
+    span carries a non-zero ``otelTraceID`` (+ span id + service); outside a
+    span the log hook never fires, so the record carries no usable trace id
+    (absent, which the JSON formatter omits)."""
+    import logging as _logging
+
+    assert telemetry.configure_telemetry(enabled=True, **_KW) is True
+    factory = _logging.getLogRecordFactory()
+
+    def _record() -> _logging.LogRecord:
+        return factory("dikw_core.test", _logging.INFO, __file__, 1, "m", None, None)
+
+    with telemetry.get_tracer().start_as_current_span("x"):
+        in_span = _record()
+    out_span = _record()
+    assert getattr(in_span, "otelTraceID", None) not in (None, "0")
+    assert getattr(in_span, "otelSpanID", None) not in (None, "0")
+    assert getattr(in_span, "otelServiceName", None) == "dikw-core"
+    assert getattr(out_span, "otelTraceID", None) in (None, "0")
+    telemetry.shutdown_telemetry()
+
+
 def test_shutdown_telemetry_safe_when_inactive() -> None:
     telemetry.shutdown_telemetry()  # no provider — must not raise
 
