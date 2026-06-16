@@ -117,6 +117,7 @@ src/dikw_core/
 ├── client/                Remote Typer CLI + httpx transport + NDJSON progress + sources importer + converter dispatch
 ├── auth_cli.py            local `dikw auth {login,import,status,list,logout}` for the per-base OAuth store
 ├── logging.py             init_logging() — DIKW_LOG_LEVEL + DIKW_LOG_FORMAT (text/json) + httpx/httpcore/urllib3 clamp
+├── telemetry.py           OTel seam (optional [otel] extra) — accessors + dikw.*/gen_ai.* keys + span/metric helpers + entry-only SDK bootstrap; imports only opentelemetry+stdlib (never server). See docs/observability.md
 ├── md_inspect.py          standalone markdown preflight (frontmatter + image-ref extraction)
 └── cli.py                 top-level Typer app: version, init, serve, auth subgroup, client subgroup
                            (HTTP-bound commands live exclusively under `dikw client <verb>` — there
@@ -211,7 +212,7 @@ will close this gap.
 
 ## Seams on purpose
 
-Three extension points are sharper than they look, because the rest of the
+Four extension points are sharper than they look, because the rest of the
 engine depends only on their Protocol / abstract interface:
 
 1. **`SourceBackend`** — adding a format (PDF, Quarto, `.ipynb`) means
@@ -223,6 +224,15 @@ engine depends only on their Protocol / abstract interface:
 3. **`LLMProvider` / `EmbeddingProvider`** — Anthropic and any
    OpenAI-compatible endpoint are wired today; llama-cpp-python for local
    inference is a drop-in.
+4. **`telemetry` accessors** — engine code emits spans/metrics through
+   `get_tracer` / `get_meter` + the `gen_ai_span` / `op_span` / `record_*`
+   helpers, never `import opentelemetry` directly, so the whole OTel stack is
+   an optional `[otel]` extra (hand-rolled no-ops when absent) and **only the
+   process entry** (server lifespan / client CLI root) wires the SDK — exactly
+   how `init_logging` is wired from entry points, not engine code. A background
+   task's root span is **linked** back to the submitting request rather than
+   parented, the OTel idiom for fire-and-forget work that outlives its trigger.
+   See [`observability.md`](observability.md).
 
 ## Storage schema
 

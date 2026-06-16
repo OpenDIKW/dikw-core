@@ -1,0 +1,38 @@
+# OpenTelemetry Collector config for the dikw-core validation stack.
+# Receives OTLP from dikw (traces + metrics), fans traces to Jaeger and
+# exposes metrics on a Prometheus scrape endpoint.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # dikw's OTLPSpanExporter / OTLPMetricExporter target
+      grpc:
+        endpoint: 0.0.0.0:4317   # optional, for non-dikw OTLP/gRPC clients
+
+processors:
+  batch: {}
+
+exporters:
+  # Traces → Jaeger all-in-one (accepts OTLP on :4317 with COLLECTOR_OTLP_ENABLED).
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Metrics → a Prometheus scrape endpoint the prometheus service pulls from.
+  # resource_to_telemetry_conversion promotes service.name etc. to labels so
+  # dashboards can filter by service.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

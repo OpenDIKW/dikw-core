@@ -165,6 +165,11 @@ in-memory state is gone.
 
 #### OpenTelemetry export
 
+> For the full operator cookbook — the complete span/metric inventory, a
+> dashboard query cookbook, and a ready-to-run Collector → Jaeger / Prometheus /
+> Grafana stack — see [`observability.md`](observability.md). This section is the
+> in-context summary.
+
 Optional, **off by default**, and a zero-overhead no-op unless the `[otel]`
 extra is installed (`uv pip install 'dikw-core[otel]'`). Turn it on with a
 `telemetry:` section in `dikw.yml`:
