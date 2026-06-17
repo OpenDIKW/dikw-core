@@ -546,12 +546,13 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw client pages {list,get,links,provenance} [--layer knowledge|wisdom|source]` — read-side page APIs across all three layers
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
 - `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; some kinds have no fixer yet)
+- `dikw client delete <path>` — delete a registered D/K/W document by path: purge its storage row + outgoing edges and soft-delete the file to `<base>/trash/<layer>/<rel>` (recover with `mv`). Immediate (no propose/apply); inbound `[[wikilink]]`s from live pages are left to surface as `broken_wikilink` on the next lint
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
 - `dikw client tasks {list,status,events,wait,cancel}` — inspect the server's async task queue
 
 **HTTP surface** (the server is the canonical wire contract):
 - Sync RPC under `/v1/` — `status`, `check`, `lint`, page list/read/links/provenance (`/v1/base/pages/...`), doc search, chunk fetch.
-- Async tasks under `/v1/{ingest,synth,eval}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
+- Async tasks under `/v1/{ingest,synth,eval}` and `/v1/base/{wisdom,delete}` — submit returns `task_id`; `GET /v1/tasks` paginates the queue via cursor JSON (`TaskListPage`, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&wait=K` long-polls a paged JSON event cursor (`EventsPage`); `/result` and `/cancel` complete the lifecycle.
 - Streaming retrieve — `POST /v1/retrieve` returns NDJSON: `retrieve_started → retrieval_done → final{succeeded|failed|cancelled}`. The final event payload carries ranked chunks (with full text + `layer`) plus page refs. **No LLM tokens stream from the server** — synthesis is the agent's job.
 - Sources import — `POST /v1/import` accepts a manifest + tar.gz (multipart upload at the transport layer), validates sha256, stages atomically, then commits per-package into `<base>/sources/` before ingest reads from disk.
 

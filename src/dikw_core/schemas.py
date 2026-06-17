@@ -876,3 +876,28 @@ class WisdomWriteReport(BaseModel):
     embedded: int
     chunks_pending_embedding: int = 0
     unresolved_wikilinks: int
+
+
+class DeleteReport(BaseModel):
+    """Result of a single ``delete <path>``.
+
+    ``path`` echoes the resolved document path (the stored display
+    spelling). ``layer`` is the DIKW layer the document was deleted from.
+    ``trashed_to`` is the base-relative location the on-disk file was moved
+    to under ``trash/`` (e.g. ``trash/knowledge/concepts/dead.md``), or
+    ``None`` when the backing file was already gone and only the storage
+    row was purged.
+
+    Outgoing edges (links + provenance) are purged with the row; inbound
+    edges from live pages are intentionally left to surface as
+    ``broken_wikilink`` / dangling provenance on the next lint — the verb
+    never rewrites another page's content. ``inbound_broken`` counts the
+    distinct live pages whose ``[[wikilink]]`` to this page just went
+    dangling, so the caller sees the blast radius inline (mirrors
+    ``SynthReport.unresolved_wikilinks``) without waiting for that lint pass.
+    """
+
+    path: str
+    layer: Layer
+    trashed_to: str | None = None
+    inbound_broken: int = 0

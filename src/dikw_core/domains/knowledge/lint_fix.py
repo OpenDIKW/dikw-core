@@ -27,10 +27,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import datetime as _dt
 import logging
 import re
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +44,7 @@ from ...storage.base import Storage
 from ..data.hashing import hash_bytes, hash_file
 from ..data.path_norm import doc_id_for
 from ..info.tokenize import CjkTokenizer
+from ..trash import move_to_trash
 from .links import build_fuzzy_index, parse_links, resolve_links
 from .lint import LintKind
 from .page import (
@@ -1078,7 +1077,7 @@ async def _apply_one_op(
         if doc_id is not None:
             await storage.delete_document(doc_id)
         try:
-            _move_to_trash(
+            move_to_trash(
                 base_root=base_root, src_abs=abs_path, rel_path=op.path,
                 reason=issue_kind, proposal_id=proposal_id,
             )
@@ -1110,106 +1109,6 @@ async def _apply_one_op(
         return None
 
     return _skip(proposal_id, op, f"unknown op kind {op.kind!r}")
-
-
-def _move_to_trash(
-    *,
-    base_root: Path,
-    src_abs: Path,
-    rel_path: str,
-    reason: str,
-    proposal_id: str,
-) -> Path:
-    """Move ``src_abs`` to ``<base_root>/trash/<rel_path>`` and stamp a
-    ``trashed:`` frontmatter block on the file before the move.
-
-    ``rel_path`` is the wiki-relative path of the page (e.g.
-    ``"wiki/concepts/dead.md"``); the file ends up at
-    ``<base_root>/trash/knowledge/concepts/dead.md`` so the original directory
-    layout under ``wiki/`` is preserved verbatim inside ``trash/``,
-    making "rescue this page back into the wiki" a plain ``mv`` for the
-    user. Collisions get a millisecond-precision timestamp suffix so a
-    re-trash of the same path doesn't clobber the earlier copy.
-
-    Why frontmatter and not a separate manifest: the audit metadata
-    lives WITH the file. A user grep-ing ``trash/`` for "what fixer
-    dropped this and when" doesn't have to cross-reference a sibling
-    JSON. ``frontmatter.dumps`` round-trips other keys, so the
-    ``trashed:`` block is added in-place without rewriting body or
-    losing existing metadata.
-
-    Returns the destination path; raises ``OSError`` on filesystem failure.
-    """
-    dest = base_root / "trash" / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        # Same wiki path trashed twice in the same wall-clock second
-        # would otherwise collide on a second-resolution suffix and
-        # overwrite the earlier copy. Spin a millisecond counter until
-        # the candidate name is free — bounded at 1000 because the
-        # next second will roll the timestamp anyway.
-        base_dest = dest
-        for ms in range(1000):
-            ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-            suffix = f".{ts}.{ms:03d}" if ms else f".{ts}"
-            candidate = base_dest.with_name(
-                f"{base_dest.stem}{suffix}{base_dest.suffix}"
-            )
-            if not candidate.exists():
-                dest = candidate
-                break
-        else:
-            raise OSError(
-                f"trash collision: {base_dest} exists and 1000 timestamp "
-                "fallbacks were all taken"
-            )
-
-    raw = src_abs.read_text(encoding="utf-8")
-    try:
-        post = frontmatter.loads(raw)
-    except Exception:
-        # Malformed frontmatter: keep the body intact, don't try to
-        # parse-and-rewrite — drop the file as-is into trash. Better to
-        # preserve byte-identical contents than to risk content loss
-        # while trying to inject an audit marker.
-        shutil.move(str(src_abs), str(dest))
-        return dest
-    post.metadata["trashed"] = {
-        "at": _dt.datetime.now(tz=_dt.UTC).isoformat(timespec="seconds"),
-        "reason": reason,
-        "proposal_id": proposal_id,
-    }
-    # Two-stage write so a mid-write failure (disk full, short write)
-    # cannot leave a partial file at the visible ``dest`` path: write
-    # to a sibling ``.tmp`` first, then atomic-replace into place. A
-    # failed ``write_text`` only leaves the ``.tmp`` to clean up; only
-    # after the rename does ``dest`` materialise visibly under
-    # ``trash/``.
-    tmp_dest = dest.with_name(dest.name + ".tmp")
-    try:
-        tmp_dest.write_text(frontmatter.dumps(post), encoding="utf-8")
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_dest.unlink()
-        raise
-    try:
-        tmp_dest.replace(dest)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_dest.unlink()
-        raise
-    try:
-        src_abs.unlink()
-    except OSError:
-        # Roll back the trash copy so we never leave the same page in
-        # BOTH wiki/ and trash/. After rollback the page stays in wiki/
-        # and storage already purged the doc row — the next
-        # ``dikw client ingest`` re-creates the row from the file (ingest is
-        # idempotent on hash), so the user recovers without manual SQL.
-        with contextlib.suppress(OSError):
-            dest.unlink()
-        raise
-    return dest
 
 
 def _skip(proposal_id: str, op: FixOperation, reason: str) -> dict[str, Any]:

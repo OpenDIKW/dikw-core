@@ -67,6 +67,7 @@ src/dikw_core/
 ├── api_synth.py           synthesize (K-layer authoring leg — only LLM entry)
 ├── api_lint.py            lint, lint_propose, lint_apply
 ├── api_wisdom.py          write_wisdom_page (W-layer write entry)
+├── api_delete.py          delete_page (immediate D/K/W soft-delete to trash/)
 ├── api_path_safety.py     `_assert_within` base-escape guard
 ├── config.py              Pydantic config + YAML loader
 ├── schemas.py             cross-layer DTOs
@@ -93,9 +94,10 @@ src/dikw_core/
 │   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, non-atomic pages, missing_provenance, invalid_wisdom_status, uncategorized, title_slug_quality; lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic)
-│   └── wisdom/
-│       ├── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
-│       └── persist.py       persist_wisdom — W-layer write entry (sole engine caller: api.write_wisdom_page)
+│   ├── wisdom/
+│   │   ├── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
+│   │   └── persist.py       persist_wisdom — W-layer write entry (sole engine caller: api.write_wisdom_page)
+│   └── trash.py            move_to_trash — cross-layer soft-delete primitive (lint delete_page fixer + the delete verb)
 ├── providers/
 │   ├── base.py              LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │   ├── anthropic_compat.py  anthropic SDK, system-prompt cache_control; retargets via llm_base_url

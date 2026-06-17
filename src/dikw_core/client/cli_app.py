@@ -884,6 +884,81 @@ def wisdom_write_cmd(
     _run(_go())
 
 
+# ---- delete -----------------------------------------------------------
+
+
+@app.command(
+    "delete",
+    epilog=(
+        "Examples:\n\n"
+        "  dikw client delete knowledge/concepts/old-note.md\n\n"
+        "  dikw client delete wisdom/elon-musk/draft.md --reason 'superseded'\n"
+    ),
+)
+def delete_cmd(
+    path: Annotated[
+        str,
+        typer.Argument(
+            help="Base-relative path to delete (sources/…, knowledge/…, or wisdom/…).",
+        ),
+    ],
+    reason: Annotated[
+        str | None,
+        typer.Option(
+            "--reason",
+            help="Audit note stamped into the trashed file's `trashed:` block.",
+        ),
+    ] = None,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait/--no-wait",
+            help="Default --wait: block + render the delete report. --no-wait: print task handle JSON.",
+        ),
+    ] = True,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Disable progress widget."),
+    ] = False,
+    server: Annotated[str | None, _server_option()] = None,
+    token: Annotated[str | None, _token_option()] = None,
+) -> None:
+    """Delete a document (D / K / W) and move its file to `<base>/trash/`.
+
+    Resolves the path to a registered document, purges its storage row +
+    outgoing links/provenance, and soft-deletes the file to
+    `<base>/trash/<layer>/<rel>`. To recover, move the file back into place:
+    a D-layer source re-indexes on the next `dikw client ingest`, but K/W
+    pages have no scan-based reindex yet — the `mv` restores the file, then
+    re-run `dikw client synth --all` (K) / `dikw client wisdom write` (W) to
+    re-index the recovered content. Inbound `[[wikilink]]`s from other pages
+    are left dangling and surface as `broken_wikilink` on the next
+    `dikw client lint` (the report's `inbound_broken` counts them) — delete
+    never rewrites another page.
+
+    A path that isn't a registered document fails the task (run
+    `dikw client pages list` to discover registered paths).
+    """
+
+    async def _go() -> None:
+        request_body: dict[str, Any] = {"path": path}
+        if reason is not None:
+            request_body["reason"] = reason
+        async with Transport.from_config(_resolve(server, token)) as t:
+            handle = await t.post_json("/v1/base/delete", json_body=request_body)
+            task_id = str(handle["task_id"])
+            if not wait and not _serve_and_run_forces_wait():
+                _print_task_handle(task_id, str(handle.get("status") or "pending"))
+                return
+            status_val, payload = await _wait_and_render(t, task_id, plain=plain)
+        if status_val == "succeeded" and payload is not None:
+            from .progress import render_delete_report
+            render_delete_report(console, payload)
+        _exit_for_status(status_val, payload)
+
+    _run(_go())
+
+
 # ---- retrieve (NDJSON stream, retrieval-only) -------------------------
 
 

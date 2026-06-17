@@ -1,6 +1,8 @@
 # Filesystem is the source of truth; consistency & deletion are lint + a `delete` verb
 
-**Status**: Accepted (design intent). Implementation phased across PR1–PR4; not yet shipped.
+**Status**: Accepted. PR1 (the `delete <path>` verb) is shipped; the drift `lint`
+kinds (`missing_file` / `untracked_file` / `stale_index` / `dangling_provenance`)
+are phased across PR2–PR4 and not yet shipped.
 
 ## Context
 
@@ -57,14 +59,21 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 
 2. **Deletion is a new immediate `delete <path>` verb** (`dikw client delete`,
    `POST /v1/base/delete`), spanning D/K/W: `delete_document` + a trash move to
-   `<base>/trash/<layer>/<rel>` (audit frontmatter). The existing `_move_to_trash`
-   helper is today knowledge-scoped (hardcoded `trash/knowledge/`); PR1 generalizes it
-   to a `<layer>` parameter. It is
-   **symmetric with `write_wisdom_page`** and follows the resulting write-form
-   principle: **explicitly-targeted single-document writes are immediate**
-   (`ingest`/`synth`/`wisdom write`/`delete`); **scan-discovered batch hygiene is
-   propose/apply** (`lint`). `delete <path>` reuses `_apply_one_op`'s existing
-   `delete_page` branch.
+   `<base>/trash/<layer>/<rel>` (audit frontmatter). The soft-delete primitive
+   `move_to_trash` was promoted out of `lint_fix.py` into the shared, layer-agnostic
+   `domains/trash.py` so D/W deletes reuse it — it was already layer-agnostic (the
+   destination mirrors whatever layer prefix the input path carries), so no per-layer
+   parameter is needed; the promotion just makes it public and lifts it out of the
+   knowledge domain. It is **symmetric with `write_wisdom_page`** and follows the
+   resulting write-form principle: **explicitly-targeted single-document writes are
+   immediate** (`ingest`/`synth`/`wisdom write`/`delete`); **scan-discovered batch
+   hygiene is propose/apply** (`lint`). The verb resolves which layer a path lives in
+   by a storage probe (like `read_page`, but matching regardless of `active`) and
+   purges rows **before** the trash move, reusing `delete_document` + `move_to_trash`
+   directly rather than routing through lint's `_apply_one_op` (which is K-only
+   sandboxed and carries the propose/apply `expected_hash` gate an immediate delete
+   doesn't need). A row whose backing file is already gone purges cleanly with no
+   trash move (`trashed_to=None`).
 
 3. **Inbound edges are not cascade-cleaned on delete.** Inbound links from *live*
    pages stay as `broken_wikilink` (the correct signal); `missing_file` purging an
