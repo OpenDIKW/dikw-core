@@ -438,17 +438,26 @@ dikw client delete wisdom/elon-musk/draft.md --reason "superseded"
 
 `delete` purges the document's storage row and its **outgoing** links +
 provenance, then soft-deletes the file to `<base>/trash/<layer>/<rel>` with
-a `trashed:` audit block. Recover it by moving the file back into place
-(`mv <base>/trash/knowledge/... <base>/knowledge/...`) and re-indexing via
-the layer's normal write entry (`synth` for K, `wisdom write` for W,
-`ingest` for D). It is immediate (no propose/apply — `trash/` is the safety
-net) and `--wait` by default; pass `--reason` to stamp an audit note.
+a `trashed:` audit block. It is immediate (no propose/apply — `trash/` is
+the safety net) and `--wait` by default; pass `--reason` to stamp an audit
+note. The report's `inbound_broken` count tells you how many live pages now
+have a dangling `[[wikilink]]` to the page you just deleted.
+
+To recover, move the file back into place
+(`mv <base>/trash/knowledge/... <base>/knowledge/...`). A **D-layer source**
+re-indexes on the next `dikw client ingest`. **K and W files have no
+scan-based reindex yet** (the `untracked_file` reconciliation lint that will
+close this lands in a follow-up) — until then, re-create a knowledge page
+with `dikw client synth --all` of its originating source (plain `synth`
+skips a source whose work is already marked done) or re-author a wisdom page
+with `dikw client wisdom write`.
 
 Inbound `[[wikilink]]`s from *other* live pages are left dangling on
-purpose — they surface as `broken_wikilink` on the next `dikw client lint`,
-because silently rewriting another page's body to drop the link would hide
-the breakage. This verb is the way to delete an arbitrary page; the `lint`
-fixers only auto-delete empty stubs and merged duplicates.
+purpose — they surface as `broken_wikilink` on the next `dikw client lint`
+(and in the delete report's `inbound_broken` count), because silently
+rewriting another page's body to drop the link would hide the breakage.
+This verb is the way to delete an arbitrary page; the `lint` fixers only
+auto-delete empty stubs and merged duplicates.
 
 ## 7. Check retrieval quality on your corpus
 

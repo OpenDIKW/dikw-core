@@ -3,13 +3,13 @@
 Mirrors :mod:`wisdom_op` / :mod:`ingest_op`: ``make_delete_runner`` returns
 a ``TaskRunner`` closure that drives :func:`api.delete_page`. The HTTP
 submit path stays thin — it validates the payload via
-:class:`schemas.DeleteSubmit` and hands the primitive fields (``path`` /
-``reason``) to the runner, which then opens storage, purges the document
+:class:`routes_tasks.DeleteSubmit` and hands the primitive fields (``path``
+/ ``reason``) to the runner, which then opens storage, purges the document
 row, and moves the on-disk file to ``<base>/trash/`` while emitting a
 ``delete`` phase event for NDJSON consumers.
 
 The runner takes primitives rather than the submit object so this module
-imports only ``api`` (no ``schemas.DeleteSubmit``), keeping it free of any
+imports only ``api`` (no ``DeleteSubmit`` import), keeping it free of any
 ``routes_tasks`` coupling — same shape as ``ingest_op``.
 """
 
@@ -34,10 +34,16 @@ def make_delete_runner(
     """Build a ``TaskRunner`` that drives ``api.delete_page``.
 
     ``lock`` (the runtime's ``ingest_lock``) serialises the delete against
-    a concurrent ``dikw ingest`` on the same base — without it, an ingest
-    re-creating a row from the file and a delete purging that same row
-    could race. Tests that drive the runner in isolation may pass ``None``
-    (an internal ``asyncio.Lock`` is used so the runner still completes).
+    a concurrent ``dikw ingest`` (and ``wisdom write``, which shares the
+    same lock) on the same base — without it, an ingest re-creating a row
+    from the file and a delete purging that same row could race. It does
+    **not** serialise against ``synth`` / ``lint apply``, which take no lock
+    of their own — so a delete racing a synth/lint-apply re-persist of the
+    *same* K page is the same unserialised window that already exists
+    between synth and lint apply (the K-write pipeline is N separately
+    committed Storage calls with no enclosing transaction). Tests that
+    drive the runner in isolation may pass ``None`` (an internal
+    ``asyncio.Lock`` is used so the runner still completes).
     """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:

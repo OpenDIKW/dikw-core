@@ -125,10 +125,11 @@ def move_to_trash(
     except OSError:
         # Roll back the trash copy so we never leave the same file in
         # BOTH its original tree and trash/. After rollback the file
-        # stays where it was — if storage already purged the doc row,
-        # the next ``dikw client ingest`` re-creates it from disk
-        # (ingest is idempotent on hash), so the user recovers without
-        # manual SQL.
+        # stays where it was — if a caller already purged the doc row,
+        # recovery is by re-indexing that file (a D-layer source
+        # self-heals on the next ``dikw client ingest``, idempotent on
+        # hash; K/W have no scan-based reindex yet, so re-run
+        # ``synth --all`` / ``wisdom write``), no manual SQL needed.
         with contextlib.suppress(OSError):
             dest.unlink()
         raise

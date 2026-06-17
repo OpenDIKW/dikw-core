@@ -11,8 +11,9 @@ gate (contrast ``lint``'s scan-discovered batch hygiene). It is the write
 
 rank3 cluster: imports ``api_core`` (``_with_storage``), ``api_path_safety``
 (``_assert_within``), the leaf ``api_types`` exceptions, the shared
-``domains.trash`` soft-delete primitive, and ``schemas`` — never the ``api``
-facade. ``api`` re-exports ``delete_page`` (public, in ``__all__``).
+``domains.trash`` soft-delete primitive, ``domains.data.path_norm``
+(``doc_id_for``), ``progress``, and ``schemas`` — never the ``api`` facade.
+``api`` re-exports ``delete_page`` (public, in ``__all__``).
 """
 
 from __future__ import annotations
@@ -49,21 +50,28 @@ async def delete_page(
     is still deletable.
 
     Storage rows are purged FIRST (``delete_document``), then the on-disk
-    file is moved to ``<base>/trash/<rel>``. The ordering mirrors lint's
-    ``delete_page`` fixer: if the trash move fails after the row is gone,
-    the file still sits at its original path and the next
-    ``dikw client ingest`` re-creates the row (idempotent on hash); the
-    reverse order would strand an orphaned row pointing at a missing file.
+    file is moved to ``<base>/trash/<layer>/<rel>``. The ordering mirrors
+    lint's ``delete_page`` fixer: if the trash move fails after the row is
+    gone, the file still sits at its original path — recoverable by
+    re-indexing it (a D-layer source self-heals on the next
+    ``dikw client ingest``, idempotent on hash; K/W have no scan-based
+    reindex yet, so recover by re-running ``synth --all`` / ``wisdom write``
+    until the reconciliation lints land). The reverse order would strand an
+    orphaned row pointing at a missing file.
 
     ``delete_document`` clears the doc's **outgoing** links + provenance.
     Inbound edges from *live* pages are deliberately left to surface as
     ``broken_wikilink`` (and dangling provenance) on the next lint — the
     verb never silently rewrites another page's body or frontmatter.
+    :attr:`DeleteReport.inbound_broken` counts those now-dangling referrers
+    so the caller sees the blast radius without waiting for the lint pass.
 
     A row whose backing file is already gone (the ``missing_file`` drift
-    case) still purges cleanly: there is nothing to trash, so
-    :attr:`DeleteReport.trashed_to` is ``None``. ``reason`` is stamped into
-    the trashed file's audit block (default ``"delete"``).
+    case, or a file that vanished mid-delete) still purges cleanly: there
+    is nothing to trash, so :attr:`DeleteReport.trashed_to` is ``None``.
+    ``reason`` is stamped into the trashed file's audit ``trashed:`` block
+    (default ``"delete"``) — unless the file's front-matter is unparseable,
+    in which case it is moved byte-identical without the stamp.
     """
     used_reporter: ProgressReporter = reporter or NoopReporter()
 
@@ -99,6 +107,17 @@ async def delete_page(
         except ValueError as e:
             raise PageNotFound(path) from e
 
+        # Count the inbound [[wikilink]] edges that will dangle once this
+        # page's row is gone. ``delete_document`` leaves them (they surface
+        # as ``broken_wikilink`` on the next lint), so report the blast
+        # radius now. ``links_to`` matches the resolved dst_path; dedupe by
+        # source doc and drop self-links (purged with the doc). Uses an
+        # existing Protocol method — no new storage primitive.
+        inbound = await storage.links_to(match.path)
+        inbound_broken = len(
+            {link.src_doc_id for link in inbound if link.src_doc_id != match.doc_id}
+        )
+
         used_reporter.cancel_token().raise_if_cancelled()
         await used_reporter.progress(
             phase="delete",
@@ -110,13 +129,13 @@ async def delete_page(
         # Purge storage rows first (see ordering rationale in the docstring).
         await storage.delete_document(match.doc_id)
 
-        # Move the on-disk file to trash. A file already gone is not an
-        # error — the row is what we deleted. ``move_to_trash`` does sync
+        # Move the on-disk file to trash. ``move_to_trash`` does sync
         # filesystem I/O (read / write / replace / unlink); offload it so a
         # slow disk doesn't stall the event loop alongside other in-flight
         # requests.
         trashed_to: str | None = None
         if abs_path.is_file():
+
             def _trash() -> Path:
                 return move_to_trash(
                     base_root=base_root,
@@ -125,8 +144,19 @@ async def delete_page(
                     reason=reason or "delete",
                 )
 
-            dest = await asyncio.to_thread(_trash)
-            trashed_to = dest.relative_to(base_root).as_posix()
+            try:
+                dest = await asyncio.to_thread(_trash)
+            except FileNotFoundError:
+                # Lost a TOCTOU race: the file vanished between the
+                # ``is_file()`` check and the move. Same end state as a
+                # file that was already gone — the row is purged and there
+                # is nothing left to trash. (Other OSErrors — disk full,
+                # permission, collision exhausted — are genuine failures
+                # and propagate: the row is gone but the file remains at
+                # its original path, recoverable per the docstring.)
+                trashed_to = None
+            else:
+                trashed_to = dest.relative_to(base_root).as_posix()
 
         await storage.append_knowledge_log(
             KnowledgeLogEntry(ts=time.time(), action="delete", src=match.path)
@@ -141,6 +171,7 @@ async def delete_page(
             path=match.path,
             layer=match.layer,
             trashed_to=trashed_to,
+            inbound_broken=inbound_broken,
         )
     finally:
         # Match ``write_wisdom_page``: a close() error must not shadow the

@@ -764,6 +764,7 @@ def render_delete_report(
     path = str(report.get("path") or "")
     layer = str(report.get("layer") or "")
     trashed_to = report.get("trashed_to")
+    inbound_broken = int(report.get("inbound_broken") or 0)
     if trashed_to:
         console.print(
             f"[red]deleted[/red] [bold]{path}[/bold] ({layer}) — moved to "
@@ -773,6 +774,12 @@ def render_delete_report(
         console.print(
             f"[red]deleted[/red] [bold]{path}[/bold] ({layer}) — storage row "
             "purged (file was already gone)"
+        )
+    if inbound_broken:
+        console.print(
+            f"[yellow]warning[/yellow]: {inbound_broken} live page(s) now have a "
+            f"broken [[wikilink]] to [bold]{path}[/bold] — run "
+            "[bold]dikw client lint[/bold] to see them"
         )
 
 

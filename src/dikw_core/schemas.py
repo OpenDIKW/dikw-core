@@ -891,9 +891,13 @@ class DeleteReport(BaseModel):
     Outgoing edges (links + provenance) are purged with the row; inbound
     edges from live pages are intentionally left to surface as
     ``broken_wikilink`` / dangling provenance on the next lint — the verb
-    never rewrites another page's content.
+    never rewrites another page's content. ``inbound_broken`` counts the
+    distinct live pages whose ``[[wikilink]]`` to this page just went
+    dangling, so the caller sees the blast radius inline (mirrors
+    ``SynthReport.unresolved_wikilinks``) without waiting for that lint pass.
     """
 
     path: str
     layer: Layer
     trashed_to: str | None = None
+    inbound_broken: int = 0

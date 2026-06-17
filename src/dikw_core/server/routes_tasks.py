@@ -205,12 +205,15 @@ class DeleteSubmit(BaseModel):
     existence can't be decided at the Pydantic boundary.
     """
 
-    path: str = Field(min_length=1)
+    path: str
     reason: str | None = None
 
     @field_validator("path")
     @classmethod
     def _check_path_not_blank(cls, v: str) -> str:
+        # Strictly stronger than ``min_length=1``: rejects both the empty
+        # string and whitespace-only paths in one place (single source of
+        # truth for the blank-path rule).
         if not v.strip():
             raise ValueError("path must contain at least one non-whitespace character")
         return v

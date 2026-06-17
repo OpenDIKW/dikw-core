@@ -158,6 +158,60 @@ async def test_delete_missing_file_purges_row_reports_no_trash(
 
 
 @pytest.mark.asyncio
+async def test_delete_file_vanished_mid_move_is_graceful(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the file vanishes between the is_file() check and the trash move
+    (a lost TOCTOU race), the FileNotFoundError is treated as 'already
+    gone': the row is still purged and trashed_to is None — no crash."""
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
+    path = "knowledge/racy.md"
+    await seed_doc(wiki, layer=Layer.KNOWLEDGE, path=path, body="# Racy\n", title="Racy")
+
+    def _vanish(**_kwargs: object) -> Path:
+        raise FileNotFoundError("file removed mid-delete")
+
+    monkeypatch.setattr("dikw_core.api_delete.move_to_trash", _vanish)
+
+    report = await api.delete_page(wiki, path)
+    assert report.trashed_to is None
+    storage = await _open_storage(wiki)
+    try:
+        assert await storage.get_document(doc_id_for(Layer.KNOWLEDGE, path)) is None
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_trash_oserror_propagates_after_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine filesystem failure during the trash move (disk full,
+    permission) is NOT swallowed — it propagates as a failed delete. The
+    row is already purged (purge-first ordering), leaving the file at its
+    original path for recovery."""
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
+    path = "knowledge/doomed.md"
+    await seed_doc(wiki, layer=Layer.KNOWLEDGE, path=path, body="# Doomed\n", title="Doomed")
+
+    def _disk_full(**_kwargs: object) -> Path:
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr("dikw_core.api_delete.move_to_trash", _disk_full)
+
+    with pytest.raises(OSError, match="disk full"):
+        await api.delete_page(wiki, path)
+
+    storage = await _open_storage(wiki)
+    try:
+        assert await storage.get_document(doc_id_for(Layer.KNOWLEDGE, path)) is None
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_delete_leaves_inbound_links_intact(tmp_path: Path) -> None:
     """Deleting ``B`` purges B's row + B's *outgoing* edges, but a live
     page ``A`` that links ``[[B]]`` keeps its outgoing edge — it now
@@ -191,7 +245,9 @@ async def test_delete_leaves_inbound_links_intact(tmp_path: Path) -> None:
     finally:
         await storage.close()
 
-    await api.delete_page(wiki, "knowledge/b.md")
+    report = await api.delete_page(wiki, "knowledge/b.md")
+    # The report surfaces the blast radius inline: A's [[B]] just dangled.
+    assert report.inbound_broken == 1
 
     storage = await _open_storage(wiki)
     try:
@@ -203,6 +259,52 @@ async def test_delete_leaves_inbound_links_intact(tmp_path: Path) -> None:
         )
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_inbound_broken_counts_distinct_pages(tmp_path: Path) -> None:
+    """``inbound_broken`` counts distinct *live* referring pages — multiple
+    edges from one page count once, and a self-link (purged with the doc)
+    is excluded."""
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)
+    for name in ("a", "b", "hub"):
+        await seed_doc(
+            wiki, layer=Layer.KNOWLEDGE, path=f"knowledge/{name}.md",
+            body=f"# {name}\n", title=name.upper(),
+        )
+    hub = doc_id_for(Layer.KNOWLEDGE, "knowledge/hub.md")
+    doc_a = doc_id_for(Layer.KNOWLEDGE, "knowledge/a.md")
+    doc_b = doc_id_for(Layer.KNOWLEDGE, "knowledge/b.md")
+
+    storage = await _open_storage(wiki)
+    try:
+        # a -> hub (twice, two lines), b -> hub, hub -> hub (self).
+        await storage.replace_links_from(
+            doc_a,
+            [
+                LinkRecord(src_doc_id=doc_a, dst_path="knowledge/hub.md",
+                           link_type=LinkType.WIKILINK, line=1),
+                LinkRecord(src_doc_id=doc_a, dst_path="knowledge/hub.md",
+                           link_type=LinkType.WIKILINK, line=5),
+            ],
+        )
+        await storage.replace_links_from(
+            doc_b,
+            [LinkRecord(src_doc_id=doc_b, dst_path="knowledge/hub.md",
+                        link_type=LinkType.WIKILINK, line=2)],
+        )
+        await storage.replace_links_from(
+            hub,
+            [LinkRecord(src_doc_id=hub, dst_path="knowledge/hub.md",
+                        link_type=LinkType.WIKILINK, line=9)],
+        )
+    finally:
+        await storage.close()
+
+    report = await api.delete_page(wiki, "knowledge/hub.md")
+    # a and b are the distinct live referrers; the hub self-link is excluded.
+    assert report.inbound_broken == 2
 
 
 @pytest.mark.asyncio

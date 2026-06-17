@@ -103,6 +103,48 @@ def test_move_to_trash_partial_write_leaves_no_dest(
         )
 
 
+def test_move_to_trash_uses_atomic_tmp_then_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the two-stage write: bytes land in a sibling ``.tmp`` and only an
+    atomic ``replace`` materialises ``dest``. Failing the ``replace`` step
+    must clean up the ``.tmp`` and leave src untouched. A naive
+    direct-to-``dest`` implementation would never call ``replace``, so this
+    test (which requires the OSError to come from ``replace``) would fail
+    for it — distinguishing the atomic path from a direct write."""
+    base_root = tmp_path
+    rel = "knowledge/concepts/atomic.md"
+    src = base_root / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("---\ntitle: Atomic\n---\nbody\n", encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def _fake_replace(self: Path, *args: object, **kwargs: object) -> Path:
+        if str(self).startswith(str(base_root / "trash")):
+            raise OSError("simulated replace failure")
+        return original_replace(self, *args, **kwargs)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(trash.Path, "replace", _fake_replace)
+
+    with pytest.raises(OSError, match="replace failure"):
+        move_to_trash(
+            base_root=base_root, src_abs=src, rel_path=rel,
+            reason="orphan_page", proposal_id="p-atomic",
+        )
+
+    # src untouched (unlink happens only after a successful replace), dest
+    # never materialised, and the .tmp was cleaned up.
+    assert src.is_file()
+    assert not (base_root / "trash" / rel).exists()
+    trash_dir = base_root / "trash" / "knowledge" / "concepts"
+    if trash_dir.exists():
+        assert list(trash_dir.iterdir()) == [], (
+            "the .tmp must be cleaned up after a failed atomic replace"
+        )
+
+
 def test_move_to_trash_rolls_back_when_unlink_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
