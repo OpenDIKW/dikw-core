@@ -926,10 +926,15 @@ def delete_cmd(
     """Delete a document (D / K / W) and move its file to `<base>/trash/`.
 
     Resolves the path to a registered document, purges its storage row +
-    outgoing links/provenance, and soft-deletes the file under `trash/`
-    (recover it with a plain `mv` back into place). Inbound `[[wikilink]]`s
-    from other pages are left dangling and surface as `broken_wikilink` on
-    the next `dikw client lint` — delete never rewrites another page.
+    outgoing links/provenance, and soft-deletes the file to
+    `<base>/trash/<layer>/<rel>`. To recover, move the file back into place:
+    a D-layer source re-indexes on the next `dikw client ingest`, but K/W
+    pages have no scan-based reindex yet — the `mv` restores the file, then
+    re-run `dikw client synth --all` (K) / `dikw client wisdom write` (W) to
+    re-index the recovered content. Inbound `[[wikilink]]`s from other pages
+    are left dangling and surface as `broken_wikilink` on the next
+    `dikw client lint` (the report's `inbound_broken` counts them) — delete
+    never rewrites another page.
 
     A path that isn't a registered document fails the task (run
     `dikw client pages list` to discover registered paths).

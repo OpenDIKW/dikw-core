@@ -207,8 +207,11 @@ Install and use `dikw-skills` for operational workflows:
   and indexed on write; `ingest` does not scan `wisdom/`)
 - delete any registered document (D/K/W) with `dikw client delete <path>` —
   purges its storage row + outgoing edges and soft-deletes the file to
-  `<base>/trash/` (recover with `mv`); inbound links from live pages surface
-  as `broken_wikilink` on the next lint
+  `<base>/trash/<layer>/<rel>` (e.g. `trash/knowledge/...`). To recover, move
+  the file back: a D source re-indexes on the next `ingest`, but K/W need a
+  re-run of `synth --all` / `wisdom write`. Inbound links from live pages
+  surface as `broken_wikilink` on the next lint (counted in the report's
+  `inbound_broken`)
 
 - follow async tasks with cursor events, status, wait, and cancel
 
