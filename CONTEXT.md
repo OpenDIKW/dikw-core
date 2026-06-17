@@ -71,6 +71,44 @@ _CLI_: `dikw client retrieve "..."`
 _HTTP_: `POST /v1/retrieve` (streams NDJSON: `retrieve_started → retrieval_done → final`)
 _Avoid_: query, ask, search
 
+### Consistency & deletion
+
+The filesystem (`sources/`, `knowledge/`, `wisdom/`) is the **source of truth**; the
+`documents` projection in storage is rebuildable from it. Engine-owned state
+(`<base>/.dikw/`, the `knowledge_log` table, the task ledger) and `synth`'s LLM output
+are *not* part of that promise (once `synth` writes a page to disk, the file is disk
+content like any other). The terms below name the divergences between disk and the
+projection, and the actions that repair them. They are **cross-cutting maintenance**
+(like `lint`), not pipeline transitions — the "one verb, one transition" rule above
+governs the pipeline verbs, not these. This is agreed design (ADR-0005); the language
+is settled here ahead of implementation, so the verbs/routes below are not yet shipped.
+
+**drift**:
+A divergence between the authoritative on-disk trees and the `documents` projection. Surfaced as `lint` kinds, repaired through `lint apply` — or, for a single named file, `delete`.
+_Avoid_: desync, staleness, inconsistency.
+
+**missing_file**:
+A **drift** lint kind (D/K/W): a `documents` row whose backing file is gone from disk. Fixer purges the row and its outgoing edges.
+_Avoid_: orphan / orphan_document (collides with **orphan_page** — see Flagged ambiguities), dangling document.
+
+**untracked_file**:
+A **drift** lint kind (K/W): a markdown file on disk with no `documents` row. Fixer indexes it — the path by which a hand-written knowledge page becomes first-class.
+_Avoid_: new file, unindexed.
+
+**stale_index**:
+A **drift** lint kind (K/W): a `documents` row whose stored hash no longer matches the file's bytes (a hand-edit). Fixer re-projects the current bytes; it never re-runs `synth`, so the edit is preserved.
+_Avoid_: outdated, dirty.
+
+**dangling_provenance**:
+A **drift** lint kind (K/W): a **provenance** edge whose target source file is gone. Read-only — surfaced, never auto-repaired (the frontmatter is the user's to edit).
+_Avoid_: broken provenance (reserve "broken" for the **wikilink** graph).
+
+**delete**:
+Remove one named document — move the live file to `<base>/trash/<layer>/<rel>` (recoverable, with an audit block) and drop its storage row + outgoing edges. Immediate (not propose/apply), symmetric with the `wisdom write` verb. Inbound edges from live pages are left as `broken_wikilink`, never silently rewritten.
+_CLI_: `dikw client delete <path>`
+_HTTP_: `POST /v1/base/delete`
+_Avoid_: remove, trash (the trash/ move is one step of delete, not the verb), purge (DB-only term).
+
 ## Relationships
 
 - **import** writes to `<base>/sources/`; **ingest** reads from it. Without import the user puts files there by hand; without ingest the files don't reach D/I.
@@ -78,6 +116,7 @@ _Avoid_: query, ask, search
 - A **document** in the D layer becomes zero or more K-layer **documents** after **synth** (one source can fan out into multiple knowledge pages).
 - The user owns `<base>/sources/`, `<base>/knowledge/`, `<base>/wisdom/` — three plain markdown trees. The engine owns `<base>/.dikw/` — opaque state (index, auth tokens, task ledger, staging). Wisdom pages are hand-written and indexed into the documents table, so they participate in retrieve/lint.
 - A K-layer **document** carries **provenance** edges back to the **source**(s) it was synth-authored from (`provenance` table, distinct from `links`). The reverse — "which K-pages derive from this source" — is the query this edge exists to answer.
+- The filesystem is authoritative; a **document** is a rebuildable projection of a file. **drift** names where the projection has fallen out of step with disk; `lint apply` (scan-discovered) and `delete` (one named file) are how it is brought back. The engine never edits a user's body/frontmatter to repair drift — it only surfaces it.
 
 ## Example dialogue
 
@@ -93,6 +132,7 @@ _Avoid_: query, ask, search
 - **wiki** was historically overloaded: K-layer role, on-disk directory, and wikilink syntax. Resolved (0.4.0): say "K layer" for the role, "knowledge tree" for the on-disk files, and reserve **wiki** exclusively for **wikilink** (`[[Target]]`) syntax. The term "wiki" no longer refers to the K layer or its files.
 - **document** vs **source**: in the D layer they're nearly synonymous (one source → one document, usually), but **source** is the file on disk and **document** is the indexed row. Keep them distinct because in K + W layers the documents have no corresponding source file — they were LLM-authored.
 - **reference / 引用** was used for "source X is used by page Y". Resolved into two distinct edges: **wikilink** (body `[[…]]`, the K↔K graph) and **provenance** (frontmatter `sources:`, page→source attribution). They are stored in separate tables and never mixed — a page can have one without the other.
+- **orphan** was ambiguous between "a page with no inbound wikilinks" and "a `documents` row whose file is gone". Resolved: **orphan_page** keeps the no-inbound-links meaning; the file-gone **drift** kind is **missing_file** (never "orphan_document"). "Orphan" alone always refers to the link sense.
 
 ## Plugin contract
 
