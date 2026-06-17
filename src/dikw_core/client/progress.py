@@ -753,6 +753,29 @@ def render_wisdom_write_report(
         )
 
 
+def render_delete_report(
+    console: Console, report: Mapping[str, Any]
+) -> None:
+    """Print the summary of a ``delete`` task result.
+
+    The default ``--wait`` path renders this; the no-wait path falls back
+    to ``_print_task_handle``.
+    """
+    path = str(report.get("path") or "")
+    layer = str(report.get("layer") or "")
+    trashed_to = report.get("trashed_to")
+    if trashed_to:
+        console.print(
+            f"[red]deleted[/red] [bold]{path}[/bold] ({layer}) — moved to "
+            f"[dim]{trashed_to}[/dim]"
+        )
+    else:
+        console.print(
+            f"[red]deleted[/red] [bold]{path}[/bold] ({layer}) — storage row "
+            "purged (file was already gone)"
+        )
+
+
 def render_lint_apply_report(
     console: Console, report: Mapping[str, Any]
 ) -> None:

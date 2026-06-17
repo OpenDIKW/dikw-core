@@ -12,6 +12,8 @@ needs, never this facade — so the import graph is acyclic):
   * ``api_core``     — base scaffold, storage open/migrate, embed-version
                        helpers (``init_base`` / ``load_base`` / ``status``).
   * ``api_types``    — cross-cutting DTOs + exceptions.
+  * ``api_delete``   — ``delete_page`` (immediate soft-delete of any D/K/W
+                       document to ``trash/``).
   * ``api_path_safety`` — ``_assert_within`` base-escape guard (leaf helper;
                        consumed by ``api_pages`` / ``api_graph``, surfaces no verb).
   * ``api_health``   — ``health`` / ``check_providers`` + provider probes.
@@ -41,6 +43,7 @@ from .api_core import (
     load_base,
     status,
 )
+from .api_delete import delete_page
 from .api_graph import (
     list_graph,
     list_links,
@@ -114,6 +117,7 @@ from .config import find_config
 # rename), so ruff keeps it rather than pruning it as unused-here.
 from .domains.data.path_norm import doc_id_for as _doc_id_for  # noqa: F401
 from .schemas import (
+    DeleteReport,
     DerivedPage,
     IncomingLink,
     OutgoingLink,
@@ -133,6 +137,7 @@ from .schemas import (
 __all__ = [
     "AssetNotFound",
     "CheckReport",
+    "DeleteReport",
     "DerivedPage",
     "EmbeddingInfo",
     "HealthReport",
@@ -159,6 +164,7 @@ __all__ = [
     "SynthVerifyReport",
     "WisdomWriteReport",
     "check_providers",
+    "delete_page",
     "find_config",
     "health",
     "ingest",

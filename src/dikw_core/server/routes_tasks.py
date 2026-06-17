@@ -26,10 +26,11 @@ import json
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..domains.knowledge.lint import LintKind
 from ..schemas import WisdomWriteSubmit
+from .delete_op import make_delete_runner
 from .errors import BadRequest, NotFoundError
 from .ingest_op import make_ingest_runner
 from .lint_op import make_lint_apply_runner, make_lint_propose_runner
@@ -189,6 +190,30 @@ class EvalSubmit(BaseModel):
     eval_modes: list[str] | None = None
     judge: bool = False
     judge_sample: int | Literal["auto"] | None = None
+
+
+class DeleteSubmit(BaseModel):
+    """Body for ``POST /v1/base/delete``.
+
+    ``path`` is the base-relative path of the document to delete
+    (``sources/…`` / ``knowledge/…`` / ``wisdom/…``). ``reason`` is an
+    optional audit note stamped into the trashed file's ``trashed:`` block.
+
+    Only a blank ``path`` is rejected here (422); a well-formed path that
+    doesn't resolve to a registered document surfaces as a FAILED task
+    (the engine raises ``PageNotFound`` after the storage probe), since
+    existence can't be decided at the Pydantic boundary.
+    """
+
+    path: str = Field(min_length=1)
+    reason: str | None = None
+
+    @field_validator("path")
+    @classmethod
+    def _check_path_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("path must contain at least one non-whitespace character")
+        return v
 
 
 class TaskHandle(BaseModel):
@@ -476,6 +501,29 @@ def make_router(*, auth_dep: Any) -> APIRouter:
                 "author": body.author,
                 "no_embed": body.no_embed,
             },
+            base_id=rt.base_id,
+        )
+        return _handle(row)
+
+    @router.post("/base/delete", response_model=TaskHandle)
+    async def submit_delete(
+        request: Request,
+        body: DeleteSubmit = Body(...),
+    ) -> TaskHandle:
+        rt: ServerRuntime = get_runtime(request.app)
+        # Share ``ingest_lock`` with the ingest / wisdom-write paths: a
+        # concurrent ``dikw ingest`` re-creating a row from disk and a
+        # delete purging that same row would otherwise race on storage.
+        runner: TaskRunner = make_delete_runner(
+            base_root=rt.root,
+            path=body.path,
+            reason=body.reason,
+            lock=rt.ingest_lock,
+        )
+        row = await rt.manager.submit(
+            op="delete",
+            runner=runner,
+            params={"path": body.path},
             base_id=rt.base_id,
         )
         return _handle(row)

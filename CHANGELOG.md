@@ -7,6 +7,27 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Added
+
+- **`dikw client delete <path>` — first-class document deletion (D/K/W).** A new
+  immediate verb (`api.delete_page` / `POST /v1/base/delete`) that deletes any
+  registered document — a `sources/` file, a `knowledge/` page, or a `wisdom/`
+  page — by path: it purges the storage row + its outgoing links/provenance
+  (`Storage.delete_document`) and soft-deletes the on-disk file to
+  `<base>/trash/<layer>/<rel>` with an audit `trashed:` block (recover with a plain
+  `mv` back into place). It is symmetric with `wisdom write`: explicitly-targeted,
+  immediate (no propose/apply — `trash/` is the safety net), `--wait` by default,
+  `--reason` for an audit note. Closes the gap where deletion existed only as a side
+  effect of the `lint` `orphan_page`/`non_atomic_page` fixers (K-layer stubs only) —
+  arbitrary K pages and all D/W documents were previously undeletable.
+  Inbound `[[wikilink]]`s from live pages are left dangling and surface as
+  `broken_wikilink` on the next `dikw client lint` — delete never rewrites another
+  page. First slice of ADR-0005 (filesystem-as-source-of-truth); the drift `lint`
+  kinds (`missing_file` / `untracked_file` / `stale_index` / `dangling_provenance`)
+  land in follow-ups. Internally, the soft-delete primitive `move_to_trash` was
+  promoted out of `domains/knowledge/lint_fix.py` into the shared, layer-agnostic
+  `domains/trash.py` so D/W deletes reuse it.
+
 ### Fixed
 
 - **Synth front-matter is whitelisted to `tags`; `write_page` guards reserved
