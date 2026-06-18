@@ -4,8 +4,10 @@ Coverage: ``broken_wikilink`` (heuristic + evidence-backed LLM repair),
 ``non_atomic_page`` (LLM split), ``orphan_page`` (heuristic strategy
 router), ``missing_provenance`` (pure deterministic — sync provenance
 table from frontmatter), ``missing_file`` (pure deterministic — purge an
-orphaned row whose file is gone, D/K/W). The ``duplicate_title`` rule has
-no fixer — the propose pipeline still reports it for human triage.
+orphaned row whose file is gone, D/K/W), ``stale_index`` + ``untracked_file``
+(pure deterministic — re-project the on-disk K/W bytes into storage; one
+``ReindexPageFixer`` serves both). The ``duplicate_title`` rule has no fixer
+— the propose pipeline still reports it for human triage.
 """
 
 from __future__ import annotations
@@ -17,6 +19,11 @@ from .missing_file import MissingFileFixer
 from .missing_provenance import MissingProvenanceFixer
 from .non_atomic_page import NonAtomicPageFixer
 from .orphan_page import OrphanPageFixer
+from .reindex import ReindexPageFixer
+
+# One ``ReindexPageFixer`` instance serves both fs-drift kinds — the
+# remediation (re-project disk bytes) is identical.
+_reindex_fixer = ReindexPageFixer()
 
 FIXER_REGISTRY: dict[LintKind, Fixer] = {
     "broken_wikilink": BrokenWikilinkFixer(),
@@ -24,6 +31,8 @@ FIXER_REGISTRY: dict[LintKind, Fixer] = {
     "orphan_page": OrphanPageFixer(),
     "missing_provenance": MissingProvenanceFixer(),
     "missing_file": MissingFileFixer(),
+    "stale_index": _reindex_fixer,
+    "untracked_file": _reindex_fixer,
 }
 
 __all__ = [
@@ -33,4 +42,5 @@ __all__ = [
     "MissingProvenanceFixer",
     "NonAtomicPageFixer",
     "OrphanPageFixer",
+    "ReindexPageFixer",
 ]

@@ -202,17 +202,22 @@ Install and use `dikw-skills` for operational workflows:
 - ingest, synthesize (LLM files each page under the configured `category`
   taxonomy), lint, and eval (lint includes `missing_provenance` for backfilling
   the provenance table on legacy bases, `uncategorized` for pages synth filed
-  under the fallback bucket, and `missing_file` to purge an orphaned D/K/W row
-  whose backing file was deleted outside dikw)
+  under the fallback bucket, `missing_file` to purge an orphaned D/K/W row
+  whose backing file was deleted outside dikw, and `stale_index` /
+  `untracked_file` to re-project a hand-edited or hand-written K/W file into
+  storage — `dikw client lint propose --rule stale_index|untracked_file` →
+  `lint apply`, which re-projects the on-disk bytes without rewriting the file
+  or re-running synth)
 - author W-layer wisdom pages with `dikw client wisdom write` (hand-written
   and indexed on write; `ingest` does not scan `wisdom/`)
 - delete any registered document (D/K/W) with `dikw client delete <path>` —
   purges its storage row + outgoing edges and soft-deletes the file to
   `<base>/trash/<layer>/<rel>` (e.g. `trash/knowledge/...`). To recover, move
-  the file back: a D source re-indexes on the next `ingest`, but K/W need a
-  re-run of `synth --all` / `wisdom write`. Inbound links from live pages
-  surface as `broken_wikilink` on the next lint (counted in the report's
-  `inbound_broken`)
+  the file back: a D source re-indexes on the next `ingest`, and a restored
+  K/W page is re-indexed by the `untracked_file` lint (`lint propose --rule
+  untracked_file` → `lint apply`) or a re-run of `synth --all` / `wisdom
+  write`. Inbound links from live pages surface as `broken_wikilink` on the
+  next lint (counted in the report's `inbound_broken`)
 
 - follow async tasks with cursor events, status, wait, and cancel
 

@@ -9,6 +9,33 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`stale_index` + `untracked_file` drift lint kinds — re-project hand-edited /
+  hand-written K/W pages (and unlock hand-authored knowledge pages as first-class).**
+  Two new deterministic `lint` kinds, both fixed by one `ReindexPageFixer`:
+  `stale_index` flags an *active* `knowledge/` (K) or `wisdom/` (W) row whose on-disk
+  body hash no longer matches the indexed `hash` (a hand-edit outside dikw);
+  `untracked_file` flags a `.md` / `.markdown` file under `knowledge/` or `wisdom/`
+  with no active row (hand-written, or restored outside dikw). Both propose a single
+  `reindex_page` op that re-projects the *current* on-disk bytes through
+  `persist_knowledge` / `persist_wisdom` — re-chunk, re-link, re-provenance,
+  inline-or-deferred re-embed — **without rewriting the file** (disk is the source of
+  truth, ADR-0005) and **without re-running `synth`** (so a hand-edit is preserved, not
+  regenerated from the D-source). Run in the default `lint` scan; fix with
+  `dikw client lint propose --rule stale_index` (or `untracked_file`) →
+  `dikw client lint apply <task_id>`. `untracked_file` closes the "hand-write a K page,
+  the engine never indexes it" gap and makes hand-authored pages first-class;
+  `stale_index` closes the "edit a K/W file on disk, the storage projection silently
+  drifts" gap. Detection is near-free: `stale_index` reuses the per-page read the
+  other lexical checks already do (no separate mtime-prefiltered hashing pass), and
+  `untracked_file` is a cheap disk walk (stat + membership, no read) rooted at
+  `knowledge/` + `wisdom/` so the sibling `trash/` / `.dikw/` / `assets/` trees are
+  naturally excluded and `.gitkeep` / non-markdown files never trip. Both are K/W-only
+  (D-layer adds/edits stay `ingest`'s job); a page failing its re-projection is
+  deactivated and surfaced via `ApplyReport.persist_errors`, successes under
+  `ApplyReport.reindexed_documents`. Third slice of ADR-0005; `dangling_provenance`
+  lands in PR4. This supersedes the never-built `dikw client reindex <path>` — the
+  reindex story is now `dikw client lint propose --rule stale_index` (or
+  `--rule untracked_file`) followed by `dikw client lint apply <task_id>`.
 - **`missing_file` drift lint kind — purge orphaned document rows (D/K/W).** A new
   deterministic `lint` kind (with `MissingFileFixer`) that detects an *active*
   `documents` row whose backing file is gone from disk — a `sources/` (D),

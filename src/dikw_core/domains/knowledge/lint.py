@@ -19,6 +19,15 @@ Reports issue classes that are safe to detect deterministically (see the
 * ``missing_file`` — an *active* ``documents`` row (D/K/W) whose backing file
   is gone from disk; the deterministic fixer purges the orphaned row
   (ADR-0005, the filesystem is the source of truth).
+* ``stale_index`` — an *active* K/W row whose on-disk body hash no longer
+  matches the indexed ``hash`` (a hand-edit outside dikw); the deterministic
+  reindex fixer re-projects the current bytes without rewriting the file.
+* ``untracked_file`` — a ``.md`` / ``.markdown`` file under ``knowledge/`` or
+  ``wisdom/`` with no active row (hand-written or restored outside dikw); the
+  reindex fixer indexes it, making hand-authored pages first-class.
+
+``stale_index`` / ``untracked_file`` are K/W only — D-layer source adds and
+edits are owned by ``ingest`` (zero overlap); ``missing_file`` spans D/K/W.
 
 Later phases may add semantic checks; this module intentionally stays
 lexical.
@@ -36,6 +45,8 @@ import frontmatter
 
 from ...schemas import Layer, LinkType, WisdomStatus
 from ...storage.base import Storage
+from ..data.backends import supported_extensions
+from ..data.backends.markdown import content_hash
 from ..data.path_norm import normalize_path
 from .links import build_title_indexes, parse_links, resolve_links
 from .page import SLUG_FALLBACK, category_from_path, frontmatter_str_list
@@ -98,6 +109,8 @@ LintKind = Literal[
     "uncategorized",
     "title_slug_quality",
     "missing_file",
+    "stale_index",
+    "untracked_file",
 ]
 
 # 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
@@ -302,6 +315,7 @@ async def run_lint(
     category (closed-set taxonomy contract, ADR-0003).
     """
     issues: list[LintIssue] = []
+    root_resolved = root.resolve()
     # path → set of LintKind the page opted out of via frontmatter.
     # Populated below in the same per-page frontmatter-load loop; consulted
     # both when appending per-page issues (broken_wikilink / non_atomic)
@@ -342,7 +356,7 @@ async def run_lint(
     )
     missing_paths: set[str] = set()
     for doc in [*source_docs, *page_docs]:
-        if not (root / doc.path).resolve().is_file():
+        if not (root_resolved / doc.path).resolve().is_file():
             missing_paths.add(doc.path)
     # Emit in sorted-path order. ``list_documents`` has no ORDER BY, so without
     # this the issue order — and thus which rows survive ``lint propose``'s
@@ -363,7 +377,15 @@ async def run_lint(
 
     # Every other K/W check runs over the *live* page set — pages whose file is
     # gone are excluded so they don't double-surface as orphan/duplicate/etc.
-    live_page_docs = [d for d in page_docs if d.path not in missing_paths]
+    # Sorted by path so the per-doc kinds emitted inside the main loop
+    # (``stale_index`` / ``broken_wikilink`` / ``missing_provenance`` / …) — and
+    # the ``duplicate_title`` "primary" pick — are deterministic across runs and
+    # adapters (``list_documents`` has no ORDER BY), so ``lint propose --limit``
+    # is reproducible (matching the already-sorted ``missing_file`` /
+    # ``untracked_file`` passes).
+    live_page_docs = sorted(
+        (d for d in page_docs if d.path not in missing_paths), key=lambda d: d.path
+    )
 
     title_to_paths: dict[str, list[str]] = defaultdict(list)
     inbound: Counter[str] = Counter()
@@ -416,6 +438,32 @@ async def run_lint(
         sources_tuple = tuple(frontmatter_str_list(post.metadata, "sources"))
         tags_tuple = tuple(frontmatter_str_list(post.metadata, "tags"))
         page_meta[doc.path] = PageMeta(sources=sources_tuple, tags=tags_tuple)
+
+        # ``stale_index`` — the on-disk body drifted from the indexed copy
+        # (a hand-edit outside dikw). The body was already loaded above for
+        # the lexical checks, so the hash comparison costs nothing extra —
+        # no separate mtime-prefiltered hashing pass is needed (the per-page
+        # read the checks below require already dominates the scan). Disk is
+        # authoritative (ADR-0005): the row + its chunks / links are the
+        # lagging projection; the reindex fixer re-projects the current bytes
+        # without rewriting the file. Compare the body hash the way
+        # ``persist`` stored it (frontmatter-stripped, markdown
+        # ``content_hash``). Scope note: this is BODY drift only — a
+        # frontmatter-only edit (e.g. a wisdom ``status:`` change with the body
+        # untouched) does not change the body hash, so it is not flagged here
+        # (a rare case; the row's ``status``/``title`` projection stays stale
+        # until the body is next edited or the page re-written).
+        if "stale_index" not in skip_kinds and content_hash(body) != doc.hash:
+            issues.append(
+                LintIssue(
+                    kind="stale_index",
+                    path=doc.path,
+                    detail=(
+                        "on-disk body differs from the indexed copy — "
+                        "re-project the page (it was hand-edited outside dikw)"
+                    ),
+                )
+            )
 
         # Surface pages whose provenance table is out of sync with
         # frontmatter — typical on bases that existed before the
@@ -598,6 +646,55 @@ async def run_lint(
                         detail=f"title '{title}' also used by {primary}",
                     )
                 )
+
+    # ``untracked_file`` — markdown files on disk under ``knowledge/`` /
+    # ``wisdom/`` with no active document row (hand-written, or restored
+    # outside dikw). Disk is authoritative (ADR-0005): the file is real
+    # content, the missing row is the lagging side, so the reindex fixer
+    # indexes it. Walk is K/W only (D-layer source discovery is owned by
+    # ``ingest``) and roots at each layer dir, so the sibling ``trash/`` /
+    # ``.dikw/`` / ``assets/`` trees are naturally outside its scope. Only
+    # backend-supported extensions count, so ``.gitkeep`` placeholders and
+    # stray non-markdown files never trip. Inactive-only rows (no active
+    # projection) intentionally surface here too — the reindex fixer's
+    # ``upsert_document`` re-activates them, healing a deactivated page.
+    # Deliberately NOT suppressible via ``lint: {skip}`` (unlike ``stale_index``):
+    # detection is read-free (stat + membership), and honouring per-file
+    # frontmatter would force a parse of every candidate; a scratch ``.md`` the
+    # user doesn't want indexed belongs outside the ``knowledge/``/``wisdom/``
+    # trees. The fix is opt-in (propose/apply), so an un-applied issue is just a
+    # warning.
+    tracked = {normalize_path(d.path) for d in page_docs}
+    exts = supported_extensions()
+    for layer_name in ("knowledge", "wisdom"):
+        layer_dir = root_resolved / layer_name
+        if not layer_dir.is_dir():
+            continue
+        for abs_file in sorted(layer_dir.rglob("*")):
+            if not abs_file.is_file() or abs_file.suffix.lower() not in exts:
+                continue
+            # In-tree symlink / junction whose target escapes the base —
+            # skip (mirrors ``iter_source_files``); reads stay under the tree.
+            if not abs_file.resolve().is_relative_to(root_resolved):
+                continue
+            rel = abs_file.relative_to(root_resolved)
+            # Dot-prefixed component (``.obsidian/``, editor swap dirs) — not
+            # part of the managed knowledge/wisdom content.
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            rel_str = str(rel).replace("\\", "/")
+            if normalize_path(rel_str) in tracked:
+                continue
+            issues.append(
+                LintIssue(
+                    kind="untracked_file",
+                    path=rel_str,
+                    detail=(
+                        "markdown file on disk has no active document row — "
+                        "index it (hand-written or restored outside dikw)"
+                    ),
+                )
+            )
 
     return LintReport(
         issues=issues,

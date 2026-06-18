@@ -39,8 +39,9 @@ from pydantic import BaseModel, Field
 
 from ...config import DikwConfig
 from ...providers.base import EmbeddingProvider, LLMProvider
-from ...schemas import Layer
+from ...schemas import KnowledgePersistResult, Layer, WisdomPersistResult
 from ...storage.base import Storage
+from ..data.backends import parse_any
 from ..data.hashing import hash_bytes, hash_file
 from ..data.path_norm import doc_id_for
 from ..info.tokenize import CjkTokenizer
@@ -111,16 +112,21 @@ class FixOperation(BaseModel):
         "delete_page",
         "reconcile_provenance",
         "purge_document",
+        "reindex_page",
     ]
     path: str
     new_frontmatter: dict[str, Any] | None = None
     new_body: str | None = None
     expected_hash: str | None = None
-    # Carrier for ``purge_document`` only (the ``missing_file`` fixer): the
-    # DIKW layer of the orphaned row, so apply can derive its ``doc_id`` via
-    # ``doc_id_for(layer, path)`` without a K-only path→doc_id map. The file
-    # is already gone, so there is no ``expected_hash`` to stamp — the op's
-    # safety invariant is "the file is still absent", re-checked at apply.
+    # Carrier for ``purge_document`` (missing_file) and ``reindex_page``
+    # (stale_index / untracked_file): the DIKW layer of the row, so apply can
+    # derive its ``doc_id`` via ``doc_id_for(layer, path)`` and dispatch
+    # ``persist_knowledge`` vs ``persist_wisdom`` without a K-only path→doc_id
+    # map. Neither op carries ``expected_hash``: ``purge_document``'s file is
+    # already gone (invariant: "still absent"); ``reindex_page`` re-projects
+    # whatever bytes are *currently* on disk (re-projecting newer bytes is
+    # still "make the DB match disk", so an intervening edit is harmless — the
+    # invariant is "file still present", re-checked at apply).
     layer: Layer | None = None
     # Carrier for ``reconcile_provenance`` only: the snapshot of
     # frontmatter ``sources:`` the fixer observed. Apply passes this
@@ -167,6 +173,13 @@ class ApplyReport(BaseModel):
     # touches no file, and spans D/K/W, so a ``sources/`` purge would not fit
     # the K-named "paths changed" channel.
     purged_documents: list[str] = Field(default_factory=list)
+    # Paths re-projected by a ``reindex_page`` op (the ``stale_index`` /
+    # ``untracked_file`` fixer): the on-disk bytes were re-indexed into storage
+    # (re-chunk / re-link / re-provenance / inline-or-deferred embed) WITHOUT
+    # rewriting the file. Distinct from ``knowledge_paths_changed`` (the fix
+    # edits no file, and spans K + W). A page that failed its Phase-1 persist
+    # is excluded here and surfaced via ``persist_errors`` instead.
+    reindexed_documents: list[str] = Field(default_factory=list)
     # Chunks embedded inline as part of this apply pass (0.4.0+). When
     # the caller wires an ``embedder`` + ``text_version_id``, Phase 1
     # re-chunks every changed page through ``persist_knowledge`` with
@@ -558,6 +571,97 @@ def _build_page_from_op(op: FixOperation) -> KnowledgePage:
     return dataclasses.replace(page, **overrides) if overrides else page
 
 
+async def _persist_changed_page(
+    *,
+    storage: Storage,
+    base_root: Path,
+    path: str,
+    layer: Layer,
+    embedder: EmbeddingProvider | None,
+    embedding_model: str,
+    text_version_id: int | None,
+    cjk_tokenizer: CjkTokenizer,
+    title_to_path: dict[str, str] | None,
+    fuzzy_index: dict[str, list[str]] | None,
+    retries: int,
+    backoff_seconds: float,
+    persist_errors: list[dict[str, Any]],
+    persist_failed_paths: set[str],
+) -> tuple[int, int]:
+    """Persist one changed (Phase 1 create/update) or reindexed K/W page with
+    the deactivate-on-hard-failure guard. Returns ``(chunks_embedded,
+    chunks_pending)``.
+
+    ``layer`` dispatches ``persist_knowledge`` (K) vs ``persist_wisdom`` (W).
+    A hard persist failure leaves the doc row + chunks committed but
+    links/provenance unreconciled, so deactivate (``documents.active`` is the
+    commit marker — hide the half-written page from retrieval + read_page),
+    record it in ``persist_errors`` + ``persist_failed_paths``, and return
+    ``(0, 0)`` so the caller continues with the remaining pages — parity with
+    the synth path and D/W. A transient embed retry-skip does NOT raise (it
+    returns chunks_pending), so the page stays active and the next ingest's
+    resume scan embeds it. ``CancelledError`` (a ``BaseException`` the
+    ``except Exception`` arm misses) is re-raised after deactivating so a
+    cancel mid-persist can't strand a half-written active row.
+
+    Recovery note: a deactivated page is surfaced in
+    ``ApplyReport.persist_errors``. We deliberately do NOT write a
+    ``synth_source_failed`` marker — a lint fix / reindex is not reproducible
+    by re-synthesis (synth regenerates from the D-source WITHOUT the on-disk
+    edit), so auto-routing recovery through default ``synth`` would silently
+    drop the user's hand-edit. The on-disk file keeps its bytes; recovery is
+    re-running the same ``lint apply`` (or ``synth --all`` for a synth page,
+    losing the edit).
+    """
+    page_doc_id = doc_id_for(layer, path)
+    try:
+        result: KnowledgePersistResult | WisdomPersistResult
+        if layer is Layer.WISDOM:
+            # Local import: ``domains.wisdom.persist`` imports
+            # ``domains.knowledge.page_index`` (the shared layered impl), so a
+            # top-level import here would risk a knowledge↔wisdom cycle.
+            from ..wisdom.persist import persist_wisdom
+
+            result = await persist_wisdom(
+                storage=storage,
+                root=base_root,
+                path=path,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                text_version_id=text_version_id,
+                cjk_tokenizer=cjk_tokenizer,
+                title_to_path=title_to_path,
+                fuzzy_index=fuzzy_index,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
+            )
+        else:
+            result = await persist_knowledge(
+                storage=storage,
+                root=base_root,
+                path=path,
+                embedder=embedder,
+                embedding_model=embedding_model,
+                text_version_id=text_version_id,
+                cjk_tokenizer=cjk_tokenizer,
+                title_to_path=title_to_path,
+                fuzzy_index=fuzzy_index,
+                retries=retries,
+                backoff_seconds=backoff_seconds,
+            )
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await storage.deactivate_document(page_doc_id)
+        raise
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            await storage.deactivate_document(page_doc_id)
+        persist_errors.append({"path": path, "message": f"{type(e).__name__}: {e}"})
+        persist_failed_paths.add(path)
+        return (0, 0)
+    return (result.chunks_embedded, result.chunks_pending_embedding)
+
+
 async def run_lint_apply(
     *,
     proposal_report: FixProposalReport,
@@ -591,11 +695,17 @@ async def run_lint_apply(
     """
     proposals = _filter_proposals(proposal_report.proposals, pick=pick, skip=skip)
 
-    # Pre-load K-layer doc rows for path→doc_id and title→path resolution.
+    # Pre-load K-layer doc rows for path→doc_id (Phase 2 referrers + delete_page
+    # are K-scoped). The title→path resolver, by contrast, is CROSS-LAYER (K + W):
+    # a K page may ``[[wikilink]]`` a W page and vice versa, exactly as
+    # ``_persist_layered_page``'s own rebuild-from-storage does. First-wins,
+    # K precedence (same policy the create/update path already used; collision
+    # surfacing is the ``duplicate_title`` lint's job, not apply's).
     docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=True))
     path_to_doc_id: dict[str, str] = {d.path: d.doc_id for d in docs}
+    wisdom_docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
     title_to_path: dict[str, str] = {}
-    for d in docs:
+    for d in (*docs, *wisdom_docs):  # K first → K-precedence on a title collision
         if d.title and d.title not in title_to_path:
             title_to_path[d.title] = d.path
 
@@ -613,6 +723,13 @@ async def run_lint_apply(
     # because a purge touches no file and writes no Phase-1/Phase-2 work; it
     # only needs to surface in ``ApplyReport.purged_documents``.
     purged_paths: set[str] = set()
+    # (path, layer) pairs to re-project in Phase 1 (``reindex_page`` /
+    # stale_index + untracked_file). Carries the layer so Phase 1 dispatches
+    # persist_knowledge (K) vs persist_wisdom (W); the file is NOT rewritten
+    # (disk is authoritative). ``reindexed_paths`` collects the successes for
+    # the report (failures land in ``persist_errors`` instead).
+    reindex_targets: list[tuple[str, Layer]] = []
+    reindexed_paths: set[str] = set()
     # Every path mutated by an in-pass op (whether write or delete) so
     # subsequent ops on the same path can't silently revert each other.
     # Each ``new_body`` was generated against the pre-apply tree;
@@ -721,6 +838,16 @@ async def run_lint_apply(
                     # on the same path; ``purged_paths`` feeds the report.
                     touched_paths.add(op.path)
                     purged_paths.add(op.path)
+                elif op.kind == "reindex_page":
+                    # No file write — the on-disk bytes are re-projected into
+                    # storage in Phase 1 (which wires the embedder +
+                    # deactivate-on-failure). Mark touched so a sibling op on
+                    # the same path can't also act; queue (path, layer) for the
+                    # Phase-1 reindex loop. ``_apply_one_op`` already verified
+                    # ``op.layer`` is set (the ``if`` narrows it for mypy).
+                    touched_paths.add(op.path)
+                    if op.layer is not None:
+                        reindex_targets.append((op.path, op.layer))
                 elif op.kind == "reconcile_provenance":
                     # No file change → no Phase 1 ``persist_knowledge``
                     # re-chunk needed, no ``knowledge_paths_changed`` entry,
@@ -775,6 +902,28 @@ async def run_lint_apply(
         if op_title not in title_to_path:
             title_to_path[op_title] = op.path
 
+    # Phase 0 (reindex leg): pre-seed reindexed pages' titles too. A
+    # reindex_page op carries no ``new_frontmatter``, and its storage row may
+    # not exist yet when a sibling persists (Phase 1b upserts serially), so a
+    # same-batch referrer — another reindex page, OR a create/update page (a
+    # broken_wikilink fix) — would resolve a ``[[wikilink]]`` to that page as
+    # *nothing* and silently drop the edge. Worse, the drop never self-heals:
+    # Phase 2 excludes reindex paths, the next ``run_lint`` re-derives the link
+    # live (so no ``broken_wikilink``) yet still sees the missing stored edge as
+    # a false ``orphan_page`` on the target (which a destructive orphan_page fix
+    # could then act on). Read the current on-disk title (frontmatter/H1) — the
+    # re-projection uses the current bytes, so the live title is authoritative.
+    for reindex_path, _reindex_layer in reindex_targets:
+        abs_reindex = (base_root / reindex_path).resolve()
+        if not abs_reindex.is_file():
+            continue
+        try:
+            reindex_title = parse_any(abs_reindex, rel_path=reindex_path).title
+        except Exception:
+            continue
+        if reindex_title and reindex_title not in title_to_path:
+            title_to_path[reindex_title] = reindex_path
+
     # Build the companion fuzzy index alongside ``title_to_path``.
     # Without it, persist_knowledge / resolve_links degrade to
     # exact-match only — fuzzy-resolvable links like ``[[Neural
@@ -791,70 +940,74 @@ async def run_lint_apply(
     # an embedder is configured) embed rebuilt chunks inline. The
     # caller decides whether to wire the embedder; without one,
     # ``persist_knowledge`` leaves chunks pending and the next ``dikw
-    # ingest``'s missing-embedding resume scan picks them up.
+    # ingest``'s missing-embedding resume scan picks them up. The
+    # deactivate-on-hard-failure guard (``documents.active`` is the commit
+    # marker) lives in ``_persist_changed_page``, shared with the reindex pass.
+    # A page dropped here lands in ``persist_errors`` and is excluded from
+    # ``knowledge_paths_changed`` below so the report never claims a
+    # now-inactive page as a live change (mirrors synth's created/updated
+    # counters). create_page / update_page are always K-layer.
     chunks_embedded_total = 0
     chunks_pending_total = 0
     for path in sorted(paths_changed):
         if not (base_root / path).resolve().is_file():
             continue
-        page_doc_id = doc_id_for(Layer.KNOWLEDGE, path)
-        try:
-            result = await persist_knowledge(
-                storage=storage,
-                root=base_root,
-                path=path,
-                embedder=embedder,
-                embedding_model=embedding_model,
-                text_version_id=text_version_id,
-                cjk_tokenizer=cjk_tokenizer,
-                title_to_path=title_to_path,
-                fuzzy_index=fuzzy_index,
-                retries=embedding_error_retries,
-                backoff_seconds=embedding_error_retry_backoff_seconds,
-            )
-        except asyncio.CancelledError:
-            # CancelledError inherits from BaseException, so the
-            # ``except Exception`` below misses it. Deactivate the in-flight
-            # page so cancellation doesn't strand a half-written-but-active
-            # doc, then re-raise to abort the apply.
-            with contextlib.suppress(Exception):
-                await storage.deactivate_document(page_doc_id)
-            raise
-        except Exception as e:
-            # A hard persist failure leaves the doc row + chunks committed
-            # but links/provenance unreconciled. Deactivate so the
-            # half-written page is hidden from retrieval + read_page, record
-            # it, and continue with the remaining changed pages — parity
-            # with the synth path and D/W. A transient embed retry-skip does
-            # NOT reach here (it returns chunks_pending without raising).
-            # The path is also dropped from ``knowledge_paths_changed`` below
-            # (it is reported via ``persist_errors`` instead) so the report
-            # doesn't claim a now-inactive page as a live change — mirroring
-            # synth, whose created/updated counters exclude failed pages.
-            #
-            # Recovery note: the deactivated page is surfaced in
-            # ``ApplyReport.persist_errors``. We deliberately do NOT write a
-            # ``synth_source_failed`` marker for the page's sources here (the
-            # way the synth path invalidates its own done markers): a lint fix
-            # is not reproducible by re-synthesis — synth regenerates the page
-            # from the D-source WITHOUT the lint edit — so auto-routing
-            # recovery through default ``synth`` would silently drop the
-            # user's fix. The on-disk file keeps the fix; recovery is
-            # ``synth --all`` (regenerates, fix lost) or the future
-            # ``dikw client reindex`` (re-persists the file as-is, fix
-            # preserved) — the same K "no scan-based reindex" limitation
-            # documented in CLAUDE.md. Deactivating is still strictly better
-            # than the prior behaviour (an active, retrievable, half-written
-            # page that leaks into retrieval).
-            with contextlib.suppress(Exception):
-                await storage.deactivate_document(page_doc_id)
-            persist_errors.append(
-                {"path": path, "message": f"{type(e).__name__}: {e}"}
-            )
-            persist_failed_paths.add(path)
+        embedded, pending = await _persist_changed_page(
+            storage=storage,
+            base_root=base_root,
+            path=path,
+            layer=Layer.KNOWLEDGE,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            cjk_tokenizer=cjk_tokenizer,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+            retries=embedding_error_retries,
+            backoff_seconds=embedding_error_retry_backoff_seconds,
+            persist_errors=persist_errors,
+            persist_failed_paths=persist_failed_paths,
+        )
+        chunks_embedded_total += embedded
+        chunks_pending_total += pending
+
+    # Phase 1b: re-project reindexed pages (``stale_index`` / ``untracked_file``).
+    # Same persist machinery, dispatched K vs W by the op's layer. The on-disk
+    # bytes are the source of truth — nothing was written to the file, so we
+    # just index whatever is there now. We pass the SAME cross-layer resolver
+    # the create/update leg uses (built K+W above and pre-seeded in Phase 0 with
+    # every create/update AND reindex page's title), NOT ``title_to_path=None``:
+    # a None would make ``_persist_layered_page`` rebuild from storage, which —
+    # because reindex rows are upserted serially here — would miss a sibling
+    # reindex/create page whose row hasn't landed yet and silently drop the
+    # outgoing edge. With the pre-seeded index, ``replace_links_from`` writes the
+    # edge by path even before the target row exists. Run after Phase 1 so a
+    # reindexed page that links to a just-created page resolves too.
+    for path, layer in sorted(reindex_targets):
+        if not (base_root / path).resolve().is_file():
+            # File vanished between op apply and here — leave the row (if any)
+            # for the next lint to surface as ``missing_file``.
             continue
-        chunks_embedded_total += result.chunks_embedded
-        chunks_pending_total += result.chunks_pending_embedding
+        embedded, pending = await _persist_changed_page(
+            storage=storage,
+            base_root=base_root,
+            path=path,
+            layer=layer,
+            embedder=embedder,
+            embedding_model=embedding_model,
+            text_version_id=text_version_id,
+            cjk_tokenizer=cjk_tokenizer,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
+            retries=embedding_error_retries,
+            backoff_seconds=embedding_error_retry_backoff_seconds,
+            persist_errors=persist_errors,
+            persist_failed_paths=persist_failed_paths,
+        )
+        chunks_embedded_total += embedded
+        chunks_pending_total += pending
+        if path not in persist_failed_paths:
+            reindexed_paths.add(path)
 
     # Phase 2: re-reconcile referrers — every proposal's ``issue.path``
     # whose body references a page this batch may have just created.
@@ -867,9 +1020,14 @@ async def run_lint_apply(
     # row touch — those would invalidate chunk_ids and orphan
     # embeddings). Skip referrers already covered by phase 1 or
     # deleted by this pass.
-    referrer_paths = {
-        proposal.issue_path for proposal in proposals
-    } - paths_changed - deleted_paths - purged_paths
+    reindex_paths_all = {p for p, _ in reindex_targets}
+    referrer_paths = (
+        {proposal.issue_path for proposal in proposals}
+        - paths_changed
+        - deleted_paths
+        - purged_paths
+        - reindex_paths_all
+    )
     for path in sorted(referrer_paths):
         abs_path = (base_root / path).resolve()
         if not abs_path.is_file():
@@ -895,6 +1053,7 @@ async def run_lint_apply(
             (paths_changed - persist_failed_paths) | deleted_paths
         ),
         purged_documents=sorted(purged_paths),
+        reindexed_documents=sorted(reindexed_paths),
         chunks_embedded=chunks_embedded_total,
         chunks_pending_embedding=chunks_pending_total,
     )
@@ -1013,6 +1172,34 @@ def _preflight_proposal(
                 return f"purge_document target reappeared on disk: {op.path!r}"
             continue
 
+        # ``reindex_page`` (stale_index / untracked_file) also bypasses the
+        # knowledge/ sandbox (W is under wisdom/). Inverse of purge: the file
+        # must still be PRESENT (it's the bytes being re-projected), the layer
+        # must be set, and the path must live in its layer's tree. No
+        # expected_hash gate — re-projecting whatever's on disk is always safe.
+        if op.kind == "reindex_page":
+            if op.path in already_touched:
+                return (
+                    f"op {op.kind} on {op.path!r} would conflict with a "
+                    "sibling proposal that already mutated this path"
+                )
+            if op.layer not in (Layer.KNOWLEDGE, Layer.WISDOM):
+                return (
+                    f"reindex_page on {op.path!r} layer must be "
+                    f"knowledge/wisdom, got {op.layer!r}"
+                )
+            if not abs_path.is_file():
+                return f"reindex_page target absent on disk: {op.path!r}"
+            layer_dir = (base_root / op.layer.value).resolve()
+            try:
+                abs_path.relative_to(layer_dir)
+            except ValueError:
+                return (
+                    f"reindex_page path is outside the {op.layer.value}/ "
+                    f"tree: {op.path!r}"
+                )
+            continue
+
         try:
             abs_path.relative_to(knowledge_dir)
         except ValueError:
@@ -1102,13 +1289,51 @@ async def _apply_one_op(
         await storage.delete_document(purge_doc_id)
         return None
 
+    # ``reindex_page`` (stale_index / untracked_file fixer) handled next: it
+    # spans K + W (W is under wisdom/, outside the knowledge/ sandbox below)
+    # and re-projects the on-disk bytes into storage WITHOUT mutating the file.
+    # This branch only validates; the actual persist runs in Phase 1 (which
+    # wires the embedder + the deactivate-on-failure guard). Safety: the layer
+    # must be present, the file must still exist (else leave the row for
+    # ``missing_file``, or drop the untracked candidate), and the path must
+    # live in its own layer's tree (defense in depth — a malformed / persisted
+    # proposal must not index a file from outside the K/W tree it claims).
+    if op.kind == "reindex_page":
+        # Reindex is K/W only — D adds/edits are ingest's job. Reject any other
+        # layer (incl. None / a malformed or hand-crafted persisted proposal
+        # carrying SOURCE) BEFORE Phase 1b dispatches it, so it can't hit the
+        # wrong persist pipeline (`persist_knowledge` vs `persist_wisdom`) or
+        # deactivate the wrong doc_id on failure.
+        if op.layer not in (Layer.KNOWLEDGE, Layer.WISDOM):
+            return _skip(
+                proposal_id, op,
+                f"reindex_page op layer must be knowledge/wisdom, got {op.layer!r}",
+            )
+        if not abs_path.is_file():
+            return _skip(
+                proposal_id, op,
+                "file is absent on disk since scan — nothing to re-project "
+                "(re-run lint propose)",
+            )
+        layer_dir = (base_root / op.layer.value).resolve()
+        try:
+            abs_path.relative_to(layer_dir)
+        except ValueError:
+            return _skip(
+                proposal_id, op,
+                f"refusing to reindex outside the {op.layer.value}/ tree: "
+                f"{op.path!r}",
+            )
+        return None
+
     # Sandbox: confine page-mutating ops to ``<base>/knowledge/``, not the
     # whole base. These ops' contract is K-layer mutation only — a malformed
     # proposal with a base-relative path like ``sources/foo.md`` or
     # ``knowledge/../dikw.yml`` would resolve inside the base root and pass a
     # wider check, but those targets are outside the K-layer tree we're
-    # authorised to mutate. (``purge_document`` is exempt — handled above — it
-    # spans D/K/W and writes no file, only removing a row by doc_id.)
+    # authorised to mutate. (``purge_document`` and ``reindex_page`` are exempt
+    # — handled above — they span D/K/W or K/W and either remove a row by
+    # doc_id or re-project an existing file, each enforcing its own tree guard.)
     knowledge_dir = (base_root / "knowledge").resolve()
     try:
         abs_path.relative_to(knowledge_dir)

@@ -40,8 +40,10 @@ edges; `broken_wikilink` / `orphan_page` / `missing_provenance`
 lint scans both K + W layers, crediting cross-layer wikilinks in
 the orphan inbound counter so a knowledge page cited only from
 wisdom is not falsely flagged. Hand-edits to wisdom files in
-Obsidian are NOT auto-reindexed — re-run `dikw client wisdom
-write` with the edited body. See
+Obsidian are not auto-reindexed *live*, but the `stale_index`
+drift lint (ADR-0005) detects them — `dikw client lint apply`
+re-projects the edited bytes (or re-run `dikw client wisdom
+write`). See
 `docs/adr/0002-wisdom-as-first-class-documents.md` for the
 rationale. dikw-core does not perform answer synthesis —
 `retrieve` returns ranked chunks + page refs and the agent layer
@@ -91,9 +93,9 @@ src/dikw_core/
 │   │   ├── page_index.py    persist_knowledge — K-layer write entry (synth + lint apply); also defines the private _persist_layered_page shared with W
 │   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
-│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, non-atomic pages, missing_provenance, invalid_wisdom_status, uncategorized, title_slug_quality, missing_file (D/K/W orphaned-row drift); lint.skip frontmatter suppression
-│   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance op)
-│   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic), missing_file (deterministic — purge orphaned row, D/K/W)
+│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, non-atomic pages, missing_provenance, invalid_wisdom_status, uncategorized, title_slug_quality, missing_file (D/K/W orphaned-row drift), stale_index + untracked_file (K/W disk↔index drift); lint.skip frontmatter suppression
+│   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance + purge_document + reindex_page ops)
+│   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic), missing_file (deterministic — purge orphaned row, D/K/W), reindex (deterministic — re-project on-disk bytes for stale_index + untracked_file, K/W)
 │   ├── wisdom/
 │   │   ├── page.py          author_from_path — wisdom/<author>/<slug>.md attribution
 │   │   └── persist.py       persist_wisdom — W-layer write entry (sole engine caller: api.write_wisdom_page)
@@ -188,13 +190,17 @@ a half-written `active=True` row either. A transient embed skip is *not* a failu
 `active=True` with `chunks_pending_embedding > 0` for the resume scan.
 Recovery is layer-specific: D re-activates on the next ingest (it
 re-scans `sources/` and the early-skip arm falls through for
-`active=False` rows); K has no scan-based reindex, so when a page failed
-synth writes a `synth_source_failed` knowledge_log marker that invalidates
-any prior `synth_source_done` for that source (done/failed markers apply in
-`ts ASC, id ASC` log order, last-writer-wins — so even a `synth --all`
-re-synth that fails doesn't strand the page), letting the next default
-`synth` re-process and rebuild it. Synth surfaces failed
-pages as `SynthReport.persist_errors`; lint apply as
+`active=False` rows); K and W now have a scan-based reindex too — a
+deactivated page's file is still on disk with no *active* row, so the
+next default `lint` flags it `untracked_file` (or `stale_index` if a
+stale active row lingers) and `lint apply` re-projects the on-disk bytes,
+re-activating it without re-running synth (ADR-0005). For a synth page,
+synth *additionally* writes a `synth_source_failed` knowledge_log marker
+that invalidates any prior `synth_source_done` for that source (done/failed
+markers apply in `ts ASC, id ASC` log order, last-writer-wins — so even a
+`synth --all` re-synth that fails doesn't strand the page), letting the
+next default `synth` re-process and rebuild it from the D-source. Synth
+surfaces failed pages as `SynthReport.persist_errors`; lint apply as
 `ApplyReport.persist_errors`.
 
 **FTS is always synchronous.** `replace_chunks` writes the FTS index
@@ -204,13 +210,17 @@ table (rowid aligns with `chunks.chunk_id`); Postgres populates
 `chunks.fts tsvector` via the Python adapter at INSERT. CJK
 preprocessing (jieba) happens before the SQL call on both adapters.
 
-**Known limitation.** Hand-edits to K or W files in Obsidian have
-**no reindex entry**: the engine doesn't watch the filesystem, and
-`ingest` only scans `<base>/sources/`. To refresh storage after a
-hand-edit, re-write the page through the layer's write entry
-(`dikw client wisdom write` for W; for K the user re-runs `synth` or
-`lint apply` against the file). A future `dikw client reindex <path>`
-will close this gap.
+**Reconciling hand-edits.** Hand-edits to K or W files in Obsidian, and
+hand-written new pages dropped under `knowledge/`/`wisdom/`, are reconciled
+by the `stale_index` / `untracked_file` drift lint kinds (ADR-0005): default
+`lint` detects them and `dikw client lint propose --rule stale_index` (or
+`untracked_file`) → `lint apply` re-projects the on-disk bytes into storage
+(re-chunk / re-link / re-provenance / inline-or-deferred embed) **without
+rewriting the file or re-running synth** — so the hand-edit is preserved, not
+regenerated from the D-source. The engine still doesn't *watch* the
+filesystem (and `ingest` still only scans `<base>/sources/`), so
+reconciliation happens on the next `lint` run, not live. This supersedes the
+never-built `dikw client reindex <path>`.
 
 ## Seams on purpose
 
