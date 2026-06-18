@@ -380,6 +380,17 @@ async def run_lint(
             )
         )
 
+    # Normalized keys of active SOURCE docs whose backing file is present on
+    # disk (``missing_file`` above already determined existence — reuse it, no
+    # extra stat). ``dangling_provenance`` consults this so a cited source whose
+    # frontmatter spelling drifts from the on-disk spelling only by case /
+    # Unicode form (on a case-sensitive filesystem) is still treated as present:
+    # the engine's source identity is the normalized path key, the same key
+    # ``read_provenance`` resolves through, so the two surfaces agree.
+    present_source_keys = {
+        normalize_path(d.path) for d in source_docs if d.path not in missing_paths
+    }
+
     # Every other K/W check runs over the *live* page set — pages whose file is
     # gone are excluded so they don't double-surface as orphan/duplicate/etc.
     # Sorted by path so the per-doc kinds emitted inside the main loop
@@ -548,13 +559,21 @@ async def run_lint(
                 # for bases with a non-default source dir, where requiring a
                 # ``sources/`` prefix would wrongly flag every edge.)
                 #
+                # A source counts as present (NOT dangling) when EITHER a file
+                # exists at its path on disk OR its normalized key matches an
+                # active source doc with a live file (``present_source_keys``).
+                # The direct stat catches a not-yet-ingested source (no row);
+                # the key match catches case / Unicode-form drift between the
+                # frontmatter spelling and the on-disk spelling on a
+                # case-sensitive filesystem (where the raw stat would miss).
+                #
                 # The raw ``source_path`` is normalized to forward slashes
-                # before the join so a hand-edited Windows-style ``sources\foo``
-                # entry resolves the same on every platform (matching the
-                # ``untracked_file`` pass and D-layer ``doc.path``); without it
-                # the same base would lint clean on Windows but dirty on Linux.
-                # An edge whose normalized path escapes the base can never
-                # resolve to an in-base source, so it's dangling and the
+                # before the join + key so a hand-edited Windows-style
+                # ``sources\foo`` entry resolves the same on every platform
+                # (matching the ``untracked_file`` pass and D-layer ``doc.path``);
+                # without it the same base would lint clean on Windows but dirty
+                # on Linux. An edge whose normalized path escapes the base can
+                # never resolve to an in-base source, so it's dangling and the
                 # escaping target's content is never ``is_file``-stat-ed (the
                 # containment check short-circuits). Sorted by normalized key so
                 # a multi-source page emits deterministically (``lint propose
@@ -564,10 +583,10 @@ async def run_lint(
                 ):
                     rel_src = e.source_path.replace("\\", "/")
                     abs_src = (root_resolved / rel_src).resolve()
-                    if (
-                        abs_src.is_relative_to(root_resolved)
-                        and abs_src.is_file()
-                    ):
+                    present = (
+                        abs_src.is_relative_to(root_resolved) and abs_src.is_file()
+                    ) or normalize_path(rel_src) in present_source_keys
+                    if present:
                         continue
                     issues.append(
                         LintIssue(

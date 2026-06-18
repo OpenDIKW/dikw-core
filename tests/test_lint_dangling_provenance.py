@@ -175,6 +175,34 @@ async def test_dangling_provenance_no_false_positive_when_unindexed_source(
 
 
 @pytest.mark.asyncio
+async def test_dangling_provenance_clean_when_source_case_form_drifts(
+    base_root: Path,
+) -> None:
+    """A cited source whose on-disk spelling differs from the frontmatter only
+    by case / Unicode form is NOT dangling — the engine's source identity is
+    the normalized path key (the key ``read_provenance`` resolves through), and
+    the detector matches an active source doc via that key. Pins the no-false-
+    positive contract on a case-sensitive filesystem (Codex review P2)."""
+    page = "knowledge/concepts/topic.md"
+    # On-disk source spelled with capitals; provenance cites the lowercase form.
+    await seed_doc(
+        base_root, layer=Layer.SOURCE, path="sources/Foo.md",
+        body="# Foo\n\nsource body\n", title="Foo",
+    )
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=page,
+        body="# Topic\n\nbody\n", title="Topic",
+    )
+    await _seed_provenance(
+        base_root, doc_id=doc_id_for(Layer.KNOWLEDGE, page),
+        source_paths=["sources/foo.md"],
+    )
+
+    report = await _run_lint(base_root)
+    assert not [i for i in report.issues if i.kind == "dangling_provenance"]
+
+
+@pytest.mark.asyncio
 async def test_dangling_provenance_suppressed_by_lint_skip(base_root: Path) -> None:
     """``lint: {skip: [dangling_provenance]}`` in frontmatter suppresses it —
     the page file exists so it can carry the annotation (unlike missing_file /
@@ -384,6 +412,36 @@ async def test_dangling_provenance_cofires_with_missing_provenance(
     dangling = [i for i in report.issues if i.kind == "dangling_provenance"]
     assert len(dangling) == 1
     assert "sources/old.md" in dangling[0].detail
+
+
+@pytest.mark.asyncio
+async def test_dangling_provenance_cofires_with_missing_file(base_root: Path) -> None:
+    """A deleted source whose D row is still active (``missing_file`` not yet
+    applied) surfaces under BOTH kinds for the same root cause — ``missing_file``
+    on the source row (purge it) AND ``dangling_provenance`` on the citing page
+    (edit the frontmatter). Neither suppresses the other; disk authority, not
+    the lingering row, decides dangling."""
+    src = "sources/foo.md"
+    page = "knowledge/concepts/topic.md"
+    await seed_doc(
+        base_root, layer=Layer.SOURCE, path=src, body="# Foo\n\nbody\n", title="Foo",
+    )
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=page,
+        body="---\nsources:\n  - sources/foo.md\n---\n# Topic\n\nbody\n",
+        title="Topic",
+    )
+    await _seed_provenance(
+        base_root, doc_id=doc_id_for(Layer.KNOWLEDGE, page), source_paths=[src],
+    )
+    # Delete the source file but leave its (now-stale) active D row in place.
+    (base_root / src).unlink()
+
+    report = await _run_lint(base_root)
+    assert any(i.kind == "missing_file" and i.path == src for i in report.issues)
+    assert any(
+        i.kind == "dangling_provenance" and i.path == page for i in report.issues
+    )
 
 
 # ---- No fixer (read-only kind) -------------------------------------------
