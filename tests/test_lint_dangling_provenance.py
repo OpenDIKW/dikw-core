@@ -243,35 +243,69 @@ async def test_dangling_provenance_partial_some_present(base_root: Path) -> None
 
     report = await _run_lint(base_root)
     dangling = [i for i in report.issues if i.kind == "dangling_provenance"]
+    # Exactly the gone source is flagged; the present one produces no issue at
+    # all (count pins it) and its path appears in no dangling detail.
     assert len(dangling) == 1
+    assert dangling[0].path == page
     assert "sources/gone.md" in dangling[0].detail
-    assert "here.md" not in dangling[0].detail
+    assert all("here.md" not in i.detail for i in dangling)
 
 
+@pytest.mark.parametrize("escaping", ["../outside.md", "/etc/passwd"])
 @pytest.mark.asyncio
-async def test_dangling_provenance_out_of_base_path_is_dangling(base_root: Path) -> None:
+async def test_dangling_provenance_out_of_base_path_is_dangling(
+    base_root: Path, escaping: str
+) -> None:
     """A provenance edge whose path escapes the base (absolute or ``../``)
-    can never resolve to an in-base source → dangling. The detector must not
-    stat (or read) the out-of-base file; an escaping path is dangling
-    regardless of whether something exists there."""
+    can never resolve to an in-base source → dangling. The escaping target's
+    *content* is never ``is_file``-stat-ed (containment short-circuits); an
+    escaping path is dangling regardless of whether something exists there."""
     page = "knowledge/concepts/topic.md"
     await seed_doc(
         base_root, layer=Layer.KNOWLEDGE, path=page,
-        body="---\nsources:\n  - ../outside.md\n---\n# Topic\n\nbody\n",
+        body=f"---\nsources:\n  - {escaping}\n---\n# Topic\n\nbody\n",
         title="Topic",
     )
-    # Create the escaping target so a naive ``is_file`` (without containment)
-    # would wrongly call it present.
-    (base_root.parent / "outside.md").write_text("x\n", encoding="utf-8")
+    # Create the relative-escape target so a naive ``is_file`` (without
+    # containment) would wrongly call it present. (The absolute /etc/passwd
+    # case relies on the existing system file but is still rejected by
+    # containment, not by absence.)
+    if escaping == "../outside.md":
+        (base_root.parent / "outside.md").write_text("x\n", encoding="utf-8")
     await _seed_provenance(
         base_root, doc_id=doc_id_for(Layer.KNOWLEDGE, page),
-        source_paths=["../outside.md"],
+        source_paths=[escaping],
     )
 
     report = await _run_lint(base_root)
     assert any(
         i.kind == "dangling_provenance" and i.path == page for i in report.issues
     )
+
+
+@pytest.mark.asyncio
+async def test_dangling_provenance_normalizes_backslash_separators(
+    base_root: Path,
+) -> None:
+    """A Windows-style backslash-spelled source entry whose real file exists at
+    the forward-slash path is NOT dangling — the detector normalizes separators
+    before the disk join, so the verdict is identical on every platform (no
+    Windows-clean / Linux-dirty divergence)."""
+    page = "knowledge/concepts/topic.md"
+    (base_root / "sources").mkdir(parents=True, exist_ok=True)
+    (base_root / "sources/foo.md").write_text("# Foo\n\nbody\n", encoding="utf-8")
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=page,
+        body="# Topic\n\nbody\n", title="Topic",
+    )
+    # Raw frontmatter spelling uses a backslash; the file is at sources/foo.md.
+    await _seed_provenance(
+        base_root, doc_id=doc_id_for(Layer.KNOWLEDGE, page),
+        source_paths=["sources\\foo.md"],
+    )
+
+    report = await _run_lint(base_root)
+    assert not [i for i in report.issues if i.kind == "dangling_provenance"]
 
 
 @pytest.mark.asyncio
@@ -300,6 +334,56 @@ async def test_dangling_provenance_independent_of_missing_provenance_skip(
     report = await _run_lint(base_root)
     assert any(i.kind == "dangling_provenance" for i in report.issues)
     assert not any(i.kind == "missing_provenance" for i in report.issues)
+
+
+@pytest.mark.asyncio
+async def test_dangling_provenance_silent_when_table_unreconciled(
+    base_root: Path,
+) -> None:
+    """``dangling_provenance`` keys on the provenance *table* (the reconciled
+    edge), not the raw frontmatter list. A page that cites a gone source but
+    whose table is empty (a legacy / never-reconciled base) surfaces as
+    ``missing_provenance`` first — NOT ``dangling_provenance``. Pins the
+    documented precondition (reconcile, then the edge lands in the dangling
+    pass) and the no-mask boundary."""
+    page = "knowledge/concepts/topic.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=page,
+        body="---\nsources:\n  - sources/gone.md\n---\n# Topic\n\nbody\n",
+        title="Topic",
+    )
+    # Deliberately NO _seed_provenance → the provenance table is empty.
+
+    report = await _run_lint(base_root)
+    assert any(i.kind == "missing_provenance" for i in report.issues)
+    assert not any(i.kind == "dangling_provenance" for i in report.issues)
+
+
+@pytest.mark.asyncio
+async def test_dangling_provenance_cofires_with_missing_provenance(
+    base_root: Path,
+) -> None:
+    """When a page's table edge points at a gone source AND the table drifts
+    from frontmatter, BOTH kinds fire independently in one pass — neither masks
+    the other. Frontmatter cites ``new.md`` (drift vs the table) while the
+    stored edge is the gone ``old.md`` (dangling); dangling reflects the TABLE
+    edge, confirming it is table-driven."""
+    page = "knowledge/concepts/topic.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=page,
+        body="---\nsources:\n  - sources/new.md\n---\n# Topic\n\nbody\n",
+        title="Topic",
+    )
+    await _seed_provenance(
+        base_root, doc_id=doc_id_for(Layer.KNOWLEDGE, page),
+        source_paths=["sources/old.md"],  # stale row, neither file on disk
+    )
+
+    report = await _run_lint(base_root)
+    assert any(i.kind == "missing_provenance" and i.path == page for i in report.issues)
+    dangling = [i for i in report.issues if i.kind == "dangling_provenance"]
+    assert len(dangling) == 1
+    assert "sources/old.md" in dangling[0].detail
 
 
 # ---- No fixer (read-only kind) -------------------------------------------

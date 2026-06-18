@@ -529,20 +529,41 @@ async def run_lint(
                 # (ADR-0005): a citation whose backing file no longer exists is
                 # drift. Read-only — surfaced, never auto-repaired (no fixer;
                 # the frontmatter is the user's to edit — ADR-0001 non-cascade).
+                #
+                # Drives off the provenance *table* (``existing_prov``), i.e.
+                # the reconciled edge, not the raw frontmatter list — the kind
+                # names a "provenance edge", consistent with
+                # ``read_provenance``. A page whose frontmatter cites a gone
+                # source but whose table is not yet reconciled (empty / stale)
+                # surfaces as ``missing_provenance`` first; once reconciled, the
+                # edge lands here. So the two kinds can co-fire (table edge gone
+                # + frontmatter drift) without either masking the other.
+                #
                 # Checks the *file*, not the D ``documents`` row: a source
                 # present on disk but not yet ``ingest``-ed (no active row) is
                 # NOT dangling — the fix there is ingest, not editing
                 # frontmatter, so a row-based ``resolved=False`` test would
-                # false-fire. An edge whose raw path escapes the base can never
+                # false-fire. (This is deliberately disk-existence, not
+                # ``read_provenance``'s SOURCE-row resolution — it stays correct
+                # for bases with a non-default source dir, where requiring a
+                # ``sources/`` prefix would wrongly flag every edge.)
+                #
+                # The raw ``source_path`` is normalized to forward slashes
+                # before the join so a hand-edited Windows-style ``sources\foo``
+                # entry resolves the same on every platform (matching the
+                # ``untracked_file`` pass and D-layer ``doc.path``); without it
+                # the same base would lint clean on Windows but dirty on Linux.
+                # An edge whose normalized path escapes the base can never
                 # resolve to an in-base source, so it's dangling and the
-                # external file is never stat-ed (the containment check
-                # short-circuits ``is_file``). Sorted by normalized key so a
-                # multi-source page emits deterministically (``lint propose
+                # escaping target's content is never ``is_file``-stat-ed (the
+                # containment check short-circuits). Sorted by normalized key so
+                # a multi-source page emits deterministically (``lint propose
                 # --limit`` reproducibility, matching the other passes).
                 for e in sorted(
                     existing_prov, key=lambda edge: edge.source_path_key
                 ):
-                    abs_src = (root_resolved / e.source_path).resolve()
+                    rel_src = e.source_path.replace("\\", "/")
+                    abs_src = (root_resolved / rel_src).resolve()
                     if (
                         abs_src.is_relative_to(root_resolved)
                         and abs_src.is_file()
