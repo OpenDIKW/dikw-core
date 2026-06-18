@@ -304,8 +304,10 @@ lint:
 ```
 
 Changing the taxonomy or prompts of a base that already has synthesized pages
-means re-running `dikw client synth --all` to rebuild under the new rules — the
-K layer has no scan-based reindex of hand-moved files.
+means re-running `dikw client synth --all` to rebuild under the new rules. The
+drift-reindex lint (`stale_index` / `untracked_file`, see §6) re-projects a
+page's *current* bytes as-is — it does not re-classify or regenerate — so it is
+not a substitute for re-synth when the taxonomy itself changes.
 
 ### Watching synth progress on large sources
 
@@ -348,9 +350,11 @@ through `dikw client wisdom write`** (CLI) or `POST /v1/base/wisdom`
 write API takes structured input (slug + title + body + optional
 metadata) and runs the same `persist_wisdom` pipeline a manual edit
 would have triggered in 0.3.x. Hand-edits to a wisdom file on disk
-are NOT auto-reindexed — re-run `dikw client wisdom write` with the
-edited body to refresh the row. (The same limitation already applies
-to K-layer pages.)
+are not auto-reindexed *live*, but the `stale_index` drift lint
+(ADR-0005) detects them — `dikw client lint apply` re-projects the
+edited bytes, or re-run `dikw client wisdom write` with the edited
+body. (The same reconciliation applies to hand-edited / hand-written
+K-layer pages.)
 
 Frontmatter shape that `wisdom write` emits — every field optional:
 
@@ -445,12 +449,19 @@ have a dangling `[[wikilink]]` to the page you just deleted.
 
 To recover, move the file back into place
 (`mv <base>/trash/knowledge/... <base>/knowledge/...`). A **D-layer source**
-re-indexes on the next `dikw client ingest`. **K and W files have no
-scan-based reindex yet** (the `untracked_file` reconciliation lint that will
-close this lands in a follow-up) — until then, re-create a knowledge page
-with `dikw client synth --all` of its originating source (plain `synth`
-skips a source whose work is already marked done) or re-author a wisdom page
-with `dikw client wisdom write`.
+re-indexes on the next `dikw client ingest`. A recovered **K or W page** is
+re-indexed by the `untracked_file` drift lint (the restored file has no active
+row again):
+
+```bash
+dikw client lint propose --rule untracked_file   # returns a task id
+dikw client lint apply <task_id>                 # re-projects the file into storage
+```
+
+This re-projects the file's bytes as-is (preserving them); it does not
+re-run synth. (You can still rebuild a knowledge page from its source with
+`dikw client synth --all`, or re-author a wisdom page with
+`dikw client wisdom write`, if you want a regenerated version instead.)
 
 Inbound `[[wikilink]]`s from *other* live pages are left dangling on
 purpose — they surface as `broken_wikilink` on the next `dikw client lint`

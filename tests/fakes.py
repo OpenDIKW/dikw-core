@@ -125,8 +125,8 @@ async def seed_doc(
     body: str,
     title: str | None = None,
     active: bool = True,
-    mtime: float = 0.0,
-    doc_hash: str = "0" * 64,
+    mtime: float | None = None,
+    doc_hash: str | None = None,
 ) -> None:
     """Drop ``body`` to ``<base_root>/<path>`` and upsert a matching
     ``DocumentRecord`` against the wiki's storage.
@@ -136,13 +136,28 @@ async def seed_doc(
     for chunking or embeddings. Mirrors :func:`seed_asset`'s shape so
     a test author already familiar with that helper picks it up
     free. Used by graph / page-links / lint tests.
+
+    ``mtime`` / ``doc_hash`` default to the real on-disk values (parsed
+    from the body just written, exactly as ``persist_*`` would store
+    them) so a seeded row is *consistent* with its file — otherwise the
+    ``stale_index`` lint (a row hash that disagrees with disk) would fire
+    on every seeded page. Pass an explicit ``doc_hash`` / ``mtime`` to
+    deliberately seed drift (the ``stale_index`` / ``ingest`` mtime tests
+    do this).
     """
     from dikw_core.api import _doc_id_for, _with_storage
+    from dikw_core.domains.data.backends import parse_any
     from dikw_core.schemas import DocumentRecord
 
     abs_p = base_root / path
     abs_p.parent.mkdir(parents=True, exist_ok=True)
     abs_p.write_text(body, encoding="utf-8")
+    if doc_hash is None or mtime is None:
+        parsed = parse_any(abs_p.resolve(), rel_path=path)
+        if doc_hash is None:
+            doc_hash = parsed.hash
+        if mtime is None:
+            mtime = parsed.mtime
     cfg, _root, storage = await _with_storage(base_root)
     del cfg
     try:

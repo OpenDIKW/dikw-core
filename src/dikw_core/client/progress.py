@@ -791,6 +791,7 @@ def render_lint_apply_report(
     skipped = report.get("skipped") or []
     paths = report.get("knowledge_paths_changed") or []
     purged = report.get("purged_documents") or []
+    reindexed = report.get("reindexed_documents") or []
     embedded = int(report.get("chunks_embedded") or 0)
     pending = int(report.get("chunks_pending_embedding") or 0)
     console.print(
@@ -801,6 +802,13 @@ def render_lint_apply_report(
         # ``missing_file`` purges: orphaned rows whose file was already gone.
         console.print(
             f"[red]purged[/red] {len(purged)} orphaned row(s): {', '.join(purged)}"
+        )
+    if reindexed:
+        # ``stale_index`` / ``untracked_file`` re-projections: the on-disk
+        # bytes were re-indexed into storage (the file itself was untouched).
+        console.print(
+            f"[green]reindexed[/green] {len(reindexed)} page(s) from disk: "
+            f"{', '.join(reindexed)}"
         )
     if embedded or pending:
         # Make the embed status explicit so the user knows whether to

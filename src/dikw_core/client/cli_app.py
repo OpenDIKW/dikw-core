@@ -506,8 +506,9 @@ def lint_propose_cmd(
             help=(
                 "Filter to one lint kind: broken_wikilink | orphan_page | "
                 "duplicate_title | non_atomic_page | missing_provenance | "
-                "missing_file. Kinds without a fixer (e.g. duplicate_title) "
-                "are accepted but every issue lands in `skipped`."
+                "missing_file | stale_index | untracked_file. Kinds without a "
+                "fixer (e.g. duplicate_title) are accepted but every issue "
+                "lands in `skipped`."
             ),
         ),
     ] = None,

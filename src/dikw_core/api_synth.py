@@ -583,8 +583,11 @@ async def synthesize(
 # Lint kinds that mark *defective new synth output* and so fail
 # ``synth --verify``. ``orphan_page`` is excluded on purpose (a fresh page is
 # legitimately orphan until cited — surfaced, never gated) and
-# ``invalid_wisdom_status`` is wisdom-only (synth never writes W). See
-# :class:`SynthVerifyReport`.
+# ``invalid_wisdom_status`` is wisdom-only (synth never writes W). The
+# fs-drift kinds (``missing_file`` / ``stale_index`` / ``untracked_file``,
+# ADR-0005) are excluded too: they describe disk↔DB hygiene, not a defect in
+# the bytes synth just wrote (synth persists with a matching hash + row, so
+# they never fire on fresh output anyway). See :class:`SynthVerifyReport`.
 _VERIFY_GATED_LINT_KINDS = frozenset(
     {
         "broken_wikilink",

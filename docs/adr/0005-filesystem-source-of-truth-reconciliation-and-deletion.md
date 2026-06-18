@@ -1,8 +1,9 @@
 # Filesystem is the source of truth; consistency & deletion are lint + a `delete` verb
 
-**Status**: Accepted. PR1 (the `delete <path>` verb) and PR2 (the `missing_file`
-drift `lint` kind) are shipped; the remaining drift kinds (`untracked_file` /
-`stale_index` / `dangling_provenance`) are phased across PR3–PR4 and not yet shipped.
+**Status**: Accepted. PR1 (the `delete <path>` verb), PR2 (the `missing_file` drift
+`lint` kind), and PR3 (the `stale_index` / `untracked_file` reindex kinds, both fixed by
+one `ReindexPageFixer` emitting a `reindex_page` op) are shipped; `dangling_provenance`
+lands in PR4 and is not yet shipped.
 
 ## Context
 
@@ -52,10 +53,16 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
    - `dangling_provenance` (K/W): a provenance edge whose target source file is gone
      → **read-only surfacing, no fixer** (the user owns the frontmatter).
 
-   The scan walks `sources/`+`knowledge/`+`wisdom/` (never `trash/`) with an
-   **mtime pre-filter** (`stat` vs `documents.mtime`; hash only on mtime drift), so
-   the default scan stays cheap. `untracked_file`/`stale_index` are K/W-only (D
-   adds/edits remain `ingest`'s job, no overlap); `missing_file` spans all three.
+   Detection stays cheap by construction rather than via a dedicated hashing pass
+   (the originally-planned mtime pre-filter proved unnecessary): `stale_index` reuses
+   the per-page read the existing lexical checks already perform, comparing the
+   in-hand body hash to the row — so a hand-edit is caught with zero extra I/O.
+   `untracked_file` is a stat-only membership walk of the `knowledge/`+`wisdom/` trees
+   (no file reads), rooted at each layer dir so the sibling `trash/`/`.dikw/`/`assets/`
+   trees and `.gitkeep`/non-markdown files are naturally outside scope. `missing_file`
+   iterates the active D/K/W rows and checks each backing file's existence (no tree
+   walk). `untracked_file`/`stale_index` are K/W-only (D adds/edits remain `ingest`'s
+   job, no overlap); `missing_file` spans all three.
 
 2. **Deletion is a new immediate `delete <path>` verb** (`dikw client delete`,
    `POST /v1/base/delete`), spanning D/K/W: `delete_document` + a trash move to
@@ -91,8 +98,11 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 - **+** Ghost-edge accumulation self-heals once `missing_file` exists; no new
   edge-cleaning machinery, no new Storage methods.
 - **−** `lint` grows from "is the indexed knowledge well-formed?" into also "does the
-  index match the authoritative disk?", and default `lint` now walks the filesystem
-  (mitigated by the mtime pre-filter; the sync `POST /v1/lint` stays usable).
+  index match the authoritative disk?", and default `lint` now walks the
+  `knowledge/`+`wisdom/` trees. The added cost is small — `stale_index` rides the
+  per-page read the existing checks already do, and `untracked_file` is a stat-only
+  membership walk — so the sync `POST /v1/lint` stays usable (no mtime pre-filter
+  needed in the end).
 - **−** The drift kinds have asymmetric layer coverage (`untracked_file`/`stale_index`
   K/W-only) — the price of keeping `ingest` as the D add/edit path.
 
@@ -120,7 +130,7 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 - `docs/design.md` — principles #2/#7 (knowledge base is the product; Obsidian-compatible
   on-disk format, user owns the files); gains a disk-authoritative invariant section in PR4.
 - `docs/architecture.md` — the promised `dikw client reindex <path>` is removed in
-  PR4, superseded by the drift kinds + `delete`.
+  PR3 (the `stale_index`/`untracked_file` reindex kinds + `lint apply` supersede it).
 - ADR-0001 — provenance/links non-cascade on delete (the inbound-edge design this ADR
   builds on).
 - CONTEXT.md — `drift`, the four drift `LintKind`s, the `delete` verb, and the
