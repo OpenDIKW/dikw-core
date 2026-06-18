@@ -703,11 +703,11 @@ async def run_lint_apply(
     # surfacing is the ``duplicate_title`` lint's job, not apply's).
     docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=True))
     path_to_doc_id: dict[str, str] = {d.path: d.doc_id for d in docs}
+    wisdom_docs = list(await storage.list_documents(layer=Layer.WISDOM, active=True))
     title_to_path: dict[str, str] = {}
-    for title_layer in (Layer.KNOWLEDGE, Layer.WISDOM):
-        for d in await storage.list_documents(layer=title_layer, active=True):
-            if d.title and d.title not in title_to_path:
-                title_to_path[d.title] = d.path
+    for d in (*docs, *wisdom_docs):  # K first → K-precedence on a title collision
+        if d.title and d.title not in title_to_path:
+            title_to_path[d.title] = d.path
 
     applied: list[FixOperation] = []
     skipped: list[dict[str, Any]] = []
