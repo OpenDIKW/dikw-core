@@ -297,6 +297,42 @@ async def test_stale_index_apply_deactivates_on_persist_failure(
 
 
 @pytest.mark.asyncio
+async def test_stale_index_apply_cancelled_deactivates_and_reraises(
+    base_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancellation mid-reindex (``asyncio.CancelledError``, a
+    ``BaseException`` the ``except Exception`` arm misses) deactivates the
+    in-flight page and re-raises, so a cancel can't strand a half-written
+    ``active=True`` row."""
+    import asyncio
+
+    from dikw_core.domains.knowledge import lint_fix
+
+    path = "knowledge/concepts/cancel.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=path, body="# C\n\nv1\n", title="C"
+    )
+    (base_root / path).write_text("# C\n\nv2\n", encoding="utf-8")
+    doc_id = doc_id_for(Layer.KNOWLEDGE, path)
+
+    async def _cancel(**_kwargs: object) -> object:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(lint_fix, "persist_knowledge", _cancel)
+
+    proposal_report = await api.lint_propose(base_root, rule="stale_index", limit=10)
+    with pytest.raises(asyncio.CancelledError):
+        await api.lint_apply(base_root, proposal_report=proposal_report)
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        doc = await storage.get_document(doc_id)
+        assert doc is not None and doc.active is False
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_index_apply_skips_when_file_vanishes(base_root: Path) -> None:
     """If the drifted file is deleted between propose and apply, the reindex
     is skipped (there is nothing to re-project) and the row is left for the

@@ -107,6 +107,56 @@ async def test_untracked_ignores_trash_tree(base_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_untracked_ignores_dot_directory(base_root: Path) -> None:
+    """A ``.md`` under a dot-prefixed dir (``.obsidian/``, editor swap dirs)
+    is not managed content and must not be flagged."""
+    _write(base_root, "knowledge/.obsidian/workspace.md", "# Obsidian\n\nstate\n")
+    report = await _run_lint(base_root)
+    assert not any(i.kind == "untracked_file" for i in report.issues)
+
+
+@pytest.mark.asyncio
+async def test_untracked_ignores_symlink_escaping_base(base_root: Path) -> None:
+    """An in-tree symlink whose target resolves OUTSIDE the base is skipped
+    (reads stay under the managed tree). Symlink creation is unavailable on
+    some platforms (Windows without privilege) → skip there."""
+    import os
+
+    outside = base_root.parent / "outside-secret.md"
+    outside.write_text("# Secret\n\noutside the base\n", encoding="utf-8")
+    link = base_root / "knowledge" / "concepts" / "escape.md"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform")
+
+    report = await _run_lint(base_root)
+    assert not any(
+        i.kind == "untracked_file" and i.path.endswith("escape.md")
+        for i in report.issues
+    )
+
+
+@pytest.mark.asyncio
+async def test_untracked_apply_broken_frontmatter_deactivates(base_root: Path) -> None:
+    """An untracked file with unparseable YAML frontmatter is detected
+    (extension + membership, no parse), but its re-projection fails at persist
+    time — the page is recorded under ``persist_errors`` and excluded from
+    ``reindexed_documents`` (the title pre-seed parse fails gracefully too)."""
+    path = "knowledge/concepts/broken.md"
+    _write(base_root, path, "---\nfoo: : not valid yaml\n---\n\n# Broken\n\nbody\n")
+
+    report = await _run_lint(base_root)
+    assert any(i.kind == "untracked_file" and i.path == path for i in report.issues)
+
+    proposal_report = await api.lint_propose(base_root, rule="untracked_file", limit=10)
+    apply_report = await api.lint_apply(base_root, proposal_report=proposal_report)
+    assert apply_report.reindexed_documents == []
+    assert any(e["path"] == path for e in apply_report.persist_errors)
+
+
+@pytest.mark.asyncio
 async def test_untracked_ignores_inactive_only_when_active_row_exists(
     base_root: Path,
 ) -> None:
