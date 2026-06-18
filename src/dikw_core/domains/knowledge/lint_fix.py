@@ -741,6 +741,23 @@ async def run_lint_apply(
                 skipped.append(skip_reason)
                 proposal_aborted = True
 
+    # Drop pages removed in THIS pass from the resolver before anything
+    # re-resolves a ``[[wikilink]]``. ``title_to_path`` was built from the
+    # pre-apply active K set, so a page purged (``missing_file``) or trashed
+    # (``delete_page``) in this same batch still maps its title → its now-gone
+    # path. Without this, Phase 1/2 reconciliation would resolve a referrer's
+    # ``[[Removed]]`` link back to the deleted path and ``replace_links_from``
+    # would re-create a ghost edge pointing at a row that no longer exists
+    # (Codex review, PR2). Removing it BEFORE Phase 0 also lets a same-titled
+    # replacement page (a broken_wikilink ``create_page`` for ``[[Foo]]`` while
+    # the old ``Foo`` is purged) claim the title there, so referrers resolve to
+    # the live replacement instead of staying falsely orphaned.
+    removed_paths = purged_paths | deleted_paths
+    if removed_paths:
+        title_to_path = {
+            t: p for t, p in title_to_path.items() if p not in removed_paths
+        }
+
     # Phase 0: pre-populate ``title_to_path`` with every changed page
     # BEFORE phase 1 reconciles any of their outgoing links.
     # ``paths_changed`` iterates alphabetically, not topologically, so a

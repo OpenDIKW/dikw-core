@@ -354,6 +354,94 @@ async def test_missing_file_apply_skips_when_row_already_purged(
     assert "no document row" in apply_report.skipped[0]["reason"]
 
 
+@pytest.mark.asyncio
+async def test_missing_file_purge_refreshes_resolver_no_ghost_edge(
+    base_root: Path,
+) -> None:
+    """A mixed apply that purges page B (title ``Foo``) AND reconciles a
+    referrer A linking ``[[Foo]]`` must NOT re-create a stored A→B edge.
+
+    The apply-time resolver (``title_to_path``) is built from the pre-apply
+    active K set, so it still maps ``Foo`` → B's path. If it isn't refreshed
+    after the purge, Phase-2 referrer reconciliation resolves A's ``[[Foo]]``
+    back to the deleted path and ``replace_links_from`` writes a ghost edge to
+    a row that no longer exists (Codex P2). After the fix, ``Foo`` is dropped
+    from the resolver, so ``[[Foo]]`` stays unresolved and A's link set is
+    empty.
+    """
+    import uuid
+
+    from dikw_core.domains.knowledge.lint_fix import (
+        FixOperation,
+        FixProposal,
+        FixProposalReport,
+        bytes_sha256,
+    )
+
+    a_path = "knowledge/concepts/a.md"
+    b_path = "knowledge/concepts/foo.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=a_path,
+        body="# A\n\nSee [[Foo]].\n", title="A",
+    )
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=b_path, body="# Foo\n", title="Foo"
+    )
+    a_doc_id = doc_id_for(Layer.KNOWLEDGE, a_path)
+    # B's file vanishes; its active row lingers (the missing_file case).
+    (base_root / b_path).unlink()
+
+    # Hand-built mixed report: purge B + a reconcile_provenance on A (a no-op
+    # storage sync that does NOT add A to paths_changed, so A lands in the
+    # Phase-2 referrer set and its [[Foo]] is re-resolved).
+    a_hash = bytes_sha256((base_root / a_path).read_bytes())
+    report = FixProposalReport(
+        proposals=[
+            FixProposal(
+                proposal_id=str(uuid.uuid4()),
+                issue_kind="missing_file",
+                issue_path=b_path,
+                issue_detail="gone",
+                operations=[
+                    FixOperation(
+                        kind="purge_document", path=b_path, layer=Layer.KNOWLEDGE
+                    )
+                ],
+                rationale="purge",
+                source="heuristic",
+            ),
+            FixProposal(
+                proposal_id=str(uuid.uuid4()),
+                issue_kind="missing_provenance",
+                issue_path=a_path,
+                issue_detail="reconcile",
+                operations=[
+                    FixOperation(
+                        kind="reconcile_provenance", path=a_path,
+                        source_paths=[], expected_hash=a_hash,
+                    )
+                ],
+                rationale="reconcile",
+                source="heuristic",
+            ),
+        ]
+    )
+
+    apply_report = await api.lint_apply(base_root, proposal_report=report)
+    assert apply_report.purged_documents == [b_path]
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        # The purged page is gone, and A holds NO ghost edge to it.
+        assert await storage.get_document(doc_id_for(Layer.KNOWLEDGE, b_path)) is None
+        a_links = await storage.links_from(a_doc_id)
+        assert [link.dst_path for link in a_links] == [], (
+            f"A must not retain a stored edge to the purged page; got {a_links}"
+        )
+    finally:
+        await storage.close()
+
+
 # ---- Fixer unit ----------------------------------------------------------
 
 
