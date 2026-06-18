@@ -84,7 +84,7 @@ src/dikw_core/
 │   ├── info/              I layer — chunk, tokenize, embed, render, RRF-fused hybrid search
 │   ├── knowledge/         K layer — knowledge pages filed under a configurable `category` tree
 │   │                                  (`knowledge/<category>/<slug>.md`), [[wikilinks]], frontmatter `sources:` ↔
-│   │                                  provenance edge, lint (incl. missing_provenance, uncategorized, title_slug_quality, missing_file, stale_index, untracked_file), lint_fix + lint_fixers/
+│   │                                  provenance edge, lint (incl. missing_provenance, uncategorized, title_slug_quality, missing_file, stale_index, untracked_file, dangling_provenance), lint_fix + lint_fixers/
 │   └── wisdom/            W layer — hand-written documents; `page.py::author_from_path`
 │                                    (`wisdom/<author>/<slug>.md` → author); indexed exclusively by
 │                                    `api.write_wisdom_page` (`dikw client wisdom write` / `POST /v1/base/wisdom`).

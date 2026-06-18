@@ -9,6 +9,23 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`dangling_provenance` drift lint kind — flag a K/W page citing a deleted source
+  (read-only).** A new deterministic `lint` kind that flags a `knowledge/` (K) or
+  `wisdom/` (W) page whose `sources:` **provenance** edge points at a source file that
+  no longer exists on disk. It is **read-only — surfaced, never auto-repaired**: there
+  is no fixer (like `duplicate_title`, `lint propose` reports it for human triage and
+  lands every issue in `skipped`), because the `sources:` frontmatter is the user's to
+  edit (ADR-0001's non-cascade design — delete never rewrites another page's content).
+  Disk is the source of truth (ADR-0005), so detection stats the *file*, not the
+  `documents` projection: a source present on disk but not yet `ingest`-ed (no active D
+  row) is **not** dangling — there the fix is `ingest`, not editing frontmatter. A
+  provenance path that escapes the base is dangling and its external target is never
+  stat-ed. Runs in the default `lint` scan, sharing the per-page provenance read with
+  `missing_provenance` (zero extra storage round-trips); suppressible per page via
+  `lint: {skip: [dangling_provenance]}`. Final slice of ADR-0005
+  (filesystem-as-source-of-truth) — the arc (the `delete` verb + `missing_file` /
+  `untracked_file` / `stale_index` / `dangling_provenance` drift kinds) is now complete,
+  and `docs/design.md` gains a "Disk is the source of truth" invariant section.
 - **`stale_index` + `untracked_file` drift lint kinds — re-project hand-edited /
   hand-written K/W pages (and unlock hand-authored knowledge pages as first-class).**
   Two new deterministic `lint` kinds, both fixed by one `ReindexPageFixer`:
@@ -32,8 +49,8 @@ on each entry call out exactly what shape changes break.
   naturally excluded and `.gitkeep` / non-markdown files never trip. Both are K/W-only
   (D-layer adds/edits stay `ingest`'s job); a page failing its re-projection is
   deactivated and surfaced via `ApplyReport.persist_errors`, successes under
-  `ApplyReport.reindexed_documents`. Third slice of ADR-0005; `dangling_provenance`
-  lands in PR4. This supersedes the never-built `dikw client reindex <path>` — the
+  `ApplyReport.reindexed_documents`. Third slice of ADR-0005 (`dangling_provenance`
+  is the fourth, above). This supersedes the never-built `dikw client reindex <path>` — the
   reindex story is now `dikw client lint propose --rule stale_index` (or
   `--rule untracked_file`) followed by `dikw client lint apply <task_id>`.
 - **`missing_file` drift lint kind — purge orphaned document rows (D/K/W).** A new

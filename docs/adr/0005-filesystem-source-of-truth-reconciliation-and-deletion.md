@@ -1,9 +1,10 @@
 # Filesystem is the source of truth; consistency & deletion are lint + a `delete` verb
 
-**Status**: Accepted. PR1 (the `delete <path>` verb), PR2 (the `missing_file` drift
-`lint` kind), and PR3 (the `stale_index` / `untracked_file` reindex kinds, both fixed by
-one `ReindexPageFixer` emitting a `reindex_page` op) are shipped; `dangling_provenance`
-lands in PR4 and is not yet shipped.
+**Status**: Accepted and fully shipped. PR1 (the `delete <path>` verb), PR2 (the
+`missing_file` drift `lint` kind), PR3 (the `stale_index` / `untracked_file` reindex
+kinds, both fixed by one `ReindexPageFixer` emitting a `reindex_page` op), and PR4 (the
+read-only `dangling_provenance` drift kind + this design's disk-authoritative invariant
+written into `docs/design.md`) are all merged.
 
 ## Context
 
@@ -128,7 +129,8 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 
 - CLAUDE.md — "On-disk format is the product" (the phrase this ADR builds on).
 - `docs/design.md` — principles #2/#7 (knowledge base is the product; Obsidian-compatible
-  on-disk format, user owns the files); gains a disk-authoritative invariant section in PR4.
+  on-disk format, user owns the files); gained a "Disk is the source of truth" invariant
+  section in PR4.
 - `docs/architecture.md` — the promised `dikw client reindex <path>` is removed in
   PR3 (the `stale_index`/`untracked_file` reindex kinds + `lint apply` supersede it).
 - ADR-0001 — provenance/links non-cascade on delete (the inbound-edge design this ADR

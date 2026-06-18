@@ -25,9 +25,13 @@ Reports issue classes that are safe to detect deterministically (see the
 * ``untracked_file`` — a ``.md`` / ``.markdown`` file under ``knowledge/`` or
   ``wisdom/`` with no active row (hand-written or restored outside dikw); the
   reindex fixer indexes it, making hand-authored pages first-class.
+* ``dangling_provenance`` — a K/W page whose ``sources:`` provenance edge points
+  at a source file that no longer exists on disk. Read-only — surfaced, never
+  auto-repaired (the frontmatter is the user's to edit; ADR-0005, ADR-0001).
 
-``stale_index`` / ``untracked_file`` are K/W only — D-layer source adds and
-edits are owned by ``ingest`` (zero overlap); ``missing_file`` spans D/K/W.
+``stale_index`` / ``untracked_file`` / ``dangling_provenance`` are K/W only —
+D-layer source adds and edits are owned by ``ingest`` (zero overlap);
+``missing_file`` spans D/K/W.
 
 Later phases may add semantic checks; this module intentionally stays
 lexical.
@@ -111,6 +115,7 @@ LintKind = Literal[
     "missing_file",
     "stale_index",
     "untracked_file",
+    "dangling_provenance",
 ]
 
 # 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
@@ -492,24 +497,69 @@ async def run_lint(
         # only collapses cleanly *after* asking the table — we can't
         # short-circuit on ``sources_tuple`` alone without losing the
         # stale-rows-when-cleared case.
-        if "missing_provenance" not in skip_kinds:
+        #
+        # The provenance edges feed two checks (``missing_provenance`` here
+        # and ``dangling_provenance`` below), so load them once and share —
+        # the storage probe runs whenever *either* kind is wanted, not just
+        # ``missing_provenance``.
+        want_missing_prov = "missing_provenance" not in skip_kinds
+        want_dangling_prov = "dangling_provenance" not in skip_kinds
+        if want_missing_prov or want_dangling_prov:
             existing_prov = await storage.provenance_from(doc.doc_id)
-            existing_map = {
-                e.source_path_key: e.source_path for e in existing_prov
-            }
-            expected_map = {normalize_path(s): s for s in sources_tuple}
-            if existing_map != expected_map:
-                issues.append(
-                    LintIssue(
-                        kind="missing_provenance",
-                        path=doc.path,
-                        detail=(
-                            f"frontmatter declares {len(sources_tuple)} "
-                            f"source(s); provenance table has "
-                            f"{len(existing_prov)} matching row(s)"
-                        ),
+            if want_missing_prov:
+                existing_map = {
+                    e.source_path_key: e.source_path for e in existing_prov
+                }
+                expected_map = {normalize_path(s): s for s in sources_tuple}
+                if existing_map != expected_map:
+                    issues.append(
+                        LintIssue(
+                            kind="missing_provenance",
+                            path=doc.path,
+                            detail=(
+                                f"frontmatter declares {len(sources_tuple)} "
+                                f"source(s); provenance table has "
+                                f"{len(existing_prov)} matching row(s)"
+                            ),
+                        )
                     )
-                )
+            if want_dangling_prov:
+                # ``dangling_provenance`` — a provenance edge whose target
+                # source file is gone from disk. Disk is authoritative
+                # (ADR-0005): a citation whose backing file no longer exists is
+                # drift. Read-only — surfaced, never auto-repaired (no fixer;
+                # the frontmatter is the user's to edit — ADR-0001 non-cascade).
+                # Checks the *file*, not the D ``documents`` row: a source
+                # present on disk but not yet ``ingest``-ed (no active row) is
+                # NOT dangling — the fix there is ingest, not editing
+                # frontmatter, so a row-based ``resolved=False`` test would
+                # false-fire. An edge whose raw path escapes the base can never
+                # resolve to an in-base source, so it's dangling and the
+                # external file is never stat-ed (the containment check
+                # short-circuits ``is_file``). Sorted by normalized key so a
+                # multi-source page emits deterministically (``lint propose
+                # --limit`` reproducibility, matching the other passes).
+                for e in sorted(
+                    existing_prov, key=lambda edge: edge.source_path_key
+                ):
+                    abs_src = (root_resolved / e.source_path).resolve()
+                    if (
+                        abs_src.is_relative_to(root_resolved)
+                        and abs_src.is_file()
+                    ):
+                        continue
+                    issues.append(
+                        LintIssue(
+                            kind="dangling_provenance",
+                            path=doc.path,
+                            detail=(
+                                f"declared source {e.source_path!r} has no file "
+                                "on disk — edit this page's `sources:` "
+                                "frontmatter (the source was deleted outside "
+                                "dikw)"
+                            ),
+                        )
+                    )
 
         page_links = parse_links(body)
         _, unresolved = resolve_links(
