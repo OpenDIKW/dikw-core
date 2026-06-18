@@ -34,7 +34,8 @@ on each entry call out exactly what shape changes break.
   deactivated and surfaced via `ApplyReport.persist_errors`, successes under
   `ApplyReport.reindexed_documents`. Third slice of ADR-0005; `dangling_provenance`
   lands in PR4. This supersedes the never-built `dikw client reindex <path>` — the
-  reindex story is now `lint propose --rule stale_index|untracked_file` + `lint apply`.
+  reindex story is now `dikw client lint propose --rule stale_index` (or
+  `--rule untracked_file`) followed by `dikw client lint apply <task_id>`.
 - **`missing_file` drift lint kind — purge orphaned document rows (D/K/W).** A new
   deterministic `lint` kind (with `MissingFileFixer`) that detects an *active*
   `documents` row whose backing file is gone from disk — a `sources/` (D),

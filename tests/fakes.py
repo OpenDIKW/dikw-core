@@ -153,11 +153,20 @@ async def seed_doc(
     abs_p.parent.mkdir(parents=True, exist_ok=True)
     abs_p.write_text(body, encoding="utf-8")
     if doc_hash is None or mtime is None:
-        parsed = parse_any(abs_p.resolve(), rel_path=path)
-        if doc_hash is None:
-            doc_hash = parsed.hash
-        if mtime is None:
-            mtime = parsed.mtime
+        try:
+            parsed = parse_any(abs_p.resolve(), rel_path=path)
+            parsed_hash, parsed_mtime = parsed.hash, parsed.mtime
+        except Exception:
+            # Non-markdown seed path (no registered backend) or unparseable —
+            # fall back to a direct body hash + the real file mtime so the
+            # seeded row stays self-consistent with disk (no UnsupportedFormat
+            # crash for a future test that seeds, say, a .txt).
+            import hashlib
+
+            parsed_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+            parsed_mtime = abs_p.stat().st_mtime
+        doc_hash = parsed_hash if doc_hash is None else doc_hash
+        mtime = parsed_mtime if mtime is None else mtime
     cfg, _root, storage = await _with_storage(base_root)
     del cfg
     try:

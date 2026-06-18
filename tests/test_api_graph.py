@@ -384,7 +384,9 @@ async def test_base_revision_changes_when_body_edited(tmp_path: Path) -> None:
 
     rev_before = (await api.list_graph(tmp_path)).base_revision
 
-    # Edit on disk, no ingest. Stored mtime stays at 0.0 (the seed value).
+    # Edit on disk, no re-index. The stored DocumentRecord.mtime is unchanged
+    # (no ingest re-persists it); base_revision must still change because it
+    # hashes the current on-disk body, not just the stored mtime.
     (tmp_path / "knowledge/A.md").write_text(
         "[[B]] [[B]]\n",  # added a duplicate link → graph weight changes
         encoding="utf-8",

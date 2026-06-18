@@ -79,8 +79,10 @@ _ENV_ALLOWLIST: frozenset[str] = frozenset()
 # a ref matches if it equals an entry or extends it with positional args.
 _CLI_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # CLAUDE.md + docs/architecture.md: planned verb to close the hand-edit /
-        # out-of-order-write reindex gap (reindex a single K/W page on disk).
+        # CLAUDE.md + docs/architecture.md + ADR-0005 + CHANGELOG: the never-built
+        # single-page reindex verb that PR3's stale_index/untracked_file drift
+        # lint superseded. The docs still name it (as the superseded command), so
+        # it must resolve here even though it has no implementation.
         "dikw client reindex",
         # docs/providers.md: planned verb to migrate the multimodal vec table
         # after switching the embedding model (v1 ships a stub). Distinct concept

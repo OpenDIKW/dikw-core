@@ -223,20 +223,77 @@ async def test_stale_index_apply_reprojects_and_preserves_handedits(
 @pytest.mark.asyncio
 async def test_stale_index_apply_reprojects_wisdom(base_root: Path) -> None:
     """W-layer drift re-projects through ``persist_wisdom`` — confirms reindex
-    is not confined to the K layer."""
+    is not confined to the K layer, AND that it actually re-links (not just
+    bumps the hash): the edited body adds a cross-layer ``[[wikilink]]`` to a
+    tracked K page, which must become a stored W→K edge after reindex."""
+    target = "knowledge/concepts/target.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=target,
+        body="# Target\n\nbody\n", title="Target",
+    )
     path = "wisdom/holo/note.md"
     await seed_doc(
         base_root, layer=Layer.WISDOM, path=path, body="# Note\n\nv1\n", title="Note"
     )
-    (base_root / path).write_text("# Note\n\nv2 revised\n", encoding="utf-8")
+    (base_root / path).write_text(
+        "# Note\n\nv2 revised, see [[Target]].\n", encoding="utf-8"
+    )
+    note_doc_id = doc_id_for(Layer.WISDOM, path)
 
     proposal_report = await api.lint_propose(base_root, rule="stale_index", limit=10)
     assert proposal_report.proposals[0].operations[0].layer == Layer.WISDOM
     apply_report = await api.lint_apply(base_root, proposal_report=proposal_report)
     assert apply_report.reindexed_documents == [path]
 
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        links = await storage.links_from(note_doc_id)
+        assert [link.dst_path for link in links] == [target], (
+            f"W reindex must rebuild the cross-layer W→K edge; got {links}"
+        )
+    finally:
+        await storage.close()
+
     post = await _run_lint(base_root)
     assert not any(i.kind == "stale_index" and i.path == path for i in post.issues)
+
+
+@pytest.mark.asyncio
+async def test_stale_index_apply_deactivates_on_persist_failure(
+    base_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hard persist failure during reindex deactivates the page
+    (``documents.active`` is the commit marker), records it under
+    ``persist_errors``, and excludes it from ``reindexed_documents`` — parity
+    with the synth / create-update failure path."""
+    from dikw_core.domains.knowledge import lint_fix
+
+    path = "knowledge/concepts/boom.md"
+    await seed_doc(
+        base_root, layer=Layer.KNOWLEDGE, path=path, body="# Boom\n\nv1\n", title="Boom"
+    )
+    (base_root / path).write_text("# Boom\n\nv2 edited\n", encoding="utf-8")
+    doc_id = doc_id_for(Layer.KNOWLEDGE, path)
+
+    async def _boom(**_kwargs: object) -> object:
+        raise RuntimeError("simulated persist failure")
+
+    monkeypatch.setattr(lint_fix, "persist_knowledge", _boom)
+
+    proposal_report = await api.lint_propose(base_root, rule="stale_index", limit=10)
+    apply_report = await api.lint_apply(base_root, proposal_report=proposal_report)
+
+    assert apply_report.reindexed_documents == []
+    assert any(e["path"] == path for e in apply_report.persist_errors)
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        doc = await storage.get_document(doc_id)
+        assert doc is not None and doc.active is False, (
+            "a reindex that failed mid-persist must be deactivated"
+        )
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio

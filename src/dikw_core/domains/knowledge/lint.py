@@ -377,7 +377,15 @@ async def run_lint(
 
     # Every other K/W check runs over the *live* page set — pages whose file is
     # gone are excluded so they don't double-surface as orphan/duplicate/etc.
-    live_page_docs = [d for d in page_docs if d.path not in missing_paths]
+    # Sorted by path so the per-doc kinds emitted inside the main loop
+    # (``stale_index`` / ``broken_wikilink`` / ``missing_provenance`` / …) — and
+    # the ``duplicate_title`` "primary" pick — are deterministic across runs and
+    # adapters (``list_documents`` has no ORDER BY), so ``lint propose --limit``
+    # is reproducible (matching the already-sorted ``missing_file`` /
+    # ``untracked_file`` passes).
+    live_page_docs = sorted(
+        (d for d in page_docs if d.path not in missing_paths), key=lambda d: d.path
+    )
 
     title_to_paths: dict[str, list[str]] = defaultdict(list)
     inbound: Counter[str] = Counter()
@@ -440,7 +448,11 @@ async def run_lint(
         # lagging projection; the reindex fixer re-projects the current bytes
         # without rewriting the file. Compare the body hash the way
         # ``persist`` stored it (frontmatter-stripped, markdown
-        # ``content_hash``).
+        # ``content_hash``). Scope note: this is BODY drift only — a
+        # frontmatter-only edit (e.g. a wisdom ``status:`` change with the body
+        # untouched) does not change the body hash, so it is not flagged here
+        # (a rare case; the row's ``status``/``title`` projection stays stale
+        # until the body is next edited or the page re-written).
         if "stale_index" not in skip_kinds and content_hash(body) != doc.hash:
             issues.append(
                 LintIssue(
@@ -646,6 +658,12 @@ async def run_lint(
     # stray non-markdown files never trip. Inactive-only rows (no active
     # projection) intentionally surface here too — the reindex fixer's
     # ``upsert_document`` re-activates them, healing a deactivated page.
+    # Deliberately NOT suppressible via ``lint: {skip}`` (unlike ``stale_index``):
+    # detection is read-free (stat + membership), and honouring per-file
+    # frontmatter would force a parse of every candidate; a scratch ``.md`` the
+    # user doesn't want indexed belongs outside the ``knowledge/``/``wisdom/``
+    # trees. The fix is opt-in (propose/apply), so an un-applied issue is just a
+    # warning.
     tracked = {normalize_path(d.path) for d in page_docs}
     exts = supported_extensions()
     for layer_name in ("knowledge", "wisdom"):

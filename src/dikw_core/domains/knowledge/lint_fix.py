@@ -41,6 +41,7 @@ from ...config import DikwConfig
 from ...providers.base import EmbeddingProvider, LLMProvider
 from ...schemas import KnowledgePersistResult, Layer, WisdomPersistResult
 from ...storage.base import Storage
+from ..data.backends import parse_any
 from ..data.hashing import hash_bytes, hash_file
 from ..data.path_norm import doc_id_for
 from ..info.tokenize import CjkTokenizer
@@ -694,13 +695,19 @@ async def run_lint_apply(
     """
     proposals = _filter_proposals(proposal_report.proposals, pick=pick, skip=skip)
 
-    # Pre-load K-layer doc rows for path→doc_id and title→path resolution.
+    # Pre-load K-layer doc rows for path→doc_id (Phase 2 referrers + delete_page
+    # are K-scoped). The title→path resolver, by contrast, is CROSS-LAYER (K + W):
+    # a K page may ``[[wikilink]]`` a W page and vice versa, exactly as
+    # ``_persist_layered_page``'s own rebuild-from-storage does. First-wins,
+    # K precedence (same policy the create/update path already used; collision
+    # surfacing is the ``duplicate_title`` lint's job, not apply's).
     docs = list(await storage.list_documents(layer=Layer.KNOWLEDGE, active=True))
     path_to_doc_id: dict[str, str] = {d.path: d.doc_id for d in docs}
     title_to_path: dict[str, str] = {}
-    for d in docs:
-        if d.title and d.title not in title_to_path:
-            title_to_path[d.title] = d.path
+    for title_layer in (Layer.KNOWLEDGE, Layer.WISDOM):
+        for d in await storage.list_documents(layer=title_layer, active=True):
+            if d.title and d.title not in title_to_path:
+                title_to_path[d.title] = d.path
 
     applied: list[FixOperation] = []
     skipped: list[dict[str, Any]] = []
@@ -895,6 +902,28 @@ async def run_lint_apply(
         if op_title not in title_to_path:
             title_to_path[op_title] = op.path
 
+    # Phase 0 (reindex leg): pre-seed reindexed pages' titles too. A
+    # reindex_page op carries no ``new_frontmatter``, and its storage row may
+    # not exist yet when a sibling persists (Phase 1b upserts serially), so a
+    # same-batch referrer — another reindex page, OR a create/update page (a
+    # broken_wikilink fix) — would resolve a ``[[wikilink]]`` to that page as
+    # *nothing* and silently drop the edge. Worse, the drop never self-heals:
+    # Phase 2 excludes reindex paths, the next ``run_lint`` re-derives the link
+    # live (so no ``broken_wikilink``) yet still sees the missing stored edge as
+    # a false ``orphan_page`` on the target (which a destructive orphan_page fix
+    # could then act on). Read the current on-disk title (frontmatter/H1) — the
+    # re-projection uses the current bytes, so the live title is authoritative.
+    for reindex_path, _reindex_layer in reindex_targets:
+        abs_reindex = (base_root / reindex_path).resolve()
+        if not abs_reindex.is_file():
+            continue
+        try:
+            reindex_title = parse_any(abs_reindex, rel_path=reindex_path).title
+        except Exception:
+            continue
+        if reindex_title and reindex_title not in title_to_path:
+            title_to_path[reindex_title] = reindex_path
+
     # Build the companion fuzzy index alongside ``title_to_path``.
     # Without it, persist_knowledge / resolve_links degrade to
     # exact-match only — fuzzy-resolvable links like ``[[Neural
@@ -945,12 +974,15 @@ async def run_lint_apply(
     # Phase 1b: re-project reindexed pages (``stale_index`` / ``untracked_file``).
     # Same persist machinery, dispatched K vs W by the op's layer. The on-disk
     # bytes are the source of truth — nothing was written to the file, so we
-    # just index whatever is there now. ``title_to_path=None`` makes
-    # ``_persist_layered_page`` rebuild the cross-layer (K+W) title index from
-    # storage, which already reflects every Phase-1 create/update above — so a
-    # reindexed page's ``[[wikilink]]`` resolves against the full, current base
-    # (the K-only Phase-0 resolver wouldn't see W titles). Run after Phase 1 so
-    # a reindexed page that links to a just-created page still resolves.
+    # just index whatever is there now. We pass the SAME cross-layer resolver
+    # the create/update leg uses (built K+W above and pre-seeded in Phase 0 with
+    # every create/update AND reindex page's title), NOT ``title_to_path=None``:
+    # a None would make ``_persist_layered_page`` rebuild from storage, which —
+    # because reindex rows are upserted serially here — would miss a sibling
+    # reindex/create page whose row hasn't landed yet and silently drop the
+    # outgoing edge. With the pre-seeded index, ``replace_links_from`` writes the
+    # edge by path even before the target row exists. Run after Phase 1 so a
+    # reindexed page that links to a just-created page resolves too.
     for path, layer in sorted(reindex_targets):
         if not (base_root / path).resolve().is_file():
             # File vanished between op apply and here — leave the row (if any)
@@ -965,8 +997,8 @@ async def run_lint_apply(
             embedding_model=embedding_model,
             text_version_id=text_version_id,
             cjk_tokenizer=cjk_tokenizer,
-            title_to_path=None,
-            fuzzy_index=None,
+            title_to_path=title_to_path,
+            fuzzy_index=fuzzy_index,
             retries=embedding_error_retries,
             backoff_seconds=embedding_error_retry_backoff_seconds,
             persist_errors=persist_errors,
@@ -1151,8 +1183,11 @@ def _preflight_proposal(
                     f"op {op.kind} on {op.path!r} would conflict with a "
                     "sibling proposal that already mutated this path"
                 )
-            if op.layer is None:
-                return f"reindex_page on {op.path!r} missing layer"
+            if op.layer not in (Layer.KNOWLEDGE, Layer.WISDOM):
+                return (
+                    f"reindex_page on {op.path!r} layer must be "
+                    f"knowledge/wisdom, got {op.layer!r}"
+                )
             if not abs_path.is_file():
                 return f"reindex_page target absent on disk: {op.path!r}"
             layer_dir = (base_root / op.layer.value).resolve()
@@ -1264,8 +1299,16 @@ async def _apply_one_op(
     # live in its own layer's tree (defense in depth — a malformed / persisted
     # proposal must not index a file from outside the K/W tree it claims).
     if op.kind == "reindex_page":
-        if op.layer is None:
-            return _skip(proposal_id, op, "reindex_page op missing layer")
+        # Reindex is K/W only — D adds/edits are ingest's job. Reject any other
+        # layer (incl. None / a malformed or hand-crafted persisted proposal
+        # carrying SOURCE) BEFORE Phase 1b dispatches it, so it can't hit the
+        # wrong persist pipeline (`persist_knowledge` vs `persist_wisdom`) or
+        # deactivate the wrong doc_id on failure.
+        if op.layer not in (Layer.KNOWLEDGE, Layer.WISDOM):
+            return _skip(
+                proposal_id, op,
+                f"reindex_page op layer must be knowledge/wisdom, got {op.layer!r}",
+            )
         if not abs_path.is_file():
             return _skip(
                 proposal_id, op,

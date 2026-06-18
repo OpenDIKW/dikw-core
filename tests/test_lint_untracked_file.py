@@ -24,7 +24,7 @@ from dikw_core import api
 from dikw_core.domains.data.path_norm import doc_id_for
 from dikw_core.domains.knowledge.lint import LintIssue, run_lint
 from dikw_core.domains.knowledge.lint_fix import FixerContext
-from dikw_core.schemas import Layer
+from dikw_core.schemas import Layer, WisdomStatus
 
 from .fakes import init_test_base, seed_doc
 
@@ -195,6 +195,9 @@ async def test_untracked_apply_indexes_wisdom_page(base_root: Path) -> None:
     try:
         doc = await storage.get_document(doc_id)
         assert doc is not None and doc.active and doc.layer == Layer.WISDOM
+        # status: flows through (W-only field) — proves persist_wisdom, not
+        # persist_knowledge (which hard-clamps status to None), ran.
+        assert doc.status == WisdomStatus.PUBLISHED
     finally:
         await storage.close()
 
@@ -219,6 +222,136 @@ async def test_untracked_apply_resolves_wikilinks(base_root: Path) -> None:
     try:
         links = await storage.links_from(new_doc_id)
         assert [link.dst_path for link in links] == [target_path]
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_untracked_apply_resolves_mutual_links_in_one_batch(
+    base_root: Path,
+) -> None:
+    """Two mutually-linking untracked pages indexed in the SAME apply batch
+    BOTH keep their edge. Regression for the co-reindex edge-drop bug: the
+    alphabetically-earlier page (alpha) persists before beta's row exists, so
+    without pre-seeding the resolver with both titles, alpha→beta would be
+    silently dropped (and never re-surface — both rows become tracked with
+    matching hashes, and beta would be falsely flagged orphan_page)."""
+    alpha = "knowledge/concepts/alpha.md"   # sorts first
+    beta = "knowledge/concepts/beta.md"
+    _write(base_root, alpha, "# Alpha Note\n\nSee [[Beta Note]].\n")
+    _write(base_root, beta, "# Beta Note\n\nSee [[Alpha Note]].\n")
+    alpha_id = doc_id_for(Layer.KNOWLEDGE, alpha)
+    beta_id = doc_id_for(Layer.KNOWLEDGE, beta)
+
+    proposal_report = await api.lint_propose(base_root, rule="untracked_file", limit=10)
+    assert len(proposal_report.proposals) == 2
+    apply_report = await api.lint_apply(base_root, proposal_report=proposal_report)
+    assert sorted(apply_report.reindexed_documents) == [alpha, beta]
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        assert [link.dst_path for link in await storage.links_from(alpha_id)] == [beta], (
+            "alpha→beta edge must survive even though beta's row lands after alpha's"
+        )
+        assert [link.dst_path for link in await storage.links_from(beta_id)] == [alpha]
+    finally:
+        await storage.close()
+
+    # Neither page is falsely flagged orphan_page (each is cited by the other).
+    post = await _run_lint(base_root)
+    orphans = {i.path for i in post.issues if i.kind == "orphan_page"}
+    assert alpha not in orphans and beta not in orphans
+
+
+@pytest.mark.asyncio
+async def test_untracked_apply_resolves_cross_layer_wikilink(base_root: Path) -> None:
+    """A hand-written K page that links to an already-tracked W page resolves
+    the cross-layer edge on reindex — the apply-time resolver is K+W, not K-only."""
+    w_path = "wisdom/holo/manifesto.md"
+    await seed_doc(
+        base_root, layer=Layer.WISDOM, path=w_path,
+        body="# Manifesto\n\nbody\n", title="Manifesto",
+    )
+    k_path = "knowledge/concepts/cites-wisdom.md"
+    _write(base_root, k_path, "# Cites Wisdom\n\nGrounded in [[Manifesto]].\n")
+    k_id = doc_id_for(Layer.KNOWLEDGE, k_path)
+
+    proposal_report = await api.lint_propose(base_root, rule="untracked_file", limit=10)
+    await api.lint_apply(base_root, proposal_report=proposal_report)
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        links = await storage.links_from(k_id)
+        assert [link.dst_path for link in links] == [w_path], (
+            f"K→W cross-layer edge must resolve on reindex; got {links}"
+        )
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_create_page_resolves_link_to_same_batch_reindex_page(
+    base_root: Path,
+) -> None:
+    """A create_page op (e.g. a broken_wikilink fix) whose body links to a
+    page being indexed via untracked_file in the SAME batch resolves the edge.
+    Regression: Phase 0 must pre-seed the reindex page's title so the Phase-1
+    create persist sees it (its row doesn't exist until Phase 1b)."""
+    import uuid
+
+    from dikw_core.domains.knowledge.lint_fix import (
+        FixOperation,
+        FixProposal,
+        FixProposalReport,
+    )
+
+    new_path = "knowledge/concepts/new-page.md"
+    _write(base_root, new_path, "# New Page\n\nhand-written target\n")
+    creator_path = "knowledge/concepts/creator.md"
+    creator_id = doc_id_for(Layer.KNOWLEDGE, creator_path)
+
+    report = FixProposalReport(
+        proposals=[
+            FixProposal(
+                proposal_id=str(uuid.uuid4()),
+                issue_kind="broken_wikilink",
+                issue_path=creator_path,
+                issue_detail="create",
+                operations=[
+                    FixOperation(
+                        kind="create_page",
+                        path=creator_path,
+                        new_frontmatter={"title": "Creator", "category": "concepts"},
+                        new_body="# Creator\n\nSee [[New Page]].\n",
+                    )
+                ],
+                rationale="create",
+                source="heuristic",
+            ),
+            FixProposal(
+                proposal_id=str(uuid.uuid4()),
+                issue_kind="untracked_file",
+                issue_path=new_path,
+                issue_detail="untracked",
+                operations=[
+                    FixOperation(
+                        kind="reindex_page", path=new_path, layer=Layer.KNOWLEDGE
+                    )
+                ],
+                rationale="reindex",
+                source="heuristic",
+            ),
+        ]
+    )
+
+    await api.lint_apply(base_root, proposal_report=report)
+
+    _cfg, _root, storage = await api._with_storage(base_root)
+    try:
+        links = await storage.links_from(creator_id)
+        assert [link.dst_path for link in links] == [new_path], (
+            "create_page must resolve [[New Page]] to the same-batch reindex page"
+        )
     finally:
         await storage.close()
 
