@@ -203,11 +203,13 @@ Install and use `dikw-skills` for operational workflows:
   taxonomy), lint, and eval (lint includes `missing_provenance` for backfilling
   the provenance table on legacy bases, `uncategorized` for pages synth filed
   under the fallback bucket, `missing_file` to purge an orphaned D/K/W row
-  whose backing file was deleted outside dikw, and `stale_index` /
+  whose backing file was deleted outside dikw, `stale_index` /
   `untracked_file` to re-project a hand-edited or hand-written K/W file into
-  storage — `dikw client lint propose --rule stale_index|untracked_file` →
-  `lint apply`, which re-projects the on-disk bytes without rewriting the file
-  or re-running synth)
+  storage — `dikw client lint propose --rule stale_index` (or
+  `untracked_file`) → `lint apply`, which re-projects the on-disk bytes without
+  rewriting the file or re-running synth — and `dangling_provenance`, a
+  read-only flag for a K/W page citing a `sources:` file that no longer exists
+  on disk, surfaced for the user to fix the frontmatter, never auto-repaired)
 - author W-layer wisdom pages with `dikw client wisdom write` (hand-written
   and indexed on write; `ingest` does not scan `wisdom/`)
 - delete any registered document (D/K/W) with `dikw client delete <path>` —

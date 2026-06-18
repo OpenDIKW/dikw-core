@@ -6,8 +6,10 @@ router), ``missing_provenance`` (pure deterministic — sync provenance
 table from frontmatter), ``missing_file`` (pure deterministic — purge an
 orphaned row whose file is gone, D/K/W), ``stale_index`` + ``untracked_file``
 (pure deterministic — re-project the on-disk K/W bytes into storage; one
-``ReindexPageFixer`` serves both). The ``duplicate_title`` rule has no fixer
-— the propose pipeline still reports it for human triage.
+``ReindexPageFixer`` serves both). The ``duplicate_title`` and
+``dangling_provenance`` rules have no fixer — the propose pipeline still
+reports them for human triage (``dangling_provenance`` is read-only by
+design: the user owns the ``sources:`` frontmatter, ADR-0005/ADR-0001).
 """
 
 from __future__ import annotations

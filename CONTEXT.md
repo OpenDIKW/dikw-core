@@ -81,9 +81,9 @@ content like any other). The terms below name the divergences between disk and t
 projection, and the actions that repair them. They are **cross-cutting maintenance**
 (like `lint`), not pipeline transitions — the "one verb, one transition" rule above
 governs the pipeline verbs, not these. This is agreed design (ADR-0005), landing
-incrementally: `delete` (PR1), the `missing_file` drift kind (PR2), and the
-`untracked_file` / `stale_index` reindex kinds (PR3) have shipped; `dangling_provenance`
-is settled here ahead of implementation (PR4) and not yet shipped.
+incrementally: `delete` (PR1), the `missing_file` drift kind (PR2), the
+`untracked_file` / `stale_index` reindex kinds (PR3), and the read-only
+`dangling_provenance` drift kind (PR4) have all shipped.
 
 **drift**:
 A divergence between the authoritative on-disk trees and the `documents` projection. Surfaced as `lint` kinds, repaired through `lint apply` — or, for a single named file, `delete`.

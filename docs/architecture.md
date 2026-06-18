@@ -93,7 +93,7 @@ src/dikw_core/
 │   │   ├── page_index.py    persist_knowledge — K-layer write entry (synth + lint apply); also defines the private _persist_layered_page shared with W
 │   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
-│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, non-atomic pages, missing_provenance, invalid_wisdom_status, uncategorized, title_slug_quality, missing_file (D/K/W orphaned-row drift), stale_index + untracked_file (K/W disk↔index drift); lint.skip frontmatter suppression
+│   │   ├── lint.py          broken wikilinks, orphans, duplicate titles, non-atomic pages, missing_provenance, invalid_wisdom_status, uncategorized, title_slug_quality, missing_file (D/K/W orphaned-row drift), stale_index + untracked_file (K/W disk↔index drift), dangling_provenance (K/W cited-source-gone drift, read-only/no fixer); lint.skip frontmatter suppression
 │   │   ├── lint_fix.py      Fixer Protocol + apply orchestrator (multi-op atomicity, trash redirect, reconcile_provenance + purge_document + reindex_page ops)
 │   │   └── lint_fixers/     broken_wikilink, non_atomic_page, orphan_page (4-strategy router), missing_provenance (deterministic), missing_file (deterministic — purge orphaned row, D/K/W), reindex (deterministic — re-project on-disk bytes for stale_index + untracked_file, K/W)
 │   ├── wisdom/

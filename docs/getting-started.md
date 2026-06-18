@@ -484,6 +484,15 @@ This is the passive complement to `delete` (which trashes a *live* file):
 policy — inbound links from live pages become `broken_wikilink`, never
 silently rewritten.
 
+When the gone file was a **source** that a knowledge or wisdom page cites in
+its `sources:` front-matter, that page's provenance edge is now **dangling**.
+The default `lint` scan flags it as **`dangling_provenance`** (K/W) — a
+**read-only** warning naming the missing source. There is no fixer: the
+`sources:` front-matter is yours to edit (the engine never rewrites your
+content), so fix it by hand (drop or re-point the entry) and the flag clears
+on the next `lint`. A source present on disk but not yet `ingest`-ed is *not*
+flagged — there the fix is `ingest`, not a front-matter edit.
+
 ## 7. Check retrieval quality on your corpus
 
 ```bash

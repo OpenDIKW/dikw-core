@@ -264,6 +264,37 @@ under the base; the engine validates that each carries the required `{placeholde
 output-format markers at load (`dikw client check` surfaces the result) and falls back to
 the packaged default when unset. See [ADR-0003](adr/0003-configurable-knowledge-taxonomy.md).
 
+### Disk is the source of truth; the DB is a rebuildable projection
+
+The on-disk markdown trees (`sources/`, `knowledge/`, `wisdom/` — body + YAML
+front-matter) are the **sole source of truth**. The `documents` / `chunks` / `links`
+/ `provenance` / `embeddings` rows in storage are a **rebuildable projection** of those
+files; reconciliation is always disk → DB, never the reverse. This is the operational
+form of principles #2/#7 ("the knowledge base is the product"; "the user owns the
+files") — and it is what lets a user safely edit the vault in Obsidian, `git
+revert` a page, or drop a hand-written `.md` into `knowledge/` and have the engine
+catch up. Excluded from the "rebuildable" promise: engine-owned state (`.dikw/`, the
+`knowledge_log` table, the task ledger), and `synth`'s LLM generation — but once
+`synth` writes a page to disk, that file *is* disk content like any other.
+
+Two consequences follow, and the engine is built around them:
+
+- **"Reindex a hand-edit" and "delete" are the same operation** — a `disk vs DB`
+  diff-and-apply. The engine never silently rewrites a user's body or front-matter
+  to make the DB agree; it surfaces the divergence and lets the user (or an opt-in
+  `lint apply`) resolve it.
+- **Divergences are named and surfaced, not hidden.** They appear as `lint` **drift
+  kinds** ([ADR-0005](adr/0005-filesystem-source-of-truth-reconciliation-and-deletion.md)):
+  `missing_file` (a row whose file is gone → purge the row, D/K/W), `untracked_file`
+  (a K/W file with no row → index it, so hand-written pages are first-class),
+  `stale_index` (a K/W row whose hash ≠ the file's bytes → re-project the current
+  bytes, never re-running `synth`), and `dangling_provenance` (a K/W page citing a
+  `sources:` file that no longer exists → **read-only**, the user edits the
+  front-matter). The first three are repaired through `lint apply`; a single named
+  file is removed immediately with the `delete` verb (trash + row purge). None of
+  these is a pipeline transition — they are cross-cutting maintenance, like `lint`
+  itself.
+
 ## Data Model
 
 The logical model is backend-agnostic; the SQL below is the **SQLite reference schema** used by the MVP adapter. The Postgres adapter maps the same logical entities to equivalent structures — `tsvector` + GIN for FTS, `pgvector` for embeddings, regular tables for the rest — behind the same `Storage` Protocol.
@@ -448,9 +479,9 @@ As of 0.4.0 the wisdom layer is fully wired end-to-end:
   knowledge→wisdom, wisdom→source) symmetrically.
 - **lint** (`broken_wikilink`, `orphan_page`, `missing_provenance`,
   `duplicate_title`, `invalid_wisdom_status`, `missing_file`,
-  `stale_index`, `untracked_file`) scans the unified KNOWLEDGE + WISDOM
-  page set; the orphan inbound counter credits cross-layer edges so a
-  knowledge page cited only from wisdom is not falsely flagged.
+  `stale_index`, `untracked_file`, `dangling_provenance`) scans the unified
+  KNOWLEDGE + WISDOM page set; the orphan inbound counter credits cross-layer
+  edges so a knowledge page cited only from wisdom is not falsely flagged.
   `missing_file` (a `documents` row whose backing file is gone — the
   deterministic `MissingFileFixer` purges the orphaned row) additionally
   scans the D-layer `sources/` rows, so it spans all three layers. The
@@ -459,7 +490,10 @@ As of 0.4.0 the wisdom layer is fully wired end-to-end:
   deterministic `ReindexPageFixer` that re-projects the current on-disk
   bytes — re-chunk / re-link / re-provenance / embed — without rewriting
   the file or re-running synth, so a hand-edit is preserved and a
-  hand-written page becomes first-class. ADR-0005.
+  hand-written page becomes first-class. `dangling_provenance` (K/W) flags a
+  page whose `sources:` provenance edge points at a source file gone from
+  disk; it is **read-only — surfaced, never auto-repaired** (no fixer, the
+  user owns the frontmatter). ADR-0005.
 
 There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
 machine. `status` is a flat enum the human sets; the engine validates it
