@@ -130,6 +130,62 @@ async def test_lint_propose_then_apply_full_flow(
 
 
 @pytest.mark.asyncio
+async def test_lint_propose_apply_missing_file_purges_over_the_wire(
+    server_client: httpx.AsyncClient, base_root: Path,
+) -> None:
+    """End-to-end ``missing_file`` purge through the server task boundary.
+
+    This is the ONLY path that serialises a ``FixOperation`` to JSON
+    (``model_dump`` into the task ledger) and back (``model_validate`` in the
+    apply runner). The ``purge_document`` op carries a non-``None``
+    ``layer`` (``broken_wikilink``'s ``update_page`` is always ``layer=None``),
+    so apply-side ``doc_id_for(op.layer, op.path)`` only works if the ``Layer``
+    enum round-trips across the wire. Asserting the row is actually purged pins
+    that contract end-to-end (a future pydantic config change breaking the
+    round-trip would surface here, not as a silent skip in production)."""
+    from ..fakes import seed_doc
+
+    path = "sources/dropped.md"
+    await seed_doc(
+        base_root, layer=Layer.SOURCE, path=path, body="# Dropped\n", title="Dropped"
+    )
+    (base_root / path).unlink()
+
+    resp = await server_client.post(
+        "/v1/lint/propose", json={"rule": "missing_file", "limit": 10}
+    )
+    assert resp.status_code == 200, resp.text
+    propose_id = resp.json()["task_id"]
+    assert (await _wait_terminal(server_client, propose_id))["status"] == "succeeded"
+
+    payload = (await server_client.get(f"/v1/tasks/{propose_id}/result")).json()
+    proposals = payload["result"]["proposals"]
+    assert len(proposals) == 1
+    op = proposals[0]["operations"][0]
+    assert op["kind"] == "purge_document"
+    assert op["layer"] == "source"  # serialised enum value
+
+    resp = await server_client.post(
+        "/v1/lint/apply", json={"proposal_task_id": propose_id}
+    )
+    assert resp.status_code == 200, resp.text
+    apply_id = resp.json()["task_id"]
+    assert (await _wait_terminal(server_client, apply_id))["status"] == "succeeded"
+
+    apply_res = (await server_client.get(f"/v1/tasks/{apply_id}/result")).json()
+    assert apply_res["result"]["purged_documents"] == [path]
+
+    # The orphaned row is actually gone — proves layer survived the round-trip.
+    _cfg, _root, storage = await api_module._with_storage(base_root)
+    try:
+        from dikw_core.domains.data.path_norm import doc_id_for
+
+        assert await storage.get_document(doc_id_for(Layer.SOURCE, path)) is None
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_lint_apply_unknown_propose_id_fails_with_clear_cause(
     server_client: httpx.AsyncClient, base_root: Path,
 ) -> None:

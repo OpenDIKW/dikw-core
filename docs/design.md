@@ -162,7 +162,7 @@ dikw-core/
 │   │   │   ├── page.py       # page read/write, front-matter conventions
 │   │   │   ├── synthesize.py # ingest → knowledge pages (LLM-driven), category-filed
 │   │   │   ├── links.py      # wikilink/markdown/URL link graph
-│   │   │   ├── lint.py       # broken wikilinks, orphans, duplicate titles, non-atomic pages, uncategorized, missing_provenance, invalid_wisdom_status, title_slug_quality
+│   │   │   ├── lint.py       # broken wikilinks, orphans, duplicate titles, non-atomic pages, uncategorized, missing_provenance, invalid_wisdom_status, title_slug_quality, missing_file
 │   │   │   └── lint_fix.py   # Fixer Protocol + apply orchestrator (+ lint_fixers/)
 │   │   │                     # (history → knowledge_log table; no generated index.md/log.md, ADR-0004)
 │   │   └── wisdom/           # W layer — hand-written first-class documents
@@ -444,10 +444,13 @@ As of 0.4.0 the wisdom layer is fully wired end-to-end:
   cross-layer wikilinks + provenance edges (wisdom→knowledge,
   knowledge→wisdom, wisdom→source) symmetrically.
 - **lint** (`broken_wikilink`, `orphan_page`, `missing_provenance`,
-  `duplicate_title`, `invalid_wisdom_status`) scans the unified
-  KNOWLEDGE + WISDOM page set; the orphan inbound counter credits
+  `duplicate_title`, `invalid_wisdom_status`, `missing_file`) scans the
+  unified KNOWLEDGE + WISDOM page set; the orphan inbound counter credits
   cross-layer edges so a knowledge page cited only from wisdom is not
-  falsely flagged.
+  falsely flagged. `missing_file` (a `documents` row whose backing file is
+  gone — the deterministic `MissingFileFixer` purges the orphaned row)
+  additionally scans the D-layer `sources/` rows, so it spans all three
+  layers; ADR-0005.
 
 There is no `≥N evidence` gate, no `kind` taxonomy, and no review state
 machine. `status` is a flat enum the human sets; the engine validates it
@@ -545,7 +548,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - `dikw client synth [--all]` — K-layer synthesis (W layer is hand-written, not LLM-authored)
 - `dikw client pages {list,get,links,provenance} [--layer knowledge|wisdom|source]` — read-side page APIs across all three layers
 - `dikw client retrieve "<q>"` — streamed retrieval (ranked chunks + page refs, no LLM call); hits arrive tagged `Hit.layer` so callers group / weight by layer
-- `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; some kinds have no fixer yet)
+- `dikw client lint [propose,proposals,apply]` — hygiene report + deterministic auto-fix proposals (broken_wikilink / orphan_page / missing_provenance / invalid_wisdom_status cover both K + W; missing_file purges orphaned D/K/W rows whose file is gone; some kinds have no fixer yet)
 - `dikw client delete <path>` — delete a registered D/K/W document by path: purge its storage row + outgoing edges and soft-delete the file to `<base>/trash/<layer>/<rel>` (recover with `mv`). Immediate (no propose/apply); inbound `[[wikilink]]`s from live pages are left to surface as `broken_wikilink` on the next lint
 - `dikw client eval [--dataset]` — run retrieval-quality evaluation
 - `dikw client tasks {list,status,events,wait,cancel}` — inspect the server's async task queue

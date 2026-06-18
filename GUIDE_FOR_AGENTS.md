@@ -201,8 +201,9 @@ Install and use `dikw-skills` for operational workflows:
 - import local source material
 - ingest, synthesize (LLM files each page under the configured `category`
   taxonomy), lint, and eval (lint includes `missing_provenance` for backfilling
-  the provenance table on legacy bases, and `uncategorized` for pages synth
-  filed under the fallback bucket)
+  the provenance table on legacy bases, `uncategorized` for pages synth filed
+  under the fallback bucket, and `missing_file` to purge an orphaned D/K/W row
+  whose backing file was deleted outside dikw)
 - author W-layer wisdom pages with `dikw client wisdom write` (hand-written
   and indexed on write; `ingest` does not scan `wisdom/`)
 - delete any registered document (D/K/W) with `dikw client delete <path>` —

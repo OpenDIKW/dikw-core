@@ -92,12 +92,16 @@ class Storage(Protocol):
         rows). The counterpart to ``deactivate_document``, which only
         flips ``active = False``.
 
-        Used by the lint-apply trash path: the on-disk page moves to
-        ``<base>/trash/knowledge/<rel>`` (recoverable by hand) while storage
-        purges all rows so ``run_lint`` can't see ghost docs and
-        ``counts()`` no longer tallies the dead row. Idempotent —
-        deleting an unknown ``doc_id`` is a no-op (matches
-        ``replace_links_from([])`` semantics).
+        Three callers, two shapes. (1) The lint-apply ``delete_page`` fixer and
+        the ``delete <path>`` verb pair this with a trash move: the on-disk file
+        moves to ``<base>/trash/<layer>/<rel>`` (recoverable by hand) while
+        storage purges all rows. (2) The lint ``missing_file`` fixer
+        (``purge_document``) calls this with NO file move — the file is already
+        gone from disk (D/K/W), so there is nothing to trash; it just drops the
+        orphaned row. Either way ``run_lint`` can't see ghost docs and
+        ``counts()`` no longer tallies the dead row. Idempotent — deleting an
+        unknown ``doc_id`` is a no-op (matches ``replace_links_from([])``
+        semantics).
 
         Also deletes provenance rows where ``src_doc_id = doc_id``
         (the K-page → D-source attribution table — see ADR-0001).

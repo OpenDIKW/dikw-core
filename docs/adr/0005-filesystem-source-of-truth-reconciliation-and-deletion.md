@@ -1,8 +1,8 @@
 # Filesystem is the source of truth; consistency & deletion are lint + a `delete` verb
 
-**Status**: Accepted. PR1 (the `delete <path>` verb) is shipped; the drift `lint`
-kinds (`missing_file` / `untracked_file` / `stale_index` / `dangling_provenance`)
-are phased across PR2–PR4 and not yet shipped.
+**Status**: Accepted. PR1 (the `delete <path>` verb) and PR2 (the `missing_file`
+drift `lint` kind) are shipped; the remaining drift kinds (`untracked_file` /
+`stale_index` / `dangling_provenance`) are phased across PR3–PR4 and not yet shipped.
 
 ## Context
 

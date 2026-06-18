@@ -459,6 +459,20 @@ rewriting another page's body to drop the link would hide the breakage.
 This verb is the way to delete an arbitrary page; the `lint` fixers only
 auto-delete empty stubs and merged duplicates.
 
+If you delete a file **outside** dikw (e.g. `rm` it, or remove it in
+Obsidian) the document row is left behind, stuck `active`. The default
+`lint` scan flags it as **`missing_file`** (D/K/W); clean it up with:
+
+```bash
+dikw client lint propose --rule missing_file   # returns a task id
+dikw client lint apply <task_id>               # purges the orphaned row(s)
+```
+
+This is the passive complement to `delete` (which trashes a *live* file):
+`missing_file` purges the stale row whose file is *already* gone. Same edge
+policy — inbound links from live pages become `broken_wikilink`, never
+silently rewritten.
+
 ## 7. Check retrieval quality on your corpus
 
 ```bash

@@ -110,11 +110,18 @@ class FixOperation(BaseModel):
         "update_page",
         "delete_page",
         "reconcile_provenance",
+        "purge_document",
     ]
     path: str
     new_frontmatter: dict[str, Any] | None = None
     new_body: str | None = None
     expected_hash: str | None = None
+    # Carrier for ``purge_document`` only (the ``missing_file`` fixer): the
+    # DIKW layer of the orphaned row, so apply can derive its ``doc_id`` via
+    # ``doc_id_for(layer, path)`` without a K-only path→doc_id map. The file
+    # is already gone, so there is no ``expected_hash`` to stamp — the op's
+    # safety invariant is "the file is still absent", re-checked at apply.
+    layer: Layer | None = None
     # Carrier for ``reconcile_provenance`` only: the snapshot of
     # frontmatter ``sources:`` the fixer observed. Apply passes this
     # straight into ``storage.replace_provenance_from(doc_id, …)``; the
@@ -154,6 +161,12 @@ class ApplyReport(BaseModel):
     applied: list[FixOperation] = Field(default_factory=list)
     skipped: list[dict[str, Any]] = Field(default_factory=list)
     knowledge_paths_changed: list[str] = Field(default_factory=list)
+    # Paths whose orphaned ``documents`` row was purged by a ``purge_document``
+    # op (the ``missing_file`` fixer). Distinct from ``knowledge_paths_changed``
+    # (file-content edits) — a purge removes a row whose file is already gone,
+    # touches no file, and spans D/K/W, so a ``sources/`` purge would not fit
+    # the K-named "paths changed" channel.
+    purged_documents: list[str] = Field(default_factory=list)
     # Chunks embedded inline as part of this apply pass (0.4.0+). When
     # the caller wires an ``embedder`` + ``text_version_id``, Phase 1
     # re-chunks every changed page through ``persist_knowledge`` with
@@ -595,6 +608,11 @@ async def run_lint_apply(
     persist_failed_paths: set[str] = set()
     paths_changed: set[str] = set()
     deleted_paths: set[str] = set()
+    # Paths whose orphaned row was purged (``purge_document`` / missing_file).
+    # Tracked separately from ``deleted_paths`` (active-file → trash deletes)
+    # because a purge touches no file and writes no Phase-1/Phase-2 work; it
+    # only needs to surface in ``ApplyReport.purged_documents``.
+    purged_paths: set[str] = set()
     # Every path mutated by an in-pass op (whether write or delete) so
     # subsequent ops on the same path can't silently revert each other.
     # Each ``new_body`` was generated against the pre-apply tree;
@@ -695,6 +713,14 @@ async def run_lint_apply(
                 if op.kind == "delete_page":
                     touched_paths.add(op.path)
                     deleted_paths.add(op.path)
+                elif op.kind == "purge_document":
+                    # Row purged; the file was already gone. No file write, no
+                    # Phase-1 re-chunk, no Phase-2 referrer reconcile (the
+                    # purge deliberately leaves inbound edges to surface as
+                    # broken_wikilink). ``touched_paths`` blocks a sibling op
+                    # on the same path; ``purged_paths`` feeds the report.
+                    touched_paths.add(op.path)
+                    purged_paths.add(op.path)
                 elif op.kind == "reconcile_provenance":
                     # No file change → no Phase 1 ``persist_knowledge``
                     # re-chunk needed, no ``knowledge_paths_changed`` entry,
@@ -826,7 +852,7 @@ async def run_lint_apply(
     # deleted by this pass.
     referrer_paths = {
         proposal.issue_path for proposal in proposals
-    } - paths_changed - deleted_paths
+    } - paths_changed - deleted_paths - purged_paths
     for path in sorted(referrer_paths):
         abs_path = (base_root / path).resolve()
         if not abs_path.is_file():
@@ -851,6 +877,7 @@ async def run_lint_apply(
         knowledge_paths_changed=sorted(
             (paths_changed - persist_failed_paths) | deleted_paths
         ),
+        purged_documents=sorted(purged_paths),
         chunks_embedded=chunks_embedded_total,
         chunks_pending_embedding=chunks_pending_total,
     )
@@ -950,6 +977,25 @@ def _preflight_proposal(
 
     for op in proposal.operations:
         abs_path = (base_root / op.path).resolve()
+
+        # ``purge_document`` (missing_file) spans D/K/W and only removes a
+        # storage row whose file is already gone, so it bypasses the
+        # knowledge/ sandbox the page-mutating ops require. Its preflight is
+        # purely filesystem: the file must still be absent (a restored file
+        # means the row is valid again). Row existence is re-checked in
+        # ``_apply_one_op`` (preflight has no storage handle).
+        if op.kind == "purge_document":
+            if op.path in already_touched:
+                return (
+                    f"op {op.kind} on {op.path!r} would conflict with a "
+                    "sibling proposal that already mutated this path"
+                )
+            if op.layer is None:
+                return f"purge_document on {op.path!r} missing layer"
+            if abs_path.is_file():
+                return f"purge_document target reappeared on disk: {op.path!r}"
+            continue
+
         try:
             abs_path.relative_to(knowledge_dir)
         except ValueError:
@@ -1015,12 +1061,37 @@ async def _apply_one_op(
     that the caller appends to :attr:`ApplyReport.skipped` on failure."""
     abs_path = (base_root / op.path).resolve()
 
-    # Sandbox: confine ops to ``<base>/wiki/``, not the whole base.
-    # ``apply``'s contract is wiki-layer mutation only — a malformed
+    # ``purge_document`` (missing_file fixer) handled first: it spans D/K/W
+    # and only removes a storage row whose backing file is already gone, so
+    # it bypasses the knowledge/ sandbox below (which is for page-mutating
+    # ops). Safety is two checks: the file must still be absent (a restored
+    # file means the row is valid again), and the row must still exist (an
+    # honest skip beats reporting a no-op ``delete_document`` as a purge).
+    if op.kind == "purge_document":
+        if op.layer is None:
+            return _skip(proposal_id, op, "purge_document op missing layer")
+        if abs_path.is_file():
+            return _skip(
+                proposal_id, op,
+                "file reappeared on disk since scan — not purging the row "
+                "(re-run lint propose)",
+            )
+        purge_doc_id = doc_id_for(op.layer, op.path)
+        if await storage.get_document(purge_doc_id) is None:
+            return _skip(
+                proposal_id, op,
+                "no document row to purge (already purged since scan?)",
+            )
+        await storage.delete_document(purge_doc_id)
+        return None
+
+    # Sandbox: confine page-mutating ops to ``<base>/knowledge/``, not the
+    # whole base. These ops' contract is K-layer mutation only — a malformed
     # proposal with a base-relative path like ``sources/foo.md`` or
-    # ``wiki/../dikw.yml`` would resolve inside the base root and
-    # would pass a wider check, but those targets are outside the
-    # K-layer tree we're authorised to mutate.
+    # ``knowledge/../dikw.yml`` would resolve inside the base root and pass a
+    # wider check, but those targets are outside the K-layer tree we're
+    # authorised to mutate. (``purge_document`` is exempt — handled above — it
+    # spans D/K/W and writes no file, only removing a row by doc_id.)
     knowledge_dir = (base_root / "knowledge").resolve()
     try:
         abs_path.relative_to(knowledge_dir)
