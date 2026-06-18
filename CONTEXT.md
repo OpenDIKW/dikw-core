@@ -80,8 +80,10 @@ are *not* part of that promise (once `synth` writes a page to disk, the file is 
 content like any other). The terms below name the divergences between disk and the
 projection, and the actions that repair them. They are **cross-cutting maintenance**
 (like `lint`), not pipeline transitions — the "one verb, one transition" rule above
-governs the pipeline verbs, not these. This is agreed design (ADR-0005); the language
-is settled here ahead of implementation, so the verbs/routes below are not yet shipped.
+governs the pipeline verbs, not these. This is agreed design (ADR-0005), landing
+incrementally: `delete` (PR1) and the `missing_file` drift kind (PR2) have shipped;
+`untracked_file` / `stale_index` / `dangling_provenance` are settled here ahead of
+implementation and not yet shipped.
 
 **drift**:
 A divergence between the authoritative on-disk trees and the `documents` projection. Surfaced as `lint` kinds, repaired through `lint apply` — or, for a single named file, `delete`.

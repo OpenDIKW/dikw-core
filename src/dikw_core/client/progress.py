@@ -790,12 +790,18 @@ def render_lint_apply_report(
     applied = report.get("applied") or []
     skipped = report.get("skipped") or []
     paths = report.get("knowledge_paths_changed") or []
+    purged = report.get("purged_documents") or []
     embedded = int(report.get("chunks_embedded") or 0)
     pending = int(report.get("chunks_pending_embedding") or 0)
     console.print(
         f"[green]applied[/green] {len(applied)} op(s); "
         f"[yellow]skipped[/yellow] {len(skipped)}"
     )
+    if purged:
+        # ``missing_file`` purges: orphaned rows whose file was already gone.
+        console.print(
+            f"[red]purged[/red] {len(purged)} orphaned row(s): {', '.join(purged)}"
+        )
     if embedded or pending:
         # Make the embed status explicit so the user knows whether to
         # follow up with ``dikw client ingest`` for the resume scan.

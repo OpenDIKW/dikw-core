@@ -1,6 +1,7 @@
-"""K-layer hygiene checker.
+"""K/W-layer hygiene checker.
 
-Reports four classes of issue that are safe to detect deterministically:
+Reports issue classes that are safe to detect deterministically (see the
+``LintKind`` literal for the full set):
 
 * ``broken_wikilink`` — wikilinks whose target title isn't a known K page.
 * ``orphan_page`` — pages with no inbound wikilinks and no listing source.
@@ -9,6 +10,15 @@ Reports four classes of issue that are safe to detect deterministically:
   content stuffed together (long body, many H2 sections, link-list-y).
   Layer-3 backstop for the Zettelkasten atomicity rule the synth prompt
   enforces in layer 1; the prompt can drift, this can't.
+* ``missing_provenance`` — frontmatter ``sources:`` disagrees with the
+  provenance table.
+* ``invalid_wisdom_status`` — a wisdom page's ``status:`` isn't a known enum.
+* ``uncategorized`` — a K page filed under the fallback category.
+* ``title_slug_quality`` — K-page title/slug hygiene (missing/blank H1,
+  title-vs-H1 drift, degenerate ``untitled`` slug).
+* ``missing_file`` — an *active* ``documents`` row (D/K/W) whose backing file
+  is gone from disk; the deterministic fixer purges the orphaned row
+  (ADR-0005, the filesystem is the source of truth).
 
 Later phases may add semantic checks; this module intentionally stays
 lexical.
@@ -87,6 +97,7 @@ LintKind = Literal[
     "invalid_wisdom_status",
     "uncategorized",
     "title_slug_quality",
+    "missing_file",
 ]
 
 # 0.3.0 PR2 — frontmatter ``status:`` enum values the engine accepts on
@@ -311,14 +322,55 @@ async def run_lint(
     ) + list(
         await storage.list_documents(layer=Layer.WISDOM, active=True)
     )
+
+    # ``missing_file`` (D/K/W) — an *active* document row whose backing file is
+    # gone from disk. Detected up front, across all three layers, so a vanished
+    # page is surfaced ONLY as ``missing_file`` and excluded from every other
+    # pass below: disk is authoritative (ADR-0005), the row is a stale
+    # projection pending purge, and a gone page can't meaningfully be an
+    # ``orphan_page`` / ``uncategorized`` / ``duplicate_title`` (those
+    # remediations contradict "purge the row"). The file is gone, so there is
+    # no frontmatter to carry a ``lint: {skip}`` annotation — ``missing_file``
+    # is never suppressible. D-layer ``sources/`` rows are never page_docs (no
+    # wikilink / atomicity / title concerns), so they only ever reach lint via
+    # this detector — closing the original "delete a source file, its row is
+    # stuck active forever" gap. The deterministic ``MissingFileFixer`` purges
+    # each orphaned row + its outgoing edges (D5: inbound edges from live pages
+    # stay as ``broken_wikilink``).
+    source_docs = list(
+        await storage.list_documents(layer=Layer.SOURCE, active=True)
+    )
+    missing_paths: set[str] = set()
+    for doc in [*source_docs, *page_docs]:
+        if not (root / doc.path).resolve().is_file():
+            missing_paths.add(doc.path)
+    # Emit in sorted-path order. ``list_documents`` has no ORDER BY, so without
+    # this the issue order — and thus which rows survive ``lint propose``'s
+    # ``--limit`` cap on a base with many orphans — would be DB-arbitrary and
+    # differ across runs / adapters. (Repeated propose→apply still drains them
+    # all; this just makes each pass deterministic.)
+    for path in sorted(missing_paths):
+        issues.append(
+            LintIssue(
+                kind="missing_file",
+                path=path,
+                detail=(
+                    "active document row has no backing file on disk — "
+                    "purge the orphaned row (the file was deleted outside dikw)"
+                ),
+            )
+        )
+
+    # Every other K/W check runs over the *live* page set — pages whose file is
+    # gone are excluded so they don't double-surface as orphan/duplicate/etc.
+    live_page_docs = [d for d in page_docs if d.path not in missing_paths]
+
     title_to_paths: dict[str, list[str]] = defaultdict(list)
     inbound: Counter[str] = Counter()
-    paths: list[str] = []
 
-    for doc in page_docs:
+    for doc in live_page_docs:
         title = doc.title or Path(doc.path).stem
         title_to_paths[title].append(doc.path)
-        paths.append(doc.path)
 
     # Share the same resolve semantics as engine persistence
     # (``persist_knowledge``): exact -> fuzzy normalize -> collision refusal.
@@ -334,17 +386,21 @@ async def run_lint(
     # first-iterated layer win, contradicting what ``persist_knowledge``
     # actually wrote into storage and causing ``broken_wikilink`` and
     # ``duplicate_title`` lint to disagree with the persisted graph.
+    # Built from ``live_page_docs`` so a missing page's title neither resolves
+    # referrers' ``[[wikilink]]``s (they correctly surface as broken until the
+    # row is purged or the file restored) nor masks a live same-titled page.
     title_to_path, fuzzy_index = build_title_indexes(
-        (doc.title or Path(doc.path).stem, doc.path) for doc in page_docs
+        (doc.title or Path(doc.path).stem, doc.path) for doc in live_page_docs
     )
 
-    for doc in page_docs:
+    for doc in live_page_docs:
         abs_path = (root / doc.path).resolve()
-        if not abs_path.is_file():
-            continue
         try:
             post = frontmatter.load(str(abs_path))
         except Exception:
+            # File vanished between the up-front missing scan and here (a rare
+            # race), or unparseable frontmatter — skip; the next lint pass
+            # reflects the settled state.
             continue
         body = post.content
         skip_kinds = _read_lint_skip(post.metadata)
@@ -496,7 +552,9 @@ async def run_lint(
     # orphans — no inbound wikilinks. Both K and W layer pages are scanned;
     # dikw-core no longer generates ``knowledge/index.md`` / ``knowledge/log.md``
     # scaffolds (ADR-0004), so there are no built-in pages to exclude.
-    for doc in page_docs:
+    # ``live_page_docs`` excludes ``missing_file`` rows, so a vanished page is
+    # never also reported as an orphan.
+    for doc in live_page_docs:
         if "orphan_page" in suppressions.get(doc.path, set()):
             continue
         if inbound[doc.path] == 0:
@@ -511,7 +569,7 @@ async def run_lint(
     # uncategorized — pages synth filed under the fallback bucket because it
     # couldn't place them in a declared category. ``category_from_path`` only
     # matches ``knowledge/`` paths, so wisdom pages never trip this.
-    for doc in page_docs:
+    for doc in live_page_docs:
         if "uncategorized" in suppressions.get(doc.path, set()):
             continue
         if category_from_path(doc.path) == fallback:

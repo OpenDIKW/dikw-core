@@ -9,6 +9,23 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **`missing_file` drift lint kind — purge orphaned document rows (D/K/W).** A new
+  deterministic `lint` kind (with `MissingFileFixer`) that detects an *active*
+  `documents` row whose backing file is gone from disk — a `sources/` (D),
+  `knowledge/` (K), or `wisdom/` (W) file deleted outside dikw — and proposes a
+  single `purge_document` op that drops the orphaned row + its outgoing edges via
+  `Storage.delete_document`. Runs in the default `lint` scan; fix it with
+  `dikw client lint propose --rule missing_file` → `dikw client lint apply <task_id>`.
+  Closes the original gap where deleting a source file left its row stuck at
+  `active=True` forever (`run_lint` never scanned D rows). Inbound `[[wikilink]]`s
+  from live pages are left to surface as `broken_wikilink` (delete_document clears
+  only outgoing edges; the kind never rewrites a user's page); a truly dangling edge
+  (both ends purged) clears itself. The op carries the resolved `layer`, re-checks
+  at apply time that the file is still absent and the row still exists (propose→apply
+  race / restored-file safety), and reports purged paths under
+  `ApplyReport.purged_documents`. Second slice of ADR-0005
+  (filesystem-as-source-of-truth); `untracked_file` / `stale_index` /
+  `dangling_provenance` land in follow-ups.
 - **`dikw client delete <path>` — first-class document deletion (D/K/W).** A new
   immediate verb (`api.delete_page` / `POST /v1/base/delete`) that deletes any
   registered document — a `sources/` file, a `knowledge/` page, or a `wisdom/`

@@ -505,8 +505,8 @@ def lint_propose_cmd(
             "--rule",
             help=(
                 "Filter to one lint kind: broken_wikilink | orphan_page | "
-                "duplicate_title | non_atomic_page. "
-                "PR1 only ships a fixer for broken_wikilink; other kinds "
+                "duplicate_title | non_atomic_page | missing_provenance | "
+                "missing_file. Kinds without a fixer (e.g. duplicate_title) "
                 "are accepted but every issue lands in `skipped`."
             ),
         ),
