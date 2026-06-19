@@ -100,7 +100,7 @@ Module boundaries are chosen so each subpackage fits in a single reading pass an
 - **Language**: Python 3.12+
 - **Packaging**: `uv` → `pyproject.toml` (PEP 621), `uv.lock` committed; single source layout under `src/dikw_core/`
 - **Storage (default)**: stdlib `sqlite3` + `sqlite-vec` (pip) for vectors; FTS5 built into SQLite. Behind a `Storage` Protocol.
-- **Storage (enterprise)**: Postgres 15+ with `pgvector` ≥0.6 and `tsvector` + GIN for full-text, via `psycopg[binary,pool]`. Optional extra: `uv pip install dikw-core[postgres]`.
+- **Storage (enterprise)**: Postgres 15+ with `pgvector` ≥0.4 and `tsvector` + GIN for full-text, via `psycopg[binary,pool]`. Optional extra: `uv pip install dikw-core[postgres]`.
 - **Schemas**: Pydantic v2 for config, records, tool I/O
 - **Markdown**: `markdown-it-py` + `python-frontmatter`; wikilink parsing via a small in-repo module (not a heavy dep)
 - **LLM SDKs**: `anthropic`, `openai` (the `openai` SDK covers all OpenAI-compatible endpoints), behind a thin provider interface
@@ -154,9 +154,10 @@ dikw-core/
 │   │   │
 │   │   ├── info/             # I layer
 │   │   │   ├── chunk.py      # heading-aware markdown chunking
+│   │   │   ├── tokenize.py   # CJK-aware tokenization (jieba default)
 │   │   │   ├── embed.py      # batched embedding via provider
-│   │   │   ├── index.py      # FTS5 + sqlite-vec writes
-│   │   │   └── search.py     # BM25 + vector + RRF + optional rerank
+│   │   │   ├── render.py     # markdown → chunk/page rendering
+│   │   │   └── search.py     # BM25 + vector + RRF (FTS5 + sqlite-vec writes live in the storage adapters)
 │   │   │
 │   │   ├── knowledge/        # K layer
 │   │   │   ├── page.py       # page read/write, front-matter conventions
@@ -170,12 +171,13 @@ dikw-core/
 │   │
 │   ├── providers/            # LLM + embedding abstraction
 │   │   ├── base.py           # LLMProvider, EmbeddingProvider protocols
-│   │   ├── anthropic.py      # claude sonnet/haiku via anthropic SDK
+│   │   ├── anthropic_compat.py # claude sonnet/haiku via anthropic SDK
 │   │   └── openai_compat.py  # openai SDK pointed at any compat endpoint
 │   │
 │   ├── prompts/              # versioned prompt templates (Jinja2-lite strings)
 │   │   ├── synthesize.md
-│   │   └── lint.md           # K-layer LLM prompts; wisdom layer is hand-written, no prompt
+│   │   ├── lint_fix_orphan_merge.md
+│   │   └── lint_fix_broken_wikilink_grounded.md  # K-layer lint-fixer LLM prompts; deterministic lint kinds use no prompt; wisdom is hand-written
 │   │
 │   ├── server/               # FastAPI app, auth, sync + task routes, NDJSON streamer
 │   ├── client/               # remote Typer CLI + httpx transport + NDJSON progress + sources importer
@@ -221,7 +223,7 @@ my-base/
 - **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `category`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
 - **Folder = category** — every knowledge page is filed under a folder path drawn from the configured **category taxonomy** (`schema.categories` in `dikw.yml`; default `entity`/`concept`/`note`, arbitrary depth e.g. `产品/移动端/`), plus `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior. The category folder tree *is* the catalogue — there is no generated `index.md` (see [ADR-0004](adr/0004-drop-generated-index-and-log.md)).
 - **History lives in the index, not the vault** — engine activity is recorded in the `knowledge_log` storage table; dikw-core no longer renders a `knowledge/log.md` chronology into the vault.
-- **Engine state stays out of the vault** — the `.dikw/` sidecar directory is gitignored and Obsidian-ignored (`.obsidian/app.json` `userIgnoreFilters` receives a `.dikw/` entry on `dikw init`).
+- **Engine state stays out of the vault** — the `.dikw/` sidecar directory is added to the base's `.gitignore` on `dikw init` (the engine does not create or edit any Obsidian config such as `.obsidian/app.json`).
 - **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing in Obsidian never sees engine-only constructs that would get stripped on round-trip.
 
 `dikw.yml` example:
@@ -354,7 +356,9 @@ CREATE TABLE links (
     PRIMARY KEY (src_doc_id, dst_path, line)
 );
 CREATE TABLE knowledge_log (
-    ts INTEGER, action TEXT, src TEXT, dst TEXT, note TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL, action TEXT NOT NULL,
+    src TEXT, dst TEXT, note TEXT
 );
 
 -- W
@@ -423,7 +427,7 @@ Each operation is implemented in `dikw_core.api` and surfaced over HTTP by the s
 | `ingest(paths)` | file paths | updated `documents`/`chunks`/`documents_fts`/`vec_chunks_v<id>` | D→I; deterministic; idempotent by content hash |
 | `synthesize(scope)` | source doc_ids (or "new since log") | new/updated knowledge pages + knowledge_log entries | I→K; LLM call with prompts/synthesize.md |
 | `retrieve(q)` | user question | ranked chunks + page refs (no LLM call) | hybrid search via `info/search.py` (BM25 + vec RRF); **LLM synthesis is the agent's responsibility, not dikw-core's** |
-| `lint()` | — | report of broken links, orphan pages, duplicated entities | K+W hygiene; prompts/lint.md |
+| `lint()` | — | report of broken links, orphan pages, duplicated entities | K+W hygiene; deterministic detection, optional LLM fixers use prompts/lint_fix_*.md |
 | `status()` | — | counts per layer, last-ingest, last-synthesize, pending review | for CLI and HTTP `/v1/status` |
 
 ## Wisdom Layer Design
@@ -556,7 +560,7 @@ Design constraints:
 The Postgres adapter is installed as an **optional extra** so SQLite users never pay for the `psycopg` dependency footprint:
 ```toml
 [project.optional-dependencies]
-postgres = ["psycopg[binary,pool] >=3.2", "pgvector >=0.3"]
+postgres = ["psycopg[binary,pool] >=3.3", "pgvector >=0.4"]
 ```
 
 ## Provider Abstraction
@@ -572,7 +576,7 @@ class EmbeddingProvider(Protocol):
     async def embed(self, texts: list[str], *, model: str) -> list[list[float]]: ...
 ```
 
-`providers/anthropic.py` wraps the official `anthropic` SDK for LLM; raises for embedding (unsupported). `providers/openai_compat.py` wraps the official `openai` SDK and takes `base_url` + `api_key` from env/config, covering OpenAI proper, Azure OpenAI, Ollama, vLLM, TEI-style embedding endpoints, and any Claude Code-style OpenAI-compat. `providers/__init__.py` resolves instances from `dikw.yml`; swapping providers is a config-only change.
+`providers/anthropic_compat.py` wraps the official `anthropic` SDK for LLM (class `AnthropicCompatLLM`, selected via `dikw.yml` `llm: anthropic_compat`); raises for embedding (unsupported). `providers/openai_compat.py` wraps the official `openai` SDK and takes `base_url` + `api_key` from env/config, covering OpenAI proper, Azure OpenAI, Ollama, vLLM, TEI-style embedding endpoints, and any Claude Code-style OpenAI-compat. `providers/__init__.py` resolves instances from `dikw.yml`; swapping providers is a config-only change.
 
 Prompt caching: when the provider is Anthropic, use the `cache_control` param on the system prompt and large knowledge blocks in `synthesize` — the knowledge schema is near-static per session and is the prime caching target. (Query-time prompt caching is the agent's concern, not dikw-core's, since dikw-core does not call the LLM at retrieve time.)
 
@@ -610,7 +614,7 @@ Prompt caching: when the provider is Anthropic, use the `cache_control` param on
 - **Phase 3 — W (wisdom, the differentiator):** hand-written first-class documents under `wisdom/<author>/<slug>.md`, indexed via `api.write_wisdom_page` (CLI `dikw client wisdom write`; HTTP `POST /v1/base/wisdom`) through the layer-symmetric `persist_wisdom` pipeline, returned by retrieve tagged `Hit.layer == "wisdom"`, and covered by the unified lint pass. No LLM authoring path. The earlier `distill` + `wisdom_items` + `review approve|reject` design (a server-internal candidate queue) is retired — see `docs/adr/0002-wisdom-as-first-class-documents.md` for the rationale.
 - **Phase 4 — Polish:** OpenAI-compat provider completeness (Ollama and Azure verified), prompt-caching on Anthropic paths, packaging for PyPI (`pip install dikw-core`), docs site, GitHub Actions release automation.
 - **Phase 5 — Alternate storage adapters:**
-  - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `postgres:16`+`pgvector` container in CI. Packaged as `dikw-core[postgres]` optional extra.
+  - **Postgres (enterprise):** `storage/postgres.py` using `psycopg[binary,pool]` + `pgvector`, `migrations/postgres/schema.sql` with `tsvector`+GIN for FTS and `vector(N)` for embeddings. Contract test suite runs green against a `pgvector/pgvector:0.8.2-pg18` container in CI. Packaged as `dikw-core[postgres]` optional extra.
   - Acceptance: the Phase 1–3 verification script runs end-to-end against the Postgres adapter with only `storage.backend` flipped in `dikw.yml`.
 
 Each phase is a landable slice: CI green, tests added, docs updated.
@@ -626,7 +630,7 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 - `src/dikw_core/domains/data/backends/markdown.py` — MD parser + front-matter
 - `src/dikw_core/domains/info/chunk.py` — heading-aware chunker (port logic from qmd `store.ts:257–310`)
 - `src/dikw_core/domains/info/search.py` — RRF fusion on top of `storage.fts_search` + `storage.vec_search` (port from `mineru-doc-explorer/src/hybrid-search.ts`)
-- `src/dikw_core/providers/{base,anthropic,openai_compat}.py`
+- `src/dikw_core/providers/{base,anthropic_compat,openai_compat}.py`
 - `src/dikw_core/cli.py`, `src/dikw_core/server/app.py`, `src/dikw_core/client/cli_app.py`
 - `tests/test_storage_contract.py` — parameterized over backends
 - `.github/workflows/ci.yml`
@@ -703,7 +707,7 @@ their vectors share one space — a text query naturally matches
 against image semantics, no caption-to-text intermediary required.
 
 **Embedding versioning.** Every embedding generation is identified by
-a composite tuple `(provider, model, revision, dim, normalize, distance)`
+a composite tuple `(provider, model, revision, dim, normalize, distance, modality)`
 in the new `embed_versions` table. The `revision` field is the
 user-facing escape hatch when a vendor silently refreshes weights
 behind a stable model name. Each version gets its own per-version

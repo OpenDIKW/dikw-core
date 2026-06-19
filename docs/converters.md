@@ -140,18 +140,19 @@ pipelines, some LLM-assisted converters), the plugin can either:
 
 | Plugin behavior                          | dikw client surfaces                                    |
 | ---------------------------------------- | ------------------------------------------------------- |
-| Raises any exception during `convert()`  | `SourceImportError(f"converter {name!r} failed: {e}")`  |
-| Returns without writing any files        | `SourceImportError("converter produced no output")`     |
+| Raises any exception during `convert()`  | `SourceImportError(f"converter {name!r} failed on {input}: {e}")` |
+| Returns without writing any files        | `SourceImportError(f"converter {name!r} produced no output for {input}")` |
 | Writes md+assets that fail md_inspect    | Normal pre-flight error chain (frontmatter, asset_missing) |
 | Missing `name` / `extensions` attribute  | `ConverterError` at `discover()` time, before dispatch  |
 
 ## Staging + cleanup
 
-dikw-core creates a `tempfile.mkdtemp(prefix="dikw-import-")` directory
-and passes `<staging>/<stem>` as `output_dir` to the plugin. The
-staging directory is cleaned up via `shutil.rmtree` whether the import
-succeeds or fails. Plugins should not assume `output_dir` persists
-beyond the `convert()` call.
+dikw-core creates a `tempfile.TemporaryDirectory(prefix="dikw-import-")`
+staging directory, plants a `sources/` subdir at its root, and passes
+`<staging>/sources/<stem>` as `output_dir` to the plugin. The staging
+tree is removed automatically when the context manager exits, whether
+the import succeeds or fails. Plugins should not assume `output_dir`
+persists beyond the `convert()` call.
 
 ## Versioning
 

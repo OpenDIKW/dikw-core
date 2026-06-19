@@ -30,7 +30,7 @@ my-base/
 ├── wisdom/               # hand-written principles / lessons / patterns (you author these
 │   └── .gitkeep          # in Obsidian or via `dikw client wisdom write`)
 └── .dikw/                # engine state (gitignored)
-    └── index.sqlite
+    └── .gitkeep          # index.sqlite is created here on first ingest/serve
 ```
 
 The whole tree is the **dikw base**; the `knowledge/` subdirectory is just
@@ -151,7 +151,7 @@ Obsidian vault without divergence. Clients render images by mapping
 each `assets[].original_paths` entry back to `assets[].url`.
 
 Asset responses are immutable (content-addressed by SHA-256), so the
-route emits a strong `ETag` + `Cache-Control: immutable, max-age=1y`;
+route emits a strong `ETag` + `Cache-Control: public, max-age=31536000, immutable`;
 a browser or HTTP cache fronting the server can revalidate with a
 single `If-None-Match`.
 
@@ -436,7 +436,7 @@ Remove any registered document — a source, a knowledge page, or a wisdom
 page — by path:
 
 ```bash
-dikw client delete knowledge/concepts/outdated-note.md
+dikw client delete knowledge/concept/outdated-note.md
 dikw client delete wisdom/elon-musk/draft.md --reason "superseded"
 ```
 

@@ -104,7 +104,7 @@ src/dikw_core/
 │   ├── base.py              LLMProvider + EmbeddingProvider + MultimodalEmbeddingProvider Protocols
 │   ├── anthropic_compat.py  anthropic SDK, system-prompt cache_control; retargets via llm_base_url
 │   ├── openai_compat.py     openai SDK; any base_url (OpenAI, Azure, Ollama, DeepSeek, GLM, Gemini-compat, …)
-│   ├── openai_codex.py      ChatGPT-only GPT-5 family via dikw-managed OAuth at <base>/.dikw/auth.json
+│   ├── openai_codex.py      ChatGPT-only codex model family (gpt-5.5, …) via dikw-managed OAuth at <base>/.dikw/auth.json
 │   ├── codex_auth.py        device-code + import + refresh for the codex OAuth store
 │   ├── gitee_multimodal.py  Gitee AI multimodal-embedding HTTP client (text + image inputs)
 │   └── _http.py             shared httpx pool helpers
@@ -140,7 +140,7 @@ documents and their derived rows.
 | Layer | Write entry | Trigger surface | Embed timing |
 |---|---|---|---|
 | **D** (source) | `persist_source` (`domains/data/persist.py`) | `api.ingest` (one call per scanned source file) | **Deferred** — `api.ingest` accumulates chunks across files and runs one bulk embed at end-of-scan for throughput |
-| **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize_for_source` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when `DIKW_EMBEDDING_API_KEY` is set, otherwise defers |
+| **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when `DIKW_EMBEDDING_API_KEY` is set, otherwise defers |
 | **W** (wisdom) | `persist_wisdom` (`domains/wisdom/persist.py`) | `api.write_wisdom_page` (CLI `dikw client wisdom write` / HTTP `POST /v1/base/wisdom`) | **Inline** unless the caller passes `no_embed=True` |
 
 **Cross-layer resume scan.** At the end of every `dikw client ingest`,
@@ -512,8 +512,10 @@ Issue #89 moves graph construction into the engine:
    to stdout (no `--format table` — graph data isn't tabular); pipes
    straight into `jq`.
 
-`base_revision` is `sha256(sorted (path, mtime, active) triples)` —
-content-addressed and cheap (microseconds), so a client can
+`base_revision` is a `sha256` over the path-sorted docs, mixing each
+doc's `path`, `title`, `layer`, `mtime`, current on-disk body hash (or
+a missing-body sentinel), and `active` — content-addressed and cheap
+(microseconds), so a client can
 short-circuit unchanged graphs by comparing the revision string before
 re-rendering. Not a cryptographic commitment to body content; clients
 that need that should hash the response themselves. v1 deliberately
