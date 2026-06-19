@@ -178,8 +178,8 @@ async def test_synth_clean_but_truncated_response_is_not_marked_done(
     ``finish_reason`` signals a budget cutoff ("length"/"max_tokens") dropped
     its tail cleanly — no unclosed tag to detect. The pipeline must persist
     the survivor pages yet count the group as an error so the source is NOT
-    marked synth-done, letting the next run recover the dropped tail (the K
-    layer has no scan-based reindex). Regression guard for issue #194."""
+    marked synth-done, letting the next run recover the dropped tail by
+    re-deriving it from the D-source. Regression guard for issue #194."""
     embedder = FakeEmbeddings()
     await api.ingest(wiki_with_fixtures, embedder=embedder)
 

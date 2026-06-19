@@ -54,10 +54,10 @@ async def delete_page(
     lint's ``delete_page`` fixer: if the trash move fails after the row is
     gone, the file still sits at its original path — recoverable by
     re-indexing it (a D-layer source self-heals on the next
-    ``dikw client ingest``, idempotent on hash; K/W have no scan-based
-    reindex yet, so recover by re-running ``synth --all`` / ``wisdom write``
-    until the reconciliation lints land). The reverse order would strand an
-    orphaned row pointing at a missing file.
+    ``dikw client ingest``, idempotent on hash; a restored K/W page is
+    re-projected by the ``untracked_file`` drift lint, or rebuilt by
+    re-running ``synth --all`` / ``wisdom write``). The reverse order would
+    strand an orphaned row pointing at a missing file.
 
     ``delete_document`` clears the doc's **outgoing** links + provenance.
     Inbound edges from *live* pages are deliberately left to surface as

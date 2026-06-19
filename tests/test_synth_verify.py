@@ -113,8 +113,9 @@ async def test_clean_run_verify_passes(tmp_path: Path) -> None:
 
     Two synth passes: the first persists each page but forward references to
     pages authored later in the SAME run stay unresolved (the documented
-    out-of-order-write limitation — K has no scan-based reindex), so the last
-    pages are still orphan. A second ``force_all`` pass re-resolves every link
+    out-of-order-write limitation — the referring page's body is unchanged, so
+    no drift lint re-resolves it), so the last pages are still orphan. A second
+    ``force_all`` pass re-resolves every link
     against the now-complete base, so the verify pass sees zero orphans, zero
     broken links, and zero near-duplicates."""
     wiki = _seed(tmp_path)

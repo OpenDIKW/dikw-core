@@ -172,9 +172,10 @@ async def test_failed_source_not_marked_done_so_resynth_recovers(
 ) -> None:
     """A source with a failed page must NOT be marked ``synth_source_done``,
     so the next default synth re-processes it and the deactivated page is
-    rebuilt to ``active=True``. This is K's recovery path (K has no
-    scan-based reindex): re-running synth restores a page parked inactive by
-    a transient failure."""
+    rebuilt to ``active=True``. This is the synth-path recovery: re-running
+    synth rebuilds from the D-source a page parked inactive by a transient
+    failure (the ``untracked_file`` drift lint only re-projects on-disk
+    bytes)."""
     wiki = _seed(tmp_path)
     embedder = FakeEmbeddings()
     await api.ingest(wiki, embedder=embedder)

@@ -931,10 +931,11 @@ def delete_cmd(
     Resolves the path to a registered document, purges its storage row +
     outgoing links/provenance, and soft-deletes the file to
     `<base>/trash/<layer>/<rel>`. To recover, move the file back into place:
-    a D-layer source re-indexes on the next `dikw client ingest`, but K/W
-    pages have no scan-based reindex yet — the `mv` restores the file, then
-    re-run `dikw client synth --all` (K) / `dikw client wisdom write` (W) to
-    re-index the recovered content. Inbound `[[wikilink]]`s from other pages
+    a D-layer source re-indexes on the next `dikw client ingest`; a restored
+    K/W page is re-indexed by the `untracked_file` drift lint
+    (`dikw client lint propose --rule untracked_file` then `lint apply`,
+    re-projecting the on-disk bytes as-is), or re-author it with
+    `dikw client synth --all` (K) / `dikw client wisdom write` (W). Inbound `[[wikilink]]`s from other pages
     are left dangling and surface as `broken_wikilink` on the next
     `dikw client lint` (the report's `inbound_broken` counts them) — delete
     never rewrites another page.
