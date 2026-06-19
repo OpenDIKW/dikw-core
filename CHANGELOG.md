@@ -111,6 +111,23 @@ on each entry call out exactly what shape changes break.
   block written by `orphan_page.mark_as_leaf` is deliberately not reserved.
   Behaviour-preserving for conformant synth output (which emits only `tags`).
 
+### Security
+
+- **Raise the `python-multipart` floor to `>=0.0.31` (security floor) — clears the
+  open Dependabot form-parsing advisories.** The declared floor was `>=0.0.26`, which
+  let the published wheel resolve a `python-multipart` vulnerable to the
+  `multipart/form-data` resource-exhaustion / DoS chain (GHSA-5rvq-cxj2-64vf and the
+  `<0.0.31` follow-ups GHSA-v9pg-7xvm-68hf / GHSA-6jv3-5f52-599m / GHSA-vffw-93wf-4j4q).
+  The lock was already bumped to `0.0.31` by Dependabot (#209), but the manifest floor
+  still permitted a downstream install below the fix; raising it hardens the
+  published-wheel contract and, by re-touching `uv.lock`, lets GitHub's dependency
+  graph re-ingest the already-patched resolution (`python-multipart 0.0.31`,
+  `starlette 1.3.1`) so the eight stale alerts auto-resolve. Starlette's matching
+  `request.form()` limit-bypass / DoS fixes (≥1.3.1, GHSA-82w8-qh3p-5jfq and the
+  `<1.1.0` advisories) already ship transitively via `fastapi` (locked) — it is not a
+  direct dependency, so no direct pin is added. Metadata-only: no resolved-version or
+  code change (`uv.lock` diff is the recorded root specifier alone).
+
 ## 0.5.3 — OpenTelemetry observability arc (traces + metrics + logs) + synth prompt restructure
 
 ### Added
