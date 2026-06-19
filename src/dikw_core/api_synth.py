@@ -176,8 +176,9 @@ async def synthesize(
                     # the done marker and re-populates this set. Without this,
                     # a ``synth --all`` re-synth whose page failed would leave
                     # the stale done marker in place and the next default
-                    # synth would skip the source, stranding the deactivated
-                    # page (K has no scan-based reindex).
+                    # synth would skip the source, leaving the page parked
+                    # inactive until a separate ``untracked_file`` drift-lint
+                    # reindex — the synth path should self-heal on its own.
                     already.discard(entry.src)
                     failed_sources.add(entry.src)
                 elif entry.action == "synth" and entry.src and entry.dst:
@@ -480,16 +481,17 @@ async def synthesize(
                 # ``synth_source_done`` for this source (applied in log order
                 # by the ``already`` computation above), so the next default
                 # synth re-processes the source and rebuilds the deactivated
-                # page — K has no scan-based reindex, so this is the only
-                # recovery path. Withholding the new done marker alone is not
-                # enough: a ``synth --all`` re-synth of an already-done source
-                # would otherwise leave the stale done marker in place.
+                # page from the D-source — the ``untracked_file`` drift lint
+                # would only re-project the on-disk bytes, so re-synth is the
+                # synth-path recovery. Withholding the new done marker alone is
+                # not enough: a ``synth --all`` re-synth of an already-done
+                # source would otherwise leave the stale done marker in place.
                 # Caveat: re-synth reactivates the page only if the LLM
                 # re-emits it at the same slug. If the next run produces a
-                # divergent page set (LLM non-determinism), the deactivated
-                # row + its on-disk ``.md`` diverge until ``dikw client
-                # reindex`` ships — the same no-reindex limitation that
-                # applies to K hand-edits.
+                # divergent page set (LLM non-determinism), the original
+                # on-disk ``.md`` is left orphaned at the old slug; the
+                # ``untracked_file`` drift lint re-indexes it back to
+                # ``active=True`` as a standalone page.
                 await storage.append_knowledge_log(
                     KnowledgeLogEntry(
                         ts=time.time(),
