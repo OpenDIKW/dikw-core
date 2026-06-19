@@ -49,9 +49,9 @@ cross-check the vendor's own docs.
 
 | Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | LLM key env | Embed key env |
 |---|---|---|---|---|---|---|
-| **OpenAI** (default) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
+| **OpenAI** (default embedder) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
 | **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *OAuth via `<base>/.dikw/auth.json` — bootstrap with `dikw auth login openai-codex`* | — |
-| **Anthropic** | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
+| **Anthropic** (default LLM) | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **MiniMax** | `anthropic_compat` | `https://api.minimaxi.com/anthropic` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
 | **Gemini** | `openai_compat` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
@@ -337,8 +337,10 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   synth NDJSON renderer only forwards `token` / `done`. Switch to
   reasoning models freely — the chain-of-thought just isn't surfaced to
   the user yet (a follow-up PR will add a `--show-reasoning` toggle).
-- **`$CODEX_HOME` is consulted only by `dikw auth import`** as the source
-  path. Dikw does not write to that location. The dikw store path
+- **`$CODEX_HOME` is consulted by `dikw auth import` and by the first-use
+  lazy migration** (`_maybe_migrate_from_codex_cli`, run on the first
+  `openai_codex` token resolution via `resolve_access_token`) as the
+  source path. Dikw does not write to that location. The dikw store path
   follows the base — multi-base setups carry independent credentials
   (copy `<old-base>/.dikw/auth.json` to `<new-base>/.dikw/auth.json` to
   share, or run `dikw auth login` per base).
@@ -478,11 +480,13 @@ embeddings stay cached).
 For a Chinese benchmark, repeat with `convert_cmteb.py` against a
 HuggingFace download — same workflow, see
 [`evals/README.md`](../evals/README.md#public-benchmarks) for the
-full command. **Before running any CJK eval**, flip
-`retrieval.cjk_tokenizer: jieba` in the scratch base's `dikw.yml`
-(gotcha #7) — otherwise the BM25 row in the ablation table will
-report 0.03 nDCG@10 regardless of fusion tuning, because FTS5's
-default tokenizer doesn't segment Chinese.
+full command. **Before running any CJK eval**, confirm
+`retrieval.cjk_tokenizer` is left at its default `jieba` in the scratch
+base's `dikw.yml` (gotcha #7) — a fresh base already segments Chinese,
+so no change is needed. Only if the base was created with
+`cjk_tokenizer: none` (the legacy FTS5 `unicode61` whitespace path)
+will the BM25 row in the ablation table report 0.03 nDCG@10 regardless
+of fusion tuning, because that path doesn't segment Chinese.
 
 ## OpenAI Codex (ChatGPT-backend GPT-5 series)
 
@@ -800,8 +804,8 @@ Change `model` (and `dim` if it differs) in `dikw.yml` and re-run
 `dikw client ingest`. The engine sees a new identity tuple, mints a new
 version row, creates a fresh `vec_assets_v<new_id>` table, and writes
 to it. The previous version's data stays in `vec_assets_v<old_id>`
-until you run `dikw embed reindex` (v1 ships a stub; v1.5 implements
-the real migration).
+until a future release implements the migration — there is no
+`dikw embed reindex` command today (no `embed` command group exists).
 
 ### Trying another multimodal provider
 

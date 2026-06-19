@@ -26,8 +26,11 @@ Triggered when the orphan's body (after frontmatter strip) is **under
 - the orphan has no `sources` and no `tags` in its frontmatter.
 
 Apply moves the file to `<base>/trash/knowledge/<original-rel-path>` and
-purges its storage rows. **Recovery**: drag the file back into `knowledge/`
-and rerun `dikw client ingest`. A `trashed: { at, reason, proposal_id }`
+purges its storage rows. **Recovery**: drag the file back into `knowledge/`,
+then re-index it — `dikw client ingest` does NOT scan `knowledge/` (it walks
+only `<base>/sources/`), so run `dikw client lint propose --rule untracked_file`
+then `dikw client lint apply <task_id>` to re-project the on-disk bytes as-is
+(no synth), or re-author with `dikw client synth --all`. A `trashed: { at, reason, proposal_id }`
 block is injected into the frontmatter on the way to trash for audit;
 strip it by hand on the way back.
 
@@ -138,7 +141,7 @@ the module-level constants; baseline numbers in `evals/BASELINES.md`.
 
 ```powershell
 # Inspect orphan count first
-uv run dikw client lint | python -c "import sys,json; d=json.load(sys.stdin); print(d['by_kind'].get('orphan_page', 0))"
+uv run dikw client lint | python -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for i in d['issues'] if i['kind']=='orphan_page'))"
 
 # Heuristic-only propose (no LLM, no API cost). Generates link /
 # delete / mark_as_leaf proposals.

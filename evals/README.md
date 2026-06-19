@@ -28,7 +28,11 @@ thresholds:
   mrr: 0.60
 ```
 
-Supported metric keys: `hit_at_3`, `hit_at_10`, `mrr`. Unknown keys reject
+Supported retrieval metric keys: `hit_at_3`, `hit_at_10`, `mrr`,
+`ndcg_at_10`, `recall_at_100` (the latter two are used by the BEIR/CMTEB
+calibration datasets such as scifact / cmteb-t2-subset). K-layer synth
+thresholds use the `synth/<metric>` namespace, and granularity views may
+be namespaced as `chunk/<metric>` / `asset/<metric>`. Unknown keys reject
 the dataset. Omitting `thresholds:` entirely is fine — the runner still
 computes metrics but `report.passed` is always True (useful for
 exploratory datasets you haven't calibrated yet).

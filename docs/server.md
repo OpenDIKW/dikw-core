@@ -30,7 +30,7 @@ The server speaks JSON over HTTP under `/v1/`. Two route families:
 | family | examples | shape |
 |---|---|---|
 | **Sync** (millisecond-level) | `GET /v1/status`, `POST /v1/check`, `POST /v1/lint`, `GET /v1/base/pages`, `GET /v1/base/pages/{path}`, `GET /v1/base/pages/{path}/links`, `GET /v1/base/pages/{path}/provenance`, `GET /v1/base/graph`, `POST /v1/doc/search` | request / response JSON |
-| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,eval,lint.propose,lint.apply}` → `task_id`; `GET /v1/tasks?cursor=<opaque>&limit=M&op=…&status=…` (cursor JSON, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}` / `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
+| **Async tasks** (seconds–minutes) | `POST /v1/{ingest,synth,eval}`, `POST /v1/lint/{propose,apply}` → `task_id`; `GET /v1/tasks?cursor=<opaque>&limit=M&op=…&status=…` (cursor JSON, summary rows); `GET /v1/tasks/{id}/events?from_seq=N&limit=M&wait=K` (cursor JSON, long-poll); `GET /v1/tasks/{id}` / `GET /v1/tasks/{id}/result`; `POST /v1/tasks/{id}/cancel` | submit JSON → paged JSON cursor → final JSON |
 | **Streaming retrieve** | `POST /v1/retrieve` | NDJSON: `retrieve_started → retrieval_done → final`. **No LLM tokens stream from the server** — agents compose chunks with their own LLM. |
 | **Import** | `POST /v1/import` | multipart: tar.gz payload + packages-aware manifest JSON; commits straight into `<base>/sources/` |
 
@@ -126,9 +126,13 @@ socket).
 ### Server-restart semantics for in-flight tasks
 
 When the server restarts mid-task (e.g., systemd restart, OOM kill,
-graceful shutdown), **any task previously in `running` status is marked
-`failed{reason=server_restart}`** by the lifespan startup hook. The
-TaskManager doesn't attempt to resume — engine ops are idempotent
+graceful shutdown), **any task previously in `pending` or `running`
+status is marked `failed{reason=server_restart}`** by the lifespan
+startup hook — automatically for the per-base SQLite task store, and
+for a shared Postgres task store only when `DIKW_TASK_REAP_ON_START=1`
+is set (otherwise it is skipped so a healthy peer replica's in-flight
+tasks aren't reaped). The TaskManager doesn't attempt to resume —
+engine ops are idempotent
 (content-hash skip on ingest, deterministic page paths on synth) so the
 correct recovery is to re-submit the task, not to half-resume one whose
 in-memory state is gone.
@@ -154,8 +158,10 @@ in-memory state is gone.
   immediately. Suitable for k8s readiness/liveness probes and the
   `serve-and-run` ready-poll.
 * `GET /v1/readyz` — confirms the storage adapter is connected and
-  migrated. Returns 503 during cold start until the lifespan startup
-  hook completes.
+  migrated. Returns `{"status":"ready", ...}` with HTTP 200 once the
+  lifespan startup hook has run (requests aren't routed before then, so
+  there's no cold-start 503). It deliberately doesn't probe providers —
+  use `/v1/check` for that.
 * `GET /v1/info` — engine version, storage backend, configured
   providers (without secrets), auth posture. Useful for client-side
   schema-drift checks.
