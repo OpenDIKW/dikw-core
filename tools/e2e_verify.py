@@ -733,6 +733,11 @@ class DockerLifecycle:
         self.args = args
         self.env = env
         self.token = secrets.token_urlsafe(24)
+        # Ephemeral Postgres password for the throwaway compose project. Passed to
+        # `docker compose` via the env (interpolated into the generated file as
+        # `${POSTGRES_PASSWORD}`) — never written to disk as a literal, so the
+        # generated compose carries no clear-text credential.
+        self.pg_password = secrets.token_urlsafe(16)
         self.ctx_dir: Path | None = None
         self.base: Path | None = None
         self.tmp: Path | None = None
@@ -785,13 +790,15 @@ class DockerLifecycle:
 
     def _compose_env(self) -> dict[str, str]:
         # Every compose invocation re-interpolates the compose file, which uses
-        # ``${DIKW_SERVER_TOKEN:?required}`` — so the token must be present for
-        # up AND down AND logs, else teardown/logging fail to interpolate. The
+        # ``${DIKW_SERVER_TOKEN:?required}`` and ``${POSTGRES_PASSWORD:?required}``
+        # — so both must be present for up AND down AND logs, else teardown/logging
+        # fail to interpolate. The
         # UID/GID make the container write the bind mount as the host user
         # (getattr fallback for Windows, where the image's 1000 is fine).
         getuid = getattr(os, "getuid", lambda: 1000)
         getgid = getattr(os, "getgid", lambda: 1000)
         return {**self.env, "DIKW_SERVER_TOKEN": self.token,
+                "POSTGRES_PASSWORD": self.pg_password,
                 "DIKW_E2E_UID": str(getuid()), "DIKW_E2E_GID": str(getgid())}
 
     def _compose(self, args: list[str], *, check: bool, timeout: float = 300.0) -> None:
@@ -881,7 +888,7 @@ def _harness_compose(host_port: int, observe: bool, provider_key_envs: list[str]
     labels: {{{_LABEL}: "1"}}
     environment:
       POSTGRES_USER: dikw
-      POSTGRES_PASSWORD: dikw
+      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD:?required}}
       POSTGRES_DB: dikw
     volumes:
       - pgdata:/var/lib/postgresql
@@ -906,7 +913,7 @@ def _harness_compose(host_port: int, observe: bool, provider_key_envs: list[str]
         condition: service_healthy
     environment:
       DIKW_SERVER_TOKEN: ${{DIKW_SERVER_TOKEN:?required}}
-      DIKW_SERVER_TASKS_DSN: "postgresql://dikw:dikw@postgres:5432/dikw"
+      DIKW_SERVER_TASKS_DSN: "postgresql://dikw:${{POSTGRES_PASSWORD}}@postgres:5432/dikw"
       DIKW_TASK_REAP_ON_START: "1"
 {provider_keys}      DIKW_LOG_FORMAT: json
       HOME: /tmp
