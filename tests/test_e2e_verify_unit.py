@@ -22,6 +22,7 @@ from tools.e2e_verify import (  # noqa: E402
     LegResult,
     Redactor,
     Status,
+    _harness_compose,
     assert_full_cli_coverage,
     build_coverage_manifest,
     build_provider_yaml,
@@ -160,6 +161,28 @@ def test_build_provider_yaml_observe_wires_telemetry() -> None:
     assert local["telemetry"]["endpoint"] == "http://localhost:4318"
     docker = yaml.safe_load(build_provider_yaml(mode="docker", observe=True, env={}))
     assert docker["telemetry"]["endpoint"] == "http://otel-collector:4318"
+
+
+# --- docker compose generator ------------------------------------------- #
+def test_harness_compose_runs_as_host_uid_with_writable_base() -> None:
+    """The server must write the ``./base`` bind mount as the host user, else a
+    native-Linux UID mismatch makes import/synth/wisdom fail."""
+    doc = yaml.safe_load(_harness_compose(12345, observe=False))
+    svc = doc["services"]["dikw-core-local"]
+    assert svc["user"] == "${DIKW_E2E_UID:-1000}:${DIKW_E2E_GID:-1000}"
+    assert svc["environment"]["HOME"] == "/tmp"
+
+
+def test_harness_compose_observe_joins_obs_network() -> None:
+    """--observe must put the server on the observability stack's network so it
+    can resolve ``otel-collector``; without --observe the file stays single-network."""
+    plain = _harness_compose(12345, observe=False)
+    assert "external" not in plain and "dikw-e2e-obs_default" not in plain
+
+    doc = yaml.safe_load(_harness_compose(12345, observe=True))
+    assert doc["networks"]["obs"]["external"] is True
+    assert doc["networks"]["obs"]["name"] == "dikw-e2e-obs_default"
+    assert doc["services"]["dikw-core-local"]["networks"] == ["default", "obs"]
 
 
 def test_build_provider_yaml_env_overrides() -> None:

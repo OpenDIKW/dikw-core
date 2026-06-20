@@ -758,8 +758,13 @@ class DockerLifecycle:
     def _compose_env(self) -> dict[str, str]:
         # Every compose invocation re-interpolates the compose file, which uses
         # ``${DIKW_SERVER_TOKEN:?required}`` — so the token must be present for
-        # up AND down AND logs, else teardown/logging fail to interpolate.
-        return {**self.env, "DIKW_SERVER_TOKEN": self.token}
+        # up AND down AND logs, else teardown/logging fail to interpolate. The
+        # UID/GID make the container write the bind mount as the host user
+        # (getattr fallback for Windows, where the image's 1000 is fine).
+        getuid = getattr(os, "getuid", lambda: 1000)
+        getgid = getattr(os, "getgid", lambda: 1000)
+        return {**self.env, "DIKW_SERVER_TOKEN": self.token,
+                "DIKW_E2E_UID": str(getuid()), "DIKW_E2E_GID": str(getgid())}
 
     def _compose(self, args: list[str], *, check: bool, timeout: float = 300.0) -> None:
         assert self.compose_file is not None
@@ -826,6 +831,19 @@ def _harness_compose(host_port: int, observe: bool) -> str:
         "headers={'Authorization': 'Bearer '+os.environ['DIKW_SERVER_TOKEN']})).read()"
     )
     obs_endpoint = "      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318\n" if observe else ""
+    # --observe: join the separately-launched observability stack's network
+    # (project ``dikw-e2e-obs`` → default network ``dikw-e2e-obs_default``,
+    # brought up before this compose in main()) so the server resolves
+    # ``otel-collector`` and exports spans to it. Listing networks opts the
+    # service out of the implicit default, so ``default`` must be named too
+    # (postgres stays reachable there).
+    svc_networks = "    networks: [default, obs]\n" if observe else ""
+    obs_network = (
+        "\nnetworks:\n"
+        "  obs:\n"
+        "    external: true\n"
+        "    name: dikw-e2e-obs_default\n"
+    ) if observe else ""
     return f"""services:
   postgres:
     image: pgvector/pgvector:0.8.2-pg18
@@ -847,6 +865,11 @@ def _harness_compose(host_port: int, observe: bool) -> str:
       context: .
       dockerfile: Dockerfile
     labels: {{{_LABEL}: "1"}}
+    # Run as the invoking host user so the ``./base`` bind mount (created on the
+    # host before ``up``) is writable: on native Linux a fixed image UID 1000 ≠
+    # the host UID can't write to it (macOS Docker Desktop maps ownership, so it
+    # masks this). HOME=/tmp keeps a passwd-less UID from defaulting to ``/``.
+    user: "${{DIKW_E2E_UID:-1000}}:${{DIKW_E2E_GID:-1000}}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -857,9 +880,10 @@ def _harness_compose(host_port: int, observe: bool) -> str:
       ANTHROPIC_API_KEY: ${{ANTHROPIC_API_KEY:-}}
       DIKW_EMBEDDING_API_KEY: ${{DIKW_EMBEDDING_API_KEY:-}}
       DIKW_LOG_FORMAT: json
+      HOME: /tmp
 {obs_endpoint}    ports:
       - "{host_port}:8765"
-    volumes:
+{svc_networks}    volumes:
       - ./base:/base
     healthcheck:
       test: ["CMD", "python", "-c", "{healthcheck}"]
@@ -871,7 +895,7 @@ def _harness_compose(host_port: int, observe: bool) -> str:
 volumes:
   pgdata:
     labels: {{{_LABEL}: "1"}}
-"""
+{obs_network}"""
 
 
 # --------------------------------------------------------------------------- #
@@ -960,7 +984,7 @@ def observability_down(env: dict[str, str]) -> None:
 
 
 def prune() -> int:
-    """Sweep any leftover harness containers/volumes by label."""
+    """Sweep any leftover harness containers/volumes/images/networks."""
     if shutil.which("docker") is None:
         sys.stderr.write("docker not found\n")
         return 1
@@ -972,15 +996,24 @@ def prune() -> int:
                           capture_output=True, text=True, check=False).stdout.split()
     if vols:
         subprocess.run(["docker", "volume", "rm", *vols], check=False)
-    # Build images are auto-named ``<project>-…`` and carry no harness label
-    # (compose ``labels:`` stamp containers/volumes, not the built image), so
-    # sweep them by the ``dikw-e2e-`` project-name prefix instead.
+    # Build images are auto-named ``<project>-…`` and the per-project default
+    # network ``<project>_default`` carries no harness label (compose ``labels:``
+    # stamp containers/volumes, not images/networks), so sweep both by the
+    # ``dikw-e2e-`` project-name prefix instead. Networks must follow the
+    # containers (an in-use network refuses removal) — harmless if already gone.
     repos = subprocess.run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
                            capture_output=True, text=True, check=False).stdout.split()
     imgs = [r for r in repos if r.startswith(f"{_LABEL}-")]
     if imgs:
         subprocess.run(["docker", "rmi", "-f", *imgs], check=False)
-    sys.stderr.write(f"pruned {len(ids)} containers, {len(vols)} volumes, {len(imgs)} images\n")
+    all_nets = subprocess.run(["docker", "network", "ls", "--format", "{{.Name}}"],
+                              capture_output=True, text=True, check=False).stdout.split()
+    nets = [n for n in all_nets if n.startswith(f"{_LABEL}-")]
+    if nets:
+        subprocess.run(["docker", "network", "rm", *nets], check=False)
+    sys.stderr.write(
+        f"pruned {len(ids)} containers, {len(vols)} volumes, "
+        f"{len(imgs)} images, {len(nets)} networks\n")
     return 0
 
 
@@ -1047,6 +1080,9 @@ def main(argv: list[str] | None = None) -> int:
         # …and coverage still runs, so the harness's core assertion never silently vanishes.
         legs.append(assert_full_cli_coverage(manifest, legs))
     except Exception:
+        # The only thing that reaches here is the re-raised setup failure, which
+        # was already recorded as a FAIL leg above; swallow it so teardown and
+        # the summary table still run (run_sequence/coverage record their own).
         pass
     finally:
         lifecycle.teardown()

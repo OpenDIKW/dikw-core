@@ -17,7 +17,7 @@ on each entry call out exactly what shape changes break.
   working tree** — not the released PyPI `examples/docker/Dockerfile`). CLI coverage is
   asserted against the live Typer tree, so adding a verb without a sequence step fails
   the run. Provider posture is tiered + skip-loud: structural legs (`ingest --no-embed`,
-  bm25 `retrieve`, `pages`/`graph`/`lint`/`delete`/`tasks`) run with no keys; real legs
+  `pages`/`graph`/`lint`/`delete`/`tasks`) run with no keys; real legs
   (`check`/embed/`synth`/vector-`retrieve`/`eval`) run when `ANTHROPIC_API_KEY` +
   `DIKW_EMBEDDING_API_KEY` are present (from `.env`) and SKIP loudly otherwise. Both modes
   use a free host port (never a fixed `8765`) so concurrent runs don't collide; docker
