@@ -110,6 +110,18 @@ on each entry call out exactly what shape changes break.
 
 ### Fixed
 
+- **OTel validation stack now runs on arm64 (Apple Silicon).** The
+  `docs/observability/docker-compose.yml` collector was pinned to
+  `otel/opentelemetry-collector-contrib:0.116.0`, whose **arm64** binary is
+  dynamically linked (`interpreter /lib/ld-linux-aarch64.so.1`) while the image
+  is `FROM scratch` — so on Apple Silicon the container exited immediately with
+  `exec /otelcol-contrib: no such file or directory` and the stack came up with
+  jaeger/prometheus/grafana healthy but **zero traces**. Bumped to `0.117.0`,
+  the nearest release that restored the static arm64 build (verified: boots
+  clean against the existing `otel-collector-config.yaml`); amd64 was
+  unaffected. This also fixes `tools/e2e_verify.py --observe` on arm64, which
+  drives this same compose file.
+
 - **Synth front-matter is whitelisted to `tags`; `write_page` guards reserved
   keys.** Enforces in code the forbidden-key policy 0.5.3 added to the synth prompt
   (the *"Synth forbids `sources`/`lint` in emitted front-matter"* entry below):

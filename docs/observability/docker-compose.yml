@@ -16,7 +16,12 @@
 # Image tags are pinned for reproducibility; bump them deliberately.
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.0
+    # Keep >= 0.117.0. The 0.116.0 arm64 build is dynamically linked
+    # (interpreter /lib/ld-linux-aarch64.so.1) but the image is FROM scratch, so
+    # on Apple Silicon the container exits at once with
+    # `exec /otelcol-contrib: no such file or directory`; 0.117.0 restored the
+    # static arm64 build. amd64 is unaffected.
+    image: otel/opentelemetry-collector-contrib:0.117.0
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
