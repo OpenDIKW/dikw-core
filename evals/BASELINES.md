@@ -1491,7 +1491,8 @@ Two issues, both fixed in this commit:
 ### How to re-run
 
 ```bash
-# From a wiki that has a configured LLM + DIKW_EMBEDDING_API_KEY in env:
+# From a wiki that has a configured LLM + the embedding key in env (the env
+# var named by provider.embedding_api_key_env — e.g. OPENAI_API_KEY / GITEE_API_KEY):
 dikw serve --port 8766 &
 DIKW_SERVER_URL=http://127.0.0.1:8766 \
     uv run dikw client eval --dataset mvp --eval synth --pretty

@@ -1,0 +1,13 @@
+name: "dikw-core CodeQL config"
+
+# CodeQL analyzes only the shipped package (``src/dikw_core``, the wheel's
+# ``packages``). ``tools/`` and ``evals/`` are repo-root dev/benchmark scripts
+# that are NOT part of the wheel and never run in a deployed dikw server, so
+# scanning them adds no product-security value and produces false positives —
+# e.g. ``py/clear-text-storage-sensitive-data`` on ``tools/e2e_verify.py``'s
+# throwaway docker-compose generator, whose "password" is a ``${POSTGRES_PASSWORD}``
+# placeholder resolved from the process env at ``docker compose`` time, never a
+# literal written to disk. Keep every query active on ``src/`` and ``tests/``.
+paths-ignore:
+  - tools
+  - evals

@@ -5,7 +5,7 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
-## Unreleased
+## 0.6.0 — config-driven provider API-key env vars (BREAKING); DeepSeek V4 Pro + Gitee bge-m3; horizontal model comparison
 
 ### Changed
 
