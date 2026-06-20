@@ -34,6 +34,10 @@ jobs:
           # patterns (deserialization, injection, hardcoded secrets) at
           # the cost of a few extra minutes per run. Acceptable.
           queries: security-extended
+          # Scope analysis to shipped code; exclude repo-root dev/benchmark
+          # scripts (tools/, evals/) that aren't in the wheel — see the config
+          # file for the rationale (false positives, no product-security value).
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
