@@ -38,11 +38,22 @@ uv run mypy src               # strict type-check
 uv run pytest -v              # tests (asyncio_mode=auto)
 uv run pytest tests/test_storage_contract.py   # storage-contract tests (also run in CI against real Postgres)
 uv run dikw <cmd>             # exercise the CLI against a scratch base
+uv run python tools/e2e_verify.py --mode local   # real-env e2e: every `dikw client` verb vs a live server, then destroy it (--mode docker = server + pgvector from the local working tree)
 ```
 
 `tools/check.py` is the single in-loop gate to run before every commit; it runs
 the same ruff/mypy/pytest CI runs, in CI order, without `--cov` (which flakes
 ASGI/CliRunner tests locally on Windows).
+
+`tools/e2e_verify.py` is the real-environment e2e harness (delivery-loop step 3,
+`cli/server/client` bucket): it spins a throwaway server, drives **every** `dikw
+client` verb (coverage asserted against the live Typer tree, so a new verb without
+a step fails the run), then tears the environment down. Structural legs run with no
+keys; the real-provider legs (`check`/embed/`synth`/vector-`retrieve`/`eval`) run
+when `.env` carries `ANTHROPIC_API_KEY` + `DIKW_EMBEDDING_API_KEY`, else they SKIP
+loudly. `--mode docker` builds the image from the local tree (not the released
+`examples/docker/Dockerfile`). Wrapped by `tests/test_e2e_verify_{local,docker}.py`
+(`-m slow`).
 
 CI (`.github/workflows/ci.yml`) gates PRs on ruff + mypy + pytest across
 Python 3.12 and 3.13, and runs the storage contract suite against a
