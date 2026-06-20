@@ -45,7 +45,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     # module-level attribute the helper will look up.
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
     # Strip any ambient env vars so these tests are hermetic.
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
+    monkeypatch.delenv("GITEE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     return rec
@@ -57,8 +57,10 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 async def test_embeddings_client_uses_base_url_when_provided(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
-    provider = OpenAICompatEmbeddings(base_url="http://gitee.example/v1")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
+    provider = OpenAICompatEmbeddings(
+        api_key_env="GITEE_API_KEY", base_url="http://gitee.example/v1"
+    )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     init = captured["init_kwargs"]
     assert init is not None
@@ -68,9 +70,11 @@ async def test_embeddings_client_uses_base_url_when_provided(
 async def test_embeddings_passes_dimensions_when_default_set(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
     provider = OpenAICompatEmbeddings(
-        base_url="http://gitee.example/v1", default_dimensions=1024
+        api_key_env="GITEE_API_KEY",
+        base_url="http://gitee.example/v1",
+        default_dimensions=1024,
     )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     call = captured["embed_kwargs"]
@@ -83,46 +87,56 @@ async def test_embeddings_passes_dimensions_when_default_set(
 async def test_embeddings_omits_dimensions_when_default_none(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
-    provider = OpenAICompatEmbeddings(base_url="http://gitee.example/v1")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
+    provider = OpenAICompatEmbeddings(
+        api_key_env="GITEE_API_KEY", base_url="http://gitee.example/v1"
+    )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     call = captured["embed_kwargs"]
     assert call is not None
     assert "dimensions" not in call
 
 
-# ---- Step 2: DIKW_EMBEDDING_API_KEY only --------------------------------
+# ---- Step 2: key resolved from the configured env var name --------------
 
 
-async def test_embeddings_reads_dikw_embedding_api_key(
+async def test_embeddings_reads_configured_api_key(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-gitee")
-    provider = OpenAICompatEmbeddings(base_url="http://gitee.example/v1")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-gitee")
+    provider = OpenAICompatEmbeddings(
+        api_key_env="GITEE_API_KEY", base_url="http://gitee.example/v1"
+    )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     init = captured["init_kwargs"]
     assert init is not None
     assert init["api_key"] == "sk-gitee"
 
 
-async def test_embeddings_ignores_openai_api_key(
+async def test_embeddings_read_only_the_configured_key(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Only the old OpenAI env var is set — the new embedding leg must not fall
-    # back to it, and must raise a ProviderError pointing at the new var.
+    # The embedder reads exactly the var named by ``api_key_env`` — a different
+    # vendor's key set in the env does not leak in. A missing configured key
+    # raises a ProviderError naming that var (LLM/embed key separation is by
+    # explicit naming, not a magic fallback rule).
     monkeypatch.setenv("OPENAI_API_KEY", "sk-should-be-ignored")
-    provider = OpenAICompatEmbeddings(base_url="http://gitee.example/v1")
+    provider = OpenAICompatEmbeddings(
+        api_key_env="GITEE_API_KEY", base_url="http://gitee.example/v1"
+    )
     with pytest.raises(ProviderError) as excinfo:
         await provider.embed(["ping"], model="Qwen3-Embedding-8B")
-    assert "DIKW_EMBEDDING_API_KEY" in str(excinfo.value)
+    assert "GITEE_API_KEY" in str(excinfo.value)
 
 
 async def test_embeddings_explicit_api_key_wins(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-env")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-env")
     provider = OpenAICompatEmbeddings(
-        base_url="http://gitee.example/v1", api_key="sk-explicit"
+        api_key_env="GITEE_API_KEY",
+        base_url="http://gitee.example/v1",
+        api_key="sk-explicit",
     )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     init = captured["init_kwargs"]
@@ -136,10 +150,11 @@ async def test_embeddings_explicit_api_key_wins(
 async def test_build_embedder_passes_dimensions_from_config(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
     cfg = make_provider_cfg(
         embedding_base_url="http://gitee.example/v1",
         embedding_dim=512,
+        embedding_api_key_env="GITEE_API_KEY",
     )
     provider = build_embedder(cfg)
     assert isinstance(provider, OpenAICompatEmbeddings)
@@ -205,16 +220,18 @@ async def test_api_ingest_honours_embedding_batch_size(
     """
     from dikw_core import api
 
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     wiki = tmp_path / "knowledge"
     api.init_base(wiki, description="batch-size smoke test")
     (wiki / "dikw.yml").write_text(
         "provider:\n"
         "  llm: anthropic_compat\n"
+        "  llm_api_key_env: ANTHROPIC_API_KEY\n"
         "  embedding: openai_compat\n"
         "  embedding_model: test-embed\n"
         "  embedding_base_url: https://fake.example/v1\n"
+        "  embedding_api_key_env: OPENAI_API_KEY\n"
         "  embedding_dim: 2\n"
         "  embedding_revision: ''\n"
         "  embedding_normalize: true\n"

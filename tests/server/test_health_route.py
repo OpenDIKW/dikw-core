@@ -102,7 +102,7 @@ async def test_health_never_leaks_secrets(
     sentinels = {
         "OPENAI_API_KEY": "sk-leak-OPENAI-AAA-BBB-CCC-DDD!@#$",
         "ANTHROPIC_API_KEY": "sk-ant-LEAK-XYZ-987-AAA-BBB-CCC",
-        "DIKW_EMBEDDING_API_KEY": "sk-embed-LEAK-321-AAA-BBB-CCC",
+        "GITEE_API_KEY": "sk-embed-LEAK-321-AAA-BBB-CCC",
     }
     for k, v in sentinels.items():
         monkeypatch.setenv(k, v)

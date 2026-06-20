@@ -16,9 +16,11 @@ Karpathy's rule applied to verification: routing/scoping is deterministic
 dispatch; the probabilistic legs (synth quality) are judged elsewhere.
 
 Provider posture is tiered + skip-loud: structural legs run with no keys;
-real legs (``check``/embed/``synth``/vector-``retrieve``/``eval``) run when
-``ANTHROPIC_API_KEY`` + ``DIKW_EMBEDDING_API_KEY`` are present (from a
-gitignored ``.env``), else they are SKIPPED loudly — a skip is never a pass.
+real legs (``check``/embed/``synth``/vector-``retrieve``/``eval``) run when the
+key env vars named by the active profile's ``provider.{llm,embedding}_api_key_env``
+are present (from a gitignored ``.env``) — for the default template that's
+``MINIMAX_API_KEY`` + ``GITEE_API_KEY`` — else they are SKIPPED loudly (a skip
+is never a pass).
 
 Default provider profile is MiniMax (M3) via ``anthropic_compat`` + Qwen3-
 Embedding-0.6B via Gitee (the committed ``tests/fixtures/live-minimax-gitee
@@ -58,10 +60,11 @@ _CORPORA: dict[str, Path] = {
     "assets": _REPO_ROOT / "evals" / "datasets" / "wiki-mini-mm" / "corpus",
 }
 
-# Secrets that gate the tier-2 (real-provider) legs. Read from env (loaded
-# from .env). The MiniMax LLM key lives in ANTHROPIC_API_KEY because the
-# template wires MiniMax via the anthropic_compat protocol.
-_SECRET_ENV = ("ANTHROPIC_API_KEY", "DIKW_EMBEDDING_API_KEY")
+# The env vars that gate the tier-2 (real-provider) legs are NOT hardcoded:
+# they are the vendor-canonical names declared by the active provider profile
+# (``provider.llm_api_key_env`` + ``provider.embedding_api_key_env``), resolved
+# at runtime via ``_required_key_envs``. The default template wires MiniMax
+# (``MINIMAX_API_KEY``) + Gitee (``GITEE_API_KEY``).
 
 _OBS_COMPOSE = _REPO_ROOT / "docs" / "observability" / "docker-compose.yml"
 # Custom label stamped on every harness container/volume so ``--prune`` can
@@ -135,8 +138,27 @@ class KeyPosture:
     missing: list[str] = field(default_factory=list)
 
 
-def resolve_posture(env: dict[str, str]) -> KeyPosture:
-    missing = [k for k in _SECRET_ENV if not env.get(k)]
+def _required_key_envs(profile: Path) -> list[str]:
+    """The env var names the real-provider legs need, read from the profile.
+
+    Derived from ``provider.{llm,embedding}_api_key_env`` so a profile that
+    targets, say, DeepSeek + Gitee gates on ``DEEPSEEK_API_KEY`` +
+    ``GITEE_API_KEY`` without the harness hardcoding any vendor name. The
+    ``openai_codex`` LLM uses OAuth (no env key), so its llm key is skipped.
+    """
+    from dikw_core.config import load_config
+
+    p = load_config(profile).provider
+    keys: list[str] = []
+    if p.llm != "openai_codex":
+        keys.append(p.llm_api_key_env)
+    keys.append(p.embedding_api_key_env)
+    seen: set[str] = set()
+    return [k for k in keys if not (k in seen or seen.add(k))]
+
+
+def resolve_posture(env: dict[str, str], required: list[str]) -> KeyPosture:
+    missing = [k for k in required if not env.get(k)]
     return KeyPosture(has_keys=not missing, missing=missing)
 
 
@@ -249,9 +271,9 @@ def build_provider_yaml(*, mode: str, observe: bool, env: dict[str, str],
     """Render the base's ``dikw.yml`` from the committed live template, applying
     per-vendor ``DIKW_E2E_*`` overrides and patching storage/telemetry per mode.
 
-    Secrets are NEVER written here — they reach the providers via the
-    ANTHROPIC_API_KEY / DIKW_EMBEDDING_API_KEY env vars, exactly as the
-    committed template documents.
+    Secrets are NEVER written here — they reach the providers via the env vars
+    named by ``provider.{llm,embedding}_api_key_env`` (default template:
+    MINIMAX_API_KEY / GITEE_API_KEY), exactly as the committed template documents.
     """
     from dikw_core.config import (
         PostgresStorageConfig,
@@ -745,7 +767,13 @@ class DockerLifecycle:
         (self.ctx_dir / ".dockerignore").write_text("base/\nwheel/\n", encoding="utf-8")
         self.compose_file = self.ctx_dir / "docker-compose.e2e.yml"
         self.compose_file.write_text(
-            _harness_compose(self.host_port, self.args.observe), encoding="utf-8")
+            _harness_compose(
+                self.host_port,
+                self.args.observe,
+                _required_key_envs(Path(self.args.provider_profile)),
+            ),
+            encoding="utf-8",
+        )
 
         self._compose(["down", "-v", "--remove-orphans"], check=False)  # pre-clean a stuck prior run
         # Generous budget: a cold-cache runner pulls base images + pgvector and
@@ -824,7 +852,10 @@ def _harness_dockerfile(wheel_name: str, extras: str) -> str:
     )
 
 
-def _harness_compose(host_port: int, observe: bool) -> str:
+def _harness_compose(host_port: int, observe: bool, provider_key_envs: list[str]) -> str:
+    # Pass the profile's vendor-canonical key vars through to the container
+    # (empty-default so a structural-only run without keys still composes).
+    provider_keys = "".join(f"      {k}: ${{{k}:-}}\n" for k in provider_key_envs)
     healthcheck = (
         "import urllib.request as r,os; "
         "r.urlopen(r.Request('http://localhost:8765/v1/healthz', "
@@ -877,9 +908,7 @@ def _harness_compose(host_port: int, observe: bool) -> str:
       DIKW_SERVER_TOKEN: ${{DIKW_SERVER_TOKEN:?required}}
       DIKW_SERVER_TASKS_DSN: "postgresql://dikw:dikw@postgres:5432/dikw"
       DIKW_TASK_REAP_ON_START: "1"
-      ANTHROPIC_API_KEY: ${{ANTHROPIC_API_KEY:-}}
-      DIKW_EMBEDDING_API_KEY: ${{DIKW_EMBEDDING_API_KEY:-}}
-      DIKW_LOG_FORMAT: json
+{provider_keys}      DIKW_LOG_FORMAT: json
       HOME: /tmp
 {obs_endpoint}    ports:
       - "{host_port}:8765"
@@ -1046,12 +1075,14 @@ def main(argv: list[str] | None = None) -> int:
 
     env = dict(os.environ)
     load_dotenv(Path(args.env_file), env)
-    posture = resolve_posture(env)
+    required_keys = _required_key_envs(Path(args.provider_profile))
+    posture = resolve_posture(env, required_keys)
 
     manifest = build_coverage_manifest()
     lifecycle = LocalLifecycle(args, env) if args.mode == "local" else DockerLifecycle(args, env)
-    redact = make_redactor([env.get("ANTHROPIC_API_KEY"), env.get("DIKW_EMBEDDING_API_KEY"),
-                            getattr(lifecycle, "token", None)])
+    redact = make_redactor(
+        [env.get(k) for k in required_keys] + [getattr(lifecycle, "token", None)]
+    )
 
     def _sigterm(_signo: int, _frame: Any) -> None:
         raise KeyboardInterrupt

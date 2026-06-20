@@ -117,14 +117,22 @@ provider:
   llm: anthropic_compat         # or: openai_compat
   llm_model: claude-sonnet-4-6
   llm_base_url: null            # set for any Anthropic-protocol-compatible endpoint
+  llm_api_key_env: ANTHROPIC_API_KEY      # required: names the env var holding the LLM key
   embedding: openai_compat
   embedding_model: text-embedding-3-small
   embedding_base_url: https://api.openai.com/v1
+  embedding_api_key_env: OPENAI_API_KEY   # required: names the env var holding the embedding key
   embedding_dim: 1536           # required: must match what the endpoint returns
   embedding_revision: ""        # bump to force re-embed when vendor refreshes weights silently
   embedding_normalize: true
   embedding_distance: cosine
 ```
+
+Each leg names its own env var via `llm_api_key_env` / `embedding_api_key_env`,
+so keys are vendor-canonical (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`DEEPSEEK_API_KEY`, `MINIMAX_API_KEY`, `GITEE_API_KEY`, …) and multiple
+same-protocol vendors (DeepSeek + MiniMax both speak the Anthropic protocol)
+coexist in one `.env` — each base picks which var it reads in `dikw.yml`.
 
 `llm` names a wire **protocol** (which SDK to speak), not a vendor — the
 actual vendor is whatever `llm_base_url` points at.
@@ -155,9 +163,11 @@ provider:
   llm: anthropic_compat
   llm_model: <MiniMax Anthropic-compatible model name>
   llm_base_url: https://api.minimaxi.com/anthropic
+  llm_api_key_env: MINIMAX_API_KEY  # required: MiniMax gets its own env var
   embedding: openai_compat
   embedding_model: Qwen3-Embedding-0.6B
   embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY  # required: Gitee gets its own env var
   embedding_dim: 1024               # 0.6B native; locked at first ingest
   embedding_revision: ""            # bump to force re-embed when Qwen weights drift silently
   embedding_normalize: true
@@ -170,13 +180,14 @@ A working reference copy lives at
 [`tests/fixtures/live-minimax-gitee.dikw.yml`](./tests/fixtures/live-minimax-gitee.dikw.yml)
 — drop it into a fresh base and fill in your two keys.
 
-Two keys for two vendors — the embedding leg reads `DIKW_EMBEDDING_API_KEY`
-exclusively (no `OPENAI_API_KEY` fallback), so misconfigurations fail loudly
-rather than cross-wiring credentials:
+Two keys for two vendors — each leg reads exactly the env var named in
+`dikw.yml` (`llm_api_key_env: MINIMAX_API_KEY`, `embedding_api_key_env:
+GITEE_API_KEY`), so the keys never cross-wire and a misconfigured name fails
+loudly:
 
 ```bash
-export ANTHROPIC_API_KEY=<your-MiniMax-key>
-export DIKW_EMBEDDING_API_KEY=<your-Gitee-key>
+export MINIMAX_API_KEY=<your-MiniMax-key>
+export GITEE_API_KEY=<your-Gitee-key>
 ```
 
 Verify connectivity **before** running ingest/synth. The two legs can be

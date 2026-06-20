@@ -155,7 +155,7 @@ def test_factory_resolves_gitee_multimodal() -> None:
     from dikw_core.providers import build_multimodal_embedder
     from dikw_core.providers.gitee_multimodal import GiteeMultimodalEmbedding
 
-    inst = build_multimodal_embedder("gitee_multimodal")
+    inst = build_multimodal_embedder("gitee_multimodal", api_key_env="GITEE_API_KEY")
     assert isinstance(inst, GiteeMultimodalEmbedding)
 
 
@@ -170,4 +170,4 @@ def test_factory_rejects_legacy_gitee_qwen_vl_literal() -> None:
     from dikw_core.providers.base import ProviderError
 
     with pytest.raises(ProviderError, match="unknown multimodal embedding provider"):
-        build_multimodal_embedder("gitee_qwen_vl")
+        build_multimodal_embedder("gitee_qwen_vl", api_key_env="GITEE_API_KEY")

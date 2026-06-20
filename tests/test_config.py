@@ -50,6 +50,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 storage:
   backend: postgres
   dsn: postgresql://u:p@h:5432/db
@@ -118,6 +120,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
   llm_max_tokens_synth: 4096
 sources: []
 """,
@@ -146,6 +150,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
   llm_max_retries: 3
   embedding_max_retries: 7
 sources: []
@@ -185,6 +191,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 sources: []
 """,
         encoding="utf-8",
@@ -205,6 +213,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 retrieval:
   rrf_k: 40
   bm25_weight: 0.5
@@ -247,6 +257,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 retrieval:
   cjk_tokenizer: jieba
 sources: []
@@ -272,6 +284,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 retrieval:
   cjk_tokenizer: trigram
 sources: []
@@ -308,6 +322,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 schema:
   categories:
     - path: 产品/移动端
@@ -361,6 +377,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 synth:
   prompt_path: ./prompts/my_synth.md
 sources: []
@@ -381,6 +399,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 lint:
   fixer_prompts:
     orphan_merge: ./prompts/orphan.md
@@ -423,6 +443,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 sources: []
 """,
         encoding="utf-8",
@@ -441,6 +463,8 @@ provider:
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
 telemetry:
   enabled: true
   endpoint: http://collector:4318

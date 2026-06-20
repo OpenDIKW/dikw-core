@@ -19,43 +19,13 @@ from .base import (
     ProviderError,
     ToolSpec,
     TransientProviderError,
+    _resolve_key,
 )
 
 if TYPE_CHECKING:  # avoid importing openai at module load for envs without it
     from openai import AsyncOpenAI
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
-
-
-API_KEY_ENV = "OPENAI_API_KEY"
-EMBEDDING_API_KEY_ENV = "DIKW_EMBEDDING_API_KEY"
-
-
-def _resolve_api_key(explicit: str | None) -> str:
-    key = explicit or os.environ.get(API_KEY_ENV)
-    if not key:
-        raise ProviderError(
-            f"{API_KEY_ENV} is not set. Export it or pass `api_key` explicitly."
-        )
-    return key
-
-
-def _resolve_embedding_api_key(explicit: str | None) -> str:
-    """Resolve the embedding-leg API key.
-
-    The embedding provider reads only ``DIKW_EMBEDDING_API_KEY`` — never
-    ``OPENAI_API_KEY``. This is deliberate: the intended deployment splits
-    the LLM and embedding legs across different vendors (e.g., MiniMax LLM +
-    Gitee AI embeddings), each with its own key. Conflating them via
-    ``OPENAI_API_KEY`` silently cross-wires credentials and masks misconfig.
-    """
-    key = explicit or os.environ.get(EMBEDDING_API_KEY_ENV)
-    if not key:
-        raise ProviderError(
-            f"{EMBEDDING_API_KEY_ENV} is not set. "
-            "Export it or pass `api_key` explicitly."
-        )
-    return key
 
 
 def _client(
@@ -80,11 +50,13 @@ class OpenAICompatLLM:
     def __init__(
         self,
         *,
+        api_key_env: str,
         base_url: str | None = None,
         api_key: str | None = None,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
+        self._api_key_env = api_key_env
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL)
         self._api_key_explicit = api_key
         self._max_retries = max_retries
@@ -95,7 +67,7 @@ class OpenAICompatLLM:
         if self._client_cache is None:
             self._client_cache = _client(
                 self._base_url,
-                _resolve_api_key(self._api_key_explicit),
+                _resolve_key(self._api_key_explicit, self._api_key_env),
                 max_retries=self._max_retries,
                 timeout_seconds=self._timeout_seconds,
             )
@@ -257,12 +229,14 @@ class OpenAICompatEmbeddings:
     def __init__(
         self,
         *,
+        api_key_env: str,
         base_url: str | None = None,
         api_key: str | None = None,
         default_dimensions: int | None = None,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
+        self._api_key_env = api_key_env
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL)
         self._api_key_explicit = api_key
         self._default_dimensions = default_dimensions
@@ -274,7 +248,7 @@ class OpenAICompatEmbeddings:
         if self._client_cache is None:
             self._client_cache = _client(
                 self._base_url,
-                _resolve_embedding_api_key(self._api_key_explicit),
+                _resolve_key(self._api_key_explicit, self._api_key_env),
                 max_retries=self._max_retries,
                 timeout_seconds=self._timeout_seconds,
             )

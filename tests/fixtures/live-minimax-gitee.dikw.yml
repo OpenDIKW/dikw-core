@@ -1,17 +1,20 @@
 # Live end-to-end test config — MiniMax LLM + Gitee AI embeddings.
 #
 # Checked into the repo as-is. URLs and model names are public vendor
-# documentation; only the API keys (ANTHROPIC_API_KEY, DIKW_EMBEDDING_API_KEY)
-# are secret, and those come from env via .env.
+# documentation; only the API keys (MINIMAX_API_KEY, GITEE_API_KEY — the vars
+# named by llm_api_key_env / embedding_api_key_env below) are secret, and those
+# come from env via .env.
 #
 # tests/test_mvp_e2e.py copies this file verbatim to the temp wiki as dikw.yml.
 provider:
   llm: anthropic_compat
   llm_model: MiniMax-M2.7
   llm_base_url: https://api.minimaxi.com/anthropic
+  llm_api_key_env: MINIMAX_API_KEY
   embedding: openai_compat
   embedding_model: Qwen3-Embedding-0.6B
   embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY
   embedding_dim: 1024
   embedding_revision: ""
   embedding_normalize: true

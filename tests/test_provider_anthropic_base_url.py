@@ -34,7 +34,11 @@ def captured_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 def test_anthropic_client_uses_base_url_when_provided(
     captured_kwargs: dict[str, object],
 ) -> None:
-    llm = AnthropicCompatLLM(api_key="sk-explicit", base_url="http://fake.example/v1")
+    llm = AnthropicCompatLLM(
+        api_key_env="ANTHROPIC_API_KEY",
+        api_key="sk-explicit",
+        base_url="http://fake.example/v1",
+    )
     llm._get_client()
     kwargs = captured_kwargs["kwargs"]
     assert isinstance(kwargs, dict)
@@ -45,7 +49,7 @@ def test_anthropic_client_uses_base_url_when_provided(
 def test_anthropic_client_omits_base_url_by_default(
     captured_kwargs: dict[str, object],
 ) -> None:
-    llm = AnthropicCompatLLM(api_key="sk-explicit")
+    llm = AnthropicCompatLLM(api_key_env="ANTHROPIC_API_KEY", api_key="sk-explicit")
     llm._get_client()
     kwargs = captured_kwargs["kwargs"]
     assert isinstance(kwargs, dict)

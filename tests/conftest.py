@@ -130,21 +130,25 @@ def dikw_base(tmp_path: Path) -> Path:
 def _no_real_embedding_key(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Clear ``DIKW_EMBEDDING_API_KEY`` for every test by default.
+    """Clear the default embedding-key env var (``OPENAI_API_KEY``) for every
+    test by default.
 
-    0.4.0 added env-key-gated inline embed to ``api.lint_apply`` (and
-    similar entry points may follow): when the key is set in the env,
-    those entries auto-build a real ``OpenAICompatEmbeddings`` provider
-    and attempt to call the configured base URL. Tests that exercise
-    those code paths must opt into embedding explicitly by passing a
-    ``FakeEmbeddings`` instance. Without this fixture, the developer's
-    ``.env`` would silently turn unit tests into network calls.
+    ``api.lint_apply`` (and similar entry points) gate an inline-embed pass on
+    the env var named by ``provider.embedding_api_key_env``; the default test
+    base (``make_provider_cfg`` / ``init_test_base`` / ``default_config``) names
+    ``OPENAI_API_KEY``. When that var is set in the env, the gate auto-builds a
+    real ``OpenAICompatEmbeddings`` provider and calls the configured base URL.
+    Tests that exercise those paths must opt into embedding explicitly by
+    passing a ``FakeEmbeddings`` instance. Without this fixture, the developer's
+    ``.env`` (loaded by pytest-dotenv) would silently turn unit tests into
+    network calls. A test whose base names a *different* embedding key var
+    (e.g. ``GITEE_API_KEY``) controls that var itself via ``monkeypatch``.
 
     Live-API smoke tests opt out via ``@pytest.mark.requires_embedding_key``.
     """
     if request.node.get_closest_marker("requires_embedding_key"):
         return
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
 @pytest.fixture(autouse=True)

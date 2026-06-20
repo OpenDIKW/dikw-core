@@ -79,9 +79,11 @@ uv run dikw client import ./my-notes --format table
 # the IngestReport + map the final status to the exit code.
 uv run dikw client ingest --no-embed --wait
 
-# Or with embeddings (requires DIKW_EMBEDDING_API_KEY on any OpenAI-compatible
-# endpoint — OpenAI, Gitee AI, Ollama, vLLM, …).
-export DIKW_EMBEDDING_API_KEY=sk-...
+# Or with embeddings (requires the env var named by
+# ``provider.embedding_api_key_env`` in dikw.yml — e.g. OPENAI_API_KEY for
+# OpenAI, GITEE_API_KEY for Gitee AI — on any OpenAI-compatible endpoint:
+# OpenAI, Gitee AI, Ollama, vLLM, …).
+export OPENAI_API_KEY=sk-...
 uv run dikw client ingest --wait
 
 # Fire-and-forget (default): submit + capture the task_id; follow up
@@ -554,14 +556,22 @@ provider:
   llm: openai_compat           # anthropic_compat | openai_compat (protocol names)
   llm_model: gpt-4.1-mini
   llm_base_url: http://localhost:11434/v1   # Ollama, vLLM, Azure, …
+  llm_api_key_env: OPENAI_API_KEY    # required: names the env var holding the LLM key
   embedding: openai_compat
   embedding_model: text-embedding-3-small
   embedding_base_url: https://api.openai.com/v1
+  embedding_api_key_env: OPENAI_API_KEY  # required: names the env var holding the embedding key
   embedding_dim: 1536          # required: must match what the endpoint returns
   embedding_revision: ""       # bump to force re-embed when vendor refreshes weights silently
   embedding_normalize: true
   embedding_distance: cosine
 ```
+
+Each leg names its own env var via `llm_api_key_env` / `embedding_api_key_env`,
+so keys stay vendor-canonical (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`DEEPSEEK_API_KEY`, `MINIMAX_API_KEY`, `GITEE_API_KEY`, …) and multiple
+same-protocol vendors (DeepSeek + MiniMax both speak the Anthropic protocol)
+coexist in one `.env` — each base picks which var it reads in `dikw.yml`.
 
 `llm` is a **protocol** name (which SDK to speak), not a vendor name.
 `llm_base_url` works for both `anthropic_compat` and `openai_compat`. With
@@ -588,9 +598,11 @@ provider:
   llm: anthropic_compat
   llm_model: <MiniMax Anthropic-compatible model name>
   llm_base_url: https://api.minimaxi.com/anthropic
+  llm_api_key_env: MINIMAX_API_KEY  # required: MiniMax gets its own env var
   embedding: openai_compat
   embedding_model: Qwen3-Embedding-0.6B
   embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY  # required: Gitee gets its own env var
   embedding_dim: 1024               # 0.6B native; locked at first ingest
   embedding_revision: ""            # bump to force re-embed when Qwen weights drift silently
   embedding_normalize: true
@@ -603,13 +615,14 @@ A working reference copy lives at
 [`tests/fixtures/live-minimax-gitee.dikw.yml`](../tests/fixtures/live-minimax-gitee.dikw.yml)
 — drop it into a fresh base and fill in your two keys.
 
-The two legs use **distinct keys**. The embedding leg reads
-`DIKW_EMBEDDING_API_KEY` exclusively — no fallback to `OPENAI_API_KEY` — so
-misconfig fails loudly instead of cross-wiring credentials:
+The two legs use **distinct keys**. Each leg reads exactly the env var named
+in `dikw.yml` (`llm_api_key_env: MINIMAX_API_KEY`, `embedding_api_key_env:
+GITEE_API_KEY`), so the keys never cross-wire and a misconfigured name fails
+loudly:
 
 ```bash
-export ANTHROPIC_API_KEY=<your-MiniMax-key>
-export DIKW_EMBEDDING_API_KEY=<your-Gitee-key>
+export MINIMAX_API_KEY=<your-MiniMax-key>
+export GITEE_API_KEY=<your-Gitee-key>
 ```
 
 Or copy [`.env.example`](../.env.example) → `.env` (gitignored) and fill

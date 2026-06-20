@@ -167,5 +167,5 @@ addopts = "-ra -q"
 markers = [
     "perf: wallclock-budget tests (skip with `-m 'not perf'` if CI is noisy)",
     "slow: tests that spawn real subprocesses or wait on network bind (skip with `-m 'not slow'` for the fast inner loop)",
-    "requires_embedding_key: opts the test out of the autouse fixture that clears DIKW_EMBEDDING_API_KEY — live-API smoke tests use this to keep their real key visible at test time",
+    "requires_embedding_key: opts the test out of the autouse fixture that clears the embedding-key env var (OPENAI_API_KEY) — live-API smoke tests use this to keep their real key visible at test time",
 ]

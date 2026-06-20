@@ -19,7 +19,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _HARNESS = _REPO_ROOT / "tools" / "e2e_verify.py"
-_SECRET_ENV = ("ANTHROPIC_API_KEY", "DIKW_EMBEDDING_API_KEY")
+_SECRET_ENV = ("MINIMAX_API_KEY", "GITEE_API_KEY")
 
 
 def _docker_ready() -> bool:

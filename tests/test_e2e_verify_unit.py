@@ -23,6 +23,7 @@ from tools.e2e_verify import (  # noqa: E402
     Redactor,
     Status,
     _harness_compose,
+    _required_key_envs,
     assert_full_cli_coverage,
     build_coverage_manifest,
     build_provider_yaml,
@@ -92,15 +93,15 @@ def test_load_dotenv_parses_and_env_wins(tmp_path: Path) -> None:
     f.write_text(
         "# a comment\n"
         "\n"
-        'ANTHROPIC_API_KEY="sk-minimax-123"\n'
-        "DIKW_EMBEDDING_API_KEY=gitee-456\n"
+        'MINIMAX_API_KEY="sk-minimax-123"\n'
+        "GITEE_API_KEY=gitee-456\n"
         "ALREADY_SET=fromfile\n"
         "MALFORMED_NO_EQUALS\n",
         encoding="utf-8")
     env = {"ALREADY_SET": "fromenv"}
     load_dotenv(f, env)
-    assert env["ANTHROPIC_API_KEY"] == "sk-minimax-123"  # quotes stripped
-    assert env["DIKW_EMBEDDING_API_KEY"] == "gitee-456"
+    assert env["MINIMAX_API_KEY"] == "sk-minimax-123"  # quotes stripped
+    assert env["GITEE_API_KEY"] == "gitee-456"
     assert env["ALREADY_SET"] == "fromenv"  # pre-set env wins over file
     assert "MALFORMED_NO_EQUALS" not in env
 
@@ -129,11 +130,21 @@ def test_redactor_ignores_empty() -> None:
 
 # --- key posture ---------------------------------------------------------- #
 def test_resolve_posture() -> None:
-    full = resolve_posture({"ANTHROPIC_API_KEY": "a", "DIKW_EMBEDDING_API_KEY": "b"})
+    required = ["MINIMAX_API_KEY", "GITEE_API_KEY"]
+    full = resolve_posture({"MINIMAX_API_KEY": "a", "GITEE_API_KEY": "b"}, required)
     assert full.has_keys and not full.missing
-    none = resolve_posture({})
+    none = resolve_posture({}, required)
     assert not none.has_keys
-    assert "ANTHROPIC_API_KEY" in none.missing and "DIKW_EMBEDDING_API_KEY" in none.missing
+    assert "MINIMAX_API_KEY" in none.missing and "GITEE_API_KEY" in none.missing
+
+
+def test_required_key_envs_reads_profile_config() -> None:
+    """The real-leg gate keys off the profile's vendor-canonical key vars,
+    not a hardcoded ANTHROPIC_API_KEY/DIKW_EMBEDDING_API_KEY pair."""
+    profile = (
+        Path(__file__).parent / "fixtures" / "live-minimax-gitee.dikw.yml"
+    )
+    assert _required_key_envs(profile) == ["MINIMAX_API_KEY", "GITEE_API_KEY"]
 
 
 # --- provider dikw.yml builder ------------------------------------------- #
@@ -144,8 +155,11 @@ def test_build_provider_yaml_local_is_sqlite_no_secrets() -> None:
     assert doc["provider"]["llm"] == "anthropic_compat"
     assert doc["provider"]["embedding_model"] == "Qwen3-Embedding-0.6B"
     assert "telemetry" not in doc or not doc["telemetry"]["enabled"]
-    # secrets never serialized
-    assert "API_KEY" not in out and "sk-" not in out
+    # The provider block names key env vars (e.g. MINIMAX_API_KEY) — those are
+    # variable NAMES, not values. What must never serialize is a secret VALUE.
+    assert doc["provider"]["llm_api_key_env"] == "MINIMAX_API_KEY"
+    assert doc["provider"]["embedding_api_key_env"] == "GITEE_API_KEY"
+    assert "sk-" not in out
 
 
 def test_build_provider_yaml_docker_is_postgres() -> None:
@@ -167,19 +181,26 @@ def test_build_provider_yaml_observe_wires_telemetry() -> None:
 def test_harness_compose_runs_as_host_uid_with_writable_base() -> None:
     """The server must write the ``./base`` bind mount as the host user, else a
     native-Linux UID mismatch makes import/synth/wisdom fail."""
-    doc = yaml.safe_load(_harness_compose(12345, observe=False))
+    doc = yaml.safe_load(
+        _harness_compose(12345, observe=False, provider_key_envs=["MINIMAX_API_KEY", "GITEE_API_KEY"])
+    )
     svc = doc["services"]["dikw-core-local"]
     assert svc["user"] == "${DIKW_E2E_UID:-1000}:${DIKW_E2E_GID:-1000}"
     assert svc["environment"]["HOME"] == "/tmp"
+    # The profile's vendor-canonical key vars are passed through to the container.
+    assert svc["environment"]["MINIMAX_API_KEY"] == "${MINIMAX_API_KEY:-}"
+    assert svc["environment"]["GITEE_API_KEY"] == "${GITEE_API_KEY:-}"
 
 
 def test_harness_compose_observe_joins_obs_network() -> None:
     """--observe must put the server on the observability stack's network so it
     can resolve ``otel-collector``; without --observe the file stays single-network."""
-    plain = _harness_compose(12345, observe=False)
+    plain = _harness_compose(12345, observe=False, provider_key_envs=["MINIMAX_API_KEY"])
     assert "external" not in plain and "dikw-e2e-obs_default" not in plain
 
-    doc = yaml.safe_load(_harness_compose(12345, observe=True))
+    doc = yaml.safe_load(
+        _harness_compose(12345, observe=True, provider_key_envs=["MINIMAX_API_KEY"])
+    )
     assert doc["networks"]["obs"]["external"] is True
     assert doc["networks"]["obs"]["name"] == "dikw-e2e-obs_default"
     assert doc["services"]["dikw-core-local"]["networks"] == ["default", "obs"]

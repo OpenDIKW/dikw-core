@@ -72,11 +72,13 @@ def test_materialise_base_honors_target_tokens_override(tmp_path: Path) -> None:
 
     spec = load_dataset(_write_dataset(tmp_path, queries=[("foo", ["alpha"])]))
     provider_cfg = ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
         embedding_model="fake",
         embedding_dim=64,
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
     )
     kwargs = {
         "provider_cfg": provider_cfg,

@@ -84,14 +84,15 @@ def _sanitize_base_url(url: str | None) -> str | None:
 def _llm_credentials_present(
     provider: Literal["anthropic_compat", "openai_compat", "openai_codex"],
     *,
+    llm_api_key_env: str,
     base_root: Path,
 ) -> bool:
     """Whether credentials for the given LLM provider are resolvable.
 
-    Env-keyed providers (anthropic_compat, openai_compat) check the
-    matching ``API_KEY_ENV`` constant; the codex protocol checks the
-    dikw-managed store at ``<base_root>/.dikw/auth.json``, falling back
-    to the codex CLI store iff lazy migration would succeed there
+    Env-keyed providers (anthropic_compat, openai_compat) check the env
+    var named by ``provider.llm_api_key_env``; the codex protocol checks
+    the dikw-managed store at ``<base_root>/.dikw/auth.json``, falling
+    back to the codex CLI store iff lazy migration would succeed there
     (fresh, non-expired tokens). That predicts what
     ``resolve_access_token`` will do, so /v1/health agrees with the
     runtime even right before the first LLM call triggers migration —
@@ -103,14 +104,10 @@ def _llm_credentials_present(
     a runtime ``ValueError`` instead of silently reporting the wrong
     credentials shape.
     """
-    if provider == "anthropic_compat":
-        from .providers.anthropic_compat import API_KEY_ENV
-
-        return bool(os.environ.get(API_KEY_ENV))
-    if provider == "openai_compat":
-        from .providers.openai_compat import API_KEY_ENV
-
-        return bool(os.environ.get(API_KEY_ENV))
+    if provider in ("anthropic_compat", "openai_compat"):
+        # Both env-keyed protocols read the env var named by config —
+        # the engine hardcodes no key var name.
+        return bool(os.environ.get(llm_api_key_env))
     if provider == "openai_codex":
         from .providers.codex_auth import (
             _read_codex_cli_tokens_if_valid,
@@ -136,8 +133,6 @@ async def health(path: str | Path | None = None) -> HealthReport:
     probe). Returned config is the *resolved* shape — what the server
     actually uses — minus secrets (no API keys, no DSN, no SQLite path).
     """
-    from .providers.openai_compat import EMBEDDING_API_KEY_ENV
-
     cfg, root, storage = await _with_storage(path)
     try:
         counts = await storage.counts()
@@ -163,7 +158,9 @@ async def health(path: str | Path | None = None) -> HealthReport:
         max_retries=p.llm_max_retries,
         max_tokens_synth=p.llm_max_tokens_synth,
         timeout_seconds=p.llm_timeout_seconds,
-        api_key_present=_llm_credentials_present(p.llm, base_root=root),
+        api_key_present=_llm_credentials_present(
+            p.llm, llm_api_key_env=p.llm_api_key_env, base_root=root
+        ),
     )
 
     mm_info: MultimodalInfo | None = None
@@ -185,7 +182,7 @@ async def health(path: str | Path | None = None) -> HealthReport:
         max_retries=p.embedding_max_retries,
         timeout_seconds=p.embedding_timeout_seconds,
         provider_label=p.embedding_provider_label,
-        api_key_present=bool(os.environ.get(EMBEDDING_API_KEY_ENV)),
+        api_key_present=bool(os.environ.get(p.embedding_api_key_env)),
         multimodal=mm_info,
     )
 
@@ -469,7 +466,10 @@ async def check_providers(
                 mm_inst = multimodal_embedder
             else:
                 mm_inst = build_multimodal_embedder(
-                    mm_cfg.provider, base_url=mm_cfg.base_url, batch=mm_cfg.batch
+                    mm_cfg.provider,
+                    api_key_env=cfg.provider.embedding_api_key_env,
+                    base_url=mm_cfg.base_url,
+                    batch=mm_cfg.batch,
                 )
                 owned_mm = mm_inst
         else:

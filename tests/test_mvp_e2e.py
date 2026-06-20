@@ -1,10 +1,11 @@
 """Live end-to-end smoke test: MiniMax LLM + Gitee AI embeddings.
 
-Gated on two env secrets — ``ANTHROPIC_API_KEY`` (the MiniMax key, since
-MiniMax exposes an Anthropic-compatible endpoint) and
-``DIKW_EMBEDDING_API_KEY`` (the Gitee AI key, since MiniMax has no
-embedding endpoint). When either is missing the test skips, so the
-default `pytest` run stays hermetic.
+Gated on two env secrets — ``MINIMAX_API_KEY`` (the MiniMax LLM key; the
+fixture wires MiniMax via the anthropic_compat protocol) and
+``GITEE_API_KEY`` (the Gitee AI embedding key, since MiniMax has no
+embedding endpoint). The fixture's ``provider.{llm,embedding}_api_key_env``
+name these vars. When either is missing the test skips, so the default
+`pytest` run stays hermetic.
 
 All non-secret config (base URLs, model names, dimensions, batch size,
 display label) lives in the committed fixture
@@ -15,7 +16,7 @@ This matches how a CLI user would run: put secrets in ``.env``, edit
 
 Run manually:
 
-    # fill ANTHROPIC_API_KEY + DIKW_EMBEDDING_API_KEY in .env (gitignored),
+    # fill MINIMAX_API_KEY + GITEE_API_KEY in .env (gitignored),
     # then either rely on pytest-dotenv (auto-loaded):
     uv run pytest tests/test_mvp_e2e.py -v -s
     # …or export them yourself before invoking pytest.
@@ -42,7 +43,7 @@ from dikw_core.providers import build_embedder
 CORPUS_DIR = datasets_root() / "mvp" / "corpus"
 CONFIG_FIXTURE = Path(__file__).parent / "fixtures" / "live-minimax-gitee.dikw.yml"
 
-REQUIRED_ENV = ("ANTHROPIC_API_KEY", "DIKW_EMBEDDING_API_KEY")
+REQUIRED_ENV = ("MINIMAX_API_KEY", "GITEE_API_KEY")
 
 
 def _missing_env() -> list[str]:

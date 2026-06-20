@@ -34,9 +34,12 @@ services:
       # previous incarnation on restart. UNSET this when scaling to
       # multiple dikw-core replicas sharing the task DSN.
       DIKW_TASK_REAP_ON_START: "1"
+      # Provider API keys: pass through whichever vars your base's dikw.yml
+      # names via provider.{llm,embedding}_api_key_env. Add lines for other
+      # vendors (DEEPSEEK_API_KEY, MINIMAX_API_KEY, …) as your config needs.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      DIKW_EMBEDDING_API_KEY: ${DIKW_EMBEDDING_API_KEY:-}
+      GITEE_API_KEY: ${GITEE_API_KEY:-}
       DIKW_LOG_LEVEL: ${DIKW_LOG_LEVEL:-INFO}
     ports:
       - "8765:8765"

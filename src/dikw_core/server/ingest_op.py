@@ -77,6 +77,7 @@ def make_ingest_runner(
                     try:
                         multimodal_embedder = build_multimodal_embedder(
                             mm_cfg.provider,
+                            api_key_env=cfg.provider.embedding_api_key_env,
                             base_url=mm_cfg.base_url,
                             batch=mm_cfg.batch,
                         )

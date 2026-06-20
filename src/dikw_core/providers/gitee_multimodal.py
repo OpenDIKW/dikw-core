@@ -40,8 +40,7 @@ import httpx
 
 from ..schemas import MultimodalInput
 from ..telemetry import gen_ai_span
-from .base import ProviderError, TransientProviderError
-from .openai_compat import _resolve_embedding_api_key
+from .base import ProviderError, TransientProviderError, _resolve_key
 
 _DEFAULT_BASE_URL = "https://ai.gitee.com/v1"
 _DEFAULT_TIMEOUT = 60.0
@@ -86,11 +85,13 @@ class GiteeMultimodalEmbedding:
     def __init__(
         self,
         *,
+        api_key_env: str,
         base_url: str | None = None,
         api_key: str | None = None,
         batch: int = 16,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
+        self._api_key_env = api_key_env
         self._base_url = (
             base_url
             or os.environ.get("DIKW_EMBEDDING_BASE_URL")
@@ -175,7 +176,7 @@ class GiteeMultimodalEmbedding:
                 base_url=self._base_url,
                 timeout=self._timeout,
                 headers={
-                    "Authorization": f"Bearer {_resolve_embedding_api_key(self._api_key_explicit)}",
+                    "Authorization": f"Bearer {_resolve_key(self._api_key_explicit, self._api_key_env)}",
                     "Content-Type": "application/json",
                 },
                 # Gitee's batch embedding endpoints (Qwen3-VL family in

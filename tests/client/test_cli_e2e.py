@@ -659,7 +659,6 @@ def test_check_unavailable_provider_exits_one(
     the CLI must exit non-zero so CI / shell scripts can branch on it."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
     patch_transport_factory()
     result = _run(["client", "check"])
     # Either both legs fail (exit 1) or the LLM probe passes
@@ -703,7 +702,6 @@ def test_check_default_emits_json(
     regardless of probe outcome."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
     patch_transport_factory()
     result = _run(["client", "check"])
     assert result.exit_code in (0, 1), result.stdout
@@ -722,7 +720,6 @@ def test_check_table_mode_renders(
     """``--format table`` keeps the rich rendering for human operators."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
     patch_transport_factory()
     result = _run(["client", "check", "--format", "table"])
     assert result.exit_code in (0, 1), result.stdout

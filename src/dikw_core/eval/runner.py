@@ -454,15 +454,17 @@ async def run_eval(
             "WARN",
             "no embedder provided — the vector retrieval leg uses FakeEmbeddings "
             "(lexical bag-of-words); hybrid / vector numbers are not real-vector "
-            "measurements. Pass a real embedder (build_embedder from a base with "
-            "DIKW_EMBEDDING_API_KEY) for trustworthy retrieval numbers",
+            "measurements. Pass a real embedder (build_embedder from a base whose "
+            "provider.embedding_api_key_env is set) for trustworthy retrieval numbers",
         )
     effective_provider_cfg = provider_config or ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
         embedding_model="fake",
         embedding_dim=64,  # matches dikw_core.eval.fake_embedder.EMBED_DIM
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
     )
     effective_retrieval_cfg = retrieval_config or RetrievalConfig()
     effective_assets_cfg = assets_config or AssetsConfig()
@@ -802,7 +804,10 @@ async def _build_multimodal_search(
     if active is None or active.version_id is None:
         return None
     embedder = build_multimodal_embedder(
-        mm_cfg.provider, base_url=mm_cfg.base_url, batch=mm_cfg.batch
+        mm_cfg.provider,
+        api_key_env=cfg.provider.embedding_api_key_env,
+        base_url=mm_cfg.base_url,
+        batch=mm_cfg.batch,
     )
     return MultimodalSearch(
         embedder=embedder,
@@ -1112,11 +1117,13 @@ async def run_synth_eval(
     _reporter: ProgressReporter = reporter or NoopReporter()
     effective_embedder: EmbeddingProvider = embedder or FakeEmbeddings()
     effective_provider_cfg = provider_config or ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
         embedding_model="fake",
         embedding_dim=64,
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
     )
     effective_retrieval_cfg = retrieval_config or RetrievalConfig()
     schema_cfg = SchemaConfig(
@@ -1139,8 +1146,8 @@ async def run_synth_eval(
             "no embedder provided — fact_grounding_ratio / duplicate_ratio_max "
             "were computed against FakeEmbeddings (lexical bag-of-words), NOT a "
             "real semantic measurement; pass a real embedder (build_embedder from "
-            "a base with DIKW_EMBEDDING_API_KEY) for trustworthy grounding / "
-            "duplicate numbers"
+            "a base whose provider.embedding_api_key_env is set) for trustworthy "
+            "grounding / duplicate numbers"
         )
         await _reporter.log("WARN", warnings[-1])
 

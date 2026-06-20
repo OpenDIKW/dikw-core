@@ -140,7 +140,7 @@ documents and their derived rows.
 | Layer | Write entry | Trigger surface | Embed timing |
 |---|---|---|---|
 | **D** (source) | `persist_source` (`domains/data/persist.py`) | `api.ingest` (one call per scanned source file) | **Deferred** — `api.ingest` accumulates chunks across files and runs one bulk embed at end-of-scan for throughput |
-| **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when `DIKW_EMBEDDING_API_KEY` is set, otherwise defers |
+| **K** (knowledge) | `persist_knowledge` (`domains/knowledge/page_index.py`) | `api.synthesize` (synth) / `api.lint_apply` | **Inline** — synth always wires an embedder; lint apply wires one when the configured `provider.embedding_api_key_env` var is set, otherwise defers |
 | **W** (wisdom) | `persist_wisdom` (`domains/wisdom/persist.py`) | `api.write_wisdom_page` (CLI `dikw client wisdom write` / HTTP `POST /v1/base/wisdom`) | **Inline** unless the caller passes `no_embed=True` |
 
 **Cross-layer resume scan.** At the end of every `dikw client ingest`,
@@ -151,8 +151,8 @@ layers, irrespective of which path created them. This is the
 eventually has a vector once an embedder is reachable. It backstops
 three legitimate "no vector yet" paths: ingest crash recovery
 (D-layer chunks written before the bulk embed ran), lint apply
-without `DIKW_EMBEDDING_API_KEY` (K-layer chunks deferred), and
-`write_wisdom_page --no-embed` (W-layer chunks deferred).
+without the configured `provider.embedding_api_key_env` var set (K-layer
+chunks deferred), and `write_wisdom_page --no-embed` (W-layer chunks deferred).
 
 **Per-batch retry-skip.** Inside every persist path the embed leg
 runs through `consume_embedding_stream`, which catches

@@ -111,6 +111,7 @@ async def _retrieve_inner(
                 if mm_embedder is None:
                     mm_embedder = build_multimodal_embedder(
                         mm_cfg.provider,
+                        api_key_env=cfg.provider.embedding_api_key_env,
                         base_url=mm_cfg.base_url,
                         batch=mm_cfg.batch,
                     )
