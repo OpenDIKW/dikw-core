@@ -33,7 +33,9 @@ async def test_openai_compat_embed_classifies_timeout_as_transient() -> None:
     """
     from openai import APITimeoutError
 
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
     fake_client = MagicMock()
     fake_client.embeddings = MagicMock()
     fake_client.embeddings.create = AsyncMock(
@@ -51,7 +53,9 @@ async def test_openai_compat_embed_classifies_503_as_transient() -> None:
     """A 503 must wrap as ``TransientProviderError`` (retryable)."""
     from openai import APIStatusError
 
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
     fake_client = MagicMock()
     fake_client.embeddings = MagicMock()
     fake_response = MagicMock(status_code=503, request=httpx.Request("POST", "u"))
@@ -77,7 +81,9 @@ async def test_openai_compat_embed_classifies_401_as_permanent() -> None:
     """
     from openai import APIStatusError
 
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
     fake_client = MagicMock()
     fake_client.embeddings = MagicMock()
     fake_response = MagicMock(status_code=401, request=httpx.Request("POST", "u"))
@@ -101,7 +107,9 @@ async def test_openai_compat_embed_classifies_404_model_as_permanent() -> None:
     """
     from openai import APIStatusError
 
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
     fake_client = MagicMock()
     fake_client.embeddings = MagicMock()
     fake_response = MagicMock(status_code=404, request=httpx.Request("POST", "u"))
@@ -141,8 +149,10 @@ async def test_gitee_multimodal_classifies_503_as_transient(
     should retry the batch.
     """
 
-    embedder = GiteeMultimodalEmbedding(base_url="https://example.test/v1")
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "k")
+    embedder = GiteeMultimodalEmbedding(
+        api_key_env="GITEE_API_KEY", base_url="https://example.test/v1"
+    )
+    monkeypatch.setenv("GITEE_API_KEY", "k")
 
     fake_client = MagicMock()
     fake_client.post = AsyncMock(side_effect=_gitee_http_status_post_factory(503))
@@ -163,8 +173,10 @@ async def test_gitee_multimodal_classifies_401_as_permanent(
     is silent corruption.
     """
 
-    embedder = GiteeMultimodalEmbedding(base_url="https://example.test/v1")
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "k")
+    embedder = GiteeMultimodalEmbedding(
+        api_key_env="GITEE_API_KEY", base_url="https://example.test/v1"
+    )
+    monkeypatch.setenv("GITEE_API_KEY", "k")
 
     fake_client = MagicMock()
     fake_client.post = AsyncMock(side_effect=_gitee_http_status_post_factory(401))
@@ -185,8 +197,10 @@ async def test_gitee_multimodal_classifies_connection_error_as_transient(
     most common Gitee failure (TCP keepalive mid-batch).
     """
 
-    embedder = GiteeMultimodalEmbedding(base_url="https://example.test/v1")
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "k")
+    embedder = GiteeMultimodalEmbedding(
+        api_key_env="GITEE_API_KEY", base_url="https://example.test/v1"
+    )
+    monkeypatch.setenv("GITEE_API_KEY", "k")
 
     fake_client = MagicMock()
     fake_client.post = AsyncMock(side_effect=httpx.ConnectError("connection reset"))

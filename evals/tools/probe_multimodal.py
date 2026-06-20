@@ -50,7 +50,7 @@ from rich.console import Console
 from rich.table import Table
 
 from dikw_core.config import load_config
-from dikw_core.providers.openai_compat import _resolve_embedding_api_key
+from dikw_core.providers.base import _resolve_key
 
 _DEFAULT_BASE_URL = "https://ai.gitee.com/v1"
 _HTTP_TIMEOUT = 60.0
@@ -469,7 +469,7 @@ async def _main() -> int:
             print(f"ERROR: image not found: {path}", file=sys.stderr)
             return 2
 
-    api_key = _resolve_embedding_api_key(None)
+    api_key = _resolve_key(None, cfg.provider.embedding_api_key_env)
 
     rows, cosines, pairwise = await _run_probes(
         base_url=base_url,

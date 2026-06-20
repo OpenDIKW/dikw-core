@@ -32,7 +32,9 @@ class _FakeEmbeddingsClient:
 
 
 def _embedder(rows: list[SimpleNamespace]) -> OpenAICompatEmbeddings:
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
     embedder._client_cache = _FakeEmbeddingsClient(rows)  # type: ignore[assignment]
     return embedder
 

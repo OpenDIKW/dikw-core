@@ -477,8 +477,9 @@ def render_synth_verify_report(
         console.print(
             "[yellow]warning:[/yellow] the semantic-duplicate check was "
             "SKIPPED — either no embeddings were available (no embedder "
-            "configured, --no-embed, or no active embed version; configure "
-            "DIKW_EMBEDDING_API_KEY and run without --no-embed) or the "
+            "configured, --no-embed, or no active embed version; set the "
+            "embedding key env var (provider.embedding_api_key_env) and run "
+            "without --no-embed) or the "
             "leg's embed pass itself failed (a provider blip — see the "
             "server log; the synth output is unaffected, retry --verify). "
             "Near-duplicate pages were NOT detected."
@@ -522,8 +523,9 @@ def render_synth_verify_report(
             console.print(
                 "[yellow]warning:[/yellow] the grounding leg (--judge) was "
                 "SKIPPED (no embeddings available) — claim entailment was NOT "
-                "scored. Configure DIKW_EMBEDDING_API_KEY (and run without "
-                "--no-embed) for the grounding report."
+                "scored. Set the embedding key env var "
+                "(provider.embedding_api_key_env) and run without --no-embed "
+                "for the grounding report."
             )
 
     if isinstance(findings, list) and findings:

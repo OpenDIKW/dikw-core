@@ -43,7 +43,6 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             self.embeddings = FakeEmbeddings()
 
     monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
-    monkeypatch.delenv("DIKW_EMBEDDING_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     return rec
@@ -53,7 +52,9 @@ async def test_llm_client_passes_max_retries_when_set(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    provider = OpenAICompatLLM(base_url="http://fake.example/v1", max_retries=6)
+    provider = OpenAICompatLLM(
+        api_key_env="OPENAI_API_KEY", base_url="http://fake.example/v1", max_retries=6
+    )
     provider._get_client()
     init = captured["init_kwargs"]
     assert init is not None
@@ -64,7 +65,9 @@ async def test_llm_client_omits_max_retries_when_none(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    provider = OpenAICompatLLM(base_url="http://fake.example/v1")
+    provider = OpenAICompatLLM(
+        api_key_env="OPENAI_API_KEY", base_url="http://fake.example/v1"
+    )
     provider._get_client()
     init = captured["init_kwargs"]
     assert init is not None
@@ -74,8 +77,10 @@ async def test_llm_client_omits_max_retries_when_none(
 async def test_embeddings_client_passes_max_retries_when_set(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
-    provider = OpenAICompatEmbeddings(base_url="http://gitee.example/v1", max_retries=8)
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
+    provider = OpenAICompatEmbeddings(
+        api_key_env="GITEE_API_KEY", base_url="http://gitee.example/v1", max_retries=8
+    )
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
     init = captured["init_kwargs"]
     assert init is not None
@@ -98,10 +103,11 @@ async def test_build_llm_wires_llm_max_retries_from_config(
 async def test_build_embedder_wires_embedding_max_retries_from_config(
     captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-test")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-test")
     cfg = make_provider_cfg(
         embedding_base_url="http://gitee.example/v1",
         embedding_max_retries=9,
+        embedding_api_key_env="GITEE_API_KEY",
     )
     provider = build_embedder(cfg)
     await provider.embed(["ping"], model="Qwen3-Embedding-8B")
@@ -115,11 +121,12 @@ async def test_legs_carry_independent_retry_budgets(
 ) -> None:
     """LLM and embedding legs can target different retry budgets in the same config."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-llm")
-    monkeypatch.setenv("DIKW_EMBEDDING_API_KEY", "sk-embed")
+    monkeypatch.setenv("GITEE_API_KEY", "sk-embed")
     cfg = make_provider_cfg(
         llm="openai_compat",
         llm_max_retries=2,
         embedding_max_retries=10,
+        embedding_api_key_env="GITEE_API_KEY",
     )
 
     llm = build_llm(cfg)

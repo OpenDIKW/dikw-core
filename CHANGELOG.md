@@ -7,8 +7,49 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING — provider API-key env var is now config-driven, and `DIKW_EMBEDDING_API_KEY`
+  is removed.** `ProviderConfig` gains two **required** fields, `llm_api_key_env` and
+  `embedding_api_key_env`, naming the environment variable that holds each leg's key.
+  The engine no longer hardcodes any key var name: `anthropic_compat`/`openai_compat`
+  read exactly the var named in `dikw.yml`, with no fallback. The dikw-invented
+  `DIKW_EMBEDDING_API_KEY` magic name is gone — embedding keys now use **vendor-canonical**
+  names (`OPENAI_API_KEY`, `GITEE_API_KEY`, …) chosen via `embedding_api_key_env`. The
+  LLM/embedding "two separate keys" separation is now achieved by *naming distinct vars*
+  (point both legs at one var to share a key, or at different vars to split vendors)
+  rather than by a special name + no-fallback rule. **Migration:** add the two fields to
+  every `dikw.yml` `provider:` block (a fresh `dikw init` scaffold writes them), and in
+  `.env` rename `DIKW_EMBEDDING_API_KEY` → the vendor var your config names; a same-vendor
+  Anthropic+MiniMax `.env` that reused `ANTHROPIC_API_KEY` for a MiniMax key should move
+  the MiniMax key to `MINIMAX_API_KEY` and set `llm_api_key_env: MINIMAX_API_KEY`. Wipe
+  the local `evals/.cache/snapshots/` after upgrading (its snapshot `dikw.yml`s predate
+  the fields). `/v1/health`'s `api_key_present` and the `dikw client check` probe now key
+  off the configured var; the `tools/e2e_verify.py` real-leg gate derives its required
+  keys from the active profile's `provider.{llm,embedding}_api_key_env`.
+
 ### Added
 
+- **DeepSeek V4 Pro (LLM) + Gitee AI bge-m3 (embeddings) support — config-only.** DeepSeek
+  runs via the existing `anthropic_compat` protocol against its Anthropic-compatible
+  endpoint (`llm_base_url: https://api.deepseek.com/anthropic`, `llm_model: deepseek-v4-pro`,
+  key in `DEEPSEEK_API_KEY`); DeepSeek **ignores** the `cache_control` field the provider
+  sends (no error — only the Anthropic prompt-cache discount is absent, same cost note as
+  `openai_compat`). bge-m3 runs via `openai_compat` embeddings against Gitee
+  (`embedding_base_url: https://ai.gitee.com/v1`, `embedding_model: bge-m3`,
+  `embedding_dim: 1024`, `embedding_batch_size: 16`, key in `GITEE_API_KEY`). No engine
+  code; a committed reference config ships at `tests/fixtures/live-deepseek-gitee-bgem3.dikw.yml`.
+  See `docs/providers.md`.
+- **Horizontal model-comparison harness (`evals/tools/compare_models.py`).** A dev tool
+  (not shipped in the wheel) that runs the same eval dataset against N model arms and emits
+  an arm-by-metric comparison matrix + per-arm JSON. `compare` compares **embedding** models
+  via retrieval eval (deterministic, 1 run/arm: hit@k / mrr / nDCG@10 / recall@100);
+  `compare-synth` compares **LLM** models via synth eval (N runs/arm + a Welch t-test of each
+  arm vs the baseline arm: grounding / atomicity / duplicate / wikilink / language, plus judge
+  dims with `--judge`). Each arm carries a full `provider:` block, so two same-protocol
+  vendors (DeepSeek + MiniMax) resolve distinct keys via their `*_api_key_env`. Reuses the
+  tested statistics from `ab_experiment.py` and the direction rule from `client/baseline.py`.
+  See `evals/README.md` and `docs/providers.md`.
 - **Real-environment end-to-end verification harness (`tools/e2e_verify.py`).** A dev
   tool (not shipped in the wheel) that drives **every** `dikw client` verb against a
   live server in one of two throwaway environments, then destroys it: `--mode local`
@@ -18,8 +59,9 @@ on each entry call out exactly what shape changes break.
   asserted against the live Typer tree, so adding a verb without a sequence step fails
   the run. Provider posture is tiered + skip-loud: structural legs (`ingest --no-embed`,
   `pages`/`graph`/`lint`/`delete`/`tasks`) run with no keys; real legs
-  (`check`/embed/`synth`/vector-`retrieve`/`eval`) run when `ANTHROPIC_API_KEY` +
-  `DIKW_EMBEDDING_API_KEY` are present (from `.env`) and SKIP loudly otherwise. Both modes
+  (`check`/embed/`synth`/vector-`retrieve`/`eval`) run when the keys named by the
+  active profile's `provider.{llm,embedding}_api_key_env` are present (from `.env`)
+  and SKIP loudly otherwise. Both modes
   use a free host port (never a fixed `8765`) so concurrent runs don't collide; docker
   teardown is guaranteed (`down -v --rmi local` removes containers, volumes **and the
   built image**; `--prune` sweeps crashed-run leftovers by label/name). `--observe` wires the

@@ -152,11 +152,11 @@ async def lint_apply(
 ) -> ApplyReport:
     """Mutate ``knowledge/`` per a previously-produced proposal report.
 
-    When ``DIKW_EMBEDDING_API_KEY`` is configured (or the caller passes
-    ``embedder``), Phase 1 re-embeds every rebuilt page inline so the
-    fix is retrievable on return. Without the key, embedding defers to
-    the next ``dikw client ingest``'s missing-embedding resume scan —
-    the same fallback the W-layer ``no_embed`` write path uses.
+    When the embedding key env var named by ``provider.embedding_api_key_env``
+    is set (or the caller passes ``embedder``), Phase 1 re-embeds every
+    rebuilt page inline so the fix is retrievable on return. Without the key,
+    embedding defers to the next ``dikw client ingest``'s missing-embedding
+    resume scan — the same fallback the W-layer ``no_embed`` write path uses.
 
     ``pick`` / ``skip`` filter the proposal list by index. Both may be
     set; pick is applied first, then skip removes from that subset.
@@ -180,7 +180,7 @@ async def lint_apply(
         active_embedder: EmbeddingProvider | None = embedder
         text_version_id: int | None = None
         embedding_model = ""
-        if active_embedder is None and os.environ.get("DIKW_EMBEDDING_API_KEY"):
+        if active_embedder is None and os.environ.get(cfg.provider.embedding_api_key_env):
             active_embedder = build_embedder(cfg.provider)
         if active_embedder is not None:
             resolved = await _resolve_active_text_version_for_inline_embed(

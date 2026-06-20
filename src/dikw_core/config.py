@@ -91,6 +91,14 @@ class ProviderConfig(BaseModel):
     # fresh ``dikw init`` against api.anthropic.com is one key away.
     llm: Literal["anthropic_compat", "openai_compat", "openai_codex"] = "anthropic_compat"
     llm_model: str = "claude-sonnet-4-6"
+    # Name of the env var holding the LLM key. Vendor-canonical — e.g.
+    # ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY`` / ``DEEPSEEK_API_KEY`` /
+    # ``MINIMAX_API_KEY`` — so multiple same-protocol vendors (DeepSeek +
+    # MiniMax both speak ``anthropic_compat``) coexist in one ``.env`` under
+    # distinct names. Required: the engine never hardcodes a key var name.
+    # Ignored by ``openai_codex`` (OAuth tokens live in
+    # ``<base>/.dikw/auth.json``; there is no env API key).
+    llm_api_key_env: str
     embedding: Literal["openai_compat"] = "openai_compat"
     embedding_model: str = "text-embedding-3-small"
     # The OpenAI-compat base URL is used for BOTH `openai_compat` LLM calls and
@@ -107,6 +115,11 @@ class ProviderConfig(BaseModel):
     embedding_revision: str
     embedding_normalize: bool
     embedding_distance: Literal["cosine", "l2", "dot"]
+    # Name of the env var holding the embedding key (vendor-canonical, e.g.
+    # ``OPENAI_API_KEY`` / ``GITEE_API_KEY``). Required. LLM/embedding key
+    # separation is achieved by naming distinct vars here — point both legs at
+    # the same var to share one key, or at different vars to split vendors.
+    embedding_api_key_env: str
     # Max texts per ``/v1/embeddings`` request. OpenAI accepts ~2048;
     # Gitee AI caps at ~25. Keep the default safe for OpenAI and drop it
     # via config when hitting a stricter backend.
@@ -451,15 +464,17 @@ class AssetsConfig(BaseModel):
 
 def _default_provider_config() -> ProviderConfig:
     """``DikwConfig.provider`` factory — defaults to a text-embedding-3-small
-    profile. ``ProviderConfig`` itself still requires the 4 embedding-identity
-    fields explicitly so user-provided yml stays unambiguous; this factory
-    exists so test fixtures and ``api.init_base`` can build a default
-    ``DikwConfig`` without restating those values."""
+    profile. ``ProviderConfig`` itself still requires the embedding-identity
+    fields and the two ``*_api_key_env`` fields explicitly so user-provided yml
+    stays unambiguous; this factory exists so test fixtures and ``api.init_base``
+    can build a default ``DikwConfig`` without restating those values."""
     return ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
         embedding_dim=1536,
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
     )
 
 
@@ -577,10 +592,12 @@ def default_config(description: str = "A dikw-core knowledge base") -> DikwConfi
     """
     return DikwConfig(
         provider=ProviderConfig(
+            llm_api_key_env="ANTHROPIC_API_KEY",  # default LLM: Anthropic native
             embedding_dim=1536,  # text-embedding-3-small native
             embedding_revision="",
             embedding_normalize=True,
             embedding_distance="cosine",
+            embedding_api_key_env="OPENAI_API_KEY",  # default embed: OpenAI
         ),
         storage=SQLiteStorageConfig(),
         schema=SchemaConfig(description=description),

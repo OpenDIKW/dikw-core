@@ -1,0 +1,40 @@
+# Live end-to-end test config — DeepSeek V4 Pro LLM + Gitee AI bge-m3 embeddings.
+#
+# Checked into the repo as-is. URLs and model names are public vendor
+# documentation; only the API keys are secret, and those come from env via .env:
+#   provider.llm_api_key_env: DEEPSEEK_API_KEY       (DeepSeek key)
+#   provider.embedding_api_key_env: GITEE_API_KEY    (Gitee AI key)
+#
+# DeepSeek exposes an Anthropic-compatible endpoint, so the LLM rides the
+# anthropic_compat protocol with llm_base_url pointed at /anthropic. DeepSeek
+# IGNORES the `cache_control` field the provider sends (it does not reject it),
+# so synth works unchanged — only the Anthropic prompt-cache discount is absent
+# (same cost note as openai_compat). See docs/providers.md gotcha #4.
+provider:
+  llm: anthropic_compat
+  llm_model: deepseek-v4-pro
+  llm_base_url: https://api.deepseek.com/anthropic
+  llm_api_key_env: DEEPSEEK_API_KEY
+  # DeepSeek V4 Pro maps from claude-opus and may spend hidden reasoning tokens
+  # on this budget; 8192 keeps a full synth fan-out group from emitting zero
+  # pages. Lower it if `dikw client check --llm-only` is green at a smaller value.
+  llm_max_tokens_synth: 8192
+  embedding: openai_compat
+  embedding_model: bge-m3
+  embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY
+  embedding_dim: 1024           # bge-m3 dense output is fixed 1024-dim
+  embedding_revision: ""
+  embedding_normalize: true
+  embedding_distance: cosine
+  # Gitee AI rejects batches >25 (HTTP 400 "No schema matches").
+  embedding_batch_size: 16
+  embedding_provider_label: gitee-bge-m3
+storage:
+  backend: sqlite
+  path: .dikw/index.sqlite
+schema:
+  description: "deepseek-v4-pro + bge-m3 e2e smoke test wiki"
+sources:
+  - path: ./sources
+    pattern: "**/*.md"

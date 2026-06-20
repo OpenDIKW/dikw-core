@@ -12,7 +12,6 @@ embeddings must go through the OpenAI-compatible provider.
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -23,33 +22,24 @@ from .base import (
     ProviderError,
     ToolSpec,
     TransientProviderError,
+    _resolve_key,
 )
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
 
 
-API_KEY_ENV = "ANTHROPIC_API_KEY"
-
-
-def _resolve_api_key(explicit: str | None) -> str:
-    key = explicit or os.environ.get(API_KEY_ENV)
-    if not key:
-        raise ProviderError(
-            f"{API_KEY_ENV} is not set. Export it or pass `api_key` explicitly."
-        )
-    return key
-
-
 class AnthropicCompatLLM:
     def __init__(
         self,
         *,
+        api_key_env: str,
         api_key: str | None = None,
         base_url: str | None = None,
         max_retries: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
+        self._api_key_env = api_key_env
         self._api_key_explicit = api_key
         self._base_url = base_url
         self._max_retries = max_retries
@@ -62,7 +52,7 @@ class AnthropicCompatLLM:
             from anthropic import AsyncAnthropic
 
             kwargs: dict[str, Any] = {
-                "api_key": _resolve_api_key(self._api_key_explicit),
+                "api_key": _resolve_key(self._api_key_explicit, self._api_key_env),
             }
             if self._base_url is not None:
                 kwargs["base_url"] = self._base_url

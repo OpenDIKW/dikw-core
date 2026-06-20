@@ -75,7 +75,8 @@ leg failed):
   `non_atomic_page` / `uncategorized` / `missing_provenance` / `title_slug_quality`
   on this run's pages.
 - **duplicate** (`duplicate_ok`) — must be PASS (or loud-skip if no embedder is
-  wired; a skip is not a pass — wire `DIKW_EMBEDDING_API_KEY`).
+  wired; a skip is not a pass — set the base's configured
+  `provider.embedding_api_key_env` var).
 - **grounding** (`grounding_entailment_ratio` + `grounding_ci`) — **interpret, do
   not gate**:
   - `grounding_checked: false` → the leg loud-skipped (no embedder/LLM, or it
@@ -129,8 +130,9 @@ shape; a change to the authoring path needs real numbers.
 <notes>
 
 - **Zero-cost LLM** for step 2/4 comes from `openai_codex` — keep the scratch
-  base's `dikw.yml` pointed at it. Embeddings still need `DIKW_EMBEDDING_API_KEY`
-  (Gitee AI), which never falls back to `OPENAI_API_KEY`.
+  base's `dikw.yml` pointed at it. Embeddings still need a real key — set the
+  var the base's `provider.embedding_api_key_env` names (e.g. `GITEE_API_KEY`
+  for Gitee AI); each leg reads exactly its configured var, no fallback.
 - The grounding leg's report-only contract is deliberate
   (`SynthVerifyReport` docstring; roadmap defers *gating* entailment to a
   calibrated Phase 2.2 threshold). Do not "fix" it by gating the ratio in the CLI

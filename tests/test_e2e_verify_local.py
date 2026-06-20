@@ -8,7 +8,7 @@ event loops. Two shapes:
   every tier-2 leg loudly SKIPPED. Proves the no-key contract.
 * keyed — run the full real-provider sweep; skipped unless live keys are set.
   Marked ``requires_embedding_key`` so conftest's autouse fixture doesn't strip
-  ``DIKW_EMBEDDING_API_KEY`` before we read it.
+  the embedding key env var before we read it.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _HARNESS = _REPO_ROOT / "tools" / "e2e_verify.py"
-_SECRET_ENV = ("ANTHROPIC_API_KEY", "DIKW_EMBEDDING_API_KEY")
+_SECRET_ENV = ("MINIMAX_API_KEY", "GITEE_API_KEY")
 
 
 def _run(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:

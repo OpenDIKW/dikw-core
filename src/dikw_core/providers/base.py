@@ -7,6 +7,7 @@ wrap the official SDKs. Swapping providers is a config-only change at the
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -73,6 +74,25 @@ class TransientProviderError(ProviderError):
     (missing key, 401, unknown model) fails the call instead of
     silently emitting an empty embedding batch.
     """
+
+
+def _resolve_key(explicit: str | None, env_name: str) -> str:
+    """Resolve an API key from an explicit value or the named env var.
+
+    The env var name comes from config (``provider.llm_api_key_env`` /
+    ``provider.embedding_api_key_env``) — the engine hardcodes no key var.
+    LLM/embedding key separation is achieved by naming distinct vars (e.g.
+    MiniMax LLM under ``MINIMAX_API_KEY`` + Gitee embeddings under
+    ``GITEE_API_KEY``); point both at one var to share a single key. Raises
+    :class:`ProviderError` (permanent) when the named var is unset, so
+    misconfig fails loud with the var name instead of a wrong-key call.
+    """
+    key = explicit or os.environ.get(env_name)
+    if not key:
+        raise ProviderError(
+            f"{env_name} is not set. Export it or pass `api_key` explicitly."
+        )
+    return key
 
 
 @runtime_checkable

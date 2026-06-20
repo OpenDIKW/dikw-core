@@ -32,12 +32,14 @@ def build_llm(config: ProviderConfig, *, base_root: Path | None = None) -> LLMPr
     """
     if config.llm == "anthropic_compat":
         return AnthropicCompatLLM(
+            api_key_env=config.llm_api_key_env,
             base_url=config.llm_base_url,
             max_retries=config.llm_max_retries,
             timeout_seconds=config.llm_timeout_seconds,
         )
     if config.llm == "openai_compat":
         return OpenAICompatLLM(
+            api_key_env=config.llm_api_key_env,
             base_url=config.llm_base_url,
             max_retries=config.llm_max_retries,
             timeout_seconds=config.llm_timeout_seconds,
@@ -74,6 +76,7 @@ def build_embedder(
     # vec_chunks_v<id> table.
     if config.embedding == "openai_compat":
         return OpenAICompatEmbeddings(
+            api_key_env=config.embedding_api_key_env,
             base_url=config.embedding_base_url,
             default_dimensions=dim_override or config.embedding_dim,
             max_retries=config.embedding_max_retries,
@@ -83,7 +86,11 @@ def build_embedder(
 
 
 def build_multimodal_embedder(
-    provider: str, *, base_url: str | None = None, batch: int = 16
+    provider: str,
+    *,
+    api_key_env: str,
+    base_url: str | None = None,
+    batch: int = 16,
 ) -> MultimodalEmbeddingProvider:
     """Build a multimodal embedder by name.
 
@@ -95,7 +102,7 @@ def build_multimodal_embedder(
     ``providers/`` and add a branch here.
     """
     if provider == "gitee_multimodal":
-        return GiteeMultimodalEmbedding(base_url=base_url, batch=batch)
+        return GiteeMultimodalEmbedding(api_key_env=api_key_env, base_url=base_url, batch=batch)
     raise ProviderError(f"unknown multimodal embedding provider: {provider!r}")
 
 

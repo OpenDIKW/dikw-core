@@ -89,8 +89,9 @@ Concrete steps:
 cd examples/docker
 cp .env.example .env
 # Edit .env: POSTGRES_PASSWORD, DIKW_SERVER_TOKEN are required;
-# at least one of OPENAI_API_KEY / ANTHROPIC_API_KEY, plus
-# DIKW_EMBEDDING_API_KEY for embeddings.
+# plus the key vars your base's dikw.yml names via
+# provider.llm_api_key_env / provider.embedding_api_key_env
+# (e.g. ANTHROPIC_API_KEY for the LLM + GITEE_API_KEY for embeddings).
 
 mkdir base
 docker compose run --rm dikw-core init /base

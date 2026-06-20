@@ -304,8 +304,9 @@ class CheckReport(BaseModel):
 
 class LlmInfo(BaseModel):
     """Resolved LLM config in /v1/health response. ``api_key_present``
-    is a bool — never the key value; the env var (``ANTHROPIC_API_KEY``
-    or ``OPENAI_API_KEY``) is selected by ``provider``.
+    is a bool — never the key value; the env var holding the key is named
+    by ``provider.llm_api_key_env`` (vendor-canonical, e.g.
+    ``ANTHROPIC_API_KEY`` / ``DEEPSEEK_API_KEY``).
     """
 
     provider: Literal["anthropic_compat", "openai_compat", "openai_codex"]
@@ -323,18 +324,20 @@ class MultimodalInfo(MultimodalEmbedConfig):
     Inherits all fields from ``MultimodalEmbedConfig`` (provider, model,
     revision, dim, normalize, distance, batch, base_url) so the two
     schemas can never drift. No ``api_key_present`` here — the
-    multimodal embedder shares ``DIKW_EMBEDDING_API_KEY`` with the text
-    embedder, surfaced once on ``EmbeddingInfo``.
+    multimodal embedder shares the configured embedding key
+    (``provider.embedding_api_key_env``) with the text embedder,
+    surfaced once on ``EmbeddingInfo``.
     """
 
 
 class EmbeddingInfo(BaseModel):
     """Resolved embedding config in /v1/health response.
 
-    ``api_key_present`` reflects ``DIKW_EMBEDDING_API_KEY`` — dikw
-    never falls back to ``OPENAI_API_KEY`` here so LLM and embedding
-    keys can differ. ``multimodal`` nests under embedding because
-    multimodal is a sub-mode of the embedding leg, not a sibling.
+    ``api_key_present`` reflects the env var named by
+    ``provider.embedding_api_key_env``; name distinct vars for the LLM and
+    embedding legs to keep their keys separate. ``multimodal`` nests under
+    embedding because multimodal is a sub-mode of the embedding leg, not a
+    sibling.
     """
 
     provider: Literal["openai_compat"]

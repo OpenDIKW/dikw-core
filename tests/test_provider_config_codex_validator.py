@@ -62,9 +62,11 @@ def test_anthropic_compat_no_base_url_still_valid() -> None:
 def test_provider_config_default_llm_unchanged() -> None:
     """Sanity: the new Literal value is opt-in, default still anthropic_compat."""
     cfg = ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
         embedding_dim=1024,
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
     )
     assert cfg.llm == "anthropic_compat"

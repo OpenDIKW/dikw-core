@@ -33,7 +33,9 @@ def captured_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 def test_anthropic_client_passes_max_retries_when_set(
     captured_kwargs: dict[str, object],
 ) -> None:
-    llm = AnthropicCompatLLM(api_key="sk-explicit", max_retries=7)
+    llm = AnthropicCompatLLM(
+        api_key_env="ANTHROPIC_API_KEY", api_key="sk-explicit", max_retries=7
+    )
     llm._get_client()
     kwargs = captured_kwargs["kwargs"]
     assert isinstance(kwargs, dict)
@@ -48,7 +50,7 @@ def test_anthropic_client_omits_max_retries_when_none(
     The SDK's default (2) stays in control; we only override when the user
     has explicitly asked for it through ``ProviderConfig``.
     """
-    llm = AnthropicCompatLLM(api_key="sk-explicit")
+    llm = AnthropicCompatLLM(api_key_env="ANTHROPIC_API_KEY", api_key="sk-explicit")
     llm._get_client()
     kwargs = captured_kwargs["kwargs"]
     assert isinstance(kwargs, dict)

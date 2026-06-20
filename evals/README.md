@@ -73,8 +73,9 @@ dataset not found / no datasets to run.
 configured with: the eval runner builds `build_embedder(cfg.provider)`
 from the served base's `dikw.yml`, so eval uses the same vector space
 the live engine does. Point `dikw serve` (or `serve-and-run`) at a base
-whose `dikw.yml` carries a real provider, export
-`DIKW_EMBEDDING_API_KEY`, then run eval against it:
+whose `dikw.yml` carries a real provider, export the key var its
+`provider.embedding_api_key_env` names (e.g. `GITEE_API_KEY`), then run eval
+against it:
 
 ```bash
 uv run --env-file .env dikw client serve-and-run --base ./my-base -- eval --dataset mvp
@@ -208,6 +209,34 @@ uv run python evals/tools/ab_experiment.py compare --exp evals/experiments/<name
 `collect` needs a live LLM in the base's `dikw.yml`; `compare` is offline. The
 verdict (`result.json` `shipped` / `regressed`) is what an optimization PR cites
 in `BASELINES.md`. Developer tooling — not on any CI gate.
+
+### Comparing models horizontally
+
+A/B above proves *one code change* on a fixed model. To instead pick **between
+models** — `bge-m3` vs `Qwen3-Embedding-0.6B`, DeepSeek vs MiniMax —
+`evals/tools/compare_models.py` runs the same dataset against N "arms" and
+prints an arm-by-metric matrix (best per metric marked, direction-aware). Each
+arm carries its **own** full `provider:` block, so two arms on the same
+protocol resolve distinct keys via their `*_api_key_env` — no `os.environ`
+juggling.
+
+```bash
+# Embedding comparison via retrieval eval (deterministic, 1 run/arm):
+uv run --env-file .env python evals/tools/compare_models.py compare \
+    --spec embed-arms.yaml --exp evals/experiments/embed-bgem3-vs-qwen
+
+# LLM comparison via synth eval (N runs/arm + Welch t-test vs the first arm):
+uv run --env-file .env python evals/tools/compare_models.py compare-synth \
+    --spec llm-arms.yaml --exp evals/experiments/llm-deepseek-vs-minimax --runs 5
+```
+
+The arms-spec (`dataset` / `mode` / `runs` / `judge` / `arms[]`, first arm =
+baseline) and worked example specs live in
+[`../docs/providers.md`](../docs/providers.md#horizontal-model-comparison).
+`compare` needs `mode: retrieval`; `compare-synth` needs `mode: synth` on a
+dataset that declares the synth mode (the packaged `mvp` set does). An
+`openai_codex` arm is rejected (OAuth, no env key). Developer tooling — not on
+any CI gate.
 
 ### Comparability caveats
 

@@ -464,11 +464,20 @@ def make_provider_cfg(**overrides: Any) -> ProviderConfig:
     don't care, so this helper supplies test-friendly defaults that
     callers can override per-case.
     """
+    # llm_api_key_env defaults to the vendor-canonical name for the chosen
+    # protocol so ``make_provider_cfg(llm="openai_compat")`` resolves against
+    # OPENAI_API_KEY without every caller restating it. An explicit override
+    # always wins (``base.update`` below).
+    llm_default_key_env = (
+        "OPENAI_API_KEY" if overrides.get("llm") == "openai_compat" else "ANTHROPIC_API_KEY"
+    )
     base: dict[str, Any] = {
+        "llm_api_key_env": llm_default_key_env,
         "embedding_dim": EMBED_DIM,
         "embedding_revision": "",
         "embedding_normalize": True,
         "embedding_distance": "cosine",
+        "embedding_api_key_env": "OPENAI_API_KEY",
     }
     base.update(overrides)
     return ProviderConfig(**base)

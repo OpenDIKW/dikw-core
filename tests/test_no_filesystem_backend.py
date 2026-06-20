@@ -37,10 +37,12 @@ def test_load_config_rejects_filesystem_backend(tmp_path: Path) -> None:
     path.write_text(
         """
 provider:
+  llm_api_key_env: ANTHROPIC_API_KEY
   embedding_dim: 1536
   embedding_revision: ''
   embedding_normalize: true
   embedding_distance: cosine
+  embedding_api_key_env: OPENAI_API_KEY
 storage:
   backend: filesystem
   root: .dikw/fs

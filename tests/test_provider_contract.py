@@ -196,7 +196,7 @@ class _OpenAICompatHarness:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
     def make(self) -> LLMProvider:
-        return OpenAICompatLLM(base_url="http://fake.example/v1")
+        return OpenAICompatLLM(api_key_env="OPENAI_API_KEY", base_url="http://fake.example/v1")
 
     def arrange_complete(self, script: _CompleteScript) -> None:
         self._complete = script
@@ -296,7 +296,7 @@ class _AnthropicHarness:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
     def make(self) -> LLMProvider:
-        return AnthropicCompatLLM()
+        return AnthropicCompatLLM(api_key_env="ANTHROPIC_API_KEY")
 
     def arrange_complete(self, script: _CompleteScript) -> None:
         self._complete = script
@@ -545,7 +545,9 @@ async def test_complete_emits_gen_ai_chat_span_with_usage(
 async def test_openai_embed_emits_gen_ai_embeddings_span_with_usage(
     span_exporter: Any,
 ) -> None:
-    embedder = OpenAICompatEmbeddings(base_url="https://example.test/v1", api_key="k")
+    embedder = OpenAICompatEmbeddings(
+        api_key_env="OPENAI_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
 
     async def _create(**_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(
@@ -572,7 +574,9 @@ async def test_openai_embed_emits_gen_ai_embeddings_span_with_usage(
 
 
 async def test_gitee_embed_emits_gen_ai_embeddings_span(span_exporter: Any) -> None:
-    embedder = GiteeMultimodalEmbedding(base_url="https://example.test/v1", api_key="k")
+    embedder = GiteeMultimodalEmbedding(
+        api_key_env="GITEE_API_KEY", base_url="https://example.test/v1", api_key="k"
+    )
 
     class _Resp:
         def raise_for_status(self) -> None:

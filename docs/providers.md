@@ -42,26 +42,68 @@ mechanism, and required Cloudflare headers all diverge from
 `openai_compat`, which is why it's a sibling protocol rather than an
 `openai_compat` base_url variant.
 
+### Where API keys come from
+
+`dikw.yml` also names **which environment variable** holds each leg's key,
+via two **required** `provider:` fields:
+
+```yaml
+provider:
+  llm_api_key_env: DEEPSEEK_API_KEY        # the LLM leg reads $DEEPSEEK_API_KEY
+  embedding_api_key_env: GITEE_API_KEY     # the embedding leg reads $GITEE_API_KEY
+```
+
+The engine hardcodes **no** key-var name and applies **no** fallback — each
+leg reads exactly the var it's pointed at. Convention is vendor-canonical
+names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`,
+`MINIMAX_API_KEY`, `GITEE_API_KEY`, …), so `.env` can hold every vendor's
+key at once and each base picks the one it needs — two same-protocol vendors
+(DeepSeek + MiniMax both speak the Anthropic protocol) never collide. A var
+that's named but unset fails loud at call time with the missing var's name.
+`openai_codex` ignores `llm_api_key_env` — it authenticates via OAuth
+(gotcha #8) — but the field is still required (give it any name).
+
+> **BREAKING:** this replaced the old hardcoded `ANTHROPIC_API_KEY` /
+> `OPENAI_API_KEY` (LLM) + `DIKW_EMBEDDING_API_KEY` (embedding) scheme. The
+> dikw-invented `DIKW_EMBEDDING_API_KEY` name is **gone, with no compat
+> fallback** — add the two fields to every base and rename your `.env` keys.
+> See `CHANGELOG.md` for the migration.
+
 ## Vendor cookbook
 
 Tested / known-compatible combinations. URLs may evolve — always
 cross-check the vendor's own docs.
 
-| Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | LLM key env | Embed key env |
+The last two columns are example **values** for `provider.llm_api_key_env` /
+`provider.embedding_api_key_env` — the env-var *names*, not the keys. The names
+are yours to choose (vendor-canonical by convention); the keys live in `.env`.
+
+| Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | `llm_api_key_env` | `embedding_api_key_env` |
 |---|---|---|---|---|---|---|
-| **OpenAI** (default embedder) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
-| **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *OAuth via `<base>/.dikw/auth.json` — bootstrap with `dikw auth login openai-codex`* | — |
+| **OpenAI** (default embedder) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `OPENAI_API_KEY` |
+| **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *ignored — OAuth via `<base>/.dikw/auth.json`; bootstrap with `dikw auth login openai-codex`* | — |
 | **Anthropic** (default LLM) | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
-| **MiniMax** | `anthropic_compat` | `https://api.minimaxi.com/anthropic` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
-| **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
-| **Gemini** | `openai_compat` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `openai_compat` | same | `OPENAI_API_KEY` | `DIKW_EMBEDDING_API_KEY` |
-| **DeepSeek** | `openai_compat` | `https://api.deepseek.com/v1` | *(no embed — pair elsewhere)* | — | `OPENAI_API_KEY` | — |
-| **Gitee AI** | *(often paired as embed only)* | — | `openai_compat` | `https://ai.gitee.com/v1` | — | `DIKW_EMBEDDING_API_KEY` |
-| **Ollama / vLLM / TEI** (local) | `openai_compat` | `http://localhost:<port>/v1` | `openai_compat` | same or localhost | `OPENAI_API_KEY` (any non-empty) | `DIKW_EMBEDDING_API_KEY` (any non-empty) |
+| **DeepSeek** (anthropic-compat) | `anthropic_compat` | `https://api.deepseek.com/anthropic` | *(no embed — pair elsewhere)* | — | `DEEPSEEK_API_KEY` | — |
+| **MiniMax** | `anthropic_compat` | `https://api.minimaxi.com/anthropic` | *(no embed — pair elsewhere)* | — | `MINIMAX_API_KEY` | — |
+| **DeepSeek** (openai-compat) | `openai_compat` | `https://api.deepseek.com/v1` | *(no embed — pair elsewhere)* | — | `DEEPSEEK_API_KEY` | — |
+| **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `ZHIPUAI_API_KEY` | `ZHIPUAI_API_KEY` |
+| **Gemini** | `openai_compat` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `openai_compat` | same | `GEMINI_API_KEY` | `GEMINI_API_KEY` |
+| **Gitee AI** (`bge-m3`, `Qwen3-Embedding-*`) | *(often paired as embed only)* | — | `openai_compat` | `https://ai.gitee.com/v1` | — | `GITEE_API_KEY` |
+| **Ollama / vLLM / TEI** (local) | `openai_compat` | `http://localhost:<port>/v1` | `openai_compat` | same or localhost | `LOCAL_API_KEY` (any name; any non-empty value) | `LOCAL_API_KEY` (any name; any non-empty value) |
+
+DeepSeek appears twice on purpose — it serves both an Anthropic-compatible
+endpoint (`/anthropic`, the row used by the reference fixture below) and an
+OpenAI-compatible one (`/v1`); pick whichever protocol you prefer. The
+anthropic-compat leg sends `cache_control`, which DeepSeek silently ignores
+(no error, no cache discount — see gotcha #4).
 
 **Reference configs** (committed in this repo):
 - [`tests/fixtures/live-minimax-gitee.dikw.yml`](../tests/fixtures/live-minimax-gitee.dikw.yml)
-  — MiniMax LLM + Gitee AI embeddings. Drop-in for a fresh base.
+  — MiniMax LLM (`anthropic_compat`, `MINIMAX_API_KEY`) + Gitee AI
+  `Qwen3-Embedding-0.6B` embeddings (`GITEE_API_KEY`). Drop-in for a fresh base.
+- [`tests/fixtures/live-deepseek-gitee-bgem3.dikw.yml`](../tests/fixtures/live-deepseek-gitee-bgem3.dikw.yml)
+  — DeepSeek V4 Pro LLM (`anthropic_compat`, `DEEPSEEK_API_KEY`) + Gitee AI
+  `bge-m3` embeddings (`GITEE_API_KEY`, 1024-dim). The DeepSeek + bge-m3 pair.
 
 Add more fixtures over time as you verify combinations; PRs welcome.
 
@@ -71,11 +113,17 @@ Add more fixtures over time as you verify combinations; PRs welcome.
    vendor's values from the cookbook above. Don't forget
    `embedding_dim` and `embedding_batch_size` if the new embedder
    differs from the old (see gotchas).
-2. **Update `.env`** with the new key values. Variable *names* don't
-   change — only their *values*:
-   - `ANTHROPIC_API_KEY` → LLM key (Anthropic or MiniMax).
-   - `OPENAI_API_KEY` → LLM key (OpenAI, Azure, Ollama, GLM, Gemini, …).
-   - `DIKW_EMBEDDING_API_KEY` → embedding key (same or different vendor).
+2. **Point `dikw.yml` at the right key vars, then fill `.env`.** Each base
+   names which env var holds its key via the two required `provider:` fields
+   `llm_api_key_env` / `embedding_api_key_env` (vendor-canonical names by
+   convention). Set them to the new vendor's vars and add the matching secret
+   to `.env`:
+   - `llm_api_key_env:` → e.g. `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` /
+     `MINIMAX_API_KEY` / `OPENAI_API_KEY`, whichever vendor the LLM leg targets.
+   - `embedding_api_key_env:` → e.g. `GITEE_API_KEY` / `OPENAI_API_KEY`. No
+     fallback — the embedder reads exactly this var, so point it at the LLM's
+     var only if you mean to share one key.
+   (`openai_codex` ignores `llm_api_key_env` — it uses OAuth, see gotcha #8.)
 3. **If the embedding model dim changed**, delete `.dikw/index.sqlite`
    (see gotcha #1). Reingestion is required.
 4. **Verify** — `dikw client check` talks to a running server, so use
@@ -177,6 +225,13 @@ DeepSeek pay full price on every call even with a stable system
 prompt. If you plan heavy synth work on an `openai_compat` vendor, the
 cost model is different from the Anthropic leg.
 
+**DeepSeek's anthropic-compat endpoint is a special case.** Even on the
+`anthropic_compat` leg (which *sends* `cache_control`), `deepseek-v4-pro`
+via `https://api.deepseek.com/anthropic` **ignores** the field — it neither
+errors nor applies a cache discount. So synth works unchanged but pays full
+input-token price every call, same cost model as the `openai_compat` vendors
+above. The sent `cache_control` is harmless, not rejected.
+
 ### 5. `max_tokens` is per-op, configurable via `dikw.yml`
 
 Default (in [`config.py`](../src/dikw_core/config.py)):
@@ -208,14 +263,23 @@ small to clear its own chain-of-thought returns an empty completion and
 the probe reports it as **down** rather than green — fix the budget here,
 then re-check.
 
-### 6. Two separate keys, on purpose
+### 6. Each leg names its own key var — no magic fallback
 
-The embedding leg reads `DIKW_EMBEDDING_API_KEY` **exclusively** — no
-silent fallback to `OPENAI_API_KEY`. When LLM and embedding point at
-the same OpenAI-compat vendor, you still set two env vars to the same
-value. This looks redundant but prevents cross-wiring when the two
-legs diverge (the common case — MiniMax LLM + Gitee embeddings, or
-Anthropic LLM + OpenAI embeddings).
+The LLM and embedding legs each read **exactly** the env var named by
+`provider.llm_api_key_env` / `provider.embedding_api_key_env` in `dikw.yml`.
+There's no hardcoded var name and no silent fallback from one leg to the
+other. Split vendors by naming distinct vars (the common case — MiniMax LLM
+`MINIMAX_API_KEY` + Gitee embeddings `GITEE_API_KEY`, or DeepSeek
+`DEEPSEEK_API_KEY` + Gitee `GITEE_API_KEY`); share one key by pointing both
+fields at the same var (e.g. both at `OPENAI_API_KEY` for an all-OpenAI base).
+A var that's named but unset fails loud at call time with the missing var's
+name — misconfiguration never degrades to a silent wrong-key call.
+
+> **BREAKING:** the embedding leg no longer reads the dikw-invented
+> `DIKW_EMBEDDING_API_KEY` — that name is gone with no compat fallback. Add
+> `llm_api_key_env` + `embedding_api_key_env` to every base's `provider:`
+> block and rename your `.env` keys to vendor-canonical names. See
+> `CHANGELOG.md` for the migration.
 
 ### 7. CJK corpora need `cjk_tokenizer: jieba`
 
@@ -384,7 +448,8 @@ cd scratch-bench-base
 #   embedding_normalize: true
 #   embedding_distance: cosine
 #   embedding_batch_size: 16          # gotcha #2 — Gitee caps at 25
-# Then in .env: DIKW_EMBEDDING_API_KEY=<your gitee-ai key>
+#   embedding_api_key_env: GITEE_API_KEY   # names the .env var below
+# Then in .env: GITEE_API_KEY=<your gitee-ai key>
 uv run --env-file .env dikw client serve-and-run --base . -- check --embed-only
 ```
 
@@ -488,6 +553,147 @@ so no change is needed. Only if the base was created with
 will the BM25 row in the ablation table report 0.03 nDCG@10 regardless
 of fusion tuning, because that path doesn't segment Chinese.
 
+## Horizontal model comparison
+
+Calibration above measures **one** config against a published baseline.
+When you instead want to pick between vendors — *is `bge-m3` or
+`Qwen3-Embedding-0.6B` better on my corpus? does DeepSeek or MiniMax write
+cleaner pages?* — use the comparison harness
+[`evals/tools/compare_models.py`](../evals/tools/compare_models.py). It runs
+the **same** eval dataset against N model "arms" and prints an arm-by-metric
+matrix, marking the best arm per metric (direction-aware). It's a dev tool
+under `evals/tools/` (not shipped in the wheel and not a `dikw client`
+command).
+
+Because the key env var is config-driven, **each arm carries a full
+`provider:` block** — so two arms that both speak the `anthropic_compat`
+protocol (DeepSeek + MiniMax) resolve distinct keys via their own
+`llm_api_key_env`, no `os.environ` juggling.
+
+Two subcommands mirror `dikw client eval --eval`:
+
+- **`compare`** — embedding comparison via **retrieval** eval. Arms differ in
+  their `embedding_*` config; retrieval is deterministic for a fixed
+  (embedder, corpus) so it runs **1 run/arm**. Metrics: `hit_at_3` /
+  `hit_at_10` / `mrr` / `ndcg_at_10` / `recall_at_100`.
+- **`compare-synth`** — LLM comparison via **synth** eval. Arms differ in
+  their `llm_*` config; synth output is non-deterministic so it runs **N
+  runs/arm** (default 5) plus a **Welch t-test** of each arm vs the first
+  (baseline) arm. Metrics carry the `synth/` prefix `flatten_synth_report`
+  emits — `synth/fact_grounding_ratio` / `synth/atomicity_score` /
+  `synth/duplicate_ratio_max` / `synth/wikilink_resolved_ratio` /
+  `synth/language_fidelity` (+ judge dims with `--judge`). Requires a dataset
+  that declares the `synth` mode (the packaged `mvp` set does).
+
+**Arms-spec** (YAML): top-level `dataset` / `mode` / `runs` / `judge` and an
+`arms:` list (≥ 2). Each arm is a `name` + a full `provider:` block. The
+**first arm is the baseline** (the Welch reference for synth).
+
+```yaml
+# embed-arms.yaml — bge-m3 vs Qwen3-Embedding-0.6B, both on Gitee
+dataset: scifact
+mode: retrieval
+arms:
+  - name: bge-m3                       # baseline
+    provider:
+      llm: anthropic_compat
+      llm_model: deepseek-v4-pro       # unused in retrieval mode, but required
+      llm_base_url: https://api.deepseek.com/anthropic
+      llm_api_key_env: DEEPSEEK_API_KEY
+      embedding: openai_compat
+      embedding_model: bge-m3
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+  - name: qwen3-0.6b
+    provider:
+      llm: anthropic_compat
+      llm_model: deepseek-v4-pro
+      llm_base_url: https://api.deepseek.com/anthropic
+      llm_api_key_env: DEEPSEEK_API_KEY
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+```
+
+```yaml
+# llm-arms.yaml — DeepSeek-V4-Pro vs MiniMax, embedder held fixed
+dataset: mvp
+mode: synth
+runs: 5
+arms:
+  - name: deepseek-v4-pro              # baseline (Welch reference)
+    provider:
+      llm: anthropic_compat
+      llm_model: deepseek-v4-pro
+      llm_base_url: https://api.deepseek.com/anthropic
+      llm_api_key_env: DEEPSEEK_API_KEY
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+  - name: minimax
+    provider:
+      llm: anthropic_compat
+      llm_model: MiniMax-M2.7
+      llm_base_url: https://api.minimaxi.com/anthropic
+      llm_api_key_env: MINIMAX_API_KEY
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+```
+
+Run (keys come from `.env` via `--env-file`, each arm reads the var its block
+names):
+
+```bash
+uv run --env-file .env python evals/tools/compare_models.py compare \
+    --spec embed-arms.yaml --exp evals/experiments/embed-bgem3-vs-qwen
+
+uv run --env-file .env python evals/tools/compare_models.py compare-synth \
+    --spec llm-arms.yaml --exp evals/experiments/llm-deepseek-vs-minimax --runs 5
+```
+
+Each run prints a matrix to stdout and writes per-arm JSON + a
+`comparison.json` under `--exp`. The leading `^` / `v` on each metric row marks
+direction (higher- vs lower-is-better); `*` marks the winning arm. Notes:
+
+- An `openai_codex` arm is **rejected** — it has no env key (OAuth token
+  store), so it can't be wired from a `provider:` block here. Use
+  `anthropic_compat` / `openai_compat` arms.
+- `compare` defaults to `--cache-mode off` (each arm re-embeds fresh): the
+  corpus cache keys only on `(embedding_model, dim)`, so it's safe when arms
+  differ by model but would let two same-model arms differing in
+  `revision`/`normalize`/`distance` silently reuse one snapshot. Pass
+  `--cache-mode read_write` to speed up runs whose arms differ only by
+  `embedding_model`.
+- Both Gitee embed arms run within the 25-item batch cap (gotcha #2) at
+  `embedding_batch_size: 16`.
+
+See [`evals/README.md`](../evals/README.md) for the dataset contract and how
+this sits alongside the A/B harness.
+
 ## OpenAI Codex (ChatGPT-backend GPT-5 series)
 
 The codex protocol picks up `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex`,
@@ -518,9 +724,12 @@ provider:
   llm: openai_codex
   llm_model: gpt-5.5                   # or gpt-5.4-mini / gpt-5.3-codex
   llm_base_url: https://chatgpt.com/backend-api/codex   # required
+  llm_api_key_env: OPENAI_API_KEY      # required field, but IGNORED by
+                                       # openai_codex (OAuth) — any name works
   embedding: openai_compat             # codex doesn't ship embeddings
   embedding_model: text-embedding-3-small
   embedding_base_url: https://api.openai.com/v1
+  embedding_api_key_env: OPENAI_API_KEY
   embedding_dim: 1536
   embedding_revision: ""
   embedding_normalize: true
@@ -530,7 +739,7 @@ provider:
 `.env`:
 
 ```
-DIKW_EMBEDDING_API_KEY=<your embedding-vendor key>
+OPENAI_API_KEY=<your embedding-vendor key>   # the var named by embedding_api_key_env
 # CODEX_HOME=/custom/path        # optional — only consulted by `dikw auth import`
 ```
 
@@ -711,8 +920,10 @@ your eval gates are tight enough that single-percent nDCG matters.
 ```yaml
 provider:
   llm: anthropic_compat                # or whichever LLM you've configured
+  llm_api_key_env: ANTHROPIC_API_KEY   # or your LLM vendor's var
   embedding: openai_compat             # text leg — single-string input shape
   embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY
   embedding_model: Qwen3-Embedding-0.6B
   embedding_dim: 1024                  # 0.6B native; matches Qwen3-VL so
                                        # both hybrid legs live in the same
@@ -750,9 +961,10 @@ assets:
 
 The text leg and the multimodal leg write **separate** vec tables
 (`vec_chunks_v<n>` / `vec_assets_v<n>`, one per `embed_versions` row);
-their dims do not have to match. Both legs read
-`DIKW_EMBEDDING_API_KEY` — never `OPENAI_API_KEY`. If LLM and
-embedding target different vendors, set them as distinct env vars.
+their dims do not have to match. Both embedding legs read the same var —
+the one named by `provider.embedding_api_key_env` (e.g. `GITEE_API_KEY`
+when both run on Gitee). If the LLM targets a different vendor, name its
+key separately via `provider.llm_api_key_env`.
 
 **Note on chunk routing**: text and multimodal are strictly separate
 channels. Chunk text always flows through the **text** embedder

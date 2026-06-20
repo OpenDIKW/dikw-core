@@ -88,7 +88,9 @@ async def test_live_minimax_synth_returns_pages() -> None:
     final-response-precedence bug — this pins that it returns real text."""
     from dikw_core.providers.anthropic_compat import AnthropicCompatLLM
 
-    llm = AnthropicCompatLLM(base_url=_MINIMAX_BASE_URL, timeout_seconds=120.0)
+    llm = AnthropicCompatLLM(
+        api_key_env="ANTHROPIC_API_KEY", base_url=_MINIMAX_BASE_URL, timeout_seconds=120.0
+    )
     resp = await llm.complete(
         system=_SYNTH_SYS, user=_SYNTH_USER, model=_MINIMAX_MODEL, max_tokens=512
     )

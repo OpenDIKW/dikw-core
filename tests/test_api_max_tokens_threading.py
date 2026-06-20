@@ -31,8 +31,10 @@ def _write_wiki(
 provider:
   llm: anthropic_compat
   llm_model: stub-model
+  llm_api_key_env: ANTHROPIC_API_KEY
   embedding: openai_compat
   embedding_model: stub-embed
+  embedding_api_key_env: OPENAI_API_KEY
   embedding_dim: 64
   embedding_revision: ''
   embedding_normalize: true

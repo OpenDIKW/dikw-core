@@ -100,16 +100,21 @@ settings. Provider examples live in `docs/providers.md`.
 Secrets belong in environment variables or an untracked `.env`, not in
 `dikw.yml`.
 
-Common variables:
+Each base names which env var holds its key via two required `dikw.yml`
+`provider:` fields — `llm_api_key_env` and `embedding_api_key_env` — so the
+var *names* are vendor-canonical and your choice. Set exactly the ones your
+config references:
 
 ```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export DIKW_EMBEDDING_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...   # e.g. llm_api_key_env: ANTHROPIC_API_KEY
+export GITEE_API_KEY=...              # e.g. embedding_api_key_env: GITEE_API_KEY
 ```
 
-The embedding leg intentionally uses `DIKW_EMBEDDING_API_KEY` so LLM and
-embedding credentials can come from different vendors.
+The LLM and embedding legs each read **exactly** the var named by their
+respective field — no hardcoded name, no fallback. Point both fields at one var
+to share a key,
+or at different vars so LLM and embedding credentials come from different
+vendors. See [`docs/providers.md`](docs/providers.md) for the cookbook.
 
 ## Start the Server
 
