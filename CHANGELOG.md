@@ -9,6 +9,25 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **Real-environment end-to-end verification harness (`tools/e2e_verify.py`).** A dev
+  tool (not shipped in the wheel) that drives **every** `dikw client` verb against a
+  live server in one of two throwaway environments, then destroys it: `--mode local`
+  (temp-dir base + long-lived `dikw serve` on SQLite) and `--mode docker` (server +
+  `pgvector` Postgres via a generated compose project, image built **from the local
+  working tree** — not the released PyPI `examples/docker/Dockerfile`). CLI coverage is
+  asserted against the live Typer tree, so adding a verb without a sequence step fails
+  the run. Provider posture is tiered + skip-loud: structural legs (`ingest --no-embed`,
+  `pages`/`graph`/`lint`/`delete`/`tasks`) run with no keys; real legs
+  (`check`/embed/`synth`/vector-`retrieve`/`eval`) run when `ANTHROPIC_API_KEY` +
+  `DIKW_EMBEDDING_API_KEY` are present (from `.env`) and SKIP loudly otherwise. Both modes
+  use a free host port (never a fixed `8765`) so concurrent runs don't collide; docker
+  teardown is guaranteed (`down -v --rmi local` removes containers, volumes **and the
+  built image**; `--prune` sweeps crashed-run leftovers by label/name). `--observe` wires the
+  `docs/observability` OTel stack and surfaces a Jaeger trace link on failure. Registered
+  as a `cli/server/client` leg in the `dikw-core-verify` skill; wrapped by
+  `tests/test_e2e_verify_{local,docker}.py` (`-m slow`). Default provider profile is the
+  committed MiniMax + Qwen3-Embedding-0.6B template; swap vendor/model via
+  `--provider-profile <dikw.yml>`.
 - **`dangling_provenance` drift lint kind — flag a K/W page citing a deleted source
   (read-only).** A new deterministic `lint` kind that flags a `knowledge/` (K) or
   `wisdom/` (W) page whose `sources:` **provenance** edge points at a source file that
