@@ -135,6 +135,32 @@ def test_parse_arms_spec_rejects_invalid_provider() -> None:
         parse_arms_spec(raw)
 
 
+def test_parse_arms_spec_rejects_non_mapping_arm() -> None:
+    # A scalar/list arm entry must fail with a clear error, not AttributeError
+    # from calling .get() on a non-mapping.
+    raw = {
+        "dataset": "d",
+        "mode": "retrieval",
+        "arms": [{"name": "ok", "provider": _provider_block()}, "not-a-mapping"],
+    }
+    with pytest.raises(ValueError, match="arm #1 must be a mapping"):
+        parse_arms_spec(raw)
+
+
+def test_parse_arms_spec_rejects_unsafe_arm_name() -> None:
+    # Arm names become ``<arm>.json`` filenames, so a path separator is rejected.
+    raw = {
+        "dataset": "d",
+        "mode": "retrieval",
+        "arms": [
+            {"name": "ok", "provider": _provider_block()},
+            {"name": "../escape", "provider": _provider_block()},
+        ],
+    }
+    with pytest.raises(ValueError, match="must match"):
+        parse_arms_spec(raw)
+
+
 # --- best-per-metric (direction-aware) ------------------------------------ #
 
 

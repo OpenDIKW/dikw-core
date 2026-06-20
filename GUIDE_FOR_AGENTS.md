@@ -110,8 +110,9 @@ export ANTHROPIC_API_KEY=sk-ant-...   # e.g. llm_api_key_env: ANTHROPIC_API_KEY
 export GITEE_API_KEY=...              # e.g. embedding_api_key_env: GITEE_API_KEY
 ```
 
-The LLM and embedding legs each read **exactly** the var their field names —
-no hardcoded name, no fallback. Point both fields at one var to share a key,
+The LLM and embedding legs each read **exactly** the var named by their
+respective field — no hardcoded name, no fallback. Point both fields at one var
+to share a key,
 or at different vars so LLM and embedding credentials come from different
 vendors. See [`docs/providers.md`](docs/providers.md) for the cookbook.
 

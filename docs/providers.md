@@ -682,9 +682,12 @@ direction (higher- vs lower-is-better); `*` marks the winning arm. Notes:
 - An `openai_codex` arm is **rejected** — it has no env key (OAuth token
   store), so it can't be wired from a `provider:` block here. Use
   `anthropic_compat` / `openai_compat` arms.
-- The retrieval corpus cache keys on `embedding_model`, so embed arms never
-  cross-contaminate; `--cache-mode rebuild` forces a fresh embed if you
-  changed a model behind a stable name.
+- `compare` defaults to `--cache-mode off` (each arm re-embeds fresh): the
+  corpus cache keys only on `(embedding_model, dim)`, so it's safe when arms
+  differ by model but would let two same-model arms differing in
+  `revision`/`normalize`/`distance` silently reuse one snapshot. Pass
+  `--cache-mode read_write` to speed up runs whose arms differ only by
+  `embedding_model`.
 - Both Gitee embed arms run within the 25-item batch cap (gotcha #2) at
   `embedding_batch_size: 16`.
 

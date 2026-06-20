@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -77,6 +78,10 @@ from evals.tools.ab_experiment import (  # noqa: E402
 )
 
 from dikw_core.client.baseline import metric_lower_is_better  # noqa: E402
+
+# Arm names are used directly as ``<arm>.json`` output filenames, so restrict
+# them to a filesystem-safe charset (no separators / traversal / spaces).
+_SAFE_ARM_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # Canonical retrieval metric order for the matrix (doc-view aliases).
 _RETRIEVAL_METRICS: tuple[str, ...] = (
@@ -151,9 +156,18 @@ def parse_arms_spec(raw: Mapping[str, Any]) -> tuple[str, str, int, bool, list[A
     arms: list[ArmSpec] = []
     seen: set[str] = set()
     for i, entry in enumerate(raw_arms):
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                f"arms spec: arm #{i} must be a mapping, got {type(entry).__name__}"
+            )
         name = entry.get("name")
         if not name or not isinstance(name, str):
             raise ValueError(f"arms spec: arm #{i} is missing a 'name'")
+        if not _SAFE_ARM_NAME.match(name):
+            raise ValueError(
+                f"arms spec: arm name {name!r} must match [A-Za-z0-9._-]+ "
+                "(it is used directly as a per-arm output filename)"
+            )
         if name in seen:
             raise ValueError(f"arms spec: duplicate arm name {name!r}")
         seen.add(name)
@@ -440,6 +454,9 @@ async def _cmd_compare_synth(args: argparse.Namespace) -> int:
         sys.stderr.write(f"error: `compare-synth` needs mode: synth (spec says {mode!r})\n")
         return 2
     runs = args.runs if args.runs is not None else runs
+    if runs < 1:
+        sys.stderr.write(f"error: --runs must be >= 1 (got {runs})\n")
+        return 2
     judge = judge or args.judge
     spec = load_dataset(dataset)
     if "synth" not in spec.modes:
@@ -464,7 +481,16 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("compare", help="retrieval comparison (embed arms, 1 run each)")
     c.add_argument("--spec", required=True, help="arms-spec YAML (mode: retrieval)")
     c.add_argument("--exp", required=True, help="output dir under evals/experiments/")
-    c.add_argument("--cache-mode", default="read_write", choices=["read_write", "rebuild", "off"])
+    # Default ``off``: the corpus cache keys on (model, dim) only, so two arms
+    # sharing a model but differing in revision/normalize/distance would silently
+    # reuse one snapshot (see eval.runner._corpus_cache_key's own ablation note).
+    # ``read_write`` is a safe speed-up only when arms differ by embedding_model.
+    c.add_argument(
+        "--cache-mode",
+        default="off",
+        choices=["read_write", "rebuild", "off"],
+        help="corpus snapshot cache (default off — safe for arm comparison)",
+    )
 
     s = sub.add_parser("compare-synth", help="synth comparison (LLM arms, N runs + Welch)")
     s.add_argument("--spec", required=True, help="arms-spec YAML (mode: synth)")
