@@ -16,6 +16,7 @@ the client is installed at, which is exactly the no-skew path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError
 from typing import Any
@@ -189,6 +190,34 @@ async def test_check_runs_once_per_instance(monkeypatch: pytest.MonkeyPatch) -> 
         await t.get_json("/v1/status")
         assert record.count("/v1/info") == 1
         assert record.count("/v1/status") == 2
+    finally:
+        await t.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_requests_all_refused_on_skew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent first-requests on one Transport (the ``asyncio.gather``
+    shape in ``_gather_task_results``) must ALL be refused on skew — none
+    may slip its real request to the skewed server before the verdict."""
+    monkeypatch.setattr(transport_mod, "_installed_version", lambda: "0.5.0")
+    monkeypatch.delenv(_ALLOW_ENV, raising=False)
+    record: list[str] = []
+    t = _transport(_mock_transport(server_version="0.6.0", record=record))
+    try:
+        results = await asyncio.gather(
+            t.get_json("/v1/status"),
+            t.get_json("/v1/status"),
+            t.get_json("/v1/status"),
+            return_exceptions=True,
+        )
+        assert all(
+            isinstance(r, ClientError) and r.code == "version_skew"
+            for r in results
+        ), results
+        # The skewed server was probed but NO real /v1/status ever landed.
+        assert "/v1/status" not in record
     finally:
         await t.__aexit__(None, None, None)
 

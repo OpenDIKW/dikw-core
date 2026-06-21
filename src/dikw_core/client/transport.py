@@ -22,6 +22,7 @@ Things this module deliberately does NOT do:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -107,7 +108,12 @@ class Transport:
         self._token = token
         # The version handshake runs at most once per instance, before the
         # first request actually reaches the server (see _ensure_version_compat).
+        # The lock serializes concurrent first-callers (e.g. the asyncio.gather
+        # in _gather_task_results, which shares one Transport) so none slips its
+        # real request past an in-flight probe — without it a skew refusal could
+        # land after the racing request already reached the skewed server.
         self._version_checked = False
+        self._version_lock = asyncio.Lock()
 
     @classmethod
     def from_config(
@@ -151,13 +157,30 @@ class Transport:
 
         Hard-fails on a confirmed mismatch unless ``DIKW_ALLOW_VERSION_SKEW``
         is set, which downgrades it to a one-line stderr warning.
+
+        Concurrency: the probe runs under ``self._version_lock`` so that a
+        burst of concurrent first-requests on one Transport (e.g.
+        ``_gather_task_results``' ``asyncio.gather``) all block on the
+        verdict instead of the second caller seeing a half-set flag and
+        racing its real request through. ``_version_checked`` is set only
+        after a non-raising probe, so on a skew refusal the flag stays
+        False and every queued caller is likewise refused (each re-probes;
+        acceptable on the terminal failure path).
         """
         if self._version_checked:
             return
-        # Set before the probe so a re-entrant call (the probe itself goes
-        # straight through ``self._client``, but defensively) can't loop.
-        self._version_checked = True
+        async with self._version_lock:
+            if self._version_checked:
+                return
+            await self._probe_version_compat()
+            self._version_checked = True
 
+    async def _probe_version_compat(self) -> None:
+        """Single ``/v1/info`` probe + comparison. Returns on every
+        ambiguous case (so the handshake never raises a false skew);
+        raises ``ClientError(version_skew)`` only on a confirmed mismatch
+        without the allow-env override. Always called while holding
+        ``self._version_lock``."""
         client_ver = _installed_version()
         if client_ver is None:
             return
