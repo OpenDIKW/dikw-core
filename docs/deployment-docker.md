@@ -34,8 +34,26 @@ keeps the quick-start under a screenful.
   docker run --rm docker-dikw-core version
   ```
 
-  The image isn't published to GHCR yet; once it is, the tag becomes
-  `ghcr.io/opendikw/dikw-core:vX.Y.Z`.
+  Each release publishes this same image to GHCR (the `publish-image`
+  job in `.github/workflows/release.yml`) as
+  `ghcr.io/opendikw/dikw-core:X.Y.Z` — public, multi-arch
+  (`linux/amd64` + `linux/arm64`), no leading `v`. The compose stack
+  pulls it by default (pinned via `DIKW_VERSION`); `docker run` works
+  against it too:
+
+  ```bash
+  docker run --rm -v ./base:/base ghcr.io/opendikw/dikw-core:0.6.0 init /base
+  docker run --rm ghcr.io/opendikw/dikw-core:0.6.0 version
+  ```
+
+  There is intentionally **no floating `:latest`** — downstream pins an
+  exact release so its debug environment stays reproducible.
+
+  > **Maintainer, one-time:** a GHCR package pushed by `GITHUB_TOKEN` is
+  > created **private**. After the first release that runs `publish-image`,
+  > set the package to **Public** (org → Packages → `dikw-core` → Package
+  > settings → Change visibility) so downstream `docker compose pull`
+  > needs no login.
 
 ## The compose stack
 
@@ -163,12 +181,23 @@ the right setup for single-machine personal use.
 
 ## Upgrading
 
+Pulling the published image is the default path — bump `DIKW_VERSION`
+in `.env` to a newer [release](https://github.com/OpenDIKW/dikw-core/releases)
+and re-pull:
+
 ```bash
-docker compose build --build-arg DIKW_VERSION=0.2.7
+docker compose pull        # fetch ghcr.io/opendikw/dikw-core:$DIKW_VERSION
 docker compose up -d
 ```
 
-Omit `--build-arg` to use the default baked into the Dockerfile. The
+To upgrade by rebuilding from local source instead (e.g. an unreleased
+change), use the `build:` fallback:
+
+```bash
+docker compose up -d --build --build-arg DIKW_VERSION=0.2.7
+```
+
+Omit `--build-arg` to use the default baked into the Dockerfile. That
 default tracks the latest PyPI release via an auto-opened chore PR
 after each publish (see the `sync-dockerfile` job in
 `.github/workflows/release.yml`) — there's a short window after a new

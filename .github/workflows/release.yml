@@ -71,6 +71,91 @@ jobs:
       - name: Publish
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
 
+  publish-image:
+    name: Build + push container image to GHCR
+    # Runs AFTER the PyPI publish because the image installs the published
+    # wheel (examples/docker/Dockerfile ``pip install dikw-core==X.Y.Z``).
+    # ``needs: publish`` only guarantees the upload returned, not that the
+    # PyPI CDN has propagated, so the ``Wait for PyPI`` step polls before
+    # building rather than letting ``pip install`` 404 on a cold index.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the image to ghcr.io/opendikw/*
+    # ONE-TIME maintainer action: a package pushed with GITHUB_TOKEN is
+    # created PRIVATE by default. After the first successful run, set
+    # ``ghcr.io/opendikw/dikw-core`` to Public in the org's package settings
+    # (Packages → dikw-core → Package settings → Change visibility) so
+    # downstream ``docker compose pull`` needs no login, as the docs promise.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Resolve + validate version (strip leading v)
+        id: ver
+        # Reads the tag from the $GITHUB_REF_NAME env var (never a ${{ }}
+        # interpolation into the shell) and refuses anything that isn't
+        # strict X.Y.Z — mirrors the sync-dockerfile guard, and means the
+        # ``version`` output is digits-and-dots only, so it's safe to use
+        # downstream as a curl URL segment, build-arg, and image tag.
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          if ! printf '%s\n' "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag ${GITHUB_REF_NAME} maps to '${v}', not strict X.Y.Z — refusing to build an image for it." >&2
+            exit 1
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the wheel to be installable from PyPI
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://pypi.org/pypi/dikw-core/${VERSION}/json"
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+            if [ "$code" = "200" ]; then
+              echo "dikw-core ${VERSION} is live on PyPI"
+              exit 0
+            fi
+            echo "attempt ${i}: PyPI returned ${code} for ${VERSION}; waiting 10s"
+            sleep 10
+          done
+          echo "::error::dikw-core ${VERSION} never became installable on PyPI (5 min)" >&2
+          exit 1
+
+      - name: Set up QEMU (linux/arm64 emulation)
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push multi-arch image (installs the published wheel)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: examples/docker
+          file: examples/docker/Dockerfile
+          # The same Dockerfile the Trivy PR-scan builds — so the published
+          # image IS the scanned one. DIKW_VERSION is passed explicitly here
+          # because the Dockerfile's ARG default still points at the PRIOR
+          # release until the sync-dockerfile PR lands.
+          build-args: |
+            DIKW_VERSION=${{ steps.ver.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # :X.Y.Z only (no :latest) — downstream pins an exact release so
+          # its debug environment stays reproducible (dikw-core is alpha).
+          tags: ghcr.io/opendikw/dikw-core:${{ steps.ver.outputs.version }}
+          provenance: false
+
   sync-dockerfile:
     name: Open PR to sync Dockerfile DIKW_VERSION
     # Closes the drift window between ``pyproject.toml`` bumping the

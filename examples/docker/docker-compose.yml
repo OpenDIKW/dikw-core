@@ -19,9 +19,19 @@ services:
       retries: 10
 
   dikw-core:
+    # Default path: ``docker compose pull`` fetches the official multi-arch
+    # image published to GHCR on each release. Pinned via DIKW_VERSION —
+    # fail-closed so the debug environment always rides a known release.
+    # The ``build:`` block is for local-source rebuilds only
+    # (``docker compose up --build``); it does NOT auto-pull. Its ``args``
+    # forward the same DIKW_VERSION so a local build matches the pinned tag
+    # instead of the Dockerfile's ARG default.
+    image: ghcr.io/opendikw/dikw-core:${DIKW_VERSION:?set DIKW_VERSION in .env to a released version, e.g. 0.6.0}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DIKW_VERSION: ${DIKW_VERSION}
     depends_on:
       postgres:
         condition: service_healthy

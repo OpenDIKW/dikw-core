@@ -9,6 +9,19 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **Official container image published to GHCR on every release.** The release
+  workflow's new `publish-image` job builds `examples/docker/Dockerfile` (the
+  same image the Trivy PR-scan builds) and pushes a public, multi-arch
+  (`linux/amd64` + `linux/arm64`) image to
+  `ghcr.io/opendikw/dikw-core:X.Y.Z` after the PyPI publish (it waits for the
+  wheel to be installable, then `pip install`s it). There is intentionally **no
+  floating `:latest`** — downstream pins an exact `X.Y.Z` so its debug
+  environment stays reproducible. `examples/docker/docker-compose.yml` now pulls
+  this image by default (pinned via the required `DIKW_VERSION` env var, with the
+  `build:` block retained as a local-source fallback), giving downstream systems
+  a stable, ready-to-run dikw-core to develop and debug their HTTP / `dikw
+  client` integration against. See `examples/docker/README.md` and
+  `docs/deployment-docker.md`.
 - **Client/server version handshake.** `dikw client` now probes `GET /v1/info`
   once per invocation and compares the server's `engine_version` to the client's
   own installed `dikw-core` version. A confirmed mismatch **hard-fails** the
