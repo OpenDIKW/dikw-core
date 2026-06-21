@@ -62,6 +62,24 @@ uv run dikw client retrieve "What does Karpathy mean by deterministic scoping?"
 > the agent (Claude Code, ChatGPT, your own script) feeds them into its own
 > LLM. See [`GUIDE_FOR_AGENTS.md`](./GUIDE_FOR_AGENTS.md).
 
+### Install from PyPI (downstream consumers)
+
+The block above is the from-source flow. To **use** dikw-core without a
+checkout, install the published wheel — the `dikw` command lands on your PATH:
+
+```bash
+uv pip install 'dikw-core[postgres]'   # or plain pip; drop [postgres] for SQLite-only
+dikw init my-base && cd my-base
+dikw serve --base .
+```
+
+Optional extras: **`postgres`** (pgvector backend), **`cjk`** (`jieba` — the
+default config selects it, so ingesting Chinese/CJK text errors without it),
+**`otel`** ([OpenTelemetry](./docs/observability.md)). Pin a version to match
+your server — `dikw client` hard-fails on a [version skew](./docs/server.md).
+Full extras matrix in
+[`docs/getting-started.md`](./docs/getting-started.md#optional-extras).
+
 Server deployment, security posture, and the wire contract live in
 [`docs/server.md`](./docs/server.md). For container deployment, see
 [`examples/docker/`](./examples/docker/) (Dockerfile + compose stack
