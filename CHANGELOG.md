@@ -35,7 +35,17 @@ on each entry call out exactly what shape changes break.
   warning for deliberate mixed-version debugging. The probe is layering-clean
   (reads its own version via `importlib.metadata`, never imports the engine).
 
-## 0.6.0 — config-driven provider API-key env vars (BREAKING); DeepSeek V4 Pro + Gitee bge-m3; horizontal model comparison
+### Docs
+
+- **Install-from-PyPI path for downstream consumers.** `docs/getting-started.md`
+  §1 now splits installation into Option A (`uv pip install 'dikw-core[...]'` —
+  the published wheel, for systems that *use* dikw-core) and Option B (`git clone`
+  + `uv sync` — for contributors), and adds an **optional-extras matrix**
+  documenting all three user-facing extras (`postgres`, `cjk`, `otel`): what each
+  pulls in, when to install it, and how the feature degrades without it. The
+  README install section gains a matching "Install from PyPI" block. Previously
+  both entry points led only with the from-source checkout flow, leaving the
+  pip-install consumer path (and the `cjk` extra entirely) undocumented.
 
 ### Changed
 

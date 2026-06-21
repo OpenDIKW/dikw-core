@@ -1,21 +1,62 @@
 # Getting started
 
 This walkthrough takes a blank directory to a queryable knowledge base in
-about five minutes. It only needs Python 3.12+ and `uv`; LLM keys are
-optional until you hit `dikw client synth` (the engine-internal K-layer
-authoring leg). Plain `dikw client retrieve` runs without any LLM key.
+about five minutes. It only needs Python 3.12+ (plus [`uv`](https://docs.astral.sh/uv/),
+or any pip-capable environment); LLM keys are optional until you hit
+`dikw client synth` (the engine-internal K-layer authoring leg). Plain
+`dikw client retrieve` runs without any LLM key.
 
 ## 1. Install and scaffold
+
+There are two ways to get the `dikw` CLI, depending on whether you want to
+**use** dikw-core or **work on** it.
+
+### Option A — install the published package (most downstream systems)
+
+dikw-core ships to [PyPI](https://pypi.org/project/dikw-core/) on every
+release. Install the wheel into any environment and the `dikw` command lands
+on your PATH:
+
+```bash
+uv pip install 'dikw-core[postgres]'   # or: pip install 'dikw-core[postgres]'
+dikw init my-base --description "my research base"
+cd my-base
+```
+
+Pin an exact version (`uv pip install 'dikw-core[postgres]==0.6.0'`) so your
+client stays on the same release as the server it talks to — `dikw client`
+runs a [version handshake](server.md) and hard-fails on a mismatch.
+
+### Option B — develop from a checkout (contributors)
 
 ```bash
 git clone https://github.com/OpenDIKW/dikw-core
 cd dikw-core
-uv sync
+uv sync --all-extras    # installs every extra + the dev group
 
 # Pick any directory — `my-base/` below — it will also be a valid Obsidian vault.
 uv run dikw init ../my-base --description "my research base"
 cd ../my-base
 ```
+
+> The rest of this walkthrough spells commands as `uv run dikw …`, the
+> checkout (Option B) form. If you installed the wheel (Option A), drop the
+> `uv run` prefix and call `dikw …` directly.
+
+### Optional extras
+
+The base install is deliberately dependency-light — SQLite + `sqlite-vec` +
+FTS5, no extras required. Three opt-in extras add capabilities; without an
+extra its feature degrades gracefully rather than erroring:
+
+| extra | pulls in | install when you… |
+| --- | --- | --- |
+| `postgres` | `psycopg[binary,pool]`, `pgvector` | run the multi-user Postgres backend (`storage.backend: postgres`) instead of the default SQLite. Degrades to: SQLite only. |
+| `cjk` | `jieba` | index Chinese / Japanese / Korean text — without it SQLite FTS5 tokenizes every CJK character separately and BM25 recall collapses. Flip `retrieval.cjk_tokenizer: jieba` in `dikw.yml` after installing. Degrades to: single-char CJK tokenization. |
+| `otel` | OpenTelemetry SDK + OTLP/HTTP exporter + FastAPI/httpx/logging instrumentation | export traces / metrics / logs to an OTLP backend — see [`observability.md`](observability.md). Degrades to: no-op telemetry. |
+
+Combine them in one install: `uv pip install 'dikw-core[postgres,cjk,otel]'`
+(checkout flow: `uv sync --all-extras`).
 
 The init command creates this tree:
 
