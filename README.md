@@ -263,6 +263,15 @@ wheel; merge that chore PR to clear the post-release queue. The
 `dockerfile-version-guard` job in `reusable-ci.yml` enforces the
 invariant on every PR.
 
+> **One-time secret — `RELEASE_PR_PAT`.** That chore PR's required CI only
+> runs if it is opened with a PAT: a PR opened by the default `GITHUB_TOKEN`
+> cannot trigger other workflows, so its checks stay `action_required` and it
+> is born blocked. Add a repo secret `RELEASE_PR_PAT` holding a fine-grained
+> PAT scoped to this repo with **Contents: read/write** + **Pull requests:
+> read/write** (no Workflows scope needed — this PR only edits the Dockerfile).
+> Without it the PR still opens but you must push an empty commit (or
+> close/re-open) to run its gate.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

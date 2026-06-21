@@ -127,9 +127,35 @@ jobs:
           sed -i -E "s/^ARG DIKW_VERSION=.*/ARG DIKW_VERSION=${v}/" examples/docker/Dockerfile
           git --no-pager diff examples/docker/Dockerfile
 
+      - name: Warn if RELEASE_PR_PAT is unset
+        # The token fallback below is intentionally silent (the PR still opens
+        # on GITHUB_TOKEN), so emit a release-time ::warning:: — far more visible
+        # than the PR-body note — telling the maintainer the PR will be born
+        # BLOCKED. Secret is mapped to an env var (never referenced in ``if:``,
+        # never echoed) and only its emptiness is tested.
+        env:
+          RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT }}
+        run: |
+          if [ -z "${RELEASE_PR_PAT}" ]; then
+            echo "::warning::RELEASE_PR_PAT secret is unset — the Dockerfile-bump PR is opened with GITHUB_TOKEN, so its CI cannot auto-run and it is born BLOCKED. Push an empty commit to the PR branch to run the gate, then merge."
+          fi
+
       - name: Create pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
         with:
+          # A PR opened with the default GITHUB_TOKEN cannot trigger other
+          # workflows (GitHub's recursion guard), so ci.yml/Trivy land on the
+          # PR head as non-runnable ``action_required`` runs and the required
+          # ``ci /`` checks never report — the PR is born BLOCKED and the only
+          # un-stick was a manual empty commit / close-reopen. Open it with a
+          # PAT instead so ``pull_request`` fires normally and the gate runs.
+          # Falls back to GITHUB_TOKEN when the secret is unset: the PR still
+          # opens, just gated as before (strictly no worse than the old path),
+          # and auto-upgrades the moment the secret lands. Set repo secret
+          # RELEASE_PR_PAT to a fine-grained PAT on THIS repo with
+          # Contents: read/write + Pull requests: read/write (no Workflows
+          # scope — this PR only edits the Dockerfile). See README "Releasing".
+          token: ${{ secrets.RELEASE_PR_PAT || github.token }}
           commit-message: |
             chore(docker): bump DIKW_VERSION to ${{ github.ref_name }}
           branch: chore/docker-version-${{ github.ref_name }}
@@ -143,11 +169,13 @@ jobs:
             from PyPI. This PR closes the drift window that opens between the
             `pyproject.toml` version bump and the wheel landing on PyPI.
 
-            **CI note:** PRs opened by the default `GITHUB_TOKEN` do not trigger
-            other workflows. If you want Trivy to scan this PR before merging,
-            close and re-open it manually — or merge directly (the change is a
-            single line and the post-publish guard in `reusable-ci.yml` will
-            re-validate on the next PR).
+            **CI note:** when the `RELEASE_PR_PAT` secret is configured this PR
+            is opened with it, so `ci.yml`/Trivy run automatically. If the secret
+            is unset the PR falls back to the default `GITHUB_TOKEN`, whose PRs
+            cannot trigger other workflows — then push an empty commit (or
+            close/re-open) to run the gate, or (with admin) merge directly
+            (single-line change; the post-publish guard in `reusable-ci.yml`
+            re-validates on the next PR).
           labels: |
             chore
             automated
