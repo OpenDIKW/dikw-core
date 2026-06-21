@@ -23,8 +23,12 @@ Things this module deliberately does NOT do:
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from types import TracebackType
 from typing import Any, cast
 
@@ -36,10 +40,33 @@ from .config import ClientConfig
 # rather than handing them to the renderer because they carry no state
 # beyond "the connection is still alive."
 _HEARTBEAT_TYPE = "heartbeat"
+# Escape hatch for the version handshake: set truthy to downgrade a
+# detected client/server version mismatch from a hard fail to a one-line
+# stderr warning (deliberate mixed-version debugging).
+_SKEW_ALLOW_ENV = "DIKW_ALLOW_VERSION_SKEW"
 # Long enough to cover slow first-byte from the server's task setup
 # (engine boot + storage migration on cold start) but short enough that
 # a wedged endpoint doesn't hang the CLI for minutes.
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=5.0)
+
+
+def _installed_version() -> str | None:
+    """The ``dikw-core`` version this client is installed at, or ``None``
+    when running from an uninstalled source checkout. Layering-clean —
+    reads package metadata via stdlib, never imports the engine."""
+    try:
+        return _pkg_version("dikw-core")
+    except PackageNotFoundError:
+        return None
+
+
+def _skew_allowed() -> bool:
+    return os.environ.get(_SKEW_ALLOW_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class ClientError(Exception):
@@ -78,6 +105,9 @@ class Transport:
     def __init__(self, *, client: httpx.AsyncClient, token: str | None) -> None:
         self._client = client
         self._token = token
+        # The version handshake runs at most once per instance, before the
+        # first request actually reaches the server (see _ensure_version_compat).
+        self._version_checked = False
 
     @classmethod
     def from_config(
@@ -104,6 +134,60 @@ class Transport:
     ) -> None:
         await self._client.aclose()
 
+    # ---- version handshake --------------------------------------------
+
+    async def _ensure_version_compat(self) -> None:
+        """Probe ``GET /v1/info`` once and compare the server's
+        ``engine_version`` to this client's installed version.
+
+        Karpathy's rule applies to the failure policy: a *positive*
+        mismatch is real drift worth stopping for (dikw-core is alpha —
+        breaking changes land in any minor, so a skewed client/server pair
+        can silently misbehave), but anything *ambiguous* — server
+        unreachable, ``/v1/info`` non-200, field missing, or the client
+        running from an uninstalled checkout — must NOT raise a false
+        skew. We skip silently in every ambiguous case and let the real
+        request surface its own error through the normal channel.
+
+        Hard-fails on a confirmed mismatch unless ``DIKW_ALLOW_VERSION_SKEW``
+        is set, which downgrades it to a one-line stderr warning.
+        """
+        if self._version_checked:
+            return
+        # Set before the probe so a re-entrant call (the probe itself goes
+        # straight through ``self._client``, but defensively) can't loop.
+        self._version_checked = True
+
+        client_ver = _installed_version()
+        if client_ver is None:
+            return
+        try:
+            resp = await self._client.get("/v1/info", headers=self._headers())
+        except httpx.RequestError:
+            return  # unreachable — let the real request raise network_error
+        if resp.status_code != 200:
+            return
+        try:
+            body = resp.json()
+        except json.JSONDecodeError:
+            return
+        server_ver = body.get("engine_version") if isinstance(body, dict) else None
+        if not isinstance(server_ver, str) or not server_ver:
+            return
+        if server_ver == client_ver:
+            return
+
+        message = (
+            f"dikw client is {client_ver} but the server at this URL is "
+            f"{server_ver}; their wire contract may have drifted (dikw-core "
+            f"is alpha — breaking changes land in any minor). Pin both to the "
+            f"same release, or set {_SKEW_ALLOW_ENV}=1 to proceed anyway."
+        )
+        if _skew_allowed():
+            print(f"warning: version skew — {message}", file=sys.stderr)
+            return
+        raise ClientError(status=0, code="version_skew", message=message)
+
     # ---- request primitives -------------------------------------------
 
     def _headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -117,6 +201,7 @@ class Transport:
     async def get_json(
         self, path: str, *, params: Mapping[str, Any] | None = None
     ) -> Any:
+        await self._ensure_version_compat()
         try:
             resp = await self._client.get(
                 path, params=params, headers=self._headers()
@@ -134,6 +219,7 @@ class Transport:
         flow through :class:`ClientError` exactly like the JSON path,
         so callers branch on ``code``.
         """
+        await self._ensure_version_compat()
         try:
             resp = await self._client.get(
                 path, params=params, headers=self._headers()
@@ -151,6 +237,7 @@ class Transport:
         json_body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
+        await self._ensure_version_compat()
         try:
             resp = await self._client.post(
                 path,
@@ -176,6 +263,7 @@ class Transport:
         objects — caller is responsible for closing them after the call
         returns.
         """
+        await self._ensure_version_compat()
         try:
             resp = await self._client.post(
                 path,
@@ -209,6 +297,7 @@ class Transport:
         a few hundred ms of scheduling overhead would otherwise raise
         ``network_error`` instead of returning an empty page).
         """
+        await self._ensure_version_compat()
         params = {"from_seq": from_seq, "limit": limit, "wait": wait}
         timeout: httpx.Timeout | None = None
         if wait > 0:
@@ -252,6 +341,7 @@ class Transport:
         commands like ``query``/``ingest``/``synth``/``tasks follow``
         never leak a raw httpx traceback to the operator.
         """
+        await self._ensure_version_compat()
         try:
             async with self._client.stream(
                 method,

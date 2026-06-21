@@ -266,7 +266,11 @@ def _on_error(err: ClientError) -> None:
     yellow notice rather than red so users don't think their cancel
     command failed.
     """
-    if err.status == 0:
+    if err.code == "version_skew":
+        # status==0 too, but the "network error" label would mislead — this
+        # is a deliberate client/server version-mismatch refusal.
+        console.print(f"[red]version skew:[/red] {err.message}")
+    elif err.status == 0:
         console.print(f"[red]network error:[/red] {err.message}")
     else:
         console.print(
