@@ -156,6 +156,79 @@ jobs:
           tags: ghcr.io/opendikw/dikw-core:${{ steps.ver.outputs.version }}
           provenance: false
 
+  github-release:
+    name: Create GitHub Release
+    # Cuts the GitHub Release for the tag once the PyPI publish succeeds (a
+    # Release that 404s on PyPI would be misleading). This automates what
+    # maintainers used to run by hand with ``gh release create`` — and kept
+    # forgetting (v0.6.0 and several earlier tags shipped to PyPI with no
+    # Release). Body is the matching ``CHANGELOG.md`` section; the built
+    # wheel + sdist ride along as downloadable assets. ``needs: publish``
+    # (not publish-image) so a GHCR hiccup never blocks the Release.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release + upload assets
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Resolve + validate version (strip leading v)
+        id: ver
+        # Same strict X.Y.Z guard as publish-image — the resolved value is
+        # fed to awk as a regex below, so refusing anything but digits-and-
+        # dots keeps the extraction injection-safe.
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          if ! printf '%s\n' "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag ${GITHUB_REF_NAME} maps to '${v}', not strict X.Y.Z — refusing to cut a release for it." >&2
+            exit 1
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract this version's CHANGELOG section
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        # Pull the ``## X.Y.Z`` heading block up to the next ``## `` so the
+        # release body is the hand-written changelog, not an auto PR dump.
+        # ``!g`` opens the gate at most once, and the version is anchored by
+        # trailing whitespace/EOL (headings are always ``## X.Y.Z — title``)
+        # so a hypothetical ``## X.Y.Z-rc1`` heading can't bleed into a later
+        # ``## X.Y.Z`` capture.
+        run: |
+          set -euo pipefail
+          awk -v ver="$VERSION" '
+            !g && $0 ~ "^## " ver "([[:space:]]|$)" {g=1; print; next}
+            g && /^## / {exit}
+            g {print}
+          ' CHANGELOG.md > notes.md
+          echo "extracted $(wc -l < notes.md) CHANGELOG lines for ${VERSION}"
+
+      - name: Create the GitHub Release (CHANGELOG notes + dist assets)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Fall back to GitHub's auto-generated notes (and warn) when the
+        # CHANGELOG has no section for this tag, so a forgotten changelog
+        # entry degrades the body rather than failing the release. Assets
+        # are globbed by extension (not ``dist/*``) to skip the ``.gitignore``
+        # ``uv build`` drops in dist/.
+        run: |
+          set -euo pipefail
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --verify-tag \
+              --title "dikw-core $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            echo "::warning::No CHANGELOG section for $GITHUB_REF_NAME; using auto-generated notes"
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --verify-tag \
+              --title "dikw-core $GITHUB_REF_NAME" --generate-notes
+          fi
+
   sync-dockerfile:
     name: Open PR to sync Dockerfile DIKW_VERSION
     # Closes the drift window between ``pyproject.toml`` bumping the
