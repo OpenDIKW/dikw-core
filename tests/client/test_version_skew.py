@@ -16,11 +16,18 @@ the client is installed at, which is exactly the no-skew path.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError
+from typing import Any
+
 import httpx
 import pytest
+from typer.testing import CliRunner
 
+from dikw_core.cli import app
 from dikw_core.client import transport as transport_mod
 from dikw_core.client.transport import ClientError, Transport
+from dikw_core.server.runtime import ServerRuntime
 
 _ALLOW_ENV = "DIKW_ALLOW_VERSION_SKEW"
 
@@ -30,6 +37,7 @@ def _mock_transport(
     server_version: str | None,
     info_status: int = 200,
     info_raises: bool = False,
+    info_non_json: bool = False,
     record: list[str] | None = None,
 ) -> httpx.MockTransport:
     """A mock backend: ``/v1/info`` reports ``server_version`` (or errors),
@@ -41,6 +49,10 @@ def _mock_transport(
         if request.url.path == "/v1/info":
             if info_raises:
                 raise httpx.ConnectError("boom", request=request)
+            if info_non_json:
+                return httpx.Response(
+                    200, content=b"<html>not json</html>", headers={}
+                )
             if info_status != 200:
                 return httpx.Response(
                     info_status,
@@ -152,6 +164,20 @@ async def test_missing_engine_version_field_skips_check(
 
 
 @pytest.mark.asyncio
+async def test_non_json_info_body_skips_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 200 ``/v1/info`` whose body isn't JSON (a misbehaving reverse
+    proxy) is ambiguous — skip rather than crash or raise a false skew."""
+    monkeypatch.setattr(transport_mod, "_installed_version", lambda: "0.5.0")
+    monkeypatch.delenv(_ALLOW_ENV, raising=False)
+    t = _transport(_mock_transport(server_version="0.6.0", info_non_json=True))
+    try:
+        got = await t.get_json("/v1/status")
+        assert got == {"ok": True}
+    finally:
+        await t.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_check_runs_once_per_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two requests on one Transport must probe ``/v1/info`` exactly once."""
     monkeypatch.setattr(transport_mod, "_installed_version", lambda: "0.6.0")
@@ -165,3 +191,71 @@ async def test_check_runs_once_per_instance(monkeypatch: pytest.MonkeyPatch) -> 
         assert record.count("/v1/status") == 2
     finally:
         await t.__aexit__(None, None, None)
+
+
+def test_installed_version_none_when_package_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An uninstalled source checkout (no distribution metadata) yields
+    ``None`` so the handshake skips rather than crashing."""
+
+    def _raise(_name: str) -> str:
+        raise PackageNotFoundError("dikw-core")
+
+    monkeypatch.setattr(transport_mod, "_pkg_version", _raise)
+    assert transport_mod._installed_version() is None
+
+
+@pytest.mark.asyncio
+async def test_none_client_version_skips_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the client can't determine its own version the check is
+    skipped — a server on any version is accepted, no false skew."""
+    monkeypatch.setattr(transport_mod, "_installed_version", lambda: None)
+    monkeypatch.delenv(_ALLOW_ENV, raising=False)
+    record: list[str] = []
+    t = _transport(_mock_transport(server_version="0.6.0", record=record))
+    try:
+        got = await t.get_json("/v1/status")
+        assert got == {"ok": True}
+        # client version unknown → we don't even probe /v1/info.
+        assert "/v1/info" not in record
+    finally:
+        await t.__aexit__(None, None, None)
+
+
+def test_on_error_labels_version_skew_distinctly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``_on_error`` must label a ``version_skew`` (also ``status==0``)
+    distinctly from a plain ``network_error`` so the operator isn't told
+    their server is unreachable when it's really a version mismatch."""
+    from dikw_core.client import cli_app
+
+    cli_app._on_error(ClientError(status=0, code="network_error", message="down"))
+    assert "network error" in capsys.readouterr().out.lower()
+
+    cli_app._on_error(ClientError(status=0, code="version_skew", message="drift"))
+    out = capsys.readouterr().out.lower()
+    assert "version skew" in out
+    assert "network error" not in out
+
+
+def test_cli_command_hard_fails_on_skew(
+    asgi_client: tuple[Any, ServerRuntime],
+    patch_transport_factory: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a ``dikw client`` command against a server whose
+    version differs from the client's exits non-zero with a clear
+    ``version skew`` message (covers the transport raise + the
+    ``_on_error`` rendering branch together)."""
+    patch_transport_factory()
+    # The in-memory server reports the real installed version; force a
+    # mismatch from the client side with a sentinel that never equals it.
+    monkeypatch.setattr(
+        transport_mod, "_installed_version", lambda: "0.0.0-skew-test"
+    )
+    monkeypatch.delenv(_ALLOW_ENV, raising=False)
+    result = CliRunner().invoke(app, ["client", "status"])
+    assert result.exit_code != 0, result.output
+    assert "version skew" in result.output.lower()
