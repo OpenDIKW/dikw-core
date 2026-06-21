@@ -5,6 +5,23 @@ All notable changes to `dikw-core` are tracked here. The project is
 1.0, breaking changes can land in any minor version. The status notes
 on each entry call out exactly what shape changes break.
 
+## Unreleased
+
+### Added
+
+- **Client/server version handshake.** `dikw client` now probes `GET /v1/info`
+  once per invocation and compares the server's `engine_version` to the client's
+  own installed `dikw-core` version. A confirmed mismatch **hard-fails** the
+  command (exit 1, a `version skew:` line naming both versions) so a downstream
+  system catches silent wire drift immediately — dikw-core is alpha, so a skewed
+  client/server pair can misbehave in subtle ways. Ambiguous cases (server
+  unreachable, `/v1/info` non-200, `engine_version` missing, or the client run
+  from an uninstalled source checkout) skip the check and let the real request
+  surface its own error, so the handshake never raises a *false* skew. Set
+  `DIKW_ALLOW_VERSION_SKEW=1` to downgrade the hard-fail to a one-line stderr
+  warning for deliberate mixed-version debugging. The probe is layering-clean
+  (reads its own version via `importlib.metadata`, never imports the engine).
+
 ## 0.6.0 — config-driven provider API-key env vars (BREAKING); DeepSeek V4 Pro + Gitee bge-m3; horizontal model comparison
 
 ### Changed

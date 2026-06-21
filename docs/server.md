@@ -163,8 +163,14 @@ in-memory state is gone.
   there's no cold-start 503). It deliberately doesn't probe providers —
   use `/v1/check` for that.
 * `GET /v1/info` — engine version, storage backend, configured
-  providers (without secrets), auth posture. Useful for client-side
-  schema-drift checks.
+  providers (without secrets), auth posture. `dikw client` probes this
+  once per invocation to run a **version handshake**: if the server's
+  `engine_version` differs from the client's own installed `dikw-core`
+  version it hard-fails the command (`version skew:` + exit 1), since a
+  skewed pair can silently misbehave while dikw-core is alpha. Ambiguous
+  cases (unreachable, non-200, field missing) skip the check rather than
+  raise a false skew. Set `DIKW_ALLOW_VERSION_SKEW=1` to downgrade the
+  refusal to a stderr warning for deliberate mixed-version debugging.
 * `GET /v1/tasks?limit=...` — list of past tasks for debugging long
   ingests / failed synth runs. Persists across server restart (backed
   by the same storage adapter as the base itself).
