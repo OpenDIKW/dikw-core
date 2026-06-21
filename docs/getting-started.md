@@ -46,14 +46,14 @@ cd ../my-base
 ### Optional extras
 
 The base install is deliberately dependency-light — SQLite + `sqlite-vec` +
-FTS5, no extras required. Three opt-in extras add capabilities; without an
-extra its feature degrades gracefully rather than erroring:
+FTS5, no extras required. Three opt-in extras add capabilities; install the
+ones your deployment needs:
 
 | extra | pulls in | install when you… |
 | --- | --- | --- |
-| `postgres` | `psycopg[binary,pool]`, `pgvector` | run the multi-user Postgres backend (`storage.backend: postgres`) instead of the default SQLite. Degrades to: SQLite only. |
-| `cjk` | `jieba` | index Chinese / Japanese / Korean text — without it SQLite FTS5 tokenizes every CJK character separately and BM25 recall collapses. Flip `retrieval.cjk_tokenizer: jieba` in `dikw.yml` after installing. Degrades to: single-char CJK tokenization. |
-| `otel` | OpenTelemetry SDK + OTLP/HTTP exporter + FastAPI/httpx/logging instrumentation | export traces / metrics / logs to an OTLP backend — see [`observability.md`](observability.md). Degrades to: no-op telemetry. |
+| `postgres` | `psycopg[binary,pool]`, `pgvector` | run the multi-user Postgres backend (`storage.backend: postgres`) instead of the default SQLite. Without it: SQLite only. |
+| `cjk` | `jieba` | ingest Chinese (or other CJK Han) text. The default config already selects `retrieval.cjk_tokenizer: jieba`, so **without this extra, ingesting CJK text fails with an `ImportError`** that points you here — install `[cjk]`, or set `retrieval.cjk_tokenizer: "none"` in `dikw.yml` to fall back to single-char tokenization (BM25 recall on CJK collapses). ASCII-only corpora never hit this path. |
+| `otel` | OpenTelemetry SDK + OTLP/HTTP exporter + FastAPI/httpx/logging instrumentation | export traces / metrics / logs to an OTLP backend — see [`observability.md`](observability.md). Without it: no-op telemetry. |
 
 Combine them in one install: `uv pip install 'dikw-core[postgres,cjk,otel]'`
 (checkout flow: `uv sync --all-extras`).

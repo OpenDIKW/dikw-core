@@ -47,6 +47,8 @@ on each entry call out exactly what shape changes break.
   both entry points led only with the from-source checkout flow, leaving the
   pip-install consumer path (and the `cjk` extra entirely) undocumented.
 
+## 0.6.0 — config-driven provider API-key env vars (BREAKING); DeepSeek V4 Pro + Gitee bge-m3; horizontal model comparison
+
 ### Changed
 
 - **BREAKING — provider API-key env var is now config-driven, and `DIKW_EMBEDDING_API_KEY`

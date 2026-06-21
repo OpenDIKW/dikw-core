@@ -73,12 +73,12 @@ dikw init my-base && cd my-base
 dikw serve --base .
 ```
 
-Optional extras: **`postgres`** (pgvector backend), **`cjk`** (`jieba`
-segmentation — required for non-broken Chinese/Japanese/Korean BM25), **`otel`**
-([OpenTelemetry](./docs/observability.md)). Pin a version to match your server —
-`dikw client` hard-fails on a [version skew](./docs/server.md). Full extras
-matrix in
-[`docs/getting-started.md`](./docs/getting-started.md#1-install-and-scaffold).
+Optional extras: **`postgres`** (pgvector backend), **`cjk`** (`jieba` — the
+default config selects it, so ingesting Chinese/CJK text errors without it),
+**`otel`** ([OpenTelemetry](./docs/observability.md)). Pin a version to match
+your server — `dikw client` hard-fails on a [version skew](./docs/server.md).
+Full extras matrix in
+[`docs/getting-started.md`](./docs/getting-started.md#optional-extras).
 
 Server deployment, security posture, and the wire contract live in
 [`docs/server.md`](./docs/server.md). For container deployment, see
