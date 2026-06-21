@@ -34,6 +34,15 @@ on each entry call out exactly what shape changes break.
   `DIKW_ALLOW_VERSION_SKEW=1` to downgrade the hard-fail to a one-line stderr
   warning for deliberate mixed-version debugging. The probe is layering-clean
   (reads its own version via `importlib.metadata`, never imports the engine).
+- **GitHub Release is now cut automatically on every tag.** `release.yml` gains a
+  `github-release` job (`needs: publish`) that creates the GitHub Release for the
+  pushed tag once the PyPI publish succeeds: the body is the tag's `CHANGELOG.md`
+  section (extracted from its `## X.Y.Z` heading to the next `## `; falls back to
+  GitHub's auto-generated notes with a `::warning::` when no section matches), and
+  the built wheel + sdist ride along as downloadable assets. Previously the
+  workflow only published to PyPI + GHCR and opened the Dockerfile-bump PR —
+  Releases were created by hand, and several tags (v0.6.0 and earlier) shipped
+  without one. A backfilled `v0.6.0` GitHub Release was created out-of-band.
 
 ### Docs
 

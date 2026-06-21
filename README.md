@@ -273,7 +273,11 @@ PyPI's side:
    - workflow: `release.yml`
    - environment: `pypi`
 
-After that, `git tag vX.Y.Z && git push --tags` is enough. The release
+After that, `git tag vX.Y.Z && git push --tags` is enough. The same run then
+publishes the multi-arch container image to GHCR and **creates the GitHub
+Release** for the tag — its body is this version's `CHANGELOG.md` section
+(falling back to auto-generated notes if that section is missing), with the
+built wheel + sdist attached as downloadable assets. The release
 workflow also opens a `chore(docker): bump DIKW_VERSION to vX.Y.Z` PR
 against `main` after a successful PyPI publish, keeping
 `examples/docker/Dockerfile` in lockstep with the latest published
