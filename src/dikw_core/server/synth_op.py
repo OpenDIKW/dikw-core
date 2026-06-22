@@ -14,6 +14,7 @@ misconfiguration.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
@@ -36,12 +37,22 @@ def make_synth_runner(
     no_embed: bool,
     verify: bool = False,
     judge: bool = False,
+    lock: asyncio.Lock | None = None,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
     """Build a ``TaskRunner`` that drives ``api.synthesize`` for one task.
 
     ``verify=True`` runs the post-synth self-check and folds a
     ``SynthVerifyReport`` into the task's final result under ``verify``.
     ``judge=True`` (with ``verify``) adds the report-only grounding leg.
+
+    ``lock`` (the runtime's ``ingest_lock``) serializes synth's storage
+    writes against the other base-mutating ops (ingest, wisdom write,
+    delete, lint apply, and a second synth). synth pins its embed
+    ``text_version_id`` and writes K-page chunks/links/embeddings without
+    an enclosing transaction; an unserialized concurrent ingest could flip
+    the active embed version mid-run (stranding synth's vectors) or two
+    writers to the same ``doc_id`` could interleave. Tests that drive the
+    runner in isolation may pass ``None``.
     """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
@@ -70,15 +81,20 @@ def make_synth_runner(
                     f"embedder unavailable, synth proceeds without dense indexing: {e}",
                 )
 
-        report = await api.synthesize(
-            base_root,
-            force_all=force_all,
-            llm=llm,
-            embedder=embedder,
-            reporter=reporter,
-            verify=verify,
-            judge=judge,
-        )
+        # Hold the base write lock across synth's storage mutations (version
+        # pin + per-page chunk/link/embedding persist). Provider construction
+        # above is pure in-memory work and needs no lock.
+        guard = lock if lock is not None else asyncio.Lock()
+        async with guard:
+            report = await api.synthesize(
+                base_root,
+                force_all=force_all,
+                llm=llm,
+                embedder=embedder,
+                reporter=reporter,
+                verify=verify,
+                judge=judge,
+            )
         return dataclasses.asdict(report)
 
     return _runner

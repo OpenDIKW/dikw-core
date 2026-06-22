@@ -725,6 +725,122 @@ async def test_vec_search_skips_zero_vector_embeddings(storage: Storage) -> None
         assert h.distance == h.distance, f"NaN distance: {h}"  # NaN != NaN
 
 
+# ---- concurrency: one Storage instance, many to_thread workers -----------
+#
+# H1 / RC-1 regression. The retrieval hot path (`info/search.py`) schedules
+# its fts / vec / asset legs concurrently via ``asyncio.create_task`` on ONE
+# Storage instance, and lint-propose orphan scoring ``asyncio.gather``s
+# vec_search. The SQLite adapter wraps every method body in
+# ``asyncio.to_thread``; without serialization those bodies run their
+# ``conn.execute(...)`` on a shared ``sqlite3.Connection`` from two OS-thread
+# workers at once, which trips ``sqlite3.InterfaceError`` / phantom rows. The
+# same failure is already documented (and locally worked around) in
+# ``storage/base.py``, ``eval/runner.py``, and ``server/tasks/store_sqlite.py``.
+# This contract pins the no-corruption invariant on BOTH backends.
+
+
+async def test_concurrent_ops_on_single_instance_are_safe(storage: Storage) -> None:
+    import asyncio
+    import sqlite3
+
+    try:
+        version_id = await register_text_version(storage, dim=4, model="test-embed")
+    except NotSupported:
+        pytest.skip("backend doesn't implement embed versioning yet")
+
+    # Distinct docs per worker so concurrent writes have no *logical*
+    # write-write conflict — any failure is the connection-level race, not
+    # a content race. Each doc starts with one chunk + embedding so reads
+    # have data to return.
+    n_docs = 8
+    docs = [_make_doc(f"sources/conc{i}.md") for i in range(n_docs)]
+    for i, d in enumerate(docs):
+        await storage.upsert_document(d)
+        ids = await storage.replace_chunks(
+            d.doc_id,
+            [ChunkRecord(doc_id=d.doc_id, seq=0, start=0, end=6, text=f"alpha{i}")],
+        )
+        await storage.upsert_embeddings(
+            [
+                EmbeddingRow(
+                    chunk_id=ids[0],
+                    version_id=version_id,
+                    embedding=[1.0, 0.0, 0.0, 0.0],
+                )
+            ]
+        )
+
+    async def churn(i: int) -> None:
+        d = docs[i]
+        ids = await storage.replace_chunks(
+            d.doc_id,
+            [ChunkRecord(doc_id=d.doc_id, seq=0, start=0, end=5, text=f"beta{i}")],
+        )
+        await storage.upsert_embeddings(
+            [
+                EmbeddingRow(
+                    chunk_id=ids[0],
+                    version_id=version_id,
+                    embedding=[0.0, 1.0, 0.0, 0.0],
+                )
+            ]
+        )
+
+    async def read_vec() -> None:
+        await storage.vec_search(
+            [1.0, 0.0, 0.0, 0.0], version_id=version_id, limit=5
+        )
+
+    async def read_fts() -> None:
+        await storage.fts_search("alpha", limit=5)
+
+    async def read_list(i: int) -> None:
+        await storage.list_chunks(docs[i].doc_id)
+
+    rounds = 20
+    try:
+        for _ in range(rounds):
+            tasks: list[object] = []
+            tasks += [churn(i) for i in range(n_docs)]
+            tasks += [read_vec() for _ in range(n_docs)]
+            tasks += [read_fts() for _ in range(n_docs)]
+            tasks += [read_list(i) for i in range(n_docs)]
+            await asyncio.gather(*tasks)  # type: ignore[arg-type]
+    except (sqlite3.InterfaceError, sqlite3.ProgrammingError) as e:
+        pytest.fail(
+            f"concurrent ops on one Storage instance raised "
+            f"{type(e).__name__}: {e} — the shared connection must be serialized"
+        )
+
+    # State intact: every doc still resolves to exactly one chunk.
+    for d in docs:
+        chunks = await storage.list_chunks(d.doc_id)
+        assert len(chunks) == 1, f"{d.doc_id} lost/gained chunks under concurrency"
+
+
+async def test_sqlite_configures_busy_timeout(tmp_path: Path) -> None:
+    """The SQLite adapter must set an explicit ``busy_timeout`` (RC-1 / M5).
+
+    The server opens a fresh connection per verb (``api._with_storage``), so
+    distinct connections contend on one WAL file. An explicit busy_timeout
+    makes a colliding writer block-then-succeed rather than fail fast. This
+    pins the *resulting* value the live connection reports to the task store's
+    30 s (``server/tasks/store_sqlite.py``) for parity. ``connect()`` sets that
+    budget two ways — ``connect(timeout=30)`` (so the connection-time pragmas
+    are covered too) and an explicit ``PRAGMA busy_timeout=30000`` — and this
+    test asserts the net effect; it does not distinguish which of the two set
+    it (both resolve to the same C-level ``busy_timeout``).
+    """
+    s = SQLiteStorage(tmp_path / "bt.sqlite")
+    await s.connect()
+    try:
+        assert s._conn is not None
+        value = s._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert value == 30_000, f"expected busy_timeout=30000, got {value}"
+    finally:
+        await s.close()
+
+
 # ---- embed_cache (chunk-level content-hash cache) ------------------------
 #
 # The cache is keyed by (sha256(chunk.text), model) and decouples

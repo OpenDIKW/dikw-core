@@ -10,6 +10,7 @@ large) proposal payload through the wire.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,7 @@ def make_lint_apply_runner(
     task_store: TaskStore,
     pick: list[int] | None,
     skip: list[int] | None,
+    lock: asyncio.Lock | None = None,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
     """Build a ``TaskRunner`` that reads a propose task's result and
     drives ``api.lint_apply``.
@@ -67,6 +69,14 @@ def make_lint_apply_runner(
     cause. Reading the proposal *inside* the runner (not at submit
     time) keeps the HTTP submit path fast and lets the runner emit
     progress events for the read step.
+
+    ``lock`` (the runtime's ``ingest_lock``) serializes apply's storage
+    mutations (re-project / delete / reindex of K/W pages) against the
+    other base-mutating ops, including synth and a concurrent ingest —
+    apply writes the same deterministic ``doc_id`` rows synth does, with
+    no enclosing transaction. Tests that drive the runner in isolation
+    may pass ``None``. Reading the (immutable) proposal stays outside the
+    lock; only ``api.lint_apply`` is serialized.
     """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
@@ -111,13 +121,17 @@ def make_lint_apply_runner(
                 code="proposal_malformed",
             ) from e
 
-        apply_report = await api.lint_apply(
-            base_root,
-            proposal_report=proposal_report,
-            pick=pick,
-            skip=skip,
-            reporter=reporter,
-        )
+        # Hold the base write lock across apply's storage mutations; the
+        # proposal read above touches only the (immutable) task store.
+        guard = lock if lock is not None else asyncio.Lock()
+        async with guard:
+            apply_report = await api.lint_apply(
+                base_root,
+                proposal_report=proposal_report,
+                pick=pick,
+                skip=skip,
+                reporter=reporter,
+            )
         # Stamp the source propose task id on the result so the CLI can
         # cross-reference applied proposals without reaching into raw
         # task ``params`` (TaskRow exposes only ``params_digest``).
