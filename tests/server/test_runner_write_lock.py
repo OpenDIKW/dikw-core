@@ -222,6 +222,40 @@ async def test_synth_and_lint_apply_serialize_under_shared_lock(
     )
 
 
+async def test_synth_runner_builds_providers_under_lock(monkeypatch: Any) -> None:
+    # F2 corner case (Codex P2): the runner must take the write lock BEFORE
+    # reloading cfg + building the LLM/embedder. Otherwise a concurrent ingest
+    # holding the lock can flip the active embed version while synth waits, and
+    # synth would then run api.synthesize (which re-resolves the new cfg) with
+    # the STALE embedder built from the old cfg — storing vectors from the wrong
+    # embedder under the freshly-active version. Pin that cfg load happens while
+    # the lock is held (it builds providers right after).
+    lock = asyncio.Lock()
+    observed: dict[str, bool] = {}
+
+    def _fake_load_config(_p: Any) -> Any:
+        observed["config_under_lock"] = lock.locked()
+        return SimpleNamespace(provider=None)
+
+    monkeypatch.setattr(synth_op_module, "load_config", _fake_load_config)
+    monkeypatch.setattr(synth_op_module, "build_llm", lambda *_a, **_k: object())
+    monkeypatch.setattr(synth_op_module, "build_embedder", lambda *_a, **_k: object())
+
+    async def _fake_synth(*_a: Any, **_k: Any) -> api_module.SynthReport:
+        return api_module.SynthReport()
+
+    monkeypatch.setattr(synth_op_module.api, "synthesize", _fake_synth)
+
+    runner = synth_op_module.make_synth_runner(
+        base_root=Path("/x"), force_all=False, no_embed=False, lock=lock
+    )
+    await runner(_NullReporter())
+    assert observed.get("config_under_lock") is True, (
+        "make_synth_runner must hold ingest_lock before reloading cfg / building "
+        "providers, so they stay aligned with api.synthesize's cfg reload"
+    )
+
+
 async def test_synth_and_lint_apply_overlap_without_shared_lock(
     monkeypatch: Any,
 ) -> None:
