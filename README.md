@@ -1,3 +1,7 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/OpenDIKW/dikw-core/main/.github/assets/opendikw-avatar.png" alt="OpenDIKW logo" width="96" height="96" />
+
 # dikw-core
 
 <p align="center">
@@ -11,6 +15,8 @@
   <a href="https://github.com/OpenDIKW/dikw-core/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
 </p>
+
+</div>
 
 **An AI-native knowledge base engine that turns your documents into Data → Information → Knowledge → Wisdom.**
 

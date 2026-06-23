@@ -21,6 +21,8 @@ on each entry call out exactly what shape changes break.
   client/server + DIKW mermaid diagram, container/Ruff/status badges, and the
   missing `dikw client delete` / `dikw client wisdom write` verbs; the maintainer
   release mechanics moved out of the README into [`docs/releasing.md`](docs/releasing.md).
+  The header is now centered with the OpenDIKW logo
+  (`.github/assets/opendikw-avatar.png`).
 
 ### Added
 
