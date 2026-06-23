@@ -14,7 +14,7 @@ Two long-standing gaps in how the engine relates the on-disk markdown trees
 1. **No filesystem↔DB consistency check or repair.** `ingest` is disk-first: it
    enumerates files on disk and upserts them, but never enumerates DB rows to compare
    against disk. A source file deleted on disk leaves its `documents` row `active=True`
-   forever (orphan, undetected). Hand-edits to K/W files in Obsidian are not
+   forever (orphan, undetected). Hand-edits to K/W files on disk are not
    re-indexed (`ingest` scans only `sources/`; W was deliberately removed from the
    ingest scan in 0.4.0). `status`/`health`/`check` surface no drift.
 2. **No first-class deletion + incomplete post-delete governance.** Deletion exists
@@ -25,7 +25,7 @@ Two long-standing gaps in how the engine relates the on-disk markdown trees
    reconciliation pass, repeated delete→edit cycles accumulate ghost inbound edges.
 
 CLAUDE.md already declares **"On-disk format is the product"** and `design.md`
-principles #2/#7 ("the knowledge base is the product"; "Obsidian-compatible on-disk
+principles #2/#7 ("the knowledge base is the product"; "open Markdown knowledge
 format … the user owns the files") establish the same — and CONTEXT.md already treats
 K/W frontmatter/body as the source of truth — but the engine had no mechanism to
 reconcile the DB *to* that authoritative disk. A future `dikw client reindex <path>`
@@ -117,7 +117,7 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 3. **Auto-apply reconciliation** (`--dry-run` to opt out). Rejected — destructive by
    default; conflicts with the project's caution bias.
 4. **DB-authoritative, disk as export.** Rejected — conflicts with "on-disk format is
-   the product" and user-owned Obsidian vaults.
+   the product" and user-owned on-disk files.
 5. **Cascade-clean inbound edges / rewrite referrer bodies & frontmatter on delete.**
    Rejected — edits content the user owns; `broken_wikilink` + `dangling_provenance`
    surfacing is the honest signal (consistent with ADR-0001's non-cascade design).
@@ -128,8 +128,8 @@ corollary collapses the two gaps into one operation: "reindex a hand-edit" and
 ## References
 
 - CLAUDE.md — "On-disk format is the product" (the phrase this ADR builds on).
-- `docs/design.md` — principles #2/#7 (knowledge base is the product; Obsidian-compatible
-  on-disk format, user owns the files); gained a "Disk is the source of truth" invariant
+- `docs/design.md` — principles #2/#7 (knowledge base is the product; open Markdown
+  knowledge format, user owns the files); gained a "Disk is the source of truth" invariant
   section in PR4.
 - `docs/architecture.md` — the promised `dikw client reindex <path>` is removed in
   PR3 (the `stale_index`/`untracked_file` reindex kinds + `lint apply` supersede it).

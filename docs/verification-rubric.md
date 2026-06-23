@@ -33,7 +33,7 @@ ruff/mypy/pytest are blind to all of them — that's exactly why a reading revie
 - [ ] Anything crossing the Storage Protocol is a `schemas.py` pydantic model — no SQL types / cursors / ORM handles leak out of adapters.
 
 ## On-disk format is the product
-- [ ] No change to `knowledge/` or `wisdom/` on-disk layout (frontmatter keys, folder shape, wikilink syntax) without `docs/design.md` updated first — users open these in Obsidian.
+- [ ] No change to `knowledge/` or `wisdom/` on-disk layout (frontmatter keys, folder shape, wikilink syntax) without `docs/design.md` updated first — users open these in any Markdown editor.
 - [ ] Category taxonomy stays a **closed set**: synth files only under a declared `path`; unplaceable → `schema.fallback` + `uncategorized` lint. No invented folders, no path-prefix recovery.
 - [ ] Prompts stay versioned markdown under `prompts/`, loaded via `prompts.resolve(...)` (never raw `load()` on the call path); new overridable prompts register their contract in `prompts/_contract.py`.
 

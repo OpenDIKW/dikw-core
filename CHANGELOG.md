@@ -7,6 +7,26 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Changed
+
+- **Docs: repositioned as a self-managed knowledge base engine.** README and the
+  user-facing docs now frame `dikw-core` as a client/server engine whose server
+  authoritatively manages the base's directory tree, index, and database — distinct
+  from Obsidian — with knowledge persisted as an open, portable Markdown format
+  (same lineage as Karpathy's LLM-Wiki pattern and Google's Open Knowledge Format).
+  `docs/**` no longer frames the base as "an Obsidian vault"; the on-disk format is
+  described as open Markdown openable in any editor. No engine behavior, on-disk
+  layout, or invariant changed.
+- **README professionalized.** Restructured with a documentation index, a
+  client/server + DIKW mermaid diagram, container/Ruff/status badges, and the
+  missing `dikw client delete` / `dikw client wisdom write` verbs; the maintainer
+  release mechanics moved out of the README into [`docs/releasing.md`](docs/releasing.md).
+
+### Added
+
+- **Community-health files**: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
+  and GitHub issue-form templates under `.github/ISSUE_TEMPLATE/`.
+
 ## 0.6.1 — official GHCR image; client/server version handshake; SQLite + write-path concurrency fixes
 
 ### Added

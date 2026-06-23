@@ -34,7 +34,7 @@ Design decisions already locked in (via clarifying Q&A):
 4. **Server-as-the-engine, CLI-as-the-client** — the engine is a long-lived `dikw serve` (FastAPI + NDJSON streaming) process that owns storage and provider connections; humans drive it through `dikw client *`, agents through HTTP. There is no in-process import path for end-user operations.
 5. **Local-first data, pluggable compute** — the base lives on the user's filesystem; the default index is a local SQLite DB; only LLM calls leave the machine (and are provider-abstracted).
 6. **Pluggable storage** — the engine talks to an abstract **Storage** interface, not to SQL directly. Two backends ship: **SQLite+sqlite-vec** (default, single-user local) and **Postgres+pgvector** (enterprise, multi-user). Swapping backends is a config change.
-7. **Obsidian-compatible on-disk format** — the K & W layers are written as a plain markdown tree that Obsidian (or any MD editor) opens as a vault: `[[wikilinks]]`, YAML front-matter with tags, folder-based organization, daily-note conventions. The engine is a collaborator, not a walled garden; the user owns the files.
+7. **Open, portable Markdown knowledge format** — the K & W layers are written as a plain markdown tree (`[[wikilinks]]`, YAML front-matter with tags, folder-based organization) that any Markdown editor can open and that moves, diffs, and versions anywhere. The server manages and reconciles the tree; the format stays open so the user is never locked in and can hand-edit alongside the engine.
 8. **YAGNI + extension points** — ship a tight MVP, but put named seams (provider adapter, storage adapter, source-backend registry, prompt registry) where known growth vectors are.
 
 ## The Four Layers (concrete definitions)
@@ -218,13 +218,13 @@ my-base/
     └── cache/                # model/artifact caches (backend-agnostic)
 ```
 
-**Obsidian vault compatibility** — `my-base/` is itself a valid Obsidian vault. The engine follows these conventions so Obsidian (or any plain MD editor) can open it and edit alongside the engine without conflict:
+**Open Markdown format** — `my-base/` is a plain Markdown tree that any Markdown editor can open. The engine follows these conventions so a human can hand-edit alongside the server without conflict:
 - `[[Wikilinks]]` — the canonical link form in `knowledge/` and `wisdom/`. `[[Page#Heading]]` and `[[Page|alias]]` supported.
-- **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `category`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). Obsidian reads `tags` natively.
-- **Folder = category** — every knowledge page is filed under a folder path drawn from the configured **category taxonomy** (`schema.categories` in `dikw.yml`; default `entity`/`concept`/`note`, arbitrary depth e.g. `产品/移动端/`), plus `wisdom/<author>/`. Matches Obsidian's default folder-sort behavior. The category folder tree *is* the catalogue — there is no generated `index.md` (see [ADR-0004](adr/0004-drop-generated-index-and-log.md)).
-- **History lives in the index, not the vault** — engine activity is recorded in the `knowledge_log` storage table; dikw-core no longer renders a `knowledge/log.md` chronology into the vault.
-- **Engine state stays out of the vault** — the `.dikw/` sidecar directory is added to the base's `.gitignore` on `dikw init` (the engine does not create or edit any Obsidian config such as `.obsidian/app.json`).
-- **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing in Obsidian never sees engine-only constructs that would get stripped on round-trip.
+- **YAML front-matter** — engine-authored knowledge pages carry `---`-delimited front-matter (typically `title`, `category`, `created`, `updated`, `tags: [...]`, optional `sources: [...]`). Hand-written wisdom pages carry the same plus an optional `status: draft|published|favorite|archived` enum (wisdom-only). The `tags` field is a standard list most editors read natively.
+- **Folder = category** — every knowledge page is filed under a folder path drawn from the configured **category taxonomy** (`schema.categories` in `dikw.yml`; default `entity`/`concept`/`note`, arbitrary depth e.g. `产品/移动端/`), plus `wisdom/<author>/`. The category folder tree *is* the catalogue — there is no generated `index.md` (see [ADR-0004](adr/0004-drop-generated-index-and-log.md)).
+- **History lives in the index, not on disk** — engine activity is recorded in the `knowledge_log` storage table; dikw-core does not render a `knowledge/log.md` chronology into the tree.
+- **Engine state stays out of the tree** — the `.dikw/` sidecar directory is added to the base's `.gitignore` on `dikw init`.
+- **No bespoke syntax in MD bodies** — only standard Markdown + wikilinks + front-matter, so a human editing the files never sees engine-only constructs that would get stripped on round-trip.
 
 `dikw.yml` example:
 ```yaml
@@ -273,7 +273,7 @@ front-matter) are the **sole source of truth**. The `documents` / `chunks` / `li
 / `provenance` / `embeddings` rows in storage are a **rebuildable projection** of those
 files; reconciliation is always disk → DB, never the reverse. This is the operational
 form of principles #2/#7 ("the knowledge base is the product"; "the user owns the
-files") — and it is what lets a user safely edit the vault in Obsidian, `git
+files") — and it is what lets a user safely edit the files in any editor, `git
 revert` a page, or drop a hand-written `.md` into `knowledge/` and have the engine
 catch up. Excluded from the "rebuildable" promise: engine-owned state (`.dikw/`, the
 `knowledge_log` table, the task ledger), and `synth`'s LLM generation — but once
@@ -434,7 +434,7 @@ Each operation is implemented in `dikw_core.api` and surfaced over HTTP by the s
 
 W layer is a first-class document layer alongside K. A wisdom page is a
 plain markdown file under `wisdom/<author>/<slug>.md` that a human writes
-by hand in Obsidian — there is no LLM proposal, no candidate queue, no
+by hand — there is no LLM proposal, no candidate queue, no
 review state machine. Authorship is encoded by directory
 (`wisdom/elon-musk/...` attributes the page to `elon-musk`); a wisdom
 file directly under `wisdom/<slug>.md` (no author subdirectory) is
@@ -658,12 +658,12 @@ Each phase is a landable slice: CI green, tests added, docs updated.
 ## Multimedia Assets — v1 (images only)
 
 dikw-core's v1 brings images into the retrieval surface. The design honours
-the four invariants from the rest of this doc — Obsidian-vault-native
+the four invariants from the rest of this doc — open Markdown
 on-disk format, deterministic scoping, the Storage Protocol as the only
 seam, and reuse of named extension points.
 
 **On disk.** Image binaries referenced from a markdown source (either the
-standard `![alt](path)` form or Obsidian's `![[file|alias]]`) are copied
+standard `![alt](path)` form or the wiki-style `![[file|alias]]` embed) are copied
 into an engine-managed directory under the project root:
 
 ```
@@ -674,7 +674,7 @@ The 2-char hash prefix shards the directory (256-way) so the asset
 folder stays Finder-, rsync-, and Dropbox-friendly even at six-figure
 asset counts. The 8-hex prefix in the filename guarantees uniqueness
 even when two different binaries share a sanitized stem; the trailing
-sanitized name preserves human-readable semantics (Obsidian shows
+sanitized name preserves human-readable semantics (a file browser shows
 `ab3f12ef-architecture-diagram.png`, not an opaque hash). Sanitization
 NFC-normalizes Unicode and whitelists letters/numbers (any script,
 including CJK / JP / KR / Cyrillic / Greek) plus `-` and `_`; everything

@@ -1,6 +1,6 @@
 # Provenance edges live in a separate table from wikilinks
 
-K-layer pages carry two distinct page-level edges: `[[wikilink]]` references parsed from page bodies (existing `links` table, K↔K graph, feeds RRF graph-leg retrieval and `orphan_page` / `broken_wikilink` lint) and **provenance** entries from a K-page's frontmatter `sources:` list (page → D-layer source attribution, written by `synth` and editable by the user in any Obsidian-style markdown editor). We considered reusing `links` with a new `link_type = 'derived_from'`, but rejected it for three reasons:
+K-layer pages carry two distinct page-level edges: `[[wikilink]]` references parsed from page bodies (existing `links` table, K↔K graph, feeds RRF graph-leg retrieval and `orphan_page` / `broken_wikilink` lint) and **provenance** entries from a K-page's frontmatter `sources:` list (page → D-layer source attribution, written by `synth` and editable by the user in any Markdown editor). We considered reusing `links` with a new `link_type = 'derived_from'`, but rejected it for three reasons:
 
 1. The existing `link_type CHECK (link_type IN ('wikilink','markdown','url'))` constraint cannot be ALTERed on SQLite without a table rebuild migration — what looked like the cheap option carries real migration cost.
 2. `links.line` and `links.anchor` are body-coordinate fields with no meaning for a frontmatter list entry. They would carry placeholder values, and `line` is part of the primary key — encoding "not applicable" into a PK is a sign the table is the wrong shape.

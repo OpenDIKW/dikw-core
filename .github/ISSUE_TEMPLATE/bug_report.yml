@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a problem in dikw-core
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please reproduce against the latest release or
+        `main` first. **Do not** report security issues here — see
+        [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected instead.
+      placeholder: "`dikw client ingest` exits 0 but no chunks are indexed when…"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands or a small repro. Include the exact CLI invocations.
+      placeholder: |
+        1. dikw init repro && cd repro
+        2. echo "# hi" > sources/a.md
+        3. dikw client serve-and-run -- ingest --no-embed
+        4. dikw client serve-and-run -- status  # shows 0 chunks
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `dikw version`.
+      placeholder: "0.6.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage backend
+      options:
+        - sqlite (default)
+        - postgres
+        - not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - PyPI wheel (uv pip / pip)
+        - from source (uv sync)
+        - container image (GHCR / compose)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server/client output. Re-run with `DIKW_LOG_LEVEL=DEBUG` if helpful.
+      render: shell
+    validations:
+      required: false

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "dikw-core contributors" }]
-keywords = ["knowledge-base", "rag", "llm", "wiki", "dikw", "obsidian"]
+keywords = ["knowledge-base", "knowledge-engine", "knowledge-graph", "rag", "llm", "wiki", "dikw"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

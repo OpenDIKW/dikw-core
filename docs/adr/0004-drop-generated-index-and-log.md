@@ -14,13 +14,13 @@ Two observations:
 
 1. **The engine never reads either file.** Synth's existing-pages awareness,
    `retrieve`, wikilink resolution, and lint are all storage- and title-index
-   driven. `index.md`/`log.md` are write-only vault artifacts; nothing in the
+   driven. `index.md`/`log.md` are write-only on-disk artifacts; nothing in the
    pipeline consumes them. The authoritative activity history is the
    `knowledge_log` *table*, of which `log.md` is only a rendered view.
 2. **The configurable hierarchical taxonomy (ADR-0003) erodes their value.**
    `indexgen` grouped by a single immediate-parent folder name — wrong under an
    arbitrary-depth tree — and the folder tree itself, now mirroring the operator's
-   taxonomy, *is* the catalogue Obsidian renders natively. A flat generated index
+   taxonomy, *is* the catalogue the file tree renders natively. A flat generated index
    duplicates the file tree; a generated log duplicates a DB table.
 
 ## Decision
@@ -33,21 +33,21 @@ Stop generating both files.
   `LOG_PATH`, the `log.md` write).
 - Drop `index.md`/`log.md` from the `dikw init` scaffold and from the lint
   orphan-exclusion set. Remove `schema.log_style` (it only configured `log.md`).
-- Navigation is the Obsidian file tree + `retrieve`; history is the `knowledge_log`
+- Navigation is the file tree + `retrieve`; history is the `knowledge_log`
   table (programmatically/SQL queryable; a `dikw client log` read command is a
   possible future addition, deferred to keep this change scoped).
 
 ## Consequences
 
-- **+** No write-only vault artifacts to keep in sync; one less thing for the
+- **+** No write-only on-disk artifacts to keep in sync; one less thing for the
   hierarchical-taxonomy rework (`indexgen`) to relearn — it is deleted outright.
 - **+** The folder tree and the `knowledge_log` table are each a single source of
   truth for their concern (catalogue vs history); no rendered duplicate to drift.
 - **−** Diverges from Karpathy's index.md/log.md convention (hence design.md
-  principle #3 was amended). A vault opened without dikw loses the at-a-glance
+  principle #3 was amended). A knowledge tree opened without dikw loses the at-a-glance
   catalogue/chronology files; users who want them can generate their own from the
   tree / DB.
-- **−** History is no longer human-browsable inside the vault until/unless a
+- **−** History is no longer human-browsable inside the knowledge tree until/unless a
   `dikw client log` read command lands.
 
 ## Alternatives considered

@@ -99,7 +99,7 @@ allowed — each `*.md` in the output becomes its own package.
 
 Every asset a plugin writes **must be referenced from the generated
 markdown** using image syntax — `![alt](assets/foo.png)` or the
-Obsidian `![[assets/foo.pdf]]` form. The dikw-core importer extracts
+wiki-style `![[assets/foo.pdf]]` form. The dikw-core importer extracts
 asset references with `md_inspect.extract_image_refs`, which only
 recognises image-style refs; a regular markdown link
 `[label](assets/foo.pdf)` will **not** include the asset.

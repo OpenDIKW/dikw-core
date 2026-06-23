@@ -34,7 +34,7 @@ git clone https://github.com/OpenDIKW/dikw-core
 cd dikw-core
 uv sync --all-extras    # installs every extra + the dev group
 
-# Pick any directory — `my-base/` below — it will also be a valid Obsidian vault.
+# Pick any directory — `my-base/` below — the server will manage it as a dikw base.
 uv run dikw init ../my-base --description "my research base"
 cd ../my-base
 ```
@@ -69,15 +69,15 @@ my-base/
 ├── prompts/              # optional per-base prompt overrides (synth.prompt_path / lint.fixer_prompts)
 │   └── .gitkeep
 ├── wisdom/               # hand-written principles / lessons / patterns (you author these
-│   └── .gitkeep          # in Obsidian or via `dikw client wisdom write`)
+│   └── .gitkeep          # by hand or via `dikw client wisdom write`)
 └── .dikw/                # engine state (gitignored)
     └── .gitkeep          # index.sqlite is created here on first ingest/serve
 ```
 
 The whole tree is the **dikw base**; the `knowledge/` subdirectory is just
-the K-layer slice. Open the folder in Obsidian and you'll see the knowledge +
-wisdom pages render natively thanks to the `[[wikilink]]` syntax and
-YAML front-matter the engine emits.
+the K-layer slice. The server manages this tree, but it stays open Markdown —
+open the folder in any Markdown editor and the knowledge + wisdom pages render
+as a plain `[[wikilink]]` + YAML-front-matter tree.
 
 ## 2. Start the server
 
@@ -167,8 +167,8 @@ choice and let it draft the answer with whatever prompt fits your task.
 
 ### Working with images
 
-Markdown sources that embed images — either `![alt](path)` or Obsidian
-`![[assets/foo.jpg]]` — flow through ingest into a content-addressed
+Markdown sources that embed images — either `![alt](path)` or the wiki-style
+`![[assets/foo.jpg]]` embed — flow through ingest into a content-addressed
 asset store under `<base>/assets/`. Once ingested, two endpoints make
 those bytes reachable from a remote client:
 
@@ -189,8 +189,8 @@ uv run dikw client assets get a649… --output /tmp/diagram.jpg
 ```
 
 The page `body` is returned **verbatim** — `![[…]]` references are
-not rewritten — so the same response round-trips an editor-owned
-Obsidian vault without divergence. Clients render images by mapping
+not rewritten — so the same response round-trips a hand-edited
+Markdown tree without divergence. Clients render images by mapping
 each `assets[].original_paths` entry back to `assets[].url`.
 
 Asset responses are immutable (content-addressed by SHA-256), so the
@@ -260,7 +260,7 @@ uv run dikw client synth --verify
 uv run dikw client synth --verify --judge
 ```
 
-`--verify` is the "open the vault and click around" pass made automatic: after
+`--verify` is the "open the pages and click around" pass made automatic: after
 synth writes the K pages, it runs a deterministic, no-extra-LLM check over just
 this run's output and prints one PASS/FAIL verdict. Three legs gate the
 verdict — **persist** (no page was deactivated mid-write), **lint** (no
@@ -289,7 +289,7 @@ zero.
 
 Cost notes: the lint leg runs a **full-base** scan (it has to, so wikilinks
 resolve against every page) and then filters to this run's pages, so its cost
-scales with total vault size, not with how many pages this run produced; the
+scales with total knowledge-base size, not with how many pages this run produced; the
 duplicate leg performs a second embed pass over the just-written page bodies; and
 `--judge` adds a grounding-embed pass plus up to `verify_judge_sample` LLM judge
 calls. All only run when you pass the corresponding flag.
@@ -447,7 +447,7 @@ dikw client wisdom write \
 
 `--slug` and `--author` must be ASCII kebab-case (`au-thor`, no
 spaces / uppercase / underscores) — the path becomes part of the
-Obsidian-visible vault layout. Pass `--body-file body.md` to read the
+on-disk layout. Pass `--body-file body.md` to read the
 markdown body from a file. `--wait` is the default; `--no-wait` prints
 a task handle JSON for async tracking.
 
@@ -514,7 +514,7 @@ This verb is the way to delete an arbitrary page; the `lint` fixers only
 auto-delete empty stubs and merged duplicates.
 
 If you delete a file **outside** dikw (e.g. `rm` it, or remove it in
-Obsidian) the document row is left behind, stuck `active`. The default
+an external editor) the document row is left behind, stuck `active`. The default
 `lint` scan flags it as **`missing_file`** (D/K/W); clean it up with:
 
 ```bash
