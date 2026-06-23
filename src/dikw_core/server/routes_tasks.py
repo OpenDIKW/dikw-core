@@ -410,12 +410,16 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         body: SynthSubmit = Body(default_factory=SynthSubmit),
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
+        # Share ``ingest_lock`` with ingest / wisdom-write / delete: synth
+        # mutates the same base (K-page rows + embed version) and must not
+        # interleave with them or with a second synth.
         runner: TaskRunner = make_synth_runner(
             base_root=rt.root,
             force_all=body.force_all,
             no_embed=body.no_embed,
             verify=body.verify,
             judge=body.judge,
+            lock=rt.ingest_lock,
         )
         row = await rt.manager.submit(
             op="synth",
@@ -460,12 +464,15 @@ def make_router(*, auth_dep: Any) -> APIRouter:
         body: LintApplySubmit = Body(...),
     ) -> TaskHandle:
         rt: ServerRuntime = get_runtime(request.app)
+        # Share ``ingest_lock`` with ingest / synth / wisdom / delete: apply
+        # re-projects / deletes the same K/W rows those ops write.
         runner: TaskRunner = make_lint_apply_runner(
             base_root=rt.root,
             proposal_task_id=body.proposal_task_id,
             task_store=rt.task_store,
             pick=body.pick,
             skip=body.skip,
+            lock=rt.ingest_lock,
         )
         row = await rt.manager.submit(
             op="lint.apply",

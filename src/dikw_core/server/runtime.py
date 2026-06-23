@@ -104,10 +104,15 @@ class ServerRuntime:
     # stamped on task spans as ``dikw.base_id``. Resolved once at build time
     # (it does file I/O) and reused for the task-store scope.
     base_id: str = ""
-    # Serializes base-mutating ops (currently ingest) so two concurrent
-    # tasks can't interleave their staging-commit + on-disk writes and
-    # leave the sources/ tree as a mix of both. Held for the entire ingest
-    # runner — concurrent ingests on the same base are a degenerate case.
+    # Single base-level write mutex. Every base-mutating task acquires it so
+    # two writers can't interleave their (un-enclosed-by-a-transaction)
+    # storage-row + on-disk writes on the same base: ingest, import, wisdom
+    # write, delete, synth, and lint apply. Named ``ingest_lock`` for
+    # history; it now guards the whole K/W/D write surface. Read paths
+    # (retrieve, list, read_page) do NOT take it — the SQLite adapter
+    # serializes its own connection internally and reads tolerate the
+    # eventual-consistency window. Held for each writer's storage-mutating
+    # span; concurrent writes to one base are a degenerate case anyway.
     ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 

@@ -12,11 +12,12 @@ import asyncio
 import json
 import math
 import sqlite3
+import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import sqlite_vec
 
@@ -50,6 +51,8 @@ from ._schema import SCHEMA_VERSION, SCHEMA_VERSION_KEY, mismatch_message
 from ._vec_codec import deserialize_vec as _deserialize_vec
 from ._vec_codec import serialize_vec as _serialize_vec
 from .base import NotSupported, StorageError
+
+_T = TypeVar("_T")
 
 MIGRATIONS_PACKAGE = "dikw_core.storage.migrations.sqlite"
 
@@ -101,19 +104,63 @@ class SQLiteStorage:
     ) -> None:
         self._path = Path(path)
         self._conn: sqlite3.Connection | None = None
+        # Serializes every method body. One ``SQLiteStorage`` instance shares a
+        # single ``sqlite3.Connection`` across all ``asyncio.to_thread`` workers
+        # (the engine fans out concurrent reads — e.g. ``info/search.py``'s
+        # fts/vec/asset legs run via ``asyncio.create_task`` — and writes onto
+        # one instance). A ``sqlite3.Connection``'s Python-level state
+        # (statement cache, implicit transaction/cursor management) is NOT safe
+        # for concurrent use even with ``check_same_thread=False``; without this
+        # lock two overlapping workers trip ``sqlite3.InterfaceError`` / phantom
+        # rows (the same hazard already worked around in ``storage/base.py``,
+        # ``eval/runner.py``, ``server/tasks/store_sqlite.py``). It is a
+        # ``threading.RLock`` (not ``asyncio.Lock``) because ``_run`` bodies
+        # execute OFF the event loop in the worker thread, where an
+        # ``asyncio.Lock`` can't be acquired at all. (Separately, the task
+        # store's history records an ``asyncio.Lock`` here deadlocking a
+        # long-poll ``asyncio.Condition`` — another reason to keep it threading.)
+        self._lock = threading.RLock()
         # Must match `_sanitize_fts` on the query side — locked at first
         # ingest via `RetrievalConfig.cjk_tokenizer`.
         self._cjk_tokenizer: CjkTokenizer = cjk_tokenizer
+
+    async def _locked(self, fn: Callable[[], _T]) -> _T:
+        """Run ``fn`` in a worker thread while holding the per-instance lock.
+
+        Wraps ``asyncio.to_thread`` so every Storage method body that touches
+        the shared connection is serialized. The lock is acquired INSIDE the
+        worker thread (where ``fn`` runs), not on the event loop.
+        """
+
+        def _call() -> _T:
+            with self._lock:
+                return fn()
+
+        return await asyncio.to_thread(_call)
 
     # ---- lifecycle -------------------------------------------------------
 
     async def connect(self) -> None:
         def _open() -> sqlite3.Connection:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(self._path, check_same_thread=False)
+            # ``timeout=30`` sets the C-level ``busy_timeout`` from the moment
+            # the connection opens, so the ``journal_mode`` / ``foreign_keys``
+            # pragmas below already wait under the full 30 s budget instead of
+            # Python's implicit 5 s ``connect`` default. Distinct verbs open
+            # distinct connections to one WAL file (``api._with_storage`` builds
+            # a fresh adapter per call), so even a connection-time pragma can
+            # collide with another connection's in-flight write transaction.
+            conn = sqlite3.connect(
+                self._path, check_same_thread=False, timeout=30.0
+            )
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Re-pin the busy wait at 30 s — parity with the task store
+            # (``server/tasks/store_sqlite.py``). Redundant with the ``connect``
+            # ``timeout`` above, but it's greppable, asserted by the storage
+            # contract, and immune to a future change of the ``connect`` default.
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
@@ -182,7 +229,7 @@ class SQLiteStorage:
             # logic. Cheap fixed-cost lookup.
             self._verify_vec_tables_use_cosine(conn)
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     # ---- D layer ---------------------------------------------------------
 
@@ -232,7 +279,7 @@ class SQLiteStorage:
                     ),
                 )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def get_document(self, doc_id: str) -> DocumentRecord | None:
         def _run() -> DocumentRecord | None:
@@ -242,7 +289,7 @@ class SQLiteStorage:
             ).fetchone()
             return _row_to_document(row) if row is not None else None
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_documents(
         self, doc_ids: Iterable[str]
@@ -260,7 +307,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_document(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def list_documents(
         self,
@@ -285,7 +332,7 @@ class SQLiteStorage:
             rows = conn.execute(q, params).fetchall()
             return [_row_to_document(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def deactivate_document(self, doc_id: str) -> None:
         def _run() -> None:
@@ -295,7 +342,7 @@ class SQLiteStorage:
                     "UPDATE documents SET active = 0 WHERE doc_id = ?", (doc_id,)
                 )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def delete_document(self, doc_id: str) -> None:
         def _run() -> None:
@@ -359,7 +406,7 @@ class SQLiteStorage:
                 )
                 conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     # ---- I layer ---------------------------------------------------------
 
@@ -402,7 +449,7 @@ class SQLiteStorage:
                     )
             return ids
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def upsert_embeddings(self, rows: Sequence[EmbeddingRow]) -> None:
         if not rows:
@@ -444,7 +491,7 @@ class SQLiteStorage:
                             (r.chunk_id, _serialize_vec(r.embedding)),
                         )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def get_cached_embeddings(
         self, content_hashes: Sequence[str], *, version_id: int
@@ -466,7 +513,7 @@ class SQLiteStorage:
                 for r in rows
             }
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_chunk_embeddings(
         self,
@@ -517,7 +564,7 @@ class SQLiteStorage:
                 for r in rows
             }
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def cache_embeddings(self, rows: Sequence[CachedEmbeddingRow]) -> None:
         if not rows:
@@ -544,7 +591,7 @@ class SQLiteStorage:
                         ),
                     )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def list_chunks_missing_embedding(
         self, *, version_id: int
@@ -571,7 +618,7 @@ class SQLiteStorage:
                 for r in rows
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_chunk(self, chunk_id: int) -> ChunkRecord | None:
         def _run() -> ChunkRecord | None:
@@ -583,7 +630,7 @@ class SQLiteStorage:
             ).fetchone()
             return _row_to_chunk(row) if row is not None else None
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def list_chunks(self, doc_id: str) -> list[ChunkRecord]:
         def _run() -> list[ChunkRecord]:
@@ -595,7 +642,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_chunk(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_chunks(self, chunk_ids: Iterable[int]) -> list[ChunkRecord]:
         ids = list(chunk_ids)
@@ -612,7 +659,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_chunk(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def fts_search(
         self, q: str, *, limit: int = 20, layer: Layer | None = None
@@ -651,7 +698,7 @@ class SQLiteStorage:
                 )
             return hits
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def vec_search(
         self,
@@ -734,7 +781,7 @@ class SQLiteStorage:
                     break
             return hits
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- K layer ---------------------------------------------------------
 
@@ -748,7 +795,7 @@ class SQLiteStorage:
                     (link.src_doc_id, link.dst_path, link.link_type.value, link.anchor, link.line),
                 )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def links_from(self, src_doc_id: str) -> list[LinkRecord]:
         def _run() -> list[LinkRecord]:
@@ -758,7 +805,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_link(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def links_to(self, dst_path: str) -> list[LinkRecord]:
         def _run() -> list[LinkRecord]:
@@ -768,7 +815,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_link(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def replace_links_from(
         self, src_doc_id: str, links: Sequence[LinkRecord]
@@ -796,7 +843,7 @@ class SQLiteStorage:
                         ],
                     )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     # ---- K layer: provenance --------------------------------------------
 
@@ -832,7 +879,7 @@ class SQLiteStorage:
                         ],
                     )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def provenance_from(self, src_doc_id: str) -> list[ProvenanceEdge]:
         def _run() -> list[ProvenanceEdge]:
@@ -852,7 +899,7 @@ class SQLiteStorage:
                 for r in rows
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def provenance_to(
         self, source_path_key: str
@@ -874,7 +921,7 @@ class SQLiteStorage:
                 for r in rows
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def neighbor_chunks_via_links(
         self,
@@ -919,7 +966,7 @@ class SQLiteStorage:
                 for row in rows
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def append_knowledge_log(self, entry: KnowledgeLogEntry) -> None:
         def _run() -> None:
@@ -930,7 +977,7 @@ class SQLiteStorage:
                     (entry.ts, entry.action, entry.src, entry.dst, entry.note),
                 )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def list_knowledge_log(
         self, *, since_ts: float | None = None, limit: int | None = None
@@ -962,7 +1009,7 @@ class SQLiteStorage:
                 for r in rows
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- D layer: multimedia assets --------------------------------------
 
@@ -997,7 +1044,7 @@ class SQLiteStorage:
                     ),
                 )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def get_asset(self, asset_id: str) -> AssetRecord | None:
         def _run() -> AssetRecord | None:
@@ -1007,7 +1054,7 @@ class SQLiteStorage:
             ).fetchone()
             return _row_to_asset(row) if row is not None else None
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_assets(self, asset_ids: Iterable[str]) -> list[AssetRecord]:
         ids = list(asset_ids)
@@ -1023,7 +1070,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_asset(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- I layer: chunk ↔ asset bridge -----------------------------------
 
@@ -1060,7 +1107,7 @@ class SQLiteStorage:
                         ),
                     )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def chunk_asset_refs_for_chunks(
         self, chunk_ids: Sequence[int]
@@ -1093,7 +1140,7 @@ class SQLiteStorage:
                 )
             return out
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def chunks_referencing_assets(
         self, asset_ids: Sequence[str]
@@ -1127,7 +1174,7 @@ class SQLiteStorage:
                     out[r["asset_id"]].append(int(r["chunk_id"]))
             return out
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- I layer: asset embeddings (multimodal) --------------------------
 
@@ -1145,7 +1192,7 @@ class SQLiteStorage:
             ).fetchall()
             return [_row_to_asset(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def upsert_asset_embeddings(
         self, rows: Sequence[AssetEmbeddingRow]
@@ -1213,7 +1260,7 @@ class SQLiteStorage:
                             (rowid, r.asset_id),
                         )
 
-        await asyncio.to_thread(_run)
+        await self._locked(_run)
 
     async def vec_search_assets(
         self,
@@ -1268,7 +1315,7 @@ class SQLiteStorage:
                 if rid in asset_id_by_rowid
             ]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- Embedding version registry --------------------------------------
 
@@ -1337,7 +1384,7 @@ class SQLiteStorage:
                 )
                 return int(cur.lastrowid or 0)
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def get_active_embed_version(
         self, *, modality: Literal["text", "multimodal"]
@@ -1354,7 +1401,7 @@ class SQLiteStorage:
             ).fetchone()
             return _row_to_embed_version(row) if row is not None else None
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     async def list_embed_versions(
         self, *, modality: Literal["text", "multimodal"] | None = None
@@ -1373,7 +1420,7 @@ class SQLiteStorage:
                 ).fetchall()
             return [_row_to_embed_version(r) for r in rows]
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- diagnostics -----------------------------------------------------
 
@@ -1403,7 +1450,7 @@ class SQLiteStorage:
                 asset_embeddings=asset_emb_count,
             )
 
-        return await asyncio.to_thread(_run)
+        return await self._locked(_run)
 
     # ---- internals -------------------------------------------------------
 

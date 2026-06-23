@@ -14,6 +14,7 @@ misconfiguration.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
@@ -36,49 +37,70 @@ def make_synth_runner(
     no_embed: bool,
     verify: bool = False,
     judge: bool = False,
+    lock: asyncio.Lock | None = None,
 ) -> Callable[[ProgressReporter], Awaitable[dict[str, Any]]]:
     """Build a ``TaskRunner`` that drives ``api.synthesize`` for one task.
 
     ``verify=True`` runs the post-synth self-check and folds a
     ``SynthVerifyReport`` into the task's final result under ``verify``.
     ``judge=True`` (with ``verify``) adds the report-only grounding leg.
+
+    ``lock`` (the runtime's ``ingest_lock``) serializes the WHOLE runner —
+    cfg reload, provider construction, and the persist pipeline — against the
+    other base-mutating ops (ingest, wisdom write, delete, lint apply, and a
+    second synth). It is taken BEFORE building providers (mirroring
+    ``ingest_op.make_ingest_runner``): synth pins its embed ``text_version_id``
+    and writes K-page chunks/links/embeddings without an enclosing transaction,
+    so an unserialized concurrent ingest could flip the active embed version
+    mid-run (stranding synth's vectors) or two writers to the same ``doc_id``
+    could interleave. Tests that drive the runner in isolation may pass
+    ``None``.
     """
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
-        # Reload cfg from disk INSIDE the runner so providers stay
-        # aligned with ``api.synthesize``'s own ``_with_storage`` reload.
-        # See ``ingest_op.make_ingest_runner`` for the full reasoning.
-        cfg = load_config(base_root / CONFIG_FILENAME)
-        try:
-            llm = build_llm(cfg.provider, base_root=base_root)
-        except Exception as e:
-            raise BadRequest(
-                f"could not build LLM: {e}", code="llm_unavailable"
-            ) from e
-
-        embedder = None
-        if not no_embed:
+        # Hold the base write lock across the WHOLE runner — cfg reload,
+        # provider construction, and the persist pipeline. Taking it BEFORE
+        # building providers (mirroring ``ingest_op.make_ingest_runner``) is
+        # required for correctness, not just tidiness: while synth waits on the
+        # lock, a concurrent ingest can rewrite ``dikw.yml`` / flip the active
+        # embed version. If we built the embedder/LLM before the wait,
+        # ``api.synthesize`` would re-resolve the newer cfg via ``_with_storage``
+        # and store vectors produced by the STALE embedder under the freshly
+        # active version — silent vector-space corruption. Building cfg +
+        # providers inside the lock keeps them aligned with what synth reads.
+        guard = lock if lock is not None else asyncio.Lock()
+        async with guard:
+            cfg = load_config(base_root / CONFIG_FILENAME)
             try:
-                embedder = build_embedder(cfg.provider)
+                llm = build_llm(cfg.provider, base_root=base_root)
             except Exception as e:
-                # Synth without an embedder is a soft-degrade: pages
-                # land on disk but new K-layer chunks miss the dense
-                # leg. Surface this as a log so the operator sees it
-                # but the task still succeeds.
-                await reporter.log(
-                    "WARN",
-                    f"embedder unavailable, synth proceeds without dense indexing: {e}",
-                )
+                raise BadRequest(
+                    f"could not build LLM: {e}", code="llm_unavailable"
+                ) from e
 
-        report = await api.synthesize(
-            base_root,
-            force_all=force_all,
-            llm=llm,
-            embedder=embedder,
-            reporter=reporter,
-            verify=verify,
-            judge=judge,
-        )
+            embedder = None
+            if not no_embed:
+                try:
+                    embedder = build_embedder(cfg.provider)
+                except Exception as e:
+                    # Synth without an embedder is a soft-degrade: pages
+                    # land on disk but new K-layer chunks miss the dense
+                    # leg. Surface this as a log so the operator sees it
+                    # but the task still succeeds.
+                    await reporter.log(
+                        "WARN",
+                        f"embedder unavailable, synth proceeds without dense indexing: {e}",
+                    )
+
+            report = await api.synthesize(
+                base_root,
+                force_all=force_all,
+                llm=llm,
+                embedder=embedder,
+                reporter=reporter,
+                verify=verify,
+                judge=judge,
+            )
         return dataclasses.asdict(report)
 
     return _runner

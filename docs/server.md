@@ -139,16 +139,34 @@ in-memory state is gone.
 
 ### Storage concurrency
 
-* **SQLite** — single writer at any time. `dikw serve` is the only
-  intended writer; running `dikw serve` against a base that's also
-  being mutated by a hand-edited script will trigger `database is
-  locked` errors.
+Two layers of write serialization keep concurrent tasks from racing a base:
+
+* **Per-adapter (SQLite).** Each `SQLiteStorage` instance shares one
+  `sqlite3.Connection` across the `asyncio.to_thread` workers a single verb
+  fans out (e.g. retrieval's fts/vec/asset legs run via `asyncio.create_task`).
+  That connection's Python-level state isn't thread-safe, so every method body
+  runs under a per-instance `threading.RLock` — overlapping workers on one
+  instance are serialized instead of tripping `sqlite3.InterfaceError` /
+  phantom rows.
+* **Cross-connection (SQLite WAL).** Distinct verbs open distinct connections
+  to one WAL file, so two writers can still collide at the file-lock level. The
+  adapter sets `busy_timeout=30000` (and opens with `connect(timeout=30)` so
+  the same budget covers the connection-time pragmas), so the loser **blocks up
+  to 30 s and then succeeds** rather than immediately raising `database is
+  locked`. A base also mutated by a hand-edited script out-of-band can still
+  exceed that window.
+* **Base-level write lock (process).** The server holds one `asyncio.Lock`
+  (`ServerRuntime.ingest_lock`) across every base-mutating task — ingest,
+  import, wisdom write, delete, **synth, and lint apply** — so two writers on
+  one base never interleave their (un-transaction-wrapped) row + on-disk writes
+  within a process. Read paths (retrieve, list, read) don't take it.
 * **Postgres** — multiple `dikw serve` instances against one base are
-  supported by the storage layer (each task is one transaction), but
-  there's no orchestration logic. If you need multi-server topologies,
-  put a load balancer in front and accept that ingest/synth tasks
-  racing on the same source will produce one winner per `(path,
-  content_hash)` pair via storage-level upsert.
+  supported by the storage layer (each task is one transaction), but there's no
+  orchestration logic, and `ingest_lock` is **per-process** — it does not
+  serialize writers across replicas. If you need multi-server topologies, put a
+  load balancer in front and accept that ingest/synth tasks racing on the same
+  source will produce one winner per `(path, content_hash)` pair via
+  storage-level upsert.
 * **Filesystem backend** — single-writer only by design. Don't run two
   servers against the same base.
 

@@ -44,6 +44,35 @@ on each entry call out exactly what shape changes break.
   Releases were created by hand, and several tags (v0.6.0 and earlier) shipped
   without one. A backfilled `v0.6.0` GitHub Release was created out-of-band.
 
+### Fixed
+
+- **Concurrency: serialize the SQLite adapter and the synth/lint-apply write
+  path.** Three race conditions could surface under concurrent task execution
+  on a single base. (1) Each `SQLiteStorage` instance shares one
+  `sqlite3.Connection` across the `asyncio.to_thread` workers a verb fans out
+  (retrieval already runs its fts/vec/asset legs via `asyncio.create_task`),
+  and that connection's Python-level state is not thread-safe — overlapping
+  workers could trip `sqlite3.InterfaceError` / phantom rows (the same hazard
+  already worked around three times in `storage/base.py`, `eval/runner.py`, and
+  `server/tasks/store_sqlite.py`). Every adapter method body now runs under a
+  per-instance `threading.RLock` (acquired inside the worker thread), closing
+  the window for *every* call site rather than one ad-hoc gather at a time.
+  (2) `synth` and `lint apply` previously took **no** lock, so they could
+  interleave with `ingest`/`delete`/`wisdom write`/each other — racing the same
+  deterministic `doc_id` rows + on-disk page with no enclosing transaction
+  (silent anchor loss, embed-version drift, or a healthy page mistakenly
+  deactivated). Both now acquire the server's existing base write lock
+  (`ServerRuntime.ingest_lock`), which already covered ingest/import/wisdom/
+  delete, so the whole D/K/W write surface is single-writer per base within a
+  process. (3) The SQLite adapter now sets an explicit `busy_timeout=30000`
+  (and opens with `connect(timeout=30)` so the budget also covers the
+  connection-time pragmas) — parity with the task store — so a cross-connection
+  WAL writer blocks-then-succeeds instead of immediately raising `database is
+  locked`. **No on-disk format, schema, Storage Protocol, or CLI change** —
+  these are internal serialization fixes. `ingest_lock` stays per-process, so
+  multi-replica Postgres deployments are unchanged (cross-replica doc-level
+  locking is tracked separately). See `docs/server.md` § Storage concurrency.
+
 ### Docs
 
 - **Install-from-PyPI path for downstream consumers.** `docs/getting-started.md`
