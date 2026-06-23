@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.1 — official GHCR image; client/server version handshake; SQLite + write-path concurrency fixes
+
 ### Added
 
 - **Official container image published to GHCR on every release.** The release
