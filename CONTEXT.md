@@ -42,7 +42,7 @@ A `[[Target]]` reference in a page **body**, parsed into the `links` table (`src
 _Avoid_: reference, citation (overloaded), provenance (the other edge).
 
 **provenance**:
-The page→source attribution recorded in a K/W-page's `sources:` **frontmatter** — "this page was authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the knowledge tree is a user-editable Obsidian vault), so the edge reconciles from frontmatter on every `persist_knowledge` / `persist_wisdom` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
+The page→source attribution recorded in a K/W-page's `sources:` **frontmatter** — "this page was authored from these D-layer sources". A separate edge from **wikilink**: it lives in frontmatter not body, has no body line/anchor, and must NOT enter the wikilink graph. The **frontmatter is the source of truth** (the knowledge tree is user-editable open Markdown), so the edge reconciles from frontmatter on every `persist_knowledge` / `persist_wisdom` — exactly mirroring how **wikilink** reconciles from the body. For pages that pre-existed when provenance shipped, the `missing_provenance` LintKind + its deterministic Fixer backfill them via the standard `lint propose → lint apply` flow (`dikw client lint propose --rule missing_provenance` then `dikw client lint apply <task_id>`).
 _Avoid_: reference, link, citation; "sources" alone (that's the frontmatter key, not the relationship).
 
 ### Pipeline verbs
@@ -60,7 +60,7 @@ _HTTP_: `POST /v1/ingest`
 _Avoid_: index (verb), process
 
 **synth**:
-LLM-author K-layer knowledge pages from D-layer sources. Files each page under its **category** path (`<base>/knowledge/<category>/<slug>.md`) and appends a row to the `knowledge_log` table. Does **not** generate `index.md` / `log.md` — navigation is the Obsidian file tree + `retrieve` (0.5.0, see [`docs/adr/0004-drop-generated-index-and-log.md`](docs/adr/0004-drop-generated-index-and-log.md)).
+LLM-author K-layer knowledge pages from D-layer sources. Files each page under its **category** path (`<base>/knowledge/<category>/<slug>.md`) and appends a row to the `knowledge_log` table. Does **not** generate `index.md` / `log.md` — navigation is the file tree + `retrieve` (0.5.0, see [`docs/adr/0004-drop-generated-index-and-log.md`](docs/adr/0004-drop-generated-index-and-log.md)).
 _CLI_: `dikw client synth`
 _HTTP_: `POST /v1/synth`
 _Avoid_: summarize, build wiki (the term "wiki" is reserved for wikilink syntax)

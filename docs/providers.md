@@ -1001,7 +1001,7 @@ probe (one `"ping"` string) — same as before.
 
 - Image binaries referenced from your markdown (`![alt](path)` or
   `![[file]]`) are materialized into `assets/<h2>/<h8>-<name>.<ext>`
-  inside your project root, visible in Obsidian.
+  inside your project root.
 - Each binary gets a vector via the multimodal model and lives in a
   per-version `vec_assets_v<id>` table (so dim/model changes don't
   collide with prior data).

@@ -4,8 +4,8 @@
 RAG stacks today:
 
 1. Knowledge should be a **compounding artifact**, not a query-time search
-   result. The knowledge tree you can read in Obsidian is the product; the
-   engine is the scribe. (This is Karpathy's LLM-wiki framing.)
+   result. The open Markdown knowledge tree is the product; the engine owns,
+   authors, and reconciles it. (This is Karpathy's LLM-wiki framing.)
 2. **All four DIKW layers deserve first-class treatment.** Data, Information,
    Knowledge, and Wisdom each have their own storage, schemas, and
    operations. The pipeline between them is explicit.
@@ -19,7 +19,7 @@ Everything else is plumbing.
 | **D** — Data         | raw source files (markdown)                      | human                          |
 | **I** — Information  | parsed, chunked, FTS-indexed, embedded           | engine (deterministic)         |
 | **K** — Knowledge    | LLM-authored knowledge pages (filed under a configurable `category` tree), link graph  | LLM, human-editable            |
-| **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human (Obsidian)               |
+| **W** — Wisdom       | hand-written markdown under `wisdom/<author>/`   | human                          |
 
 The W layer is hand-written first-class documents under
 `wisdom/<author>/<slug>.md`. Since 0.4.0, wisdom is indexed
@@ -39,8 +39,8 @@ archived`) validated by the `invalid_wisdom_status` lint kind.
 edges; `broken_wikilink` / `orphan_page` / `missing_provenance`
 lint scans both K + W layers, crediting cross-layer wikilinks in
 the orphan inbound counter so a knowledge page cited only from
-wisdom is not falsely flagged. Hand-edits to wisdom files in
-Obsidian are not auto-reindexed *live*, but the `stale_index`
+wisdom is not falsely flagged. Hand-edits to wisdom files on
+disk are not auto-reindexed *live*, but the `stale_index`
 drift lint (ADR-0005) detects them — `dikw client lint apply`
 re-projects the edited bytes (or re-run `dikw client wisdom
 write`). See
@@ -89,7 +89,7 @@ src/dikw_core/
 │   ├── data/
 │   │   └── persist.py       persist_source — D-layer write entry (doc + chunk + FTS + chunk_asset_refs)
 │   ├── knowledge/
-│   │   ├── page.py          KnowledgePage I/O (Obsidian-compatible front-matter)
+│   │   ├── page.py          KnowledgePage I/O (YAML front-matter + wikilinks)
 │   │   ├── page_index.py    persist_knowledge — K-layer write entry (synth + lint apply); also defines the private _persist_layered_page shared with W
 │   │   ├── synthesize.py    LLM -> <page> blocks -> KnowledgePage
 │   │   ├── links.py         [[wikilinks]] + md + URL parser; fuzzy resolve + collision refusal
@@ -210,7 +210,7 @@ table (rowid aligns with `chunks.chunk_id`); Postgres populates
 `chunks.fts tsvector` via the Python adapter at INSERT. CJK
 preprocessing (jieba) happens before the SQL call on both adapters.
 
-**Reconciling hand-edits.** Hand-edits to K or W files in Obsidian, and
+**Reconciling hand-edits.** Hand-edits to K or W files on disk, and
 hand-written new pages dropped under `knowledge/`/`wisdom/`, are reconciled
 by the `stale_index` / `untracked_file` drift lint kinds (ADR-0005): default
 `lint` detects them and `dikw client lint propose --rule stale_index` (or
@@ -444,7 +444,7 @@ raise it.
 ## Asset exposure to remote clients
 
 Markdown source pages routinely embed images (`![alt](./figs/x.png)`
-or Obsidian `![[assets/foo.jpg]]`). Ingest already materialises each
+or the wiki-style `![[assets/foo.jpg]]` embed). Ingest already materialises each
 image into `<base>/assets/<h2>/<h8>-<stem>.<ext>` (content-addressed by
 SHA-256) and writes both an `AssetRecord` and the chunk → asset bridge
 rows (`chunk_asset_refs`). The server makes those bytes reachable from
@@ -458,7 +458,7 @@ that keeps the knowledge tree itself unchanged**:
    `media_meta`, and `url` (always `/v1/assets/{asset_id}` — fixed
    shape so the client zero-parses). The page `body` itself is
    returned **verbatim** — no in-place URL rewriting — because the
-   `knowledge/` tree is the product (Obsidian-compatible, user-owned),
+   `knowledge/` tree is the product (open Markdown, user-owned),
    and rewriting would diverge from the on-disk file.
 
 2. **`GET /v1/assets/{asset_id}`** — streams the raw bytes with the
