@@ -541,6 +541,14 @@ async def _cmd_compare_synth(args: argparse.Namespace) -> int:
     if judge:
         raw = _load_spec_file(Path(args.spec))
         jp = raw.get("judge_provider")
+        if jp is not None and not isinstance(jp, Mapping):
+            # Present but mis-shaped (e.g. a scalar/list from an indentation
+            # typo): fail fast instead of silently falling back to self-judging,
+            # which would re-introduce the bias judge_provider exists to remove.
+            sys.stderr.write(
+                f"error: judge_provider must be a mapping (got {type(jp).__name__})\n"
+            )
+            return 2
         if isinstance(jp, Mapping):
             from dikw_core.config import ProviderConfig
             from dikw_core.providers import build_llm
@@ -572,6 +580,13 @@ async def _cmd_compare_synth(args: argparse.Namespace) -> int:
     return 0
 
 
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Horizontal model comparison harness.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -597,7 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--judge", action="store_true", help="run the LLM grounding judge")
     s.add_argument(
         "--judge-sample",
-        type=int,
+        type=_positive_int,
         default=None,
         help="cap each judge leg to N items (pages / claims) — bounds the judge "
         "call count + wall-clock for slow reasoning judges (default: judge all)",
