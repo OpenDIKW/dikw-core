@@ -1089,6 +1089,8 @@ async def run_synth_eval(
     retrieval_config: RetrievalConfig | None = None,
     judge: bool = False,
     judge_sample: int | None = None,
+    judge_llm: LLMProvider | None = None,
+    judge_model: str | None = None,
     target_tokens_per_group: int | None = None,
     reporter: ProgressReporter | None = None,
 ) -> SynthEvalReport:
@@ -1200,6 +1202,14 @@ async def run_synth_eval(
             fallback=schema_cfg.fallback,
         )
 
+        # The judge legs may run on a DIFFERENT LLM than synth — pass
+        # ``judge_llm`` to route grading to a neutral third-party model (the
+        # model comparison harness uses this so each arm is graded by the same
+        # judge, not by itself). Both default to the synth ``llm`` / its model,
+        # preserving the self-judge behaviour every other caller relies on.
+        _judge_llm: LLMProvider = judge_llm or llm
+        _judge_model: str = judge_model or spec.judge.model or effective_provider_cfg.llm_model
+
         judge_summary: JudgeSummary | None = None
         if judge:
             await _reporter.progress(
@@ -1210,8 +1220,8 @@ async def run_synth_eval(
             judge_summary = await judge_synthesis(
                 bundle.pages,
                 sources=bundle.source_text_by_path,
-                llm=llm,
-                model=spec.judge.model or effective_provider_cfg.llm_model,
+                llm=_judge_llm,
+                model=_judge_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,
@@ -1238,8 +1248,8 @@ async def run_synth_eval(
             )
             entailment_summary = await judge_entailment(
                 bundle.entailment_pairs,
-                llm=llm,
-                model=spec.judge.model or effective_provider_cfg.llm_model,
+                llm=_judge_llm,
+                model=_judge_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,
@@ -1292,8 +1302,8 @@ async def run_synth_eval(
             category_summary = await judge_category(
                 bundle.pages,
                 options=category_options,
-                llm=llm,
-                model=spec.judge.model or effective_provider_cfg.llm_model,
+                llm=_judge_llm,
+                model=_judge_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,
@@ -1325,8 +1335,8 @@ async def run_synth_eval(
             )
             wikilink_summary = await judge_wikilinks(
                 bundle.wikilink_units,
-                llm=llm,
-                model=spec.judge.model or effective_provider_cfg.llm_model,
+                llm=_judge_llm,
+                model=_judge_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,
@@ -1358,8 +1368,8 @@ async def run_synth_eval(
             )
             semantic_atomicity_summary = await judge_semantic_atomicity(
                 bundle.pages,
-                llm=llm,
-                model=spec.judge.model or effective_provider_cfg.llm_model,
+                llm=_judge_llm,
+                model=_judge_model,
                 sample=judge_sample,
                 reporter=_reporter,
                 seed=spec.name,

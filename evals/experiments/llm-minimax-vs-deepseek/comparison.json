@@ -1,0 +1,238 @@
+{
+  "mode": "synth",
+  "dataset": "mvp",
+  "baseline_arm": "minimax-m3",
+  "arms": [
+    "minimax-m3",
+    "deepseek-v4-pro"
+  ],
+  "metrics": [
+    "judge/atomicity",
+    "judge/clarity",
+    "judge/completeness",
+    "judge/grounding",
+    "synth/atomicity_score",
+    "synth/duplicate_ratio_max",
+    "synth/expected_coverage",
+    "synth/fact_entailment_ratio",
+    "synth/fact_grounding_ratio",
+    "synth/fallback_ratio_max",
+    "synth/language_fidelity",
+    "synth/page_density",
+    "synth/semantic_atomicity_ratio",
+    "synth/slug_merge_ratio_max",
+    "synth/source_chunk_coverage",
+    "synth/wikilink_correctness_ratio",
+    "synth/wikilink_resolved_ratio"
+  ],
+  "cells": {
+    "minimax-m3": {
+      "judge/atomicity": {
+        "value": 5.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "judge/clarity": {
+        "value": 4.534188034188034,
+        "std": 0.20355297952198323,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "judge/completeness": {
+        "value": 4.213675213675214,
+        "std": 0.18549174713000588,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "judge/grounding": {
+        "value": 4.811965811965812,
+        "std": 0.037009632640360494,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/atomicity_score": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/duplicate_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/expected_coverage": {
+        "value": 0.1851851851851852,
+        "std": 0.06415002990995841,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "synth/fact_entailment_ratio": {
+        "value": 0.7236111111111111,
+        "std": 0.04552421008324805,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "synth/fact_grounding_ratio": {
+        "value": 0.6783029085112419,
+        "std": 0.03586922619636461,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/fallback_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/language_fidelity": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/page_density": {
+        "value": 0.5873015873015873,
+        "std": 0.027492869961410784,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/semantic_atomicity_ratio": {
+        "value": 0.9316239316239315,
+        "std": 0.025906742848252475,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "synth/slug_merge_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/source_chunk_coverage": {
+        "value": 0.6984126984126985,
+        "std": 0.027492869961410784,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "synth/wikilink_correctness_ratio": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "synth/wikilink_resolved_ratio": {
+        "value": 0.34722222222222215,
+        "std": 0.2836191368980852,
+        "p_vs_baseline": null,
+        "is_best": false
+      }
+    },
+    "deepseek-v4-pro": {
+      "judge/atomicity": {
+        "value": 5.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "judge/clarity": {
+        "value": 4.527777777777778,
+        "std": 0.12729376930432892,
+        "p_vs_baseline": 0.9657299130641108,
+        "is_best": false
+      },
+      "judge/completeness": {
+        "value": 4.111111111111112,
+        "std": 0.17347216662217788,
+        "p_vs_baseline": 0.5229530909983879,
+        "is_best": false
+      },
+      "judge/grounding": {
+        "value": 4.777777777777778,
+        "std": 0.12729376930432892,
+        "p_vs_baseline": 0.6931612655788082,
+        "is_best": false
+      },
+      "synth/atomicity_score": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/duplicate_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/expected_coverage": {
+        "value": 0.2962962962962963,
+        "std": 0.06415002990995841,
+        "p_vs_baseline": 0.1011915072182953,
+        "is_best": true
+      },
+      "synth/fact_entailment_ratio": {
+        "value": 0.7866666666666666,
+        "std": 0.05033222956847165,
+        "p_vs_baseline": 0.1835489122162339,
+        "is_best": true
+      },
+      "synth/fact_grounding_ratio": {
+        "value": 0.6506558641975309,
+        "std": 0.041351212602780456,
+        "p_vs_baseline": 0.43199281237772336,
+        "is_best": false
+      },
+      "synth/fallback_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/language_fidelity": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/page_density": {
+        "value": 0.5714285714285714,
+        "std": 0.0,
+        "p_vs_baseline": 0.4226497308103736,
+        "is_best": false
+      },
+      "synth/semantic_atomicity_ratio": {
+        "value": 0.9583333333333334,
+        "std": 0.041666666666666685,
+        "p_vs_baseline": 0.4087172005159996,
+        "is_best": true
+      },
+      "synth/slug_merge_ratio_max": {
+        "value": 0.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/source_chunk_coverage": {
+        "value": 0.746031746031746,
+        "std": 0.027492869961410718,
+        "p_vs_baseline": 0.10119150721829562,
+        "is_best": true
+      },
+      "synth/wikilink_correctness_ratio": {
+        "value": 1.0,
+        "std": 0.0,
+        "p_vs_baseline": 1.0,
+        "is_best": false
+      },
+      "synth/wikilink_resolved_ratio": {
+        "value": 0.759921798631476,
+        "std": 0.21191215919431644,
+        "p_vs_baseline": 0.11926126773792249,
+        "is_best": true
+      }
+    }
+  }
+}

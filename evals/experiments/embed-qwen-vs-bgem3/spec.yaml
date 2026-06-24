@@ -1,0 +1,30 @@
+# embed-arms.yaml — Qwen3-Embedding-0.6B vs bge-m3, retrieval (deterministic, 1 run/arm).
+# Both via Gitee AI @ 1024-dim, cosine, normalized. LLM unused in retrieval mode
+# (llm_api_key_env is a required field, so it points at a present var).
+dataset: cmteb-t2-subset
+mode: retrieval
+arms:
+  - name: qwen3-0.6b
+    provider:
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+      llm_api_key_env: GITEE_API_KEY
+  - name: bge-m3
+    provider:
+      embedding: openai_compat
+      embedding_model: bge-m3
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+      llm_api_key_env: GITEE_API_KEY

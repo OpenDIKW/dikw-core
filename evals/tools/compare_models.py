@@ -392,17 +392,84 @@ async def run_retrieval_arm(spec: Any, arm: ArmSpec, *, cache_mode: str) -> dict
 
 
 async def run_synth_arm(
-    spec: Any, arm: ArmSpec, *, runs: int, judge: bool
+    spec: Any,
+    arm: ArmSpec,
+    *,
+    runs: int,
+    judge: bool,
+    judge_llm: Any = None,
+    judge_model: str | None = None,
+    judge_sample: int | None = None,
 ) -> list[dict[str, float]]:
+    import asyncio
+
+    import httpx
+
     from dikw_core.eval.runner import run_synth_eval
+
+    # A synth run fans out many streaming LLM calls (synth + up to 3 judges over
+    # every page); a single mid-stream drop (ReadTimeout / RemoteProtocolError —
+    # the SDK does not retry an already-consumed stream) would otherwise crash
+    # the whole experiment and write nothing. Retry the run on transient network
+    # errors so the comparison survives provider flakiness.
+    #
+    # A per-run hard ceiling via ``asyncio.wait_for`` is the real backstop: some
+    # provider stalls hang a socket read PAST the SDK's own timeout (a half-open
+    # connection that dribbles no bytes), so the SDK timeout never fires and the
+    # run wedges indefinitely. ``wait_for`` cancels + raises ``TimeoutError``,
+    # which the same retry arm catches — turning an indefinite hang into a bounded
+    # retry. Sized for synth + a sampled judge pass with generous headroom.
+    _MAX_ATTEMPTS = 4
+    # Sized from measured judged runs: synth + the codex judge over
+    # ``--judge-sample 25`` items lands at ~370-540s wall-clock, so the original
+    # 360s ceiling mis-flagged every healthy judged run as a hang and then
+    # crashed the whole comparison. 900s clears that with headroom while still
+    # bounding a genuine half-open stall.
+    _PER_RUN_TIMEOUT_S = 900.0
+
+    def _is_transient(exc: BaseException) -> bool:
+        if isinstance(exc, (httpx.HTTPError, TimeoutError)):
+            return True
+        # The Gitee embedder intermittently returns one extra vector ("returned
+        # N vectors for M texts") — a bare RuntimeError the embed retry layer
+        # does not classify as transient. Pure provider glitch; a fresh-base
+        # retry clears it. Other RuntimeErrors (real bugs) still propagate.
+        return isinstance(exc, RuntimeError) and "vectors for" in str(exc)
 
     llm = _build_arm_llm(arm)
     embedder = _build_arm_embedder(arm)
     out: list[dict[str, float]] = []
     for i in range(runs):
-        report = await run_synth_eval(
-            spec, llm=llm, embedder=embedder, provider_config=arm.provider, judge=judge
-        )
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                report = await asyncio.wait_for(
+                    run_synth_eval(
+                        spec,
+                        llm=llm,
+                        embedder=embedder,
+                        provider_config=arm.provider,
+                        judge=judge,
+                        judge_llm=judge_llm,
+                        judge_model=judge_model,
+                        judge_sample=judge_sample,
+                    ),
+                    timeout=_PER_RUN_TIMEOUT_S,
+                )
+                break
+            except (httpx.HTTPError, TimeoutError, RuntimeError) as exc:
+                if not _is_transient(exc) or attempt == _MAX_ATTEMPTS:
+                    raise
+                label = (
+                    f"hung > {_PER_RUN_TIMEOUT_S:.0f}s"
+                    if isinstance(exc, TimeoutError)
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                print(
+                    f"  [{arm.name}] run {i + 1}/{runs} attempt {attempt} transient "
+                    f"failure ({label}); retrying after backoff",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(5.0 * attempt)
         out.append(flatten_synth_report(report))
         print(f"  [{arm.name}] run {i + 1}/{runs} done", file=sys.stderr)
     return out
@@ -462,16 +529,62 @@ async def _cmd_compare_synth(args: argparse.Namespace) -> int:
     if "synth" not in spec.modes:
         sys.stderr.write(f"error: dataset {dataset!r} does not declare 'synth' mode\n")
         return 2
+
+    # Optional neutral judge: a top-level ``judge_provider:`` block routes ALL
+    # judge legs (grounding / entailment / category / wikilink / atomicity) to
+    # one shared model instead of each arm grading itself — removing the
+    # self-evaluation bias that makes the judge dims otherwise non-comparable
+    # across arms. ``openai_codex`` is allowed here (unlike the synth arms): the
+    # judge needs no env key, it reads its OAuth token from ``<base_root>/.dikw``.
+    judge_llm: Any = None
+    judge_model: str | None = None
+    if judge:
+        raw = _load_spec_file(Path(args.spec))
+        jp = raw.get("judge_provider")
+        if jp is not None and not isinstance(jp, Mapping):
+            # Present but mis-shaped (e.g. a scalar/list from an indentation
+            # typo): fail fast instead of silently falling back to self-judging,
+            # which would re-introduce the bias judge_provider exists to remove.
+            sys.stderr.write(
+                f"error: judge_provider must be a mapping (got {type(jp).__name__})\n"
+            )
+            return 2
+        if isinstance(jp, Mapping):
+            from dikw_core.config import ProviderConfig
+            from dikw_core.providers import build_llm
+
+            judge_cfg = ProviderConfig.model_validate(dict(jp))
+            judge_llm = build_llm(judge_cfg, base_root=_REPO_ROOT)
+            judge_model = judge_cfg.llm_model
+            print(
+                f"[synth] neutral judge: {judge_cfg.llm} ({judge_model})", file=sys.stderr
+            )
+
     per_arm: dict[str, list[dict[str, float]]] = {}
     for arm in arms:
         print(f"[synth] arm {arm.name} ({arm.provider.llm_model}), {runs} run(s)", file=sys.stderr)
-        per_arm[arm.name] = await run_synth_arm(spec, arm, runs=runs, judge=judge)
+        per_arm[arm.name] = await run_synth_arm(
+            spec,
+            arm,
+            runs=runs,
+            judge=judge,
+            judge_llm=judge_llm,
+            judge_model=judge_model,
+            judge_sample=args.judge_sample,
+        )
     matrix = build_synth_matrix(
         per_arm, dataset=dataset, arms_order=[a.name for a in arms], baseline_arm=arms[0].name
     )
     print(format_matrix_table(matrix))
     _write_outputs(Path(args.exp), matrix, per_arm)
     return 0
+
+
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -497,6 +610,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--exp", required=True, help="output dir under evals/experiments/")
     s.add_argument("--runs", type=int, default=None, help="runs per arm (overrides spec)")
     s.add_argument("--judge", action="store_true", help="run the LLM grounding judge")
+    s.add_argument(
+        "--judge-sample",
+        type=_positive_int,
+        default=None,
+        help="cap each judge leg to N items (pages / claims) — bounds the judge "
+        "call count + wall-clock for slow reasoning judges (default: judge all)",
+    )
     return ap
 
 

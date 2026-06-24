@@ -691,6 +691,27 @@ direction (higher- vs lower-is-better); `*` marks the winning arm. Notes:
 - Both Gitee embed arms run within the 25-item batch cap (gotcha #2) at
   `embedding_batch_size: 16`.
 
+**Judged synth comparison.** `compare-synth` runs the LLM grounding/quality
+judge when the spec sets `judge: true` (or you pass `--judge`). Two knobs keep a
+judged comparison fair and bounded:
+
+- `--judge-sample N` caps each judge leg (grounding / entailment / category /
+  wikilink / atomicity) to N items. **Pass it** — e.g. `--judge-sample 25`,
+  matching the calibration baselines; an unbounded judge over every page + claim
+  is slow enough that one judged run can hit the harness per-run timeout.
+- A top-level `judge_provider:` block (a full `provider:` block) routes **all**
+  judge legs to one shared model instead of each arm grading its own output,
+  removing the self-evaluation bias that otherwise makes the judge dims
+  non-comparable across arms. `openai_codex` is allowed here (unlike the synth
+  arms) — the judge needs no env key, it reads its OAuth token from
+  `<repo>/.dikw/auth.json`.
+
+Worked specs + committed results:
+[`evals/experiments/llm-minimax-vs-deepseek/`](../evals/experiments/llm-minimax-vs-deepseek/)
+(synth, n=3, neutral `gpt-5.5` judge) and
+[`evals/experiments/embed-qwen-vs-bgem3/`](../evals/experiments/embed-qwen-vs-bgem3/)
+(retrieval).
+
 See [`evals/README.md`](../evals/README.md) for the dataset contract and how
 this sits alongside the A/B harness.
 
