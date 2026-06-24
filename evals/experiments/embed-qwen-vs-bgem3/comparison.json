@@ -1,0 +1,82 @@
+{
+  "mode": "retrieval",
+  "dataset": "cmteb-t2-subset",
+  "baseline_arm": null,
+  "arms": [
+    "qwen3-0.6b",
+    "bge-m3"
+  ],
+  "metrics": [
+    "hit_at_3",
+    "hit_at_10",
+    "mrr",
+    "ndcg_at_10",
+    "recall_at_100"
+  ],
+  "cells": {
+    "qwen3-0.6b": {
+      "hit_at_3": {
+        "value": 0.9866666666666667,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "hit_at_10": {
+        "value": 0.9866666666666667,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "mrr": {
+        "value": 0.979360625161515,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "ndcg_at_10": {
+        "value": 0.9460263283100276,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": true
+      },
+      "recall_at_100": {
+        "value": 0.9876851851851851,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": false
+      }
+    },
+    "bge-m3": {
+      "hit_at_3": {
+        "value": 0.9866666666666667,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "hit_at_10": {
+        "value": 0.9866666666666667,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "mrr": {
+        "value": 0.9747402713773681,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "ndcg_at_10": {
+        "value": 0.9412348783624557,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": false
+      },
+      "recall_at_100": {
+        "value": 0.9903796296296296,
+        "std": null,
+        "p_vs_baseline": null,
+        "is_best": true
+      }
+    }
+  }
+}

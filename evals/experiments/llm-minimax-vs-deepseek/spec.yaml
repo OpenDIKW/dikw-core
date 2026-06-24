@@ -1,0 +1,61 @@
+# llm-arms.yaml — MiniMax-M3 vs DeepSeek-V4-Pro, embedder held fixed (Qwen3-0.6B).
+# Baseline (Welch reference) = first arm = minimax-m3.
+dataset: mvp
+mode: synth
+runs: 3
+judge: true
+# Neutral third-party judge: ALL judge legs run on codex gpt-5.5 instead of
+# each arm grading its own output (removes self-evaluation bias + sidesteps the
+# arms' streaming flakiness on the judge calls). openai_codex reads its OAuth
+# token from <repo>/.dikw/auth.json (dikw auth import openai-codex). The
+# api_key_env fields are required by ProviderConfig but unused by codex.
+judge_provider:
+  llm: openai_codex
+  llm_model: gpt-5.5
+  llm_base_url: https://chatgpt.com/backend-api/codex
+  llm_api_key_env: GITEE_API_KEY
+  # Healthy codex calls return in ~2s; 90s is generous headroom while letting a
+  # stalled stream fail fast (judge catches it as one errored item + continues)
+  # instead of hanging the whole experiment for the 600s SDK default.
+  llm_timeout_seconds: 90.0
+  embedding: openai_compat
+  embedding_api_key_env: GITEE_API_KEY
+  embedding_dim: 1024
+  embedding_revision: ""
+  embedding_normalize: true
+  embedding_distance: cosine
+arms:
+  - name: minimax-m3
+    provider:
+      llm: anthropic_compat
+      llm_model: MiniMax-M3
+      llm_base_url: https://api.minimaxi.com/anthropic
+      llm_api_key_env: MINIMAX_API_KEY
+      llm_max_tokens_synth: 8192
+      llm_timeout_seconds: 600.0
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
+  - name: deepseek-v4-pro
+    provider:
+      llm: anthropic_compat
+      llm_model: deepseek-v4-pro
+      llm_base_url: https://api.deepseek.com/anthropic
+      llm_api_key_env: DEEPSEEK_API_KEY
+      llm_max_tokens_synth: 8192
+      llm_timeout_seconds: 600.0
+      embedding: openai_compat
+      embedding_model: Qwen3-Embedding-0.6B
+      embedding_base_url: https://ai.gitee.com/v1
+      embedding_api_key_env: GITEE_API_KEY
+      embedding_dim: 1024
+      embedding_revision: ""
+      embedding_normalize: true
+      embedding_distance: cosine
+      embedding_batch_size: 16
