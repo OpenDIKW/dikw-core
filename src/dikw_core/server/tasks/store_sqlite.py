@@ -28,6 +28,7 @@ from typing import Any
 
 from .._time import isoformat_utc_ms as _isoformat
 from .store import (
+    TERMINAL_STATUSES,
     TaskNotFound,
     TaskRow,
     TaskStatus,
@@ -298,14 +299,27 @@ class SqliteTaskStore:
             if error is not None:
                 sets.append("error = ?")
                 params.append(json.dumps(error))
-            params.extend([task_id, self._instance_id])
+            terminal = [s.value for s in TERMINAL_STATUSES]
+            placeholders = ", ".join("?" for _ in terminal)
+            params.extend([task_id, self._instance_id, *terminal])
             cur = conn.execute(
                 f"UPDATE tasks SET {', '.join(sets)} "
-                "WHERE task_id = ? AND instance_id = ?",
+                f"WHERE task_id = ? AND instance_id = ? "
+                f"AND status NOT IN ({placeholders})",
                 params,
             )
             if cur.rowcount == 0:
-                raise TaskNotFound(task_id)
+                # Zero rows means the task is either unknown OR already
+                # terminal. Terminal rows are immutable: a late write
+                # (e.g. a runner's failure landing after a cancel) is a
+                # silent no-op so cancel-wins + idempotency hold. Only a
+                # genuinely missing task_id raises.
+                exists = conn.execute(
+                    "SELECT 1 FROM tasks WHERE task_id = ? AND instance_id = ?",
+                    (task_id, self._instance_id),
+                ).fetchone()
+                if exists is None:
+                    raise TaskNotFound(task_id)
         finally:
             conn.close()
 

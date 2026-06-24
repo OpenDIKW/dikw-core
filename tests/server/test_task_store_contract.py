@@ -119,6 +119,47 @@ async def test_update_unknown_raises(store: TaskStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_status_is_immutable(store: TaskStore) -> None:
+    # Once a task reaches a terminal state, a later update_status is a
+    # silent no-op (NOT a TaskNotFound — the row exists): the terminal row
+    # never changes. This keeps a late failure from clobbering a succeeded
+    # row and makes cancel-wins deterministic.
+    row = _row()
+    await store.create(row)
+    await store.update_status(
+        row.task_id,
+        TaskStatus.SUCCEEDED,
+        finished_at="2026-05-02T12:00:02.000Z",
+        result={"echoed": 5},
+    )
+    # A later FAILED write must NOT raise and must NOT change anything.
+    await store.update_status(
+        row.task_id,
+        TaskStatus.FAILED,
+        finished_at="2026-05-02T13:00:00.000Z",
+        error={"type": "late"},
+    )
+    fetched = await store.get(row.task_id)
+    assert fetched is not None
+    assert fetched.status == TaskStatus.SUCCEEDED
+    assert fetched.finished_at == "2026-05-02T12:00:02.000Z"
+    assert fetched.result == {"echoed": 5}
+    assert fetched.error is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_wins_over_late_failure(store: TaskStore) -> None:
+    row = _row()
+    await store.create(row)
+    await store.update_status(row.task_id, TaskStatus.CANCELLED)
+    # The runner's own error-path write arrives after the cancel — dropped.
+    await store.update_status(row.task_id, TaskStatus.FAILED, error={"type": "boom"})
+    fetched = await store.get(row.task_id)
+    assert fetched is not None
+    assert fetched.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
 async def test_list_filters_and_orders(store: TaskStore) -> None:
     a = _row(op="echo")
     b = _row(op="ingest")

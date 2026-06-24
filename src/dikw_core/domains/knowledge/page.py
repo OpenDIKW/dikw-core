@@ -28,6 +28,8 @@ from typing import Any
 
 import frontmatter
 
+from .._atomic import atomic_write_text
+
 _SLUG_ILLEGAL = re.compile(r"[^a-z0-9]+")
 
 # The stem ``slugify`` collapses to when a title carries no ASCII/CJK-romanised
@@ -200,7 +202,7 @@ def write_page(root: Path, page: KnowledgePage) -> Path:
     post = frontmatter.Post(page.body.rstrip() + "\n")
     post.metadata.update(meta)
     serialized = frontmatter.dumps(post)
-    abs_path.write_text(serialized + "\n", encoding="utf-8")
+    atomic_write_text(abs_path, serialized + "\n")
     return abs_path
 
 

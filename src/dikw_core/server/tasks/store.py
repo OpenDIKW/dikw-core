@@ -90,7 +90,12 @@ class TaskStore(Protocol):
         numbering, not the bus.
       * ``list_events(task_id, from_seq=N)`` returns every event with
         seq >= N, in seq order.
-      * ``update_status`` is idempotent on the same target status.
+      * ``update_status`` is idempotent on the same target status, and a
+        **terminal** status is immutable: once a task is succeeded / failed
+        / cancelled, a later ``update_status`` is a silent no-op (so a cancel
+        that lands first wins over a runner's late failure). It raises
+        ``TaskNotFound`` only when the ``task_id`` is unknown — never for a
+        row that is merely already terminal.
       * Concurrent appenders to *different* tasks must not block each other.
     """
 
