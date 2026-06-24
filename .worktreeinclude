@@ -1,0 +1,9 @@
+# Gitignored files to copy into each new worktree.
+# Syntax is .gitignore-style; only files that BOTH match a pattern here
+# AND are gitignored get copied (tracked files are never duplicated).
+#
+# dikw-core keeps all secrets in .env (e.g. MINIMAX_API_KEY / GITEE_API_KEY),
+# which tools/e2e_verify.py and `dikw client check` read at runtime. A worktree
+# is a fresh checkout, so without this the real-provider legs SKIP for lack of keys.
+.env
+.env.*
