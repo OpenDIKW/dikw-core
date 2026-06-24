@@ -80,6 +80,18 @@ def test_base_scope_id_concurrent_first_create_converges(tmp_path: Path) -> None
         assert ids[0] == on_disk
 
 
+def test_base_scope_id_empty_file_fails_loud(tmp_path: Path) -> None:
+    """A base_id file that exists but is empty (a crash between the exclusive
+    create and the write, or an operator-seeded empty file) is a broken state:
+    fail loud with an actionable message rather than silently returning an
+    empty scope id."""
+    dikw_dir = tmp_path / ".dikw"
+    dikw_dir.mkdir()
+    (dikw_dir / "base_id").write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="never received an id"):
+        rt._base_scope_id(tmp_path)
+
+
 async def test_orphan_staging_cleaned_when_owning_sqlite_store(base_root: Path) -> None:
     """A per-base SQLite task store means this process owns the base
     exclusively, so startup wipes orphaned import staging (a crash leftover)."""
