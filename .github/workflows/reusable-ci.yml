@@ -86,6 +86,9 @@ jobs:
     name: Postgres contract tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # Codecov OIDC tokenless upload (Postgres-only coverage)
     services:
       postgres:
         # Matches examples/docker/docker-compose.yml byte-for-byte.
@@ -134,10 +137,26 @@ jobs:
           exit 1
 
       - name: Run storage + task-store contract tests against Postgres
+        # Measure coverage here too: the Postgres adapters
+        # (storage/postgres.py, tasks/store_postgres.py) are exercised
+        # ONLY by this job — the matrix ``unit`` job runs without a DSN so
+        # their tests skip there. Without this upload, any change to a
+        # Postgres-only code path shows as 0 % patch coverage on Codecov
+        # even though it is fully tested. Codecov merges sessions by flag,
+        # so these hits union with the ``unit`` report (never subtract).
         run: |
           uv run pytest -v \
+            --cov=src/dikw_core --cov-report=xml \
             tests/test_storage_contract.py \
             tests/server/test_task_store_contract.py
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          flags: postgres
+          use_oidc: true
 
   dockerfile-version-guard:
     name: Dockerfile DIKW_VERSION guard

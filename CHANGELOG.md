@@ -29,6 +29,30 @@ on each entry call out exactly what shape changes break.
 - **Community-health files**: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   and GitHub issue-form templates under `.github/ISSUE_TEMPLATE/`.
 
+### Fixed
+
+- **Atomic on-disk page writes.** Knowledge and wisdom page writes now go through a
+  shared temp-file-then-`os.replace` helper (`domains/_atomic.py`), so a crash or a
+  full disk mid-write can no longer leave a half-written page at the visible path —
+  a reader sees the old bytes or the new bytes, never a truncated file. The
+  `trash/` collision loop claims its destination name via `O_CREAT | O_EXCL` instead
+  of an `exists()` probe, closing the window where two concurrent trashings of the
+  same path could clobber each other.
+- **Task status is terminal-immutable.** `update_status` (both the SQLite and
+  Postgres task stores) now refuses to overwrite a row that is already
+  succeeded / failed / cancelled: a late write is a silent no-op, so a cancel that
+  lands first wins over a runner's trailing failure. An unknown `task_id` still
+  raises `TaskNotFound`.
+- **Atomic base-instance-id creation.** `<base>/.dikw/base_id` is now created with an
+  exclusive `open(..., "x")`, so two server processes cold-starting the same base
+  converge on one id instead of each minting a different one (which silently split
+  the shared-Postgres task-store scope). `DIKW_BASE_INSTANCE_ID` still overrides.
+- **Orphan import-staging cleanup is gated like task reaping.** Startup no longer
+  wipes `<base>/.dikw/staging/` unconditionally; it does so only when this process
+  owns the task store exclusively (per-base SQLite, or `DIKW_TASK_REAP_ON_START=1`),
+  so a replica sharing a Postgres task store can no longer delete a live peer's
+  in-flight import staging.
+
 ## 0.6.1 — official GHCR image; client/server version handshake; SQLite + write-path concurrency fixes
 
 ### Added

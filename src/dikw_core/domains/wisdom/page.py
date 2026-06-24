@@ -21,6 +21,7 @@ from typing import Any
 import frontmatter
 
 from ...schemas import WisdomStatus
+from .._atomic import atomic_write_text
 
 # Kebab-case ASCII: lowercase letters / digits separated by single
 # hyphens, no leading/trailing/double hyphens. Centralised here so the
@@ -155,7 +156,7 @@ def write_wisdom_file(
     # parameter names regardless of which keys are in extras.
     post = frontmatter.Post(body.rstrip() + "\n")
     post.metadata.update(meta)
-    abs_path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    atomic_write_text(abs_path, frontmatter.dumps(post) + "\n")
     return abs_path
 
 

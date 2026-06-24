@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import shutil
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -74,20 +75,36 @@ def _base_scope_id(root: Path) -> str:
     dikw_dir = root / ".dikw"
     dikw_dir.mkdir(parents=True, exist_ok=True)
     id_path = dikw_dir / _BASE_ID_FILENAME
+    # Fast path: an id already persisted by an earlier run.
     try:
         existing = id_path.read_text(encoding="utf-8").strip()
         if existing:
             return existing
     except FileNotFoundError:
         pass
-    new_id = uuid.uuid4().hex
-    # ``write_text`` is sufficient — concurrent first-runs of the same
-    # base against the same volume would race here, but the file is
-    # tiny + atomic at the FS layer (POSIX) and read-on-startup means
-    # a brief mismatch only loses already-orphaned tasks. Operators
-    # that fan out from cold should pre-seed the file.
-    id_path.write_text(new_id + "\n", encoding="utf-8")
-    return new_id
+    # First run for this base. Create the id file *exclusively* so two
+    # processes cold-starting the same base converge on one winner instead
+    # of each minting a different UUID (which would silently split the
+    # task-store scope — cross-replica follow/cancel would stop finding each
+    # other's tasks). ``open(..., "x")`` lets exactly one creator win.
+    try:
+        with open(id_path, "x", encoding="utf-8") as fh:
+            new_id = uuid.uuid4().hex
+            fh.write(new_id + "\n")
+            return new_id
+    except FileExistsError:
+        # Lost the create race. The winner writes its id immediately after
+        # creating the file, so poll briefly until the content lands rather
+        # than racing the empty-file window and returning a divergent id.
+        for _ in range(200):
+            existing = id_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+            time.sleep(0.005)
+    raise RuntimeError(
+        f"base id file {id_path} exists but never received an id; remove it "
+        "or pin DIKW_BASE_INSTANCE_ID"
+    )
 
 
 @dataclass
@@ -130,13 +147,6 @@ async def build_runtime(
     _assert_base_upgraded(root)
     cfg = load_config(cfg_path)
 
-    # Crash-recovery: a server killed mid-import leaves a staging dir
-    # behind. The import endpoint always rmtrees its own staging when
-    # the request returns, so any leftover here means a process died
-    # before that block ran. Wipe wholesale — staging is purely
-    # transient.
-    _cleanup_orphan_staging(root)
-
     storage = build_storage(
         cfg.storage,
         root=root,
@@ -165,14 +175,23 @@ async def build_runtime(
         "true",
         "yes",
     )
-    if isinstance(task_store, SqliteTaskStore) or force_reap:
+    owns_task_store = isinstance(task_store, SqliteTaskStore) or force_reap
+    if owns_task_store:
         await manager.restart_cleanup()
+        # Same gate as restart_cleanup: a server killed mid-import leaves a
+        # staging dir behind (the import endpoint always rmtrees its own
+        # staging on return, so a leftover means the process died first).
+        # Wipe it only when this process owns the base exclusively — a
+        # replica sharing a Postgres task store must not delete a live
+        # peer's in-flight staging.
+        _cleanup_orphan_staging(root)
     else:
         logger.info(
-            "skipping restart_cleanup for shared task store (%s); "
-            "stuck rows from a previous incarnation must be reaped "
-            "out-of-band, or set DIKW_TASK_REAP_ON_START=1 if this is "
-            "the only server bound to the task DSN",
+            "skipping restart_cleanup + orphan-staging cleanup for shared "
+            "task store (%s); stuck rows / orphan staging from a previous "
+            "incarnation must be reaped out-of-band, or set "
+            "DIKW_TASK_REAP_ON_START=1 if this is the only server bound to "
+            "the task DSN",
             type(task_store).__name__,
         )
 

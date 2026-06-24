@@ -314,9 +314,26 @@ class TaskManager:
                     await self._store.update_status(
                         task_id, TaskStatus.CANCELLED, finished_at=finished_at
                     )
-                    await reporter.emit_raw({"type": "final", "status": "cancelled"})
-                    tspan.cancelled()
-                    status = "cancelled"
+                    # The update above no-ops if the run committed a terminal
+                    # status (e.g. SUCCEEDED) in the instant before the cancel
+                    # landed — terminal rows are immutable. Re-read the row and
+                    # only emit the cancelled final when our CANCELLED write
+                    # actually won; otherwise the run truly finished and the
+                    # succeeded arm owns the final — a cancelled event here would
+                    # contradict the persisted row on the event tape.
+                    row = await self._store.get(task_id)
+                    if row is None or row.status == TaskStatus.CANCELLED:
+                        await reporter.emit_raw(
+                            {"type": "final", "status": "cancelled"}
+                        )
+                        tspan.cancelled()
+                        status = "cancelled"
+                    else:
+                        # Only SUCCEEDED is reachable here (the FAILED arm is
+                        # mutually exclusive and nothing else writes this row
+                        # mid-run); leave its final + row untouched.
+                        tspan.ok()
+                        status = "ok"
                     # Don't re-raise: the manager owns the task lifecycle and a
                     # graceful "cancelled" final is the contract.
                 except Exception as e:

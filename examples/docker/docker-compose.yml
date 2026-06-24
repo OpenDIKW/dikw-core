@@ -40,9 +40,12 @@ services:
       # libpq keyword conninfo — survives passwords with URL-reserved chars
       # (/, #, ?, %, @, :) that would break a postgresql:// URL form.
       DIKW_SERVER_TASKS_DSN: "host=postgres port=5432 user=dikw password=${POSTGRES_PASSWORD} dbname=dikw"
-      # Single-server PG task store: reclaim ``running`` rows from the
-      # previous incarnation on restart. UNSET this when scaling to
-      # multiple dikw-core replicas sharing the task DSN.
+      # Single-server PG task store: on restart, reclaim ``running`` rows
+      # from the previous incarnation AND wipe orphaned import staging left
+      # by a crashed process. Both are gated on this flag for a shared
+      # Postgres task store. UNSET this when scaling to multiple dikw-core
+      # replicas sharing the task DSN — a replica must not reap a healthy
+      # peer's tasks or delete its in-flight staging.
       DIKW_TASK_REAP_ON_START: "1"
       # Provider API keys: pass through whichever vars your base's dikw.yml
       # names via provider.{llm,embedding}_api_key_env. Add lines for other

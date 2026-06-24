@@ -148,6 +148,52 @@ async def test_cancel_unknown_task_returns_false(
 
 
 @pytest.mark.asyncio
+async def test_cancel_after_terminal_emits_no_contradictory_final(
+    manager_only: tuple[TaskManager, SqliteTaskStore],
+) -> None:
+    """If a run commits a terminal status in the instant before a cancel
+    lands, the cancel arm's CANCELLED write no-ops (terminal is immutable)
+    and it must NOT append a ``cancelled`` final that contradicts the
+    persisted (succeeded) row. Reproduce the race deterministically by
+    committing SUCCEEDED out-of-band while the runner is blocked, then
+    cancelling."""
+    manager, store = manager_only
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _runner(_reporter: ProgressReporter) -> dict[str, Any]:
+        started.set()
+        await release.wait()  # CancelledError is injected here
+        return {"unreached": True}
+
+    row = await manager.submit(op="echo", runner=_runner)
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    # The run reaches a terminal status just before the cancel lands.
+    await store.update_status(row.task_id, TaskStatus.SUCCEEDED, result={"ok": 1})
+    await manager.cancel(row.task_id)
+
+    # Wait for _run to finish (it removes itself from _running in its finally).
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline:
+        async with manager._lock:
+            finished = row.task_id not in manager._running
+        if finished:
+            break
+        await asyncio.sleep(0.02)
+    else:  # pragma: no cover - only on a hang
+        raise AssertionError("run did not finish after cancel")
+
+    final_row = await store.get(row.task_id)
+    assert final_row is not None
+    assert final_row.status == TaskStatus.SUCCEEDED  # cancel did not clobber it
+    events = await store.list_events(row.task_id)
+    contradictory = [
+        e for e in events if e.get("type") == "final" and e.get("status") == "cancelled"
+    ]
+    assert contradictory == []
+
+
+@pytest.mark.asyncio
 async def test_resume_by_seq_via_store(
     manager_only: tuple[TaskManager, SqliteTaskStore],
 ) -> None:

@@ -24,6 +24,8 @@ from pathlib import Path
 
 import frontmatter
 
+from ._atomic import reserve_path
+
 
 def move_to_trash(
     *,
@@ -60,30 +62,8 @@ def move_to_trash(
 
     Returns the destination path; raises ``OSError`` on filesystem failure.
     """
-    dest = base_root / "trash" / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        # Same path trashed twice in the same wall-clock second would
-        # otherwise collide on a second-resolution suffix and overwrite
-        # the earlier copy. Spin a millisecond counter until the
-        # candidate name is free — bounded at 1000 because the next
-        # second will roll the timestamp anyway.
-        base_dest = dest
-        for ms in range(1000):
-            ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-            suffix = f".{ts}.{ms:03d}" if ms else f".{ts}"
-            candidate = base_dest.with_name(
-                f"{base_dest.stem}{suffix}{base_dest.suffix}"
-            )
-            if not candidate.exists():
-                dest = candidate
-                break
-        else:
-            raise OSError(
-                f"trash collision: {base_dest} exists and 1000 timestamp "
-                "fallbacks were all taken"
-            )
-
+    # Read + parse BEFORE reserving a destination name, so a read failure
+    # (file vanished mid-delete) can't strand a reserved empty file in trash/.
     raw = src_abs.read_text(encoding="utf-8")
     try:
         post = frontmatter.loads(raw)
@@ -92,6 +72,37 @@ def move_to_trash(
         # parse-and-rewrite — drop the file as-is into trash. Better to
         # preserve byte-identical contents than to risk content loss
         # while trying to inject an audit marker.
+        post = None
+
+    dest = base_root / "trash" / rel_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        # Same path trashed twice in the same wall-clock second would
+        # otherwise collide on a second-resolution suffix and overwrite
+        # the earlier copy. Spin a millisecond counter and claim each
+        # candidate atomically via ``reserve_path`` (O_CREAT | O_EXCL):
+        # an ``exists()`` probe leaves a window where two concurrent
+        # trashers both see the name free and the second clobbers the
+        # first. Bounded at 1000 — the next wall-clock second rolls the
+        # timestamp anyway. The reserved empty file is overwritten in
+        # place by the move/replace below.
+        base_dest = dest
+        for ms in range(1000):
+            ts = _dt.datetime.now(tz=_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+            suffix = f".{ts}.{ms:03d}" if ms else f".{ts}"
+            candidate = base_dest.with_name(
+                f"{base_dest.stem}{suffix}{base_dest.suffix}"
+            )
+            if reserve_path(candidate):
+                dest = candidate
+                break
+        else:
+            raise OSError(
+                f"trash collision: {base_dest} exists and 1000 timestamp "
+                "fallbacks were all taken"
+            )
+
+    if post is None:
         shutil.move(str(src_abs), str(dest))
         return dest
     trashed: dict[str, str] = {
@@ -103,22 +114,27 @@ def move_to_trash(
     post.metadata["trashed"] = trashed
     # Two-stage write so a mid-write failure (disk full, short write)
     # cannot leave a partial file at the visible ``dest`` path: write
-    # to a sibling ``.tmp`` first, then atomic-replace into place. A
-    # failed ``write_text`` only leaves the ``.tmp`` to clean up; only
-    # after the rename does ``dest`` materialise visibly under
-    # ``trash/``.
+    # to a sibling ``.tmp`` first, then atomic-replace into place. On
+    # failure clean up both the ``.tmp`` AND ``dest`` — on the collision
+    # path ``dest`` is the empty file ``reserve_path`` created, which would
+    # otherwise be stranded (on the non-collision path ``dest`` doesn't
+    # exist yet, so the unlink is a suppressed no-op).
     tmp_dest = dest.with_name(dest.name + ".tmp")
     try:
         tmp_dest.write_text(frontmatter.dumps(post), encoding="utf-8")
     except OSError:
         with contextlib.suppress(OSError):
             tmp_dest.unlink()
+        with contextlib.suppress(OSError):
+            dest.unlink()
         raise
     try:
         tmp_dest.replace(dest)
     except OSError:
         with contextlib.suppress(OSError):
             tmp_dest.unlink()
+        with contextlib.suppress(OSError):
+            dest.unlink()
         raise
     try:
         src_abs.unlink()

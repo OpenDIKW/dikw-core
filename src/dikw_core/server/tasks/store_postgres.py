@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._time import isoformat_utc_ms as _isoformat
 from .store import (
+    TERMINAL_STATUSES,
     TaskNotFound,
     TaskRow,
     TaskStatus,
@@ -261,16 +262,30 @@ class PostgresTaskStore:
         if error is not None:
             sets.append("error = %s::jsonb")
             params.append(json.dumps(error))
-        params.extend([task_id, self._instance_id])
+        terminal = [s.value for s in TERMINAL_STATUSES]
+        placeholders = ", ".join("%s" for _ in terminal)
+        params.extend([task_id, self._instance_id, *terminal])
         async with self._acquire() as conn, conn.cursor() as cur:
             await cur.execute(
                 f"UPDATE {self._schema}.tasks SET {', '.join(sets)} "
-                "WHERE task_id = %s AND instance_id = %s",
+                f"WHERE task_id = %s AND instance_id = %s "
+                f"AND status NOT IN ({placeholders})",
                 params,
             )
             updated = cur.rowcount
+            missing = False
+            if updated == 0:
+                # Zero rows: unknown task OR already terminal. Terminal rows
+                # are immutable — a late write is a silent no-op (cancel-wins
+                # + idempotency); only a missing task_id raises.
+                await cur.execute(
+                    f"SELECT 1 FROM {self._schema}.tasks "
+                    "WHERE task_id = %s AND instance_id = %s",
+                    (task_id, self._instance_id),
+                )
+                missing = (await cur.fetchone()) is None
             await conn.commit()
-        if updated == 0:
+        if missing:
             raise TaskNotFound(task_id)
 
     # ---- event tape -----------------------------------------------------
