@@ -43,6 +43,19 @@ def test_atomic_write_text_failure_preserves_old_and_cleans_tmp(
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_atomic_write_text_preserves_existing_mode(tmp_path: Path) -> None:
+    import stat
+
+    p = tmp_path / "p.md"
+    atomic_write_text(p, "first\n")
+    os.chmod(p, 0o600)
+    # Overwrite: os.replace swaps inodes, so without copying the mode the
+    # rewritten page would silently inherit the umask (commonly 0o644).
+    atomic_write_text(p, "second\n")
+    assert p.read_text(encoding="utf-8") == "second\n"
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+
+
 def test_reserve_path_claims_name_exactly_once(tmp_path: Path) -> None:
     p = tmp_path / "claim"
     assert reserve_path(p) is True
