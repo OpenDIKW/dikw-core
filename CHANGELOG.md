@@ -26,6 +26,29 @@ on each entry call out exactly what shape changes break.
 
 ### Added
 
+- **Optional cross-encoder reranking in the retrieval pipeline.** A new
+  `RerankProvider` seam (`providers/base.py`) + `build_reranker` factory +
+  `OpenAICompatReranker` (`providers/rerank.py`, the Jina/Cohere-compatible
+  `/rerank` wire shape that Gitee AI / SiliconFlow / Jina / Cohere share) add a
+  rerank stage to `HybridSearcher.search`, between RRF fusion and the top-K
+  truncation: the top `retrieval.rerank_candidate_k` (default 40) fused
+  candidates are scored by `(query, chunk)` relevance, re-ordered, then cut to
+  the query `limit`. It recovers precision@k from the recall pool without
+  changing recall, and does **not** touch any storage adapter or `retrieve`'s
+  response shape. Configure via `provider.rerank` / `rerank_model` /
+  `rerank_base_url` / `rerank_api_key_env` (+ `rerank_timeout_seconds` /
+  `rerank_batch_size`) and `retrieval.rerank_enabled` / `rerank_candidate_k`;
+  the candidate window is split into `rerank_batch_size` batches per `/rerank`
+  call so it respects per-vendor document caps (Gitee: ≤25). **On once configured**
+  (`rerank_enabled` defaults `true`; a base that configures no reranker runs no
+  rerank leg). A reranker is a deterministic scoring model — the same category
+  as the embedding model, part of *scoping* not *reasoning* — so it is
+  consistent with the "LLMs only enter at synth" invariant; an LLM-as-reranker
+  is deliberately excluded. On the read path a transient rerank failure degrades
+  to the fused order, a permanent one fails loud. See
+  [`docs/adr/0006-reranker-deterministic-scoping.md`](docs/adr/0006-reranker-deterministic-scoping.md),
+  the `docs/providers.md` reranking cookbook, and the SciFact ablation in
+  `evals/BASELINES.md`.
 - **Community-health files**: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
   and GitHub issue-form templates under `.github/ISSUE_TEMPLATE/`.
 

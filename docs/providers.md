@@ -168,6 +168,12 @@ violates other vendors:
 Exceeding the cap typically returns HTTP 400. Gitee AI emits
 `"No schema matches, </input>"`.
 
+The **`/rerank` endpoint has the same per-request `documents` cap** (Gitee:
+1–25, emitting `无效的参数数组长度: 'documents' 长度是 '1' 到 '25'`). The reranker
+batches the candidate window by `provider.rerank_batch_size` (default 16,
+Gitee-safe) for exactly this reason — set it to the new vendor's rerank cap when
+switching.
+
 ### 3. Streaming completions, per-event timeout, and classified retry
 
 **LLM completions stream internally.** Both `anthropic_compat` and
@@ -552,6 +558,61 @@ so no change is needed. Only if the base was created with
 `cjk_tokenizer: none` (the legacy FTS5 `unicode61` whitespace path)
 will the BM25 row in the ablation table report 0.03 nDCG@10 regardless
 of fusion tuning, because that path doesn't segment Chinese.
+
+### Reranking the fused candidates (optional cross-encoder)
+
+RRF fuses **ranks**, not **relevance** — it can't tell a
+semantically-close-but-wrong chunk from the one that actually answers the
+query. An optional cross-encoder rerank stage runs **after** fusion + the
+diversity penalty and **before** the final top-K cut: it scores the top
+`rerank_candidate_k` fused candidates by `(query, chunk)` relevance, re-orders
+them, then truncates to the query `limit`. It recovers precision@k from the
+recall pool (`recall@100` is unchanged — rerank reorders the pool, never
+expands it). See [`docs/adr/0006`](adr/0006-reranker-deterministic-scoping.md)
+for why a deterministic scoring model is consistent with "LLMs only at synth".
+
+It speaks the de-facto-standard Jina/Cohere `/rerank` wire shape that Gitee AI,
+SiliconFlow, Jina, and Cohere all share, so one config covers every vendor —
+the model/url/key pick which. Point `rerank_api_key_env` at the same var as
+`embedding_api_key_env` to reuse a key (e.g. Gitee for both):
+
+```yaml
+provider:
+  # ... embedding block as above (e.g. Gitee Qwen3-Embedding-0.6B) ...
+  rerank: openai_compat_rerank
+  rerank_model: bge-reranker-v2-m3        # Gitee also serves Qwen3-Reranker-*
+  rerank_base_url: https://ai.gitee.com/v1
+  rerank_api_key_env: GITEE_API_KEY       # reuse the embedding key
+  rerank_batch_size: 16                   # docs/request cap; Gitee /rerank: ≤25 (gotcha #2)
+  # rerank_timeout_seconds: 30.0          # optional; tight (interactive read path)
+retrieval:
+  rerank_enabled: true                    # default true → on once configured
+  rerank_candidate_k: 40                  # window scored before truncation to limit
+```
+
+`rerank_candidate_k` (the window) is **independent of** `rerank_batch_size` (the
+per-request cap): a 40-wide window is split into batches of `rerank_batch_size`
+and scored in separate `/rerank` calls (a cross-encoder scores each `(query,
+document)` pair independently, so batch boundaries don't change the scores). The
+default 16 is Gitee-safe; raise it for Jina / Cohere (which accept hundreds) to
+cut round-trips.
+
+**On once configured.** Unlike the graph leg (`graph_enabled`, default off),
+setting `provider.rerank` *is* the opt-in: `rerank_enabled` defaults `true`, so
+a configured reranker runs, and a base that configures none has no rerank leg
+regardless. Flip `rerank_enabled: false` to keep a configured reranker dark
+(this is how the eval harness compares rerank-off vs rerank-on at one config).
+
+**Cost & resilience.** Rerank is paid **per query** (embeddings are paid once
+at ingest), so configure it where the corpus is large or noisy enough to need
+it. On the read path a transient rerank failure (5xx/timeout/connection drop)
+degrades to the fused order rather than failing the query; a permanent error
+(401/403/404, bad model) fails loud so a misconfig surfaces immediately. All
+the embedding gotchas about Gitee keepalive drops (gotcha #3) and the no-magic
+key-var rule (gotcha #6) apply to the rerank leg identically.
+
+Eval evidence (SciFact rerank-off-vs-on, Qwen3-Embedding-0.6B +
+`bge-reranker-v2-m3` via Gitee AI) is in [`evals/BASELINES.md`](../evals/BASELINES.md).
 
 ## Horizontal model comparison
 

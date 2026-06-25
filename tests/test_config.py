@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from dikw_core.config import (
     CONFIG_FILENAME,
@@ -491,3 +492,90 @@ sources: []
 def test_telemetry_config_rejects_out_of_range_sample_ratio() -> None:
     with pytest.raises(Exception, match="sample_ratio"):
         TelemetryConfig(sample_ratio=1.5)
+
+
+# ---- rerank config ----------------------------------------------------------
+
+
+def test_retrieval_config_rerank_defaults() -> None:
+    """Rerank is on once configured: enabled defaults True (the kill switch
+    stays open), with a 40-wide candidate window matching ``per_leg_limit``.
+    """
+    cfg = RetrievalConfig()
+    assert cfg.rerank_enabled is True
+    assert cfg.rerank_candidate_k == 40
+
+
+def test_provider_config_rerank_unset_by_default() -> None:
+    """A base that never configured a reranker leaves ``rerank`` None — the
+    searcher then builds no rerank leg (off because unconfigured)."""
+    cfg = ProviderConfig()
+    assert cfg.rerank is None
+    assert cfg.rerank_model == ""
+    assert cfg.rerank_base_url is None
+    assert cfg.rerank_api_key_env is None
+
+
+def test_provider_config_rerank_requires_model_url_key() -> None:
+    """Selecting the rerank protocol without its wiring fails fast at config
+    load, mirroring the openai_codex base-url validator."""
+    with pytest.raises(ValidationError) as ei:
+        ProviderConfig(rerank="openai_compat_rerank")
+    msg = str(ei.value)
+    assert "rerank" in msg
+
+    with pytest.raises(ValidationError):
+        ProviderConfig(
+            rerank="openai_compat_rerank",
+            rerank_model="bge-reranker-v2-m3",
+            # rerank_base_url + rerank_api_key_env missing
+        )
+
+
+def test_provider_config_rerank_fully_configured_validates() -> None:
+    cfg = ProviderConfig(
+        rerank="openai_compat_rerank",
+        rerank_model="bge-reranker-v2-m3",
+        rerank_base_url="https://ai.gitee.com/v1",
+        rerank_api_key_env="GITEE_API_KEY",
+    )
+    assert cfg.rerank == "openai_compat_rerank"
+    assert cfg.rerank_model == "bge-reranker-v2-m3"
+    assert cfg.rerank_base_url == "https://ai.gitee.com/v1"
+    assert cfg.rerank_api_key_env == "GITEE_API_KEY"
+
+
+def test_dikw_config_rerank_round_trip(tmp_path: Path) -> None:
+    """Rerank knobs parse from YAML and survive dump → load."""
+    path = tmp_path / CONFIG_FILENAME
+    path.write_text(
+        """
+provider:
+  embedding_dim: 1536
+  embedding_revision: ''
+  embedding_normalize: true
+  embedding_distance: cosine
+  llm_api_key_env: ANTHROPIC_API_KEY
+  embedding_api_key_env: OPENAI_API_KEY
+  rerank: openai_compat_rerank
+  rerank_model: bge-reranker-v2-m3
+  rerank_base_url: https://ai.gitee.com/v1
+  rerank_api_key_env: GITEE_API_KEY
+retrieval:
+  rerank_enabled: true
+  rerank_candidate_k: 60
+sources: []
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.provider.rerank == "openai_compat_rerank"
+    assert cfg.provider.rerank_model == "bge-reranker-v2-m3"
+    assert cfg.retrieval.rerank_candidate_k == 60
+
+    yaml_text = dump_config_yaml(cfg)
+    path.write_text(yaml_text, encoding="utf-8")
+    cfg2 = load_config(path)
+    assert cfg2.provider.rerank == "openai_compat_rerank"
+    assert cfg2.provider.rerank_base_url == "https://ai.gitee.com/v1"
+    assert cfg2.retrieval.rerank_candidate_k == 60

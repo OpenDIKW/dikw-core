@@ -22,8 +22,10 @@ from .progress import NoopReporter, ProgressReporter
 from .providers import (
     EmbeddingProvider,
     MultimodalEmbeddingProvider,
+    RerankProvider,
     build_embedder,
     build_multimodal_embedder,
+    build_reranker,
 )
 from .schemas import Hit, PageRef, RetrieveResult
 from .storage import Storage
@@ -63,6 +65,7 @@ async def _retrieve_inner(
     """
     _reporter: ProgressReporter = reporter or NoopReporter()
     owned_mm: MultimodalEmbeddingProvider | None = None
+    reranker: RerankProvider | None = None
 
     try:
         # Pin the text leg to the active text version's stored model AND
@@ -91,6 +94,14 @@ async def _retrieve_inner(
         _embedder = embedder
         if _embedder is None:
             _embedder = build_embedder(cfg.provider, dim_override=text_query_dim)
+
+        # Optional cross-encoder rerank leg. Built only when a reranker is
+        # configured (``cfg.provider.rerank``) AND not killed via
+        # ``cfg.retrieval.rerank_enabled`` — "on once configured". ``None`` when
+        # either is off, in which case ``search`` runs no rerank stage. Closed
+        # in the ``finally`` below (its lifetime is local to this call).
+        if cfg.retrieval.rerank_enabled:
+            reranker = build_reranker(cfg.provider)
 
         mm_search: MultimodalSearch | None = None
         mm_cfg = cfg.assets.multimodal
@@ -139,6 +150,8 @@ async def _retrieve_inner(
             embedding_model=text_query_model,
             text_version_id=text_version_id,
             multimodal=mm_search,
+            reranker=reranker,
+            rerank_model=cfg.provider.rerank_model,
         )
         hits = await searcher.search(q, limit=limit)
         # Include full ``text`` so a streaming agent can prompt off the
@@ -171,6 +184,19 @@ async def _retrieve_inner(
                     "multimodal embedder aclose failed during _retrieve_inner cleanup"
                 )
         raise
+    finally:
+        # The reranker's lifetime is local to this call (only ``searcher``
+        # uses it, during ``search`` above). Close it on every exit — success,
+        # error, or cancel — so its httpx client never leaks. Unlike
+        # ``owned_mm`` (returned for the caller to close), nothing outside this
+        # function references it.
+        if reranker is not None and hasattr(reranker, "aclose"):
+            try:
+                await reranker.aclose()
+            except Exception:
+                logger.exception(
+                    "reranker aclose failed during _retrieve_inner cleanup"
+                )
 
 
 def _build_page_refs(hits: list[Hit]) -> list[PageRef]:

@@ -171,6 +171,59 @@ class ProviderConfig(BaseModel):
     # skip (no retries before the skip).
     embedding_error_retries: int = Field(default=2, ge=0)
     embedding_error_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
+    # Optional cross-encoder reranker over the fused candidate set (see
+    # ``RetrievalConfig.rerank_enabled`` / ``rerank_candidate_k`` for the
+    # behavioural knobs). ``None`` (the default) means the base never wired a
+    # reranker, so the search layer runs no rerank leg. ``openai_compat_rerank``
+    # speaks the Jina/Cohere-compatible ``/rerank`` wire shape that Gitee AI
+    # (``BAAI/bge-reranker-v2-m3``), SiliconFlow, Jina, and Cohere converge on —
+    # the model/url/key pick the vendor (point ``rerank_api_key_env`` at the
+    # same var as ``embedding_api_key_env`` to reuse, e.g., a Gitee key). The
+    # validator below requires the three wiring fields once ``rerank`` is set,
+    # mirroring the ``openai_codex`` base-url validator (fail fast at config
+    # load, not at first query).
+    rerank: Literal["openai_compat_rerank"] | None = None
+    rerank_model: str = ""
+    rerank_base_url: str | None = None
+    rerank_api_key_env: str | None = None
+    # Max documents per ``/rerank`` request. Vendors cap the ``documents``
+    # array exactly like the embedding batch (Gitee /rerank: 25), so a wider
+    # ``retrieval.rerank_candidate_k`` window is split into batches of this
+    # size and scored independently. Default 16 is safe for Gitee (the cookbook
+    # default rerank vendor); raise it for vendors that accept more (Jina /
+    # Cohere allow hundreds) to cut round-trips.
+    rerank_batch_size: int = Field(default=16, ge=1)
+    # Per-request timeout for the ``/rerank`` call. Tight because rerank is on
+    # the interactive read path — a dead connection should fail fast (the
+    # search layer then degrades to the fused order) rather than hang. ``gt=0``
+    # so an invalid 0/negative is rejected at config load, not at first query.
+    rerank_timeout_seconds: float = Field(default=30.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _require_rerank_wiring(self) -> ProviderConfig:
+        # A selected rerank protocol needs model + endpoint + key var, all
+        # config-driven (the engine hardcodes no key name). Surface a missing
+        # field at config-load time so ``dikw client check`` fails fast instead
+        # of the first rerank-bearing ``retrieve`` raising mid-query.
+        if self.rerank is not None:
+            missing = [
+                name
+                for name, val in (
+                    ("rerank_model", self.rerank_model),
+                    ("rerank_base_url", self.rerank_base_url),
+                    ("rerank_api_key_env", self.rerank_api_key_env),
+                )
+                if val is None or not str(val).strip()
+            ]
+            if missing:
+                raise ValueError(
+                    f"rerank={self.rerank!r} requires {', '.join(missing)} to be "
+                    f"set. A reranker needs a model, an endpoint, and the name of "
+                    f"the env var holding its API key (e.g. rerank_model: "
+                    f"BAAI/bge-reranker-v2-m3, rerank_base_url: "
+                    f"https://ai.gitee.com/v1, rerank_api_key_env: GITEE_API_KEY)."
+                )
+        return self
 
     @model_validator(mode="after")
     def _require_codex_base_url(self) -> ProviderConfig:
@@ -268,6 +321,21 @@ class RetrievalConfig(BaseModel):
     graph_enabled: bool = False
     graph_seed_top_k: int = Field(default=20, ge=1)
     graph_weight: float = Field(default=0.3, ge=0.0)
+    # Cross-encoder rerank stage, applied after RRF fusion + the diversity
+    # penalty and before the final top-K truncation. Unlike ``graph_enabled``,
+    # rerank is **on once a provider is configured** (``rerank_enabled`` is the
+    # kill switch, defaulting open): a base that sets ``provider.rerank`` opts
+    # in, a base that doesn't has no reranker to run regardless of this flag.
+    # Set ``rerank_enabled: false`` to keep a configured reranker dark (the
+    # eval harness flips it to compare rerank-off vs rerank-on at one config).
+    # ``rerank_candidate_k`` is the window of top-fused chunks scored by the
+    # reranker before truncation to the query ``limit``; a wider window
+    # recovers more precision@k from recall but costs more rerank latency.
+    # The window is clamped to at least ``limit`` so it never starves results.
+    # Default 40 matches the per-leg candidate cap. See
+    # ``docs/adr/0006-reranker-deterministic-scoping.md``.
+    rerank_enabled: bool = True
+    rerank_candidate_k: int = Field(default=40, ge=1)
 
 
 class SQLiteStorageConfig(BaseModel):

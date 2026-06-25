@@ -60,7 +60,9 @@ from ..progress import NoopReporter, ProgressReporter
 from ..providers import (
     EmbeddingProvider,
     MultimodalEmbeddingProvider,
+    RerankProvider,
     build_multimodal_embedder,
+    build_reranker,
 )
 from ..providers.base import LLMProvider
 from ..schemas import ChunkRecord, DocumentRecord, Hit, Layer, LinkRecord, LinkType
@@ -870,6 +872,7 @@ async def _run_queries(
     )
     await storage.connect()
     await storage.migrate()
+    reranker: RerankProvider | None = None
     try:
         # Resolve named ids → runtime keys once per run; reused across modes.
         asset_named_to_runtime = _resolve_asset_targets(spec)
@@ -909,12 +912,20 @@ async def _run_queries(
         # would silently collapse to whatever the text-ranked chunks
         # happened to carry in ``Hit.asset_refs``.
         mm_search = await _build_multimodal_search(cfg, storage)
+        # Wire the rerank leg the same way ``_retrieve_inner`` does so eval
+        # measures rerank-on vs rerank-off at one config (flip
+        # ``retrieval.rerank_enabled`` between runs). ``None`` when the base
+        # configured no reranker or disabled it. Closed in the ``finally``.
+        if cfg.retrieval.rerank_enabled:
+            reranker = build_reranker(cfg.provider)
         searcher = HybridSearcher.from_config(
             storage,
             embedder,
             cfg.retrieval,
             embedding_model=embedding_model,
             multimodal=mm_search,
+            reranker=reranker,
+            rerank_model=cfg.provider.rerank_model,
         )
         results: dict[
             RetrievalMode, tuple[list[PerQueryRow], list[NegativeRow]]
@@ -961,6 +972,16 @@ async def _run_queries(
             results[m] = (positives, negatives)
         return results
     finally:
+        # Guard the reranker close so an aclose failure neither masks a
+        # body-level error nor skips storage.close() (which would leak the DB
+        # connection) — mirrors api_retrieve._retrieve_inner's cleanup.
+        if reranker is not None and hasattr(reranker, "aclose"):
+            try:
+                await reranker.aclose()
+            except Exception:
+                logger.exception(
+                    "reranker aclose failed during eval _run_queries cleanup"
+                )
         await storage.close()
 
 

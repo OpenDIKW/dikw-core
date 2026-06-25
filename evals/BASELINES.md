@@ -7,6 +7,68 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-25 — rerank stage: post-fusion cross-encoder (opt-in), SciFact off-vs-on
+
+**Change under test:** the new optional rerank stage in `HybridSearcher.search`
+(`RerankProvider` + `OpenAICompatReranker` + `build_reranker`; `RetrievalConfig`
+gains `rerank_enabled` / `rerank_candidate_k`, `ProviderConfig` gains the rerank
+wiring + `rerank_batch_size`). After RRF fusion + the source-diversity penalty
+and before the top-K truncation, the top `rerank_candidate_k=40` fused
+candidates are scored `(query, chunk)` by a cross-encoder, re-sorted, then cut
+to the query limit. Gated to `mode == "hybrid"` (like the graph leg) so the
+bm25 / vector ablations stay pure.
+
+**Method:** SciFact (BEIR, 300 queries, 5,183 passages), real embedder
+**Qwen3-Embedding-0.6B@1024** (Gitee AI, `embedding_batch_size=16`), reranker
+**`bge-reranker-v2-m3`** (Gitee AI, `rerank_batch_size=16` — Gitee `/rerank`
+caps `documents` at 25, so the 40-wide window is scored in 3 batches).
+`--retrieval hybrid`, SciFact-tuned RRF defaults (`rrf_k=60`, `bm25_weight=0.3`,
+`vector_weight=1.5`, `same_doc_penalty_alpha=0.3`). rerank **off** (baseline) vs
+**on**, toggled via `retrieval.rerank_enabled`, **one snapshot per arm** (the
+eval cache key is `(corpus, embedder)` only and `_run_queries` reloads retrieval
+config from the cached base — a shared `cache_root` would make the on-arm reuse
+the off-arm's `rerank_enabled`; this footgun cost one invalid run before the
+per-arm fix).
+
+| metric (gate) | rerank off | rerank on | Δ |
+|---|---|---|---|
+| `ndcg_at_10` | 0.6890 | **0.7219** | **+0.0329** |
+| `hit_at_3` | 0.7233 | **0.7567** | **+0.0333** |
+| `hit_at_10` | 0.8433 | 0.8433 | +0.0000 |
+| `mrr` | 0.6551 | **0.6988** | **+0.0437** |
+| `recall_at_100` (sanity, must be ~flat) | 0.9467 | 0.9467 | **+0.0000** |
+
+**Read:** rerank lifts the position-weighted metrics meaningfully — `ndcg@10`
++0.033, `hit@3` +0.033, `mrr` +0.044 — exactly the precision-from-recall payoff
+the stage exists for (SciFact's `recall@100=0.947` ≫ its top-K precision: the
+right passage is in the pool, just not ranked first). `hit@10` is flat (the gold
+passage was already inside the top-10, rerank only reorders within it).
+**`recall@100` is byte-identical** off-vs-on — the membership invariant holds:
+rerank reorders the deterministically-retrieved pool, it never changes which
+chunks are retrievable, so a `recall@100` move would be a bug. Non-destructive
+when off is structural: `rerank_enabled=False` short-circuits `_apply_rerank` to
+the byte-identical pre-rerank path (pinned by
+`test_rerank_none_is_byte_identical_to_baseline`).
+
+**Repro** (`.env` carries `GITEE_API_KEY`; materialise SciFact per
+`evals/datasets/scifact/dataset.yaml`):
+
+```bash
+# Configure a base: Gitee Qwen3-Embedding-0.6B@1024 + rerank bge-reranker-v2-m3,
+# rerank_api_key_env: GITEE_API_KEY, rerank_batch_size: 16.
+
+# Arm 1 — OFF baseline. Set `retrieval.rerank_enabled: false` in dikw.yml, then:
+uv run --env-file .env dikw client eval --dataset scifact --retrieval hybrid
+
+# Arm 2 — ON. Flip the SAME knob to `retrieval.rerank_enabled: true`, then re-run.
+# The eval cache key is (corpus, embedder) only and _run_queries reloads
+# retrieval config from the cached base, so DROP the snapshot between arms (or
+# point each arm at its own cache) — otherwise arm 2 silently reuses arm 1's
+# rerank_enabled and the table shows a spurious +0.0000 across the board:
+rm -rf <eval-cache-root>   # or: dikw client eval ... --cache off  (rebuilds each arm)
+uv run --env-file .env dikw client eval --dataset scifact --retrieval hybrid
+```
+
 ## 2026-06-14 — synth prompt pass (PR3): SP restructure (6-invariant spine) + slim UP A/B
 
 **Change under test:** the synth prompts are re-tiered into a **structured

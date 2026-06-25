@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +33,7 @@ __all__ = [
     "FakeEmbeddings",
     "FakeLLM",
     "FakeMultimodalEmbedding",
+    "FakeReranker",
     "FlakyEmbedder",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
@@ -641,6 +642,56 @@ class FakeLLM:
             )
 
         return _gen()
+
+
+@dataclass
+class FakeReranker:
+    """Deterministic ``RerankProvider`` for tests.
+
+    Returns one score per document, aligned to input order — the same
+    contract the real ``OpenAICompatReranker`` honours after remapping the
+    response ``index``.
+
+    ``score_fn`` (optional) computes ``score_fn(query, document)`` per doc;
+    when ``None`` the default scores by **input position ascending**
+    (``[0.0, 1.0, 2.0, …]``) so the LAST document handed to the reranker
+    sorts highest — a corpus-independent way to prove the searcher reorders
+    by rerank score rather than fused score.
+
+    ``raise_error`` (optional) is raised from ``rerank`` instead of scoring,
+    so a test can exercise the searcher's transient-degrade / permanent-
+    propagate branches with a ``TransientProviderError`` / ``ProviderError``.
+
+    Records ``last_query`` / ``last_documents`` / ``call_count`` so tests can
+    assert the candidate window the searcher fed in (its width vs ``limit``)
+    and that ``rerank`` was (or was not) invoked.
+    """
+
+    score_fn: Callable[[str, str], float] | None = None
+    raise_error: BaseException | None = None
+    last_query: str | None = field(default=None, init=False)
+    last_documents: list[str] = field(default_factory=list, init=False)
+    last_model: str | None = field(default=None, init=False)
+    call_count: int = field(default=0, init=False)
+    closed: bool = field(default=False, init=False)
+
+    async def rerank(
+        self, query: str, documents: list[str], *, model: str
+    ) -> list[float]:
+        self.call_count += 1
+        self.last_query = query
+        self.last_documents = list(documents)
+        self.last_model = model
+        if self.raise_error is not None:
+            raise self.raise_error
+        if self.score_fn is not None:
+            return [self.score_fn(query, d) for d in documents]
+        return [float(i) for i in range(len(documents))]
+
+    async def aclose(self) -> None:
+        # Mirrors OpenAICompatReranker.aclose so the api/eval cleanup paths
+        # (which gate on ``hasattr(reranker, "aclose")``) exercise the close.
+        self.closed = True
 
 
 @dataclass
