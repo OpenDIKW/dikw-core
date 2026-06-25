@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.2 — optional cross-encoder reranking; atomic writes + concurrency hardening; repositioned as a self-managed knowledge engine
+
 ### Changed
 
 - **Docs: repositioned as a self-managed knowledge base engine.** README and the
