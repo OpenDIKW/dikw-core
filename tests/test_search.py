@@ -15,10 +15,16 @@ from dikw_core.domains.info.search import (
     comb_sum_fusion,
     reciprocal_rank_fusion,
 )
+from dikw_core.providers.base import ProviderError, TransientProviderError
 from dikw_core.storage.base import NotSupported
 from dikw_core.storage.sqlite import SQLiteStorage
 
-from .fakes import FakeEmbeddings, FakeMultimodalEmbedding, register_text_version
+from .fakes import (
+    FakeEmbeddings,
+    FakeMultimodalEmbedding,
+    FakeReranker,
+    register_text_version,
+)
 
 
 def test_rrf_favors_consensus() -> None:
@@ -783,6 +789,364 @@ async def test_hybrid_searcher_rejects_unknown_fusion_mode(tmp_path) -> None:
     with pytest.raises(ValueError, match="unknown fusion mode"):
         await searcher.search("DIKW pyramid", limit=3)
     await storage.close()
+
+
+# ---- rerank stage -----------------------------------------------------------
+
+
+_RERANK_QUERY = "alpha foo bar"
+
+
+async def _fused_baseline_ids(storage, embedder, version_id, *, limit: int) -> list[int]:
+    """Hits a no-reranker searcher returns — the post-fusion order a
+    reranker re-sorts. Captured so the rerank tests assert *against* the
+    deterministic fused order rather than hard-coding chunk_ids."""
+    baseline = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    hits = await baseline.search(_RERANK_QUERY, limit=limit)
+    return [h.chunk_id for h in hits if h.chunk_id is not None]
+
+
+@pytest.mark.asyncio
+async def test_rerank_reorders_window_by_rerank_score(tmp_path) -> None:
+    """A reranker re-sorts the fused window by its own scores, not RRF.
+
+    ``FakeReranker`` (default) scores by input position ascending, so the
+    LAST fused-window chunk gets the highest score → the reranked output is
+    the fused order reversed, and each ``Hit.score`` carries the rerank
+    score (not the fused score).
+    """
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    fused = await _fused_baseline_ids(storage, embedder, version_id, limit=5)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert reranker.call_count == 1
+    reranked = [h.chunk_id for h in hits]
+    # Window covered the whole fused pool (candidate_k >> pool), so reranked
+    # order is the fused order reversed (FakeReranker scores last input top).
+    assert reranked == fused[::-1]
+    # Hit.score is the rerank relevance score, strictly descending.
+    scores = [h.score for h in hits]
+    assert scores == sorted(scores, reverse=True)
+    assert scores[0] > scores[-1]
+
+
+@pytest.mark.asyncio
+async def test_rerank_none_is_byte_identical_to_baseline(tmp_path) -> None:
+    """``reranker=None`` runs the current path unchanged — same hits, order,
+    and scores as a searcher built without rerank support at all."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    baseline = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    with_none = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=None,
+        rerank_candidate_k=40,
+    )
+    base_hits = await baseline.search(_RERANK_QUERY, limit=5)
+    none_hits = await with_none.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert [(h.chunk_id, h.score) for h in none_hits] == [
+        (h.chunk_id, h.score) for h in base_hits
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rerank_disabled_does_not_call_reranker(tmp_path) -> None:
+    """``rerank_enabled=False`` is a kill switch: even with a configured
+    reranker the searcher never calls it and returns the fused order."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    fused = await _fused_baseline_ids(storage, embedder, version_id, limit=5)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_enabled=False,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert reranker.call_count == 0
+    assert [h.chunk_id for h in hits] == fused
+
+
+@pytest.mark.asyncio
+async def test_rerank_widens_candidate_window_beyond_limit(tmp_path) -> None:
+    """The reranker scores a window larger than ``limit`` — that wider pool
+    is the whole point (recover precision@k from recall@candidate_k)."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=2)
+    await storage.close()
+
+    # Only 2 hits returned, but the reranker saw the full fused pool (5
+    # chunks) — the window was widened from limit=2 up to candidate_k.
+    assert len(hits) == 2
+    assert len(reranker.last_documents) > 2
+    assert reranker.last_query == _RERANK_QUERY
+    assert reranker.last_model == "fake-rerank"
+
+
+@pytest.mark.asyncio
+async def test_rerank_candidate_k_clamped_to_at_least_limit(tmp_path) -> None:
+    """A candidate window smaller than ``limit`` would starve the result —
+    the window is clamped to at least ``limit`` so ``limit`` hits survive."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=1,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=3)
+    await storage.close()
+
+    assert len(reranker.last_documents) >= 3
+    assert len(hits) == 3
+
+
+@pytest.mark.asyncio
+async def test_rerank_introduces_no_chunks_outside_fused_pool(tmp_path) -> None:
+    """Rerank only reorders the deterministically-retrieved pool — it never
+    surfaces a chunk the fused legs didn't retrieve (recall is unchanged)."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    fused_pool = set(await _fused_baseline_ids(storage, embedder, version_id, limit=100))
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert {h.chunk_id for h in hits} <= fused_pool
+
+
+@pytest.mark.asyncio
+async def test_rerank_transient_error_degrades_to_fused_order(tmp_path) -> None:
+    """A transient rerank failure must not 500 the read path — the searcher
+    logs and falls back to the fused order."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    fused = await _fused_baseline_ids(storage, embedder, version_id, limit=5)
+
+    reranker = FakeReranker(
+        raise_error=TransientProviderError("rerank vendor 503")
+    )
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert [h.chunk_id for h in hits] == fused
+
+
+@pytest.mark.asyncio
+async def test_rerank_permanent_error_propagates(tmp_path) -> None:
+    """A permanent rerank misconfig (bad key/model) fails fast rather than
+    silently degrading — same fail-loud contract as the embedding path."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    reranker = FakeReranker(raise_error=ProviderError("rerank 401 bad key"))
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    with pytest.raises(ProviderError):
+        await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_rerank_only_fires_in_hybrid_mode(tmp_path) -> None:
+    """Rerank is a hybrid-pipeline stage — it must NOT touch the bm25 / vector
+    single-leg ablations (mirrors the graph leg's `mode == "hybrid"` gate), so
+    `dikw client eval --retrieval all` keeps those rows pure vs published
+    baselines. Production `retrieve` is always hybrid, so it still reranks.
+    """
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+    )
+    await searcher.search(_RERANK_QUERY, limit=3, mode="bm25")
+    await searcher.search(_RERANK_QUERY, limit=3, mode="vector")
+    assert reranker.call_count == 0, "rerank must not fire on single-leg ablations"
+
+    await searcher.search(_RERANK_QUERY, limit=3, mode="hybrid")
+    await storage.close()
+    assert reranker.call_count == 1, "rerank must fire on hybrid (the production mode)"
+
+
+@pytest.mark.asyncio
+async def test_rerank_leg_span_only_in_hybrid(tmp_path, span_exporter) -> None:
+    """The rerank leg emits a `dikw.retrieve.leg` span (with a hit count) in
+    hybrid mode, and none in a bm25 ablation — same leg-purity contract the
+    other legs honor.
+    """
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=FakeReranker(),
+        rerank_model="fake-rerank",
+    )
+    await searcher.search(_RERANK_QUERY, limit=3, mode="hybrid")
+    hybrid_legs = {
+        s.attributes[telemetry.DIKW_RETRIEVAL_LEG]
+        for s in span_exporter.get_finished_spans()
+        if s.name == "dikw.retrieve.leg"
+    }
+    assert "rerank" in hybrid_legs
+    rerank_spans = [
+        s
+        for s in span_exporter.get_finished_spans()
+        if s.name == "dikw.retrieve.leg"
+        and s.attributes[telemetry.DIKW_RETRIEVAL_LEG] == "rerank"
+    ]
+    assert all(telemetry.DIKW_LEG_HIT_COUNT in s.attributes for s in rerank_spans)
+
+    await searcher.search(_RERANK_QUERY, limit=3, mode="bm25")
+    await storage.close()
+    # The bm25 run must add no new rerank leg span.
+    bm25_rerank_spans = [
+        s
+        for s in span_exporter.get_finished_spans()
+        if s.name == "dikw.retrieve.leg"
+        and s.attributes[telemetry.DIKW_RETRIEVAL_LEG] == "rerank"
+    ]
+    assert len(bm25_rerank_spans) == len(rerank_spans), (
+        "bm25 ablation must not open a rerank leg span"
+    )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_searcher_from_config_threads_rerank_knobs(tmp_path) -> None:
+    """RetrievalConfig rerank knobs → from_config → search() wiring."""
+    from dikw_core.config import RetrievalConfig
+
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    cfg = RetrievalConfig(rerank_candidate_k=12, rerank_enabled=True)
+    reranker = FakeReranker()
+    searcher = HybridSearcher.from_config(
+        storage,
+        embedder,
+        cfg,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+    )
+    assert searcher._rerank_candidate_k == 12
+    assert searcher._rerank_enabled is True
+    assert searcher._reranker is reranker
+    hits = await searcher.search(_RERANK_QUERY, limit=3)
+    await storage.close()
+    assert reranker.call_count == 1
+    assert len(hits) == 3
 
 
 # ---- cjk tokenizer integration ----------------------------------------------

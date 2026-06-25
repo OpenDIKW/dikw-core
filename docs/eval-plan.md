@@ -234,8 +234,24 @@ or non-destructiveness. Two gates:
    in the storage `links` table. For those, the gate is "non-destructive
    when off; non-destructive when on with empty links".
 
-The Stage A K-layer fan-out + atomicity-lint baseline (2026-05-08) and
-the wikilink graph leg ablation (2026-05-08) are the worked examples.
+   For the **rerank stage** the ablation is off-vs-on at one config (toggle
+   `retrieval.rerank_enabled`, keep everything else fixed): the gate is
+   `ndcg@10` / `hit@3` **improve or hold** while `recall@100` stays flat — a
+   recall change means rerank changed pool *membership*, which is a bug
+   (rerank only reorders the deterministically-retrieved pool). Use a **real
+   embedder**: the hermetic `FakeEmbeddings` is lexical bag-of-words and can't
+   exercise the semantically-close-but-wrong failure mode rerank targets, so a
+   fake-embedder run is non-informative for this change. scifact (large recall
+   pool) is the strongest signal; mvp is the dogfood sanity check. **Run each
+   arm with its own snapshot** (`cache_root`, or `cache_mode="off"`): the eval
+   cache key is `(corpus, embedder)` only and `_run_queries` reloads retrieval
+   config from the cached base's `dikw.yml`, so a shared `cache_root` makes the
+   second arm silently reuse the first arm's `rerank_enabled` — same reason RRF
+   weight A/B uses the offline re-fusion tools, not the `run_eval` cache.
+
+The Stage A K-layer fan-out + atomicity-lint baseline (2026-05-08), the
+wikilink graph leg ablation (2026-05-08), and the rerank-stage SciFact
+ablation (`evals/BASELINES.md`) are the worked examples.
 
 ## Triggers for revisiting
 

@@ -134,6 +134,30 @@ class EmbeddingProvider(Protocol):
 
 
 @runtime_checkable
+class RerankProvider(Protocol):
+    """Cross-encoder reranker over a retrieved candidate set.
+
+    Scores each ``(query, document)`` pair and returns one relevance score
+    per document **aligned to input order** — the search layer pairs scores
+    back to candidate chunks positionally, so an adapter talking to an
+    endpoint that returns results sorted by relevance MUST remap the response
+    ``index`` before returning (mirrors ``EmbeddingProvider``'s defensive
+    index handling).
+
+    A reranker is a deterministic scoring model in the same epistemic
+    category as the embedding model — it reorders the deterministically
+    retrieved pool; it does not generate text or decide what to retrieve.
+    It is part of *scoping*, not *reasoning*, so it is consistent with the
+    engine's "LLM calls only enter at synth" invariant. See
+    ``docs/adr/0006-reranker-deterministic-scoping.md``.
+    """
+
+    async def rerank(
+        self, query: str, documents: list[str], *, model: str
+    ) -> list[float]: ...
+
+
+@runtime_checkable
 class MultimodalEmbeddingProvider(Protocol):
     """Embedding provider that can encode text, images, or any combination
     into a single shared vector space.
@@ -163,6 +187,7 @@ __all__ = [
     "LLMStreamEvent",
     "MultimodalEmbeddingProvider",
     "ProviderError",
+    "RerankProvider",
     "ToolSpec",
     "TransientProviderError",
 ]

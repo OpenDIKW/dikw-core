@@ -27,13 +27,15 @@ leg dominates or both legs are close at the head — see
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Awaitable, Hashable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from ...providers import EmbeddingProvider, MultimodalEmbeddingProvider
+from ...providers import EmbeddingProvider, MultimodalEmbeddingProvider, RerankProvider
+from ...providers.base import TransientProviderError
 from ...schemas import (
     AssetRecord,
     AssetVecHit,
@@ -53,6 +55,8 @@ from ...telemetry import (
     record_retrieve_leg_duration,
 )
 from .tokenize import WORD_OR_CJK_CHARS, CjkTokenizer, preprocess_for_fts
+
+logger = logging.getLogger(__name__)
 
 
 async def _traced_leg[LegHitT](
@@ -111,6 +115,8 @@ class RetrievalConfigLike(Protocol):
     graph_enabled: bool
     graph_seed_top_k: int
     graph_weight: float
+    rerank_enabled: bool
+    rerank_candidate_k: int
 
 
 @dataclass(frozen=True)
@@ -323,6 +329,10 @@ class HybridSearcher:
         graph_enabled: bool = False,
         graph_seed_top_k: int = 20,
         graph_weight: float = 0.5,
+        reranker: RerankProvider | None = None,
+        rerank_model: str | None = None,
+        rerank_candidate_k: int = 40,
+        rerank_enabled: bool = True,
     ) -> None:
         self._storage = storage
         self._embedder = embedder
@@ -344,6 +354,10 @@ class HybridSearcher:
         self._graph_enabled = graph_enabled
         self._graph_seed_top_k = graph_seed_top_k
         self._graph_weight = graph_weight
+        self._reranker = reranker
+        self._rerank_model = rerank_model
+        self._rerank_candidate_k = rerank_candidate_k
+        self._rerank_enabled = rerank_enabled
 
     @classmethod
     def from_config(
@@ -355,12 +369,19 @@ class HybridSearcher:
         embedding_model: str | None = None,
         text_version_id: int | None = None,
         multimodal: MultimodalSearch | None = None,
+        reranker: RerankProvider | None = None,
+        rerank_model: str | None = None,
     ) -> HybridSearcher:
         """Unpack a ``RetrievalConfig`` into the keyword kwargs.
 
         Centralises the knob mapping so adding a new knob is a
         one-file change. ``RetrievalConfigLike`` is any object with
         the listed attributes — pydantic ``RetrievalConfig`` qualifies.
+
+        The reranker and its model are passed in (not read off ``cfg``)
+        because they live on ``ProviderConfig``, not ``RetrievalConfig`` —
+        the api layer builds the reranker via ``build_reranker`` and threads
+        it here, mirroring how ``embedding_model`` is threaded explicitly.
         """
         return cls(
             storage,
@@ -377,6 +398,10 @@ class HybridSearcher:
             graph_enabled=cfg.graph_enabled,
             graph_seed_top_k=cfg.graph_seed_top_k,
             graph_weight=cfg.graph_weight,
+            reranker=reranker,
+            rerank_model=rerank_model,
+            rerank_candidate_k=cfg.rerank_candidate_k,
+            rerank_enabled=cfg.rerank_enabled,
         )
 
     async def search(
@@ -614,7 +639,18 @@ class HybridSearcher:
         adjusted = apply_source_diversity_penalty(
             fused, doc_id_by_chunk, alpha=self._same_doc_penalty_alpha
         )
-        top = sorted(adjusted.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        ranked = sorted(adjusted.items(), key=lambda kv: kv[1], reverse=True)
+        # Stage 4 (optional) cross-encoder rerank: reorder a wider candidate
+        # window by query↔chunk relevance, then truncate to ``limit``. A no-op
+        # (returns ``ranked[:limit]``) when no reranker is configured/enabled,
+        # or when ``mode != "hybrid"`` — like the graph leg, rerank stays out of
+        # the bm25/vector single-leg ablations so `--retrieval all` keeps those
+        # rows pure vs published baselines (production ``retrieve`` is hybrid).
+        # ``prefetched_chunks`` is the window's chunk records (fetched for the
+        # reranker) so materialization below reuses them instead of re-querying.
+        top, prefetched_chunks = await self._apply_rerank(
+            q, ranked, limit=limit, mode=mode
+        )
 
         # Per-chunk snippet lookup from FTS hits (BM25's snippet() preview).
         snippets_by_chunk: dict[int, str] = {
@@ -639,11 +675,21 @@ class HybridSearcher:
         # Batch-fetch the chunks (for snippet fallback + seq) and unique
         # parent docs (for path/title) — chunk-level fusion repeats
         # doc_ids across hits, so per-hit fetches would N+1 the storage.
-        chunk_by_id_all: dict[int, ChunkRecord] = {
-            c.chunk_id: c
-            for c in await self._storage.get_chunks(retrieved_chunk_ids)
-            if c.chunk_id is not None
-        }
+        if prefetched_chunks is not None:
+            # The rerank window already fetched these chunks; the retained
+            # top-K is a subset of that window, so reuse the records instead
+            # of a second round-trip to storage.
+            chunk_by_id_all: dict[int, ChunkRecord] = {
+                cid: prefetched_chunks[cid]
+                for cid in retrieved_chunk_ids
+                if cid in prefetched_chunks
+            }
+        else:
+            chunk_by_id_all = {
+                c.chunk_id: c
+                for c in await self._storage.get_chunks(retrieved_chunk_ids)
+                if c.chunk_id is not None
+            }
         unique_doc_ids = list({
             chunk_by_id_all[cid].doc_id
             for cid in retrieved_chunk_ids
@@ -688,6 +734,94 @@ class HybridSearcher:
                 )
             )
         return hits
+
+    async def _apply_rerank(
+        self,
+        q: str,
+        ranked: list[tuple[int, float]],
+        *,
+        limit: int,
+        mode: RetrievalMode,
+    ) -> tuple[list[tuple[int, float]], dict[int, ChunkRecord] | None]:
+        """Reorder the top candidate window by cross-encoder rerank scores.
+
+        Returns ``(top, prefetched_chunks)``. A pure no-op returning
+        ``(ranked[:limit], None)`` — byte-identical to the pre-rerank path —
+        when no reranker is configured/enabled OR ``mode != "hybrid"``. Rerank
+        is gated to hybrid for the same reason the graph leg is (``search``
+        line ~515): the bm25 / vector single-leg modes are diagnostic
+        ablations that `dikw client eval --retrieval all` compares against
+        published BEIR/CMTEB baselines, so they must stay pure; production
+        ``retrieve`` always runs hybrid, so it still reranks.
+
+        Otherwise it takes the top ``rerank_candidate_k`` (clamped to at least
+        ``limit`` so a small window never starves the result), fetches their
+        chunk text, scores each ``(query, chunk)`` pair, and returns the window
+        re-sorted by rerank score, truncated to ``limit``. The rerank score
+        fully determines the final top-K order; the source-diversity penalty
+        (applied to ``ranked`` upstream) therefore shapes which chunks enter the
+        window, not the final order — by design for v1 (rerank is the stronger
+        relevance signal). ``Hit.score`` downstream becomes the rerank score.
+
+        The fetched window chunks are returned so the caller reuses them for
+        materialization instead of a second ``get_chunks`` round-trip.
+
+        Resilience: a transient rerank failure degrades to the fused order (the
+        read path must not 500 because a rerank vendor blipped); a permanent
+        ``ProviderError`` propagates so a rerank misconfig (bad key / model)
+        fails loud instead of silently skipping rerank on every query — the
+        same fail-fast contract the embedding path uses.
+        """
+        if (
+            mode != "hybrid"
+            or self._reranker is None
+            or not self._rerank_enabled
+            or not self._rerank_model
+        ):
+            return ranked[:limit], None
+        # Widen the window past ``limit`` (that wider pool is the whole point),
+        # but never below ``limit`` or a tiny candidate_k would starve results.
+        window_k = max(self._rerank_candidate_k, limit)
+        window_ids = [cid for cid, _ in ranked[:window_k]]
+        prefetched: dict[int, ChunkRecord] = {
+            c.chunk_id: c
+            for c in await self._storage.get_chunks(window_ids)
+            if c.chunk_id is not None
+        }
+        # Skip any chunk that vanished between fusion and fetch (race) — it has
+        # no text to score and would be dropped at materialization anyway.
+        scored_ids = [cid for cid in window_ids if cid in prefetched]
+        if not scored_ids:
+            return ranked[:limit], None
+        documents = [prefetched[cid].text for cid in scored_ids]
+        # Same span + single-``finally`` timing contract as the other legs
+        # (``_traced_leg`` / the graph leg): the rerank leg's wall-clock is
+        # recorded on EVERY exit — success, transient-degrade, or a propagating
+        # permanent error — so a slow rerank vendor surfaces in the per-leg
+        # duration histogram. No-op when telemetry is off.
+        with op_span(
+            "dikw.retrieve.leg", attributes={DIKW_RETRIEVAL_LEG: "rerank"}
+        ) as span:
+            span.set_attribute(DIKW_LEG_HIT_COUNT, len(documents))
+            start = time.perf_counter()
+            try:
+                scores = await self._reranker.rerank(
+                    q, documents, model=self._rerank_model
+                )
+            except TransientProviderError:
+                logger.warning(
+                    "rerank degraded to fused order after a transient failure",
+                    exc_info=True,
+                )
+                return ranked[:limit], None
+            finally:
+                record_retrieve_leg_duration("rerank", time.perf_counter() - start)
+        reranked = sorted(
+            zip(scored_ids, scores, strict=True),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )[:limit]
+        return reranked, prefetched
 
     async def _collect_graph_neighbors(
         self,

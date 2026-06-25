@@ -350,6 +350,14 @@ embeddings / `[[wikilinks]]` / `provenance` edges land symmetrically.
 Answer synthesis happens **outside** dikw-core, in the agent layer,
 with the agent's own LLM and conversation context.
 
+The optional cross-encoder reranker in the retrieve path does not break
+this rule. It is a deterministic `(query, chunk) → relevance` scoring
+model — the same category as the embedding model already in retrieval —
+so it reorders the deterministically-retrieved candidate set (part of
+*scoping*), it does not generate text or reason about an answer. A
+*generative* LLM-as-reranker is excluded for exactly that reason. See
+[ADR-0006](adr/0006-reranker-deterministic-scoping.md).
+
 ### Wikilink resolve, as a concrete example
 
 `resolve_links` (in `domains/knowledge/links.py`) walks three lookup
