@@ -673,6 +673,7 @@ class FakeReranker:
     last_documents: list[str] = field(default_factory=list, init=False)
     last_model: str | None = field(default=None, init=False)
     call_count: int = field(default=0, init=False)
+    closed: bool = field(default=False, init=False)
 
     async def rerank(
         self, query: str, documents: list[str], *, model: str
@@ -686,6 +687,11 @@ class FakeReranker:
         if self.score_fn is not None:
             return [self.score_fn(query, d) for d in documents]
         return [float(i) for i in range(len(documents))]
+
+    async def aclose(self) -> None:
+        # Mirrors OpenAICompatReranker.aclose so the api/eval cleanup paths
+        # (which gate on ``hasattr(reranker, "aclose")``) exercise the close.
+        self.closed = True
 
 
 @dataclass

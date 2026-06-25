@@ -989,6 +989,51 @@ async def test_rerank_introduces_no_chunks_outside_fused_pool(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rerank_all_window_chunks_vanished_degrades(tmp_path) -> None:
+    """If every window chunk vanished between fusion and fetch (race), there is
+    nothing to score — degrade to the fused order rather than rerank an empty
+    set. The reranker is never called."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    fused = await _fused_baseline_ids(storage, embedder, version_id, limit=5)
+
+    reranker = FakeReranker()
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        reranker=reranker,
+        rerank_model="fake-rerank",
+        rerank_candidate_k=40,
+    )
+    real_get_chunks = storage.get_chunks
+    calls = {"n": 0}
+
+    async def empty_first_call(chunk_ids):
+        # Starve ONLY the first get_chunks (the rerank-window fetch in
+        # _apply_rerank) so scored_ids is empty → degrade; the materialization
+        # fetch that follows (degraded path re-fetches top-K) gets real rows.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []
+        return await real_get_chunks(chunk_ids)
+
+    storage.get_chunks = empty_first_call  # type: ignore[method-assign]
+    try:
+        hits = await searcher.search(_RERANK_QUERY, limit=5)
+    finally:
+        storage.get_chunks = real_get_chunks  # type: ignore[method-assign]
+    await storage.close()
+
+    assert reranker.call_count == 0
+    assert [h.chunk_id for h in hits] == fused
+
+
+@pytest.mark.asyncio
 async def test_rerank_transient_error_degrades_to_fused_order(tmp_path) -> None:
     """A transient rerank failure must not 500 the read path — the searcher
     logs and falls back to the fused order."""

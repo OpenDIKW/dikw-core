@@ -22,8 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from dikw_core.providers import build_reranker
 from dikw_core.providers.base import ProviderError, TransientProviderError
 from dikw_core.providers.rerank import OpenAICompatReranker
+
+from .fakes import make_provider_cfg
 
 
 def _ok_post(results: list[dict[str, Any]]) -> AsyncMock:
@@ -244,3 +247,92 @@ async def test_rerank_classifies_connection_error_as_transient() -> None:
     with pytest.raises(TransientProviderError) as ei:
         await reranker.rerank("q", ["a"], model="m")
     assert "ConnectError" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_rerank_generic_http_error_is_permanent() -> None:
+    """A bare httpx.HTTPError (not status/timeout/network) wraps as a permanent
+    ProviderError — the catch-all arm below the specific ones."""
+    reranker = _make_reranker()
+    reranker._client = MagicMock()
+    reranker._client.post = AsyncMock(side_effect=httpx.HTTPError("malformed"))
+
+    with pytest.raises(ProviderError) as ei:
+        await reranker.rerank("q", ["a"], model="m")
+    assert not isinstance(ei.value, TransientProviderError)
+
+
+@pytest.mark.asyncio
+async def test_rerank_out_of_range_index_raises() -> None:
+    """A result index outside [0, len(documents)) is a contract breach."""
+    reranker = _make_reranker()
+    reranker._client = MagicMock()
+    reranker._client.post = _ok_post(
+        [
+            {"index": 0, "relevance_score": 0.5},
+            {"index": 9, "relevance_score": 0.5},  # out of range for 2 docs
+        ]
+    )
+
+    with pytest.raises(ProviderError):
+        await reranker.rerank("q", ["a", "b"], model="m")
+
+
+@pytest.mark.asyncio
+async def test_rerank_parse_failure_is_transient() -> None:
+    """A 200 whose body lacks `results` (truncated CDN/proxy response) is a
+    parse failure → transient, so the search layer degrades rather than 500s."""
+    reranker = _make_reranker()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"unexpected": "shape"})  # KeyError on results
+    reranker._client = MagicMock()
+    reranker._client.post = AsyncMock(return_value=resp)
+
+    with pytest.raises(TransientProviderError):
+        await reranker.rerank("q", ["a"], model="m")
+
+
+@pytest.mark.asyncio
+async def test_get_client_sets_auth_header_and_is_reused() -> None:
+    """`_get_client` builds a no-keepalive client with the resolved Bearer key
+    and caches it (one client per reranker instance)."""
+    reranker = _make_reranker()
+    c1 = reranker._get_client()
+    c2 = reranker._get_client()
+    assert c1 is c2
+    assert c1.headers["Authorization"] == "Bearer k"
+    assert c1.headers["Content-Type"] == "application/json"
+    await reranker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_and_resets_client() -> None:
+    reranker = _make_reranker()
+    reranker._get_client()
+    assert reranker._client is not None
+    await reranker.aclose()
+    assert reranker._client is None
+    # Idempotent: a second close on an already-closed reranker is a no-op.
+    await reranker.aclose()
+
+
+def test_build_reranker_none_when_unconfigured() -> None:
+    """No `provider.rerank` → no reranker built (rerank off because unconfigured)."""
+    assert build_reranker(make_provider_cfg()) is None
+
+
+def test_build_reranker_builds_configured() -> None:
+    """A configured `provider.rerank` builds an `OpenAICompatReranker` threaded
+    with the model/url/key/batch from config."""
+    cfg = make_provider_cfg(
+        rerank="openai_compat_rerank",
+        rerank_model="bge-reranker-v2-m3",
+        rerank_base_url="https://ai.gitee.com/v1",
+        rerank_api_key_env="GITEE_API_KEY",
+        rerank_batch_size=8,
+    )
+    rr = build_reranker(cfg)
+    assert isinstance(rr, OpenAICompatReranker)
+    assert rr._base_url == "https://ai.gitee.com/v1"
+    assert rr._batch_size == 8
