@@ -6,9 +6,10 @@ description: The unified dikw-core delivery loop — drives a non-trivial change
 <what-this-is>
 
 This skill is the **spine** of dikw-core's verification story. It encodes CLAUDE.md's
-8-step **Delivery loop** as one runnable checklist, with the right verification leg
-embedded at each step. It does not invent a parallel process — it *is* the CLAUDE.md
-Delivery loop, made executable.
+8-step **Delivery loop** (steps 1–8) as one runnable checklist — prefixed by a **step-0
+resume preamble** that reads the delivery artifact (mirroring `dikw-core-verify`'s step-0
+"classify"), with the right verification leg embedded at each step. It does not invent a
+parallel process — it *is* the CLAUDE.md Delivery loop, made executable.
 
 Two companion skills are called from inside this one as they land (walking-skeleton →
 grows legs over phases):
@@ -16,6 +17,15 @@ grows legs over phases):
 - `dikw-core-verify` — step 3 in-loop change-type router (classify the diff → run only the legs that path needs); step 3's table below is the inline fallback if it's unavailable.
 - `dikw-core-verify-synth` — the K-layer leg of step 3 (synth output self-check), dispatched by `dikw-core-verify`.
 - `dikw-core-fresh-review` — step 5 fresh-agent pre-merge review (clean subagent vs diff + rubric + design); run it alongside `/code-review`.
+
+Every run keeps one **delivery artifact** — `.claude/delivery/<branch>.md` — that is both
+**resumable STATE** (step 0 reads it, so an interrupted task continues instead of
+cold-starting) and an **auditable receipt** (each step records its *machine output*, which
+step 7 renders into the PR body). It turns the soft verify/review steps from "ran on the
+honor system" into an **auditable trail** a reviewer can check at PR time. Honest limit: the
+receipt *records* those steps, it doesn't *re-run* them the way CI re-runs the deterministic
+floor — so it raises the cost of a silently-skipped step and surfaces it, but is not itself a
+hard gate. Template + lifecycle in `<delivery-artifact>` below.
 
 **Run autonomously.** Per `feedback_autonomy_default` + `feedback_pr_workflow`, the full
 loop is standing approval to commit/push/PR/squash. Only stop on the 6 block signals below.
@@ -26,6 +36,16 @@ loop is standing approval to commit/push/PR/squash. Only stop on the 6 block sig
 
 Create one TodoWrite item per step. Do not skip a step because it "feels unnecessary"
 (`feedback_code_review_not_optional`: even doc-only PRs surface real findings).
+
+## 0. Resume — read the delivery artifact first
+Before anything, read `.claude/delivery/<branch>.md` (the current branch, `/`→`-`). If it
+exists, it records which steps are done + the single **Next action** — resume there, don't
+cold-start. If absent (new task), create it from the `<delivery-artifact>` template
+(back-fill **Goal** once step 1 has clarified it). After **every** step, keep it current —
+both the **header fields** (Goal, Next action, PR number) and that step's **status** + its
+**machine evidence**, pasted into the Evidence section per the template. On *why* the
+evidence must be real machine output rather than a free-text "I ran it", see the rule in
+`<delivery-artifact>`.
 
 ## 1. Clarify the request
 - Restate the goal, list assumptions, surface alternatives.
@@ -75,6 +95,7 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once `uv run pr
 ## 7. Commit + push + PR
 - Local commit + `git push` + `gh pr create` proceed without re-asking (the loop is the approval).
 - **K-layer / Retrieval / storage PRs need an `evals/BASELINES.md` entry** (real-data outcome) or the `no-baseline-needed` label, or `eval-gate` blocks. Handle here, not at merge.
+- **Render the delivery receipt** into the PR body under a `## Delivery receipt` section — the artifact's Evidence — then set the artifact's `PR:` field to the new number. This is the durable, reviewable form of the otherwise self-graded soft steps. **Redact first:** strip absolute home paths, endpoints / base-URLs, and any key or token value from the pasted output before it enters the world-readable PR body (`.env` stays the only home for secrets).
 
 ## 8. Watch CI green → squash → sync local
 - Monitor `gh pr checks` + reviewer comments (CodeRabbit/human). Fix every actionable finding.
@@ -83,6 +104,63 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once `uv run pr
 - Squash merge, fast-forward local main, delete the feature branch (`feedback_delivery_loop_tail_no_reask`).
 
 </checklist>
+
+<delivery-artifact>
+
+Every run maintains one markdown file, **`.claude/delivery/<branch>.md`** (replace `/` with
+`-` in the branch name). It is **gitignored** — the existing `.claude/*` rule already covers
+it, so no `.gitignore` change is needed — and lives in the working checkout (lifetime = the
+branch's worktree); its durable, shareable form is the `## Delivery receipt` step 7 renders
+into the PR body. Three roles across the lifecycle:
+
+- **STATE** (in progress) — step 0 reads it to resume an interrupted task mid-loop.
+- **Receipt** (at PR) — proves the soft verify/review steps actually ran, against
+  "loops fail quietly"; rendered into the PR body at step 7.
+- **Metrics source** (after merge) — a future `tools/loop_metrics.py` reads the rendered
+  `## Delivery receipt` PR bodies across merged PRs (codex rounds, fresh-review TP/FP) for
+  the `cost per accepted change` readout — the durable PR-body receipts, not these
+  gitignored local files.
+
+Template:
+
+```markdown
+# Delivery — <branch>
+
+- **PR:** —            (set to #N once opened)
+- **Goal:** <one line restated from step 1>
+- **Next action:** <the single next step to take on resume>
+
+## Steps
+| # | step            | status | evidence                                   |
+|---|-----------------|--------|--------------------------------------------|
+| 0 | resume          | …      | fresh task / resumed-from-prior-session    |
+| 1 | clarify         | …      | assumptions / plan link                    |
+| 2 | plan / TDD      | …      | failing-test refs                          |
+| 3 | verify          | …      | per-leg table ↓                            |
+| 4 | codex (≤3)      | …      | rounds; resolved/rejected                  |
+| 5 | fresh-review    | …      | verdict; TP/FP ↓                           |
+| 6 | doc-sync        | …      | BASELINES link / no-baseline-needed / N-A  |
+| 7 | commit+push+PR  | …      | PR #                                       |
+| 8 | CI green→squash | …      | run links; mergeStateStatus                |
+
+## Evidence
+### step 3 — verify
+<paste the dikw-core-verify per-leg PASS/FAIL/SKIPPED table verbatim>
+### step 4 — codex
+<rounds run; links to findings resolved / rejected>
+### step 5 — fresh-review
+<pass/blocking verdict + the TP/FP table verbatim>
+
+## Open findings
+- <in-flight findings the next session must still resolve>
+```
+
+Paste **real machine output** into Evidence — never a free-text "I ran it"; a self-asserted
+receipt is just another soft gate (`feedback_real_data_validation`, in spirit). *The agent
+forgets, the file does not.* Redact secrets/paths/endpoints before any of it is rendered
+into a public PR body (step 7).
+
+</delivery-artifact>
 
 <block-signals>
 
