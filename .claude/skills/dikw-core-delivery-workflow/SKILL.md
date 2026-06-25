@@ -38,7 +38,9 @@ Create one TodoWrite item per step. Do not skip a step because it "feels unneces
 (`feedback_code_review_not_optional`: even doc-only PRs surface real findings).
 
 ## 0. Resume — read the delivery artifact first
-Before anything, read `.claude/delivery/<branch>.md` (the current branch, `/`→`-`). If it
+Before anything, read `.claude/delivery/<branch>.md` (the branch name used as the path — a
+`/` just nests a subdirectory, e.g. `feat/foo` → `.claude/delivery/feat/foo.md`, lossless so
+branches never collide). If it
 exists, it records which steps are done + the single **Next action** — resume there, don't
 cold-start. If absent (new task), create it from the `<delivery-artifact>` template
 (back-fill **Goal** once step 1 has clarified it). After **every** step, keep it current —
@@ -95,7 +97,7 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once `uv run pr
 ## 7. Commit + push + PR
 - Local commit + `git push` + `gh pr create` proceed without re-asking (the loop is the approval).
 - **K-layer / Retrieval / storage PRs need an `evals/BASELINES.md` entry** (real-data outcome) or the `no-baseline-needed` label, or `eval-gate` blocks. Handle here, not at merge.
-- **Render the delivery receipt** into the PR body under a `## Delivery receipt` section — the artifact's Evidence — then set the artifact's `PR:` field to the new number. This is the durable, reviewable form of the otherwise self-graded soft steps. **Redact first:** strip absolute home paths, endpoints / base-URLs, and any key or token value from the pasted output before it enters the world-readable PR body (`.env` stays the only home for secrets).
+- **Set the artifact's `PR:` field** as soon as the PR exists (so a crash mid-render doesn't drop the reference from resumable STATE), then **render the delivery receipt** into the PR body under a `## Delivery receipt` section — the artifact's Evidence. It is already redacted at write time (see `<delivery-artifact>`); do a final scan as you render, since the PR body is world-readable. This is the durable, reviewable form of the otherwise self-graded soft steps.
 
 ## 8. Watch CI green → squash → sync local
 - Monitor `gh pr checks` + reviewer comments (CodeRabbit/human). Fix every actionable finding.
@@ -107,8 +109,10 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook once `uv run pr
 
 <delivery-artifact>
 
-Every run maintains one markdown file, **`.claude/delivery/<branch>.md`** (replace `/` with
-`-` in the branch name). It is **gitignored** — the existing `.claude/*` rule already covers
+Every run maintains one markdown file, **`.claude/delivery/<branch>.md`** — the branch name
+is used verbatim as the relative path, so a `/` nests a subdirectory (`feat/foo` →
+`.claude/delivery/feat/foo.md`); the mapping is lossless, so branches differing only by `/`
+vs `-` never collide. It is **gitignored** — the existing `.claude/*` rule already covers
 it, so no `.gitignore` change is needed — and lives in the working checkout (lifetime = the
 branch's worktree); its durable, shareable form is the `## Delivery receipt` step 7 renders
 into the PR body. Three roles across the lifecycle:
@@ -157,8 +161,10 @@ Template:
 
 Paste **real machine output** into Evidence — never a free-text "I ran it"; a self-asserted
 receipt is just another soft gate (`feedback_real_data_validation`, in spirit). *The agent
-forgets, the file does not.* Redact secrets/paths/endpoints before any of it is rendered
-into a public PR body (step 7).
+forgets, the file does not.* **Redact at write time:** strip secrets / absolute paths /
+endpoints *before* the output is written into Evidence, so the on-disk artifact — and the
+step-7 PR-body render that reuses it — never holds them (`.env` stays the only home for
+secrets).
 
 </delivery-artifact>
 
