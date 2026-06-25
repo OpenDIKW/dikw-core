@@ -263,6 +263,25 @@ async def test_rerank_generic_http_error_is_permanent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rerank_malformed_result_item_is_transient() -> None:
+    """A per-item field defect (missing/non-numeric `index`/`relevance_score`)
+    is a parse failure → transient, so the search layer degrades to the fused
+    order rather than 500ing — the remap is inside the parse-failure try."""
+    reranker = _make_reranker()
+    reranker._client = MagicMock()
+    # Right count, but the second item is missing `relevance_score`.
+    reranker._client.post = _ok_post(
+        [
+            {"index": 0, "relevance_score": 0.5},
+            {"index": 1},  # malformed — KeyError on relevance_score
+        ]
+    )
+
+    with pytest.raises(TransientProviderError):
+        await reranker.rerank("q", ["a", "b"], model="m")
+
+
+@pytest.mark.asyncio
 async def test_rerank_out_of_range_index_raises() -> None:
     """A result index outside [0, len(documents)) is a contract breach."""
     reranker = _make_reranker()

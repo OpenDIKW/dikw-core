@@ -101,11 +101,48 @@ class OpenAICompatReranker:
         # degrades to the fused order (a single vendor blip must not 500 the
         # read path); permanent errors (401/403/404, bad model) propagate so a
         # rerank misconfig fails fast instead of silently degrading every query.
+        # The response parse AND the per-item index/score remap both live inside
+        # this try so a malformed item (missing/non-numeric ``index`` /
+        # ``relevance_score``, or a non-dict element) classifies as a transient
+        # parse failure — the search layer degrades to the fused order rather
+        # than 500ing the read path. The explicit ``ProviderError`` raises below
+        # (length / range / duplicate) are contract breaches we deliberately
+        # keep **permanent**: they are not in the caught exception tuple, so
+        # they propagate past these arms unchanged.
         try:
             resp = await client.post(f"{self._base_url}/rerank", json=payload)
             resp.raise_for_status()
             data = resp.json()
             results: list[dict[str, Any]] = data["results"]
+            if len(results) != len(documents):
+                # top_n == len(documents), so a short result set is a contract
+                # breach — fail loud rather than fabricate scores for the gaps.
+                raise ProviderError(
+                    f"rerank returned {len(results)} scores for "
+                    f"{len(documents)} documents"
+                )
+            scores = [0.0] * len(documents)
+            seen: set[int] = set()
+            for r in results:
+                idx = int(r["index"])
+                if not 0 <= idx < len(documents):
+                    raise ProviderError(
+                        f"rerank result index {idx} out of range for "
+                        f"{len(documents)} documents"
+                    )
+                if idx in seen:
+                    # A duplicate index passes the count check yet leaves
+                    # another document unscored — fail loud rather than silently
+                    # bottom-rank the gap at 0.0. With count == len(documents) +
+                    # range-checked + no duplicates, ``seen`` covers every
+                    # index, so no slot keeps its 0.0 placeholder.
+                    raise ProviderError(
+                        f"rerank returned a duplicate index {idx} for "
+                        f"{len(documents)} documents"
+                    )
+                seen.add(idx)
+                scores[idx] = float(r["relevance_score"])
+            return scores
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             err = (
@@ -126,41 +163,12 @@ class OpenAICompatReranker:
                 f"rerank call failed: {type(exc).__name__}: {exc}"
             ) from exc
         except (KeyError, ValueError, TypeError) as exc:
-            # Parse failures often indicate a transient CDN / proxy serving a
-            # partial response — retryable from the search layer's view.
+            # Parse failures (bad JSON shape, a malformed/non-numeric result
+            # item) often indicate a transient CDN / proxy serving a partial
+            # response — retryable from the search layer's view.
             raise TransientProviderError(
                 f"rerank response parse failed: {type(exc).__name__}: {exc}"
             ) from exc
-
-        if len(results) != len(documents):
-            # top_n == len(documents), so a short result set is a contract
-            # breach — fail loud rather than fabricate scores for the gaps.
-            raise ProviderError(
-                f"rerank returned {len(results)} scores for {len(documents)} "
-                f"documents"
-            )
-        scores = [0.0] * len(documents)
-        seen: set[int] = set()
-        for r in results:
-            idx = int(r["index"])
-            if not 0 <= idx < len(documents):
-                raise ProviderError(
-                    f"rerank result index {idx} out of range for "
-                    f"{len(documents)} documents"
-                )
-            if idx in seen:
-                # A duplicate index passes the count check yet leaves another
-                # document unscored — fail loud rather than silently bottom-rank
-                # the gap at 0.0. With count == len(documents) + range-checked +
-                # no duplicates, ``seen`` covers every index, so no slot keeps
-                # its 0.0 placeholder.
-                raise ProviderError(
-                    f"rerank returned a duplicate index {idx} for "
-                    f"{len(documents)} documents"
-                )
-            seen.add(idx)
-            scores[idx] = float(r["relevance_score"])
-        return scores
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:

@@ -195,8 +195,9 @@ class ProviderConfig(BaseModel):
     rerank_batch_size: int = Field(default=16, ge=1)
     # Per-request timeout for the ``/rerank`` call. Tight because rerank is on
     # the interactive read path — a dead connection should fail fast (the
-    # search layer then degrades to the fused order) rather than hang.
-    rerank_timeout_seconds: float = 30.0
+    # search layer then degrades to the fused order) rather than hang. ``gt=0``
+    # so an invalid 0/negative is rejected at config load, not at first query.
+    rerank_timeout_seconds: float = Field(default=30.0, gt=0.0)
 
     @model_validator(mode="after")
     def _require_rerank_wiring(self) -> ProviderConfig:

@@ -56,9 +56,16 @@ the byte-identical pre-rerank path (pinned by
 ```bash
 # Configure a base: Gitee Qwen3-Embedding-0.6B@1024 + rerank bge-reranker-v2-m3,
 # rerank_api_key_env: GITEE_API_KEY, rerank_batch_size: 16.
-# Off baseline (retrieval.rerank_enabled: false):
+
+# Arm 1 — OFF baseline. Set `retrieval.rerank_enabled: false` in dikw.yml, then:
 uv run --env-file .env dikw client eval --dataset scifact --retrieval hybrid
-# On (retrieval.rerank_enabled: true) — fresh snapshot / cache_root per arm:
+
+# Arm 2 — ON. Flip the SAME knob to `retrieval.rerank_enabled: true`, then re-run.
+# The eval cache key is (corpus, embedder) only and _run_queries reloads
+# retrieval config from the cached base, so DROP the snapshot between arms (or
+# point each arm at its own cache) — otherwise arm 2 silently reuses arm 1's
+# rerank_enabled and the table shows a spurious +0.0000 across the board:
+rm -rf <eval-cache-root>   # or: dikw client eval ... --cache off  (rebuilds each arm)
 uv run --env-file .env dikw client eval --dataset scifact --retrieval hybrid
 ```
 
