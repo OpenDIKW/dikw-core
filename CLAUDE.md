@@ -154,7 +154,7 @@ Working when diffs stay small, rewrites due to overcomplication are rare, and cl
 
 ## Delivery loop
 
-End-to-end protocol for any non-trivial change. Run it autonomously — only pause at the block signals listed at the bottom. The loop also maintains a per-branch **delivery artifact** as resumable STATE and an auditable PR receipt of the soft verify/review steps; the `dikw-core-delivery-workflow` skill carries its contract and template.
+End-to-end protocol for any non-trivial change. Run it autonomously — only pause at the block signals listed at the bottom. The loop also maintains a per-branch **delivery artifact** as resumable STATE and an auditable PR receipt of the soft verify/review steps; the `dikw-core-delivery-workflow` skill carries its contract and template. `uv run python tools/loop_metrics.py` reads the accumulated PR-body receipts + GitHub API to report the loop's own effectiveness (first-pass-green rate, escape rate, codex rounds) — "cost per accepted change".
 
 1. **Clarify the request.** Don't start coding from a vague ask. Restate the goal, list assumptions, surface alternatives. For multi-decision work, escalate to the `grill-with-docs` skill or the `superpowers:brainstorming` skill until a written plan exists.
 2. **Plan in the user's language, default TDD.** Write the plan in the language the user uses (Chinese in this repo — see `feedback_language_chinese`); keep code, commits, and technical identifiers English. Each step lands as `failing test → implementation → passing test`. K-layer / retrieval changes mandate this (see `feedback_tdd_discipline`).
