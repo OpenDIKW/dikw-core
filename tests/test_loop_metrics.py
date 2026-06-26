@@ -36,6 +36,7 @@ from tools.loop_metrics import (  # noqa: E402
     PRMetrics,
     Review,
     ReviewComment,
+    _parse_gh_objects,
     classify_first_pass_green,
     count_escapes,
     has_changes_requested,
@@ -123,6 +124,36 @@ def test_first_pass_green_error_state_counts_as_failure() -> None:
     # Commit statuses (codecov) use "error"/"failure"/"success", not check-run conclusions.
     results = [_cr("codecov/patch", "error")]
     assert classify_first_pass_green(results, DEFAULT_REQUIRED_FRAGMENTS) is False
+
+
+# --- _parse_gh_objects (the array-vs-NDJSON parser) ----------------------------
+
+
+def test_parse_gh_objects_json_array() -> None:
+    # Shape from `gh ... --json f1,f2` (no --jq): a single JSON array.
+    out = '[{"number": 1}, {"number": 2}]'
+    assert _parse_gh_objects(out) == [{"number": 1}, {"number": 2}]
+
+
+def test_parse_gh_objects_ndjson_stream() -> None:
+    # Shape from `gh api --paginate --jq '.[] | {x}'`: one compact object per line.
+    out = '{"name": "a"}\n{"name": "b"}\n{"name": "c"}\n'
+    assert _parse_gh_objects(out) == [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+
+
+def test_parse_gh_objects_empty_and_blank() -> None:
+    assert _parse_gh_objects("") == []
+    assert _parse_gh_objects("   \n  \n") == []
+
+
+def test_parse_gh_objects_single_object() -> None:
+    assert _parse_gh_objects('{"a": 1}') == [{"a": 1}]
+
+
+def test_parse_gh_objects_skips_unparseable_and_non_dict_lines() -> None:
+    # A malformed line and a bare-array line are dropped, not fatal.
+    out = '{"ok": 1}\nnot-json\n[1, 2]\n{"ok": 2}'
+    assert _parse_gh_objects(out) == [{"ok": 1}, {"ok": 2}]
 
 
 # --- count_escapes -------------------------------------------------------------

@@ -262,14 +262,16 @@ def _gh_obj(args: list[str]) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _gh_list(args: list[str]) -> list[dict[str, object]]:
-    """Parse ``gh`` stdout as a list of objects.
+def _parse_gh_objects(text: str) -> list[dict[str, object]]:
+    """Parse ``gh`` stdout into a list of objects, handling both shapes it emits.
 
-    Handles both shapes ``gh`` emits: a single JSON array (``--json`` without
-    ``--jq``) and an NDJSON stream (``--paginate`` with a per-object ``--jq``,
-    one compact object per line — which ``json.loads`` cannot parse whole).
+    A single JSON array (``--json`` without ``--jq``) parses whole; an NDJSON
+    stream (``--paginate`` with a per-object ``--jq`` — one compact object per
+    line, which ``json.loads`` cannot parse whole) falls back to line-by-line.
+    Non-dict and unparseable lines are dropped. Pure (no I/O) so it is
+    unit-tested directly.
     """
-    out = _run_gh(args).strip()
+    out = text.strip()
     if not out:
         return []
     try:
@@ -292,6 +294,11 @@ def _gh_list(args: list[str]) -> list[dict[str, object]]:
         if isinstance(obj, dict):
             objs.append(obj)
     return objs
+
+
+def _gh_list(args: list[str]) -> list[dict[str, object]]:
+    """Run ``gh`` and parse its stdout as a list of objects (see _parse_gh_objects)."""
+    return _parse_gh_objects(_run_gh(args))
 
 
 def _as_dict(value: object) -> dict[str, object]:
