@@ -120,10 +120,10 @@ into the PR body. Three roles across the lifecycle:
 - **STATE** (in progress) — step 0 reads it to resume an interrupted task mid-loop.
 - **Receipt** (at PR) — proves the soft verify/review steps actually ran, against
   "loops fail quietly"; rendered into the PR body at step 7.
-- **Metrics source** (after merge) — a future `tools/loop_metrics.py` reads the rendered
-  `## Delivery receipt` PR bodies across merged PRs (codex rounds, fresh-review TP/FP) for
-  the `cost per accepted change` readout — the durable PR-body receipts, not these
-  gitignored local files.
+- **Metrics source** (after merge) — `tools/loop_metrics.py` reads the rendered
+  `## Delivery receipt` PR bodies across merged PRs (codex rounds, fresh-review verdict)
+  plus the GitHub API (first-pass-green rate, escape rate) for the `cost per accepted
+  change` readout — the durable PR-body receipts, not these gitignored local files.
 
 Template:
 
