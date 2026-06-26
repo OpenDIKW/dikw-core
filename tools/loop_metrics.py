@@ -454,11 +454,15 @@ def _merged_pr_numbers(repo: str, limit: int, since: str | None) -> list[int]:
     naive-string slice of the newest ``limit`` PRs), and a truncation warning
     fires if the cap is hit.
     """
-    args = ["pr", "list", "--repo", repo, "--limit", str(limit), "--json", "number,mergedAt"]
+    # --state merged is set unconditionally (not only on the no-since branch): gh's
+    # --state defaults to `open`, and although `merged:>=` already returns only
+    # merged PRs on current gh, keeping the explicit merged state makes the --since
+    # window unambiguous across gh versions instead of relying on the qualifier
+    # implying it.
+    args = ["pr", "list", "--repo", repo, "--state", "merged", "--limit", str(limit),
+            "--json", "number,mergedAt"]
     if since:
         args += ["--search", f"merged:>={since} sort:created-desc"]
-    else:
-        args += ["--state", "merged"]
     rows = _gh_list(args)
     numbers = [n for r in rows if isinstance((n := r.get("number")), int)]
     if since and len(numbers) >= limit:
