@@ -41,6 +41,8 @@ from tools.loop_metrics import (  # noqa: E402
     count_escapes,
     has_changes_requested,
     parse_receipt,
+    receipt_section,
+    required_seen,
     summarize,
 )
 
@@ -124,6 +126,44 @@ def test_first_pass_green_error_state_counts_as_failure() -> None:
     # Commit statuses (codecov) use "error"/"failure"/"success", not check-run conclusions.
     results = [_cr("codecov/patch", "error")]
     assert classify_first_pass_green(results, DEFAULT_REQUIRED_FRAGMENTS) is False
+
+
+def test_first_pass_green_cancelled_and_stale_are_not_failures() -> None:
+    # GitHub Actions concurrency auto-cancels a superseded run on re-push; with
+    # filter=all that cancelled attempt is visible but must NOT deflate the rate.
+    results = [
+        _cr("lint-type-test (3.12)", "cancelled"),
+        _cr("lint-type-test (3.12)", "stale"),
+        _cr("lint-type-test (3.12)", "success"),
+    ]
+    assert classify_first_pass_green(results, DEFAULT_REQUIRED_FRAGMENTS) is True
+
+
+# --- required_seen -------------------------------------------------------------
+
+
+def test_required_seen_distinct_fragments_not_raw_count() -> None:
+    # A check that ran on three commits counts its fragment once.
+    results = [
+        _cr("ci / lint-type-test (3.12)", "success"),
+        _cr("ci / lint-type-test (3.12)", "success"),
+        _cr("Postgres contract tests", "success"),
+    ]
+    assert required_seen(results, DEFAULT_REQUIRED_FRAGMENTS) == {
+        "lint-type-test (3.12)",
+        "postgres contract",
+    }
+
+
+def test_required_seen_full_set() -> None:
+    results = [
+        _cr("lint-type-test (3.12)", "success"),
+        _cr("lint-type-test (3.13)", "success"),
+        _cr("Postgres contract tests", "success"),
+        _cr("Server e2e (serve-and-run)", "success"),
+        _cr("codecov/patch", "success"),
+    ]
+    assert required_seen(results, DEFAULT_REQUIRED_FRAGMENTS) == set(DEFAULT_REQUIRED_FRAGMENTS)
 
 
 # --- _parse_gh_objects (the array-vs-NDJSON parser) ----------------------------
@@ -236,6 +276,42 @@ mentions codex 7 rounds in release notes
     assert facts.fresh_review == "pass"
 
 
+def test_parse_receipt_fresh_review_word_boundary() -> None:
+    # "bypass" / "unblocking" must NOT be read as a verdict; "**blocking**" must.
+    bypass = "## Delivery receipt\n\nthe fresh-review step can bypass codex entirely\n"
+    assert parse_receipt(bypass).fresh_review is None
+    unblocking = "## Delivery receipt\n\nfresh-review of the unblocking work\n"
+    assert parse_receipt(unblocking).fresh_review is None
+    real = "## Delivery receipt\n\n### step 5 — fresh-review **blocking**\n"
+    assert parse_receipt(real).fresh_review == "blocking"
+
+
+def test_parse_receipt_section_bound_ignores_h2_inside_code_fence() -> None:
+    # The skill mandates pasting machine output into Evidence; a "## " line inside
+    # a fenced block is content, not a section break, so the codex/fresh lines
+    # that follow it must still be scraped.
+    body = """## Delivery receipt
+
+```
+pasted --help output:
+## Usage
+```
+
+| 4 | codex (2 rounds) | done |
+
+### step 5 — fresh-review **pass**
+
+## Summary by CodeRabbit
+"""
+    facts = parse_receipt(body)
+    assert facts.codex_rounds == 2
+    assert facts.fresh_review == "pass"
+
+
+def test_receipt_section_absent_returns_none() -> None:
+    assert receipt_section("## What\n\nno receipt here\n") is None
+
+
 # --- summarize -----------------------------------------------------------------
 
 
@@ -244,7 +320,7 @@ def _m(
     *,
     green: bool,
     escapes: int,
-    seen: int,
+    full: bool,
     codex: int | None = None,
     receipt: bool = False,
 ) -> PRMetrics:
@@ -254,7 +330,8 @@ def _m(
         author="holo",
         first_pass_green=green,
         escapes=escapes,
-        required_checks_seen=seen,
+        required_checks_seen=len(DEFAULT_REQUIRED_FRAGMENTS) if full else 1,
+        full_required=full,
         codex_rounds=codex,
         fresh_review=None,
         has_receipt=receipt,
@@ -264,9 +341,10 @@ def _m(
 
 def test_summarize_rates() -> None:
     records = [
-        _m(1, green=True, escapes=0, seen=5, codex=1, receipt=True),
-        _m(2, green=False, escapes=3, seen=5),
-        _m(3, green=True, escapes=1, seen=0),  # no CI data → excluded from green rate
+        _m(1, green=True, escapes=0, full=True, codex=1, receipt=True),
+        _m(2, green=False, escapes=3, full=True),
+        # saw only a partial required set → excluded from the green rate denominator
+        _m(3, green=True, escapes=1, full=False),
     ]
     agg = summarize(records)
     assert agg.total == 3

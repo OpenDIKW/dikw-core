@@ -11,8 +11,13 @@ Two data tiers, by robustness:
 
   * **GitHub API (robust, every historical PR).** ``first_pass_green`` — no
     *required* check ever concluded a failure across the PR's commits; and
-    ``escapes`` — inline review comments authored by someone other than the PR
-    author (plus a ``changes_requested`` flag for a non-author blocking review).
+    ``escapes`` — **inline** review comments authored by someone other than the
+    PR author (plus a ``changes_requested`` flag for a non-author blocking
+    review). Inline-only is deliberate: PR-level issue comments are dominated by
+    bot summaries / "LGTM" / the receipt itself, and deciding which of those is a
+    *finding* would need an LLM — disallowed on this read path — so the count is
+    a deterministic, honest under-count of inline findings rather than a noisy
+    over-count of all comments.
   * **PR-body delivery receipt (best-effort, only PRs that carry one).**
     ``codex_rounds`` and the ``fresh_review`` verdict, regex-scraped from the
     rendered ``## Delivery receipt`` section (see the ``dikw-core-delivery-
@@ -24,8 +29,9 @@ Karpathy's rule holds on the read path: every metric is a deterministic count or
 parse — no LLM judges actionability, so ``escapes`` is an honest upper bound that
 includes nitpicks rather than a model's guess at which comments "mattered".
 
-The pure functions (:func:`classify_first_pass_green`, :func:`count_escapes`,
-:func:`has_changes_requested`, :func:`parse_receipt`, :func:`summarize`) are
+The pure functions (:func:`classify_first_pass_green`, :func:`required_seen`,
+:func:`count_escapes`, :func:`has_changes_requested`, :func:`parse_receipt`,
+:func:`receipt_section`, :func:`_parse_gh_objects`, :func:`summarize`) are
 unit-tested in ``tests/test_loop_metrics.py``; :func:`main` adds the ``gh``
 plumbing — mirroring the split in ``tools/check_baselines.py``.
 """
@@ -33,6 +39,7 @@ plumbing — mirroring the split in ``tools/check_baselines.py``.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import subprocess
@@ -54,17 +61,16 @@ DEFAULT_REQUIRED_FRAGMENTS: tuple[str, ...] = (
 )
 
 # Conclusions (check-runs) and states (commit statuses) that mean the check was
-# red. check-runs use ``failure``/``timed_out``/``cancelled``/…; commit statuses
-# (e.g. codecov/patch) use ``error``/``failure``. A merged PR has no pending
-# checks left, so ``queued``/``in_progress``/``pending`` need no handling.
+# genuinely red. check-runs use ``failure``/``timed_out``/…; commit statuses
+# (e.g. codecov/patch) use ``error``/``failure``. NB ``cancelled`` and ``stale``
+# are deliberately NOT here: GitHub Actions concurrency auto-cancels a superseded
+# run on re-push, which is not a CI failure — counting it would deflate the rate.
 _FAILING: frozenset[str] = frozenset(
     {
         "failure",
         "timed_out",
-        "cancelled",
         "startup_failure",
         "action_required",
-        "stale",
         "error",
     }
 )
@@ -72,17 +78,18 @@ _FAILING: frozenset[str] = frozenset(
 # Match the receipt section heading rendered into a PR body — "## Delivery
 # receipt" optionally followed by a parenthetical ("(dogfooded — …)").
 _RECEIPT_HEADING_RE = re.compile(r"^##\s+Delivery receipt\b", re.IGNORECASE | re.MULTILINE)
-# The next top-level (H2) heading, used to bound the receipt section so a codex /
-# fresh-review mention in the surrounding narrative (a "## Why" above, a "##
-# Summary by CodeRabbit" below) can't bleed into the scrape.
-_NEXT_H2_RE = re.compile(r"^##\s+", re.MULTILINE)
+_H2_LINE_RE = re.compile(r"^##\s+")
+_FENCE_RE = re.compile(r"^\s*```")
 # Codex round count, however the receipt spells it: "codex (1 round)",
-# "codex (≤3) | done | 2 rounds", "### step 4 — codex (3 rounds)". Grab the first
-# integer that sits next to the word "round" on a line that mentions codex.
+# "codex (≤3) | done | 2 rounds". Confined to one line on purpose — the canonical
+# receipt renders the count in a single table cell, and spanning lines would risk
+# grabbing an unrelated number elsewhere in the section. Fails closed to None.
 _CODEX_ROUNDS_RE = re.compile(r"codex[^\n]*?(\d+)\s*rounds?\b", re.IGNORECASE)
-# Fresh-review verdict: "fresh-review **pass**" / "fresh-review: blocking".
+# Fresh-review verdict: "fresh-review **pass**" / "fresh-review: blocking". Word
+# boundaries on the alternation so it does not match "pass" inside "bypass" or
+# "blocking" inside "unblocking".
 _FRESH_REVIEW_RE = re.compile(
-    r"fresh-review\b[^\n]*?\*{0,2}\s*(pass|blocking|changes[_ ]requested)",
+    r"fresh-review\b[^\n]*?\*{0,2}\b(pass|blocking|changes[ _]requested)\b",
     re.IGNORECASE,
 )
 
@@ -128,7 +135,8 @@ class PRMetrics:
     author: str
     first_pass_green: bool
     escapes: int
-    required_checks_seen: int
+    required_checks_seen: int  # distinct required fragments seen, not a raw count
+    full_required: bool  # saw the *entire* required set → comparable in the rate
     codex_rounds: int | None
     fresh_review: str | None
     has_receipt: bool
@@ -159,16 +167,29 @@ def _is_required(name: str, required_fragments: Sequence[str]) -> bool:
     return any(frag in low for frag in required_fragments)
 
 
+def required_seen(
+    results: Sequence[CheckResult], required_fragments: Sequence[str]
+) -> set[str]:
+    """The set of required fragments that matched at least one check result.
+
+    Distinct fragments, not a raw count — a check that ran on three commits (and
+    in both the check-runs and statuses feeds) counts its fragment once.
+    """
+    names = [r.name.lower() for r in results]
+    return {frag for frag in required_fragments if any(frag in n for n in names)}
+
+
 def classify_first_pass_green(
     results: Sequence[CheckResult], required_fragments: Sequence[str]
 ) -> bool:
     """True iff no *required* check ever concluded a failure.
 
-    ``results`` is the union of check-runs + commit statuses across **all** of
-    the PR's commits, so a required check that failed on an early commit and was
-    fixed on a later one still makes the PR not-first-pass-green. A required
-    check that never ran (absent) is not a failure — this degrades gracefully
-    across history where the required set changed.
+    ``results`` is the union of check-runs (queried with ``filter=all`` so a
+    same-commit re-run cannot hide an earlier failure) + commit statuses across
+    **all** of the PR's commits, so a required check that failed on any commit —
+    or any attempt — makes the PR not-first-pass-green. A required check that
+    never ran (absent) is not a failure; this degrades gracefully across history
+    where the required set changed.
     """
     for r in results:
         if _is_required(r.name, required_fragments) and r.conclusion.lower() in _FAILING:
@@ -180,9 +201,10 @@ def count_escapes(comments: Sequence[ReviewComment], author: str) -> int:
     """Inline review comments authored by someone other than the PR author.
 
     An honest upper bound on findings that leaked past in-loop review — it counts
-    nitpicks too, by design (no LLM decides which comments "mattered").
+    nitpicks too, by design (no LLM decides which comments "mattered"). Empty /
+    null authors are dropped (a deleted account yields no usable login).
     """
-    return sum(1 for c in comments if c.author != author)
+    return sum(1 for c in comments if c.author and c.author != author)
 
 
 def has_changes_requested(reviews: Sequence[Review], author: str) -> bool:
@@ -190,18 +212,36 @@ def has_changes_requested(reviews: Sequence[Review], author: str) -> bool:
     return any(r.author != author and r.state.upper() == "CHANGES_REQUESTED" for r in reviews)
 
 
-def parse_receipt(body: str) -> ReceiptFacts:
-    """Best-effort scrape of the rendered ``## Delivery receipt`` PR-body section.
+def receipt_section(body: str) -> str | None:
+    """The text of the ``## Delivery receipt`` section, or None if absent.
 
-    The codex/fresh-review scrape is bounded to the receipt section (heading →
-    next H2 / EOF) so a mention in the surrounding PR narrative or a trailing
-    CodeRabbit summary does not leak into the metric.
+    Bounded heading → next top-level (H2) heading / EOF so a codex / fresh-review
+    mention in the surrounding narrative (a "## Why" above, a "## Summary by
+    CodeRabbit" below) can't bleed into the scrape. Fenced code blocks are
+    skipped when looking for the bound, because the skill mandates pasting real
+    machine output into Evidence — a ``## `` line inside a pasted ``` fence is
+    content, not a real section break.
     """
     heading = _RECEIPT_HEADING_RE.search(body)
     if not heading:
+        return None
+    start = heading.end()
+    offset = start
+    in_fence = False
+    for line in body[start:].splitlines(keepends=True):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and _H2_LINE_RE.match(line):
+            return body[start:offset]
+        offset += len(line)
+    return body[start:]
+
+
+def parse_receipt(body: str) -> ReceiptFacts:
+    """Best-effort scrape of the rendered ``## Delivery receipt`` PR-body section."""
+    section = receipt_section(body)
+    if section is None:
         return ReceiptFacts(has_receipt=False, codex_rounds=None, fresh_review=None)
-    nxt = _NEXT_H2_RE.search(body, heading.end())
-    section = body[heading.end() : nxt.start()] if nxt else body[heading.end() :]
     rounds_match = _CODEX_ROUNDS_RE.search(section)
     fresh_match = _FRESH_REVIEW_RE.search(section)
     fresh = fresh_match.group(1).lower().replace("_", " ") if fresh_match else None
@@ -215,14 +255,14 @@ def parse_receipt(body: str) -> ReceiptFacts:
 def summarize(records: Sequence[PRMetrics]) -> Aggregate:
     """Fold per-PR rows into window rates.
 
-    ``first_pass_green_rate`` is computed only over PRs we have CI data for
-    (``required_checks_seen > 0``), so old PRs that predate the required checks
-    don't inflate it. ``mean_codex_rounds`` averages only PRs whose receipt
-    reported a round count.
+    ``first_pass_green_rate`` is computed only over PRs that saw the **full**
+    required set (``full_required``), so old PRs that predate some required
+    checks — or any partial set — don't skew an apples-to-oranges rate.
+    ``mean_codex_rounds`` averages only PRs whose receipt reported a count.
     """
     total = len(records)
-    with_ci = sum(1 for r in records if r.required_checks_seen > 0)
-    green = sum(1 for r in records if r.required_checks_seen > 0 and r.first_pass_green)
+    with_ci = sum(1 for r in records if r.full_required)
+    green = sum(1 for r in records if r.full_required and r.first_pass_green)
     total_escapes = sum(r.escapes for r in records)
     with_receipt = sum(1 for r in records if r.has_receipt)
     changes_requested = sum(1 for r in records if r.changes_requested)
@@ -239,27 +279,6 @@ def summarize(records: Sequence[PRMetrics]) -> Aggregate:
         mean_codex_rounds=(sum(codex_values) / len(codex_values)) if codex_values else None,
         changes_requested=changes_requested,
     )
-
-
-# --- gh I/O (thin; not unit-tested) --------------------------------------------
-
-
-def _run_gh(args: list[str]) -> str:
-    """Run ``gh`` and return stdout; exit with a clear message on failure."""
-    try:
-        return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, check=True
-        ).stdout
-    except FileNotFoundError:
-        sys.exit("error: `gh` CLI not found on PATH — install/authenticate it first.")
-    except subprocess.CalledProcessError as exc:
-        sys.exit(f"error: `gh {' '.join(args)}` failed:\n{exc.stderr.strip()}")
-
-
-def _gh_obj(args: list[str]) -> dict[str, object]:
-    """Parse ``gh`` stdout as a single JSON object (e.g. ``pr view --json``)."""
-    parsed = json.loads(_run_gh(args) or "{}")
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _parse_gh_objects(text: str) -> list[dict[str, object]]:
@@ -296,6 +315,36 @@ def _parse_gh_objects(text: str) -> list[dict[str, object]]:
     return objs
 
 
+# --- gh I/O (thin; not unit-tested) --------------------------------------------
+
+
+class _GhError(RuntimeError):
+    """A ``gh`` invocation failed (non-zero exit) — recoverable per-PR."""
+
+
+def _run_gh(args: list[str]) -> str:
+    """Run ``gh`` and return stdout.
+
+    A missing ``gh`` binary is fatal (every call would fail) → ``sys.exit``. A
+    non-zero exit raises :class:`_GhError` so the caller can isolate a transient
+    per-PR failure instead of aborting a whole multi-PR window.
+    """
+    try:
+        return subprocess.run(
+            ["gh", *args], capture_output=True, text=True, check=True
+        ).stdout
+    except FileNotFoundError:
+        sys.exit("error: `gh` CLI not found on PATH — install/authenticate it first.")
+    except subprocess.CalledProcessError as exc:
+        raise _GhError(f"`gh {' '.join(args)}` failed: {exc.stderr.strip()}") from exc
+
+
+def _gh_obj(args: list[str]) -> dict[str, object]:
+    """Parse ``gh`` stdout as a single JSON object (e.g. ``pr view --json``)."""
+    parsed = json.loads(_run_gh(args) or "{}")
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _gh_list(args: list[str]) -> list[dict[str, object]]:
     """Run ``gh`` and parse its stdout as a list of objects (see _parse_gh_objects)."""
     return _parse_gh_objects(_run_gh(args))
@@ -310,11 +359,17 @@ def _as_list(value: object) -> list[object]:
 
 
 def _check_results_for_commit(repo: str, sha: str) -> list[CheckResult]:
-    """Union of check-runs + commit statuses for one commit SHA."""
+    """Union of check-runs + commit statuses for one commit SHA.
+
+    check-runs uses ``filter=all`` (every attempt, so a same-commit re-run can't
+    hide an earlier failure); statuses uses the **plural** ``/statuses`` endpoint
+    (full history) rather than the combined ``/status`` (latest-per-context only).
+    Both are paginated.
+    """
     results: list[CheckResult] = []
     runs = _gh_list(
         [
-            "api", f"repos/{repo}/commits/{sha}/check-runs", "--paginate",
+            "api", f"repos/{repo}/commits/{sha}/check-runs?filter=all", "--paginate",
             "--jq", ".check_runs[] | {name, conclusion}",
         ]
     )
@@ -323,7 +378,10 @@ def _check_results_for_commit(repo: str, sha: str) -> list[CheckResult]:
             CheckResult(name=str(obj.get("name", "")), conclusion=str(obj.get("conclusion") or ""))
         )
     statuses = _gh_list(
-        ["api", f"repos/{repo}/commits/{sha}/status", "--jq", ".statuses[] | {context, state}"]
+        [
+            "api", f"repos/{repo}/commits/{sha}/statuses", "--paginate",
+            "--jq", ".[] | {context, state}",
+        ]
     )
     for obj in statuses:
         results.append(
@@ -332,14 +390,20 @@ def _check_results_for_commit(repo: str, sha: str) -> list[CheckResult]:
     return results
 
 
-def _collect_pr(repo: str, number: int, required_fragments: Sequence[str]) -> PRMetrics:
+def _collect_pr(
+    repo: str, number: int, required_fragments: Sequence[str], include_bots: bool
+) -> PRMetrics | None:
+    """Gather one PR's metrics, or None if it is bot-authored and not included."""
     pr = _gh_obj(
         [
             "pr", "view", str(number), "--repo", repo,
             "--json", "number,title,author,body,commits,reviews",
         ]
     )
-    author = str(_as_dict(pr.get("author")).get("login", ""))
+    author_obj = _as_dict(pr.get("author"))
+    if not include_bots and author_obj.get("is_bot"):
+        return None
+    author = str(author_obj.get("login") or "")
     shas = [
         str(c.get("oid", ""))
         for c in _as_list(pr.get("commits"))
@@ -348,7 +412,7 @@ def _collect_pr(repo: str, number: int, required_fragments: Sequence[str]) -> PR
     all_checks: list[CheckResult] = []
     for sha in shas:
         all_checks.extend(_check_results_for_commit(repo, sha))
-    seen = sum(1 for c in all_checks if _is_required(c.name, required_fragments))
+    seen = required_seen(all_checks, required_fragments)
 
     comments = _gh_list(
         [
@@ -356,10 +420,10 @@ def _collect_pr(repo: str, number: int, required_fragments: Sequence[str]) -> PR
             "--jq", ".[] | {login: .user.login}",
         ]
     )
-    review_comments = [ReviewComment(author=str(o.get("login", ""))) for o in comments]
+    review_comments = [ReviewComment(author=str(o.get("login") or "")) for o in comments]
     reviews = [
         Review(
-            author=str(_as_dict(r.get("author")).get("login", "")),
+            author=str(_as_dict(r.get("author")).get("login") or ""),
             state=str(r.get("state", "")),
         )
         for r in _as_list(pr.get("reviews"))
@@ -373,7 +437,8 @@ def _collect_pr(repo: str, number: int, required_fragments: Sequence[str]) -> PR
         author=author,
         first_pass_green=classify_first_pass_green(all_checks, required_fragments),
         escapes=count_escapes(review_comments, author),
-        required_checks_seen=seen,
+        required_checks_seen=len(seen),
+        full_required=len(seen) == len(required_fragments),
         codex_rounds=facts.codex_rounds,
         fresh_review=facts.fresh_review,
         has_receipt=facts.has_receipt,
@@ -382,19 +447,26 @@ def _collect_pr(repo: str, number: int, required_fragments: Sequence[str]) -> PR
 
 
 def _merged_pr_numbers(repo: str, limit: int, since: str | None) -> list[int]:
-    rows = _gh_list(
-        [
-            "pr", "list", "--repo", repo, "--state", "merged",
-            "--limit", str(limit), "--json", "number,mergedAt",
-        ]
-    )
-    numbers: list[int] = []
-    for row in rows:
-        if since and str(row.get("mergedAt", "")) < since:
-            continue
-        num = row.get("number")
-        if isinstance(num, int):
-            numbers.append(num)
+    """Merged PR numbers in the window.
+
+    When ``since`` is given it is filtered **server-side** via the ``merged:>=``
+    search qualifier (so ``--limit`` caps a date-correct window, not a
+    naive-string slice of the newest ``limit`` PRs), and a truncation warning
+    fires if the cap is hit.
+    """
+    args = ["pr", "list", "--repo", repo, "--limit", str(limit), "--json", "number,mergedAt"]
+    if since:
+        args += ["--search", f"merged:>={since} sort:created-desc"]
+    else:
+        args += ["--state", "merged"]
+    rows = _gh_list(args)
+    numbers = [n for r in rows if isinstance((n := r.get("number")), int)]
+    if since and len(numbers) >= limit:
+        print(
+            f"warning: --limit {limit} reached with --since {since}; the window may be "
+            f"truncated — raise --limit to be sure it covers the full date range.",
+            file=sys.stderr,
+        )
     return numbers
 
 
@@ -413,7 +485,7 @@ def _render_text(records: Sequence[PRMetrics], agg: Aggregate) -> str:
     lines = [
         "# Delivery-loop metrics",
         "",
-        f"PRs in window: {agg.total}  (with CI data: {agg.with_ci})",
+        f"PRs in window: {agg.total}  (measured on the full required set: {agg.with_ci})",
         (
             f"first-pass-green: {agg.first_pass_green}/{agg.with_ci} "
             f"= {_fmt_rate(agg.first_pass_green_rate)}"
@@ -433,7 +505,7 @@ def _render_text(records: Sequence[PRMetrics], agg: Aggregate) -> str:
         "|---|---|---|---|---|---|---|",
     ]
     for r in records:
-        green = "?" if r.required_checks_seen == 0 else ("✓" if r.first_pass_green else "✗")
+        green = "?" if not r.full_required else ("✓" if r.first_pass_green else "✗")
         cr = "✗" if r.changes_requested else ""
         codex = str(r.codex_rounds) if r.codex_rounds is not None else "—"
         fresh = r.fresh_review or "—"
@@ -455,25 +527,56 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--limit", type=int, default=20, help="max merged PRs to scan (default: %(default)s)"
     )
     parser.add_argument(
-        "--since", default=None, help="only PRs merged on/after this ISO date (e.g. 2026-06-01)"
+        "--since", default=None,
+        help="only PRs merged on/after this ISO date YYYY-MM-DD (server-side filter)",
     )
     parser.add_argument(
         "--required", action="append", default=None,
         help="required-check name fragment (repeatable; overrides the default set)",
     )
     parser.add_argument(
+        "--include-bots", action="store_true",
+        help="include bot-authored PRs (default: skip them — they bypass the human loop)",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON instead of a table"
     )
     args = parser.parse_args(argv)
 
+    if args.since:
+        try:
+            datetime.date.fromisoformat(args.since)
+        except ValueError:
+            return _fail(f"--since must be an ISO date (YYYY-MM-DD), got {args.since!r}")
+
     required = (
         tuple(f.lower() for f in args.required) if args.required else DEFAULT_REQUIRED_FRAGMENTS
     )
-    numbers = _merged_pr_numbers(args.repo, args.limit, args.since)
+    try:
+        numbers = _merged_pr_numbers(args.repo, args.limit, args.since)
+    except _GhError as exc:
+        return _fail(str(exc))
     if not numbers:
         print("no merged PRs in window", file=sys.stderr)
         return 0
-    records = [_collect_pr(args.repo, n, required) for n in numbers]
+
+    records: list[PRMetrics] = []
+    skipped_bots = 0
+    for n in numbers:
+        try:
+            rec = _collect_pr(args.repo, n, required, args.include_bots)
+        except _GhError as exc:
+            print(f"warning: skipping PR #{n}: {exc}", file=sys.stderr)
+            continue
+        if rec is None:
+            skipped_bots += 1
+            continue
+        records.append(rec)
+    if skipped_bots:
+        print(f"note: skipped {skipped_bots} bot-authored PR(s) (use --include-bots)", file=sys.stderr)
+    if not records:
+        print("no human-authored PRs in window", file=sys.stderr)
+        return 0
     agg = summarize(records)
 
     if args.json:
@@ -482,6 +585,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(_render_text(records, agg))
     return 0
+
+
+def _fail(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
