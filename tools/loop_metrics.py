@@ -72,6 +72,10 @@ _FAILING: frozenset[str] = frozenset(
 # Match the receipt section heading rendered into a PR body — "## Delivery
 # receipt" optionally followed by a parenthetical ("(dogfooded — …)").
 _RECEIPT_HEADING_RE = re.compile(r"^##\s+Delivery receipt\b", re.IGNORECASE | re.MULTILINE)
+# The next top-level (H2) heading, used to bound the receipt section so a codex /
+# fresh-review mention in the surrounding narrative (a "## Why" above, a "##
+# Summary by CodeRabbit" below) can't bleed into the scrape.
+_NEXT_H2_RE = re.compile(r"^##\s+", re.MULTILINE)
 # Codex round count, however the receipt spells it: "codex (1 round)",
 # "codex (≤3) | done | 2 rounds", "### step 4 — codex (3 rounds)". Grab the first
 # integer that sits next to the word "round" on a line that mentions codex.
@@ -187,11 +191,19 @@ def has_changes_requested(reviews: Sequence[Review], author: str) -> bool:
 
 
 def parse_receipt(body: str) -> ReceiptFacts:
-    """Best-effort scrape of the rendered ``## Delivery receipt`` PR-body section."""
-    if not _RECEIPT_HEADING_RE.search(body):
+    """Best-effort scrape of the rendered ``## Delivery receipt`` PR-body section.
+
+    The codex/fresh-review scrape is bounded to the receipt section (heading →
+    next H2 / EOF) so a mention in the surrounding PR narrative or a trailing
+    CodeRabbit summary does not leak into the metric.
+    """
+    heading = _RECEIPT_HEADING_RE.search(body)
+    if not heading:
         return ReceiptFacts(has_receipt=False, codex_rounds=None, fresh_review=None)
-    rounds_match = _CODEX_ROUNDS_RE.search(body)
-    fresh_match = _FRESH_REVIEW_RE.search(body)
+    nxt = _NEXT_H2_RE.search(body, heading.end())
+    section = body[heading.end() : nxt.start()] if nxt else body[heading.end() :]
+    rounds_match = _CODEX_ROUNDS_RE.search(section)
+    fresh_match = _FRESH_REVIEW_RE.search(section)
     fresh = fresh_match.group(1).lower().replace("_", " ") if fresh_match else None
     return ReceiptFacts(
         has_receipt=True,

@@ -182,6 +182,29 @@ def test_parse_receipt_empty_body() -> None:
     assert facts.has_receipt is False
 
 
+def test_parse_receipt_scoped_to_section_not_whole_body() -> None:
+    # Narrative BEFORE the receipt mentions misleading values; the real receipt
+    # section (and a CodeRabbit block AFTER it) must not bleed into the scrape.
+    body = """## Why
+
+An earlier abandoned attempt took codex 9 rounds and the fresh-review came back
+blocking before we reworked it.
+
+## Delivery receipt
+
+| 4 | codex (1 round) | done | ok |
+
+### step 5 — fresh-review **pass**
+
+## Summary by CodeRabbit
+mentions codex 7 rounds in release notes
+"""
+    facts = parse_receipt(body)
+    assert facts.has_receipt is True
+    assert facts.codex_rounds == 1
+    assert facts.fresh_review == "pass"
+
+
 # --- summarize -----------------------------------------------------------------
 
 
