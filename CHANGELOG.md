@@ -7,6 +7,20 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.3 — delivery-loop instrumentation (no engine changes)
+
+### Changed
+
+- **Cadence release — no shipped-engine change.** The published wheel is
+  byte-identical to 0.6.2; `src/` is untouched, so every runtime behavior, on-disk
+  format, database schema, and CLI surface is unchanged. The delta lives entirely in
+  the repo's own maintainer-facing delivery loop (neither shipped in the wheel nor
+  user-facing): a resumable-STATE + PR-receipt artifact convention for the delivery
+  workflow, and a new `tools/loop_metrics.py` that reads the accumulated PR-body
+  receipts plus the GitHub API to report the loop's own effectiveness
+  (first-pass-green rate, escape rate, codex rounds). The bump keeps the GHCR image,
+  the pip pin, and the docs in lockstep with the tag.
+
 ## 0.6.2 — optional cross-encoder reranking; atomic writes + concurrency hardening; repositioned as a self-managed knowledge engine
 
 ### Changed

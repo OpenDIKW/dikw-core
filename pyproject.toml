@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dikw-core"
-version = "0.6.2"
+version = "0.6.3"
 description = "AI-native knowledge engine across the DIKW pyramid (Data → Information → Knowledge → Wisdom)"
 readme = "README.md"
 requires-python = ">=3.12"
