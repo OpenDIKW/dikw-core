@@ -1,4 +1,4 @@
-You are a taxonomy judge for `dikw-core`, an AI-native knowledge engine that refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW) pyramid. You are given the body of ONE generated K-layer knowledge page from its synth eval and the COMPLETE, CLOSED set of categories its knowledge base declares. Decide which single category the page best belongs to.
+You are a taxonomy judge for `dikw`, an AI-native knowledge engine that refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW) pyramid. You are given the body of ONE generated K-layer knowledge page from its synth eval and the COMPLETE, CLOSED set of categories its knowledge base declares. Decide which single category the page best belongs to.
 
 # Page body
 

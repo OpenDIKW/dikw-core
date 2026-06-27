@@ -16,6 +16,8 @@ import re
 
 from dikw_core import prompts
 from dikw_core.domains.knowledge.lint import check_atomicity
+from dikw_core.domains.knowledge.lint_fixers.broken_wikilink import _GROUNDED_SYSTEM
+from dikw_core.domains.knowledge.lint_fixers.orphan_page import _MERGE_SYSTEM
 from dikw_core.domains.knowledge.synthesize import (
     DEFAULT_ALLOWED_CATEGORIES,
     DEFAULT_SYNTH_SYSTEM,
@@ -243,6 +245,54 @@ def test_template_prose_references_current_section_names() -> None:
     context`` with H3 sub-sections."""
     raw = prompts.load("synthesize")
     assert "existing-pages section above" not in raw
+
+
+def test_knowledge_system_prompts_sourced_from_packaged_md() -> None:
+    """Each ``domains/knowledge`` system prompt equals its packaged ``prompts/*.md``
+    read **independently** of the cached :func:`prompts.load` the constant itself
+    uses — so re-inlining a constant to a literal that drifts from the shipped file
+    fails here, not silently at synth/lint time. Reading the file directly (rather
+    than asserting ``load(x) == load(x)``) is what makes this non-tautological."""
+    from importlib import resources
+
+    def packaged(name: str) -> str:
+        return (
+            resources.files("dikw_core.prompts").joinpath(f"{name}.md").read_text(encoding="utf-8")
+        )
+
+    assert packaged("synthesize_system") == DEFAULT_SYNTH_SYSTEM
+    assert packaged("lint_fix_orphan_merge_system") == _MERGE_SYSTEM
+    assert packaged("lint_fix_broken_wikilink_grounded_system") == _GROUNDED_SYSTEM
+
+
+def test_no_packaged_prompt_calls_the_product_dikw_core() -> None:
+    """Every packaged prompt (synth + lint + eval) refers to the product as the
+    code-span ``dikw``; the legacy ``dikw-core`` self-reference must not survive
+    in any ``prompts/*.md``."""
+    from importlib import resources
+
+    offenders = [
+        entry.name
+        for entry in resources.files("dikw_core.prompts").iterdir()
+        if entry.name.endswith(".md") and "`dikw-core`" in entry.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"prompts still calling the product `dikw-core`: {offenders}"
+
+
+def test_lint_system_prompts_carry_standard_self_intro() -> None:
+    """``_MERGE_SYSTEM`` / ``_GROUNDED_SYSTEM`` open with the same self-intro the
+    other authoring prompts use — ``**lint-fix** component of `dikw``` plus the
+    ``an AI-native knowledge engine`` descriptor — rather than the old bare
+    ``for `dikw-core``` reference, and still carry their task-specific
+    instructions (so a truncated/corrupt extraction is caught, not just the
+    intro line)."""
+    for sp in (_MERGE_SYSTEM, _GROUNDED_SYSTEM):
+        assert "**lint-fix** component of `dikw`" in sp
+        assert "an AI-native knowledge engine" in sp
+        assert "Emit exactly one <page> block" in sp
+        assert "Never invent biographical or factual claims." in sp
+    assert "merge a K-layer knowledge orphan" in _MERGE_SYSTEM
+    assert "REFUSE: insufficient evidence" in _GROUNDED_SYSTEM
 
 
 def test_duplicate_rule_scoped_to_existing_page_lists() -> None:
