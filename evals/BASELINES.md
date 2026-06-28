@@ -7,6 +7,41 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-28 — eval-infra: two-level snapshot cache (fixes the RetrievalConfig footgun, #250)
+
+**Change under test:** `run_eval`'s snapshot cache key (`_corpus_cache_key`) now
+includes the one **ingest-time** `RetrievalConfig` field, `cjk_tokenizer` (baked
+into the FTS index), and `_run_queries` reads every **query-time** knob from the
+caller's **live** config instead of the baked snapshot's `dikw.yml`: the
+search-time `RetrievalConfig` fields (`rrf_k`, `bm25_weight`, `vector_weight`,
+`fusion`, `same_doc_penalty_alpha`, `graph_*`, `rerank_enabled`,
+`rerank_candidate_k`) **and** the rerank provider wiring (`provider.rerank_model`
+/ base_url) — the reranker scores `(query, chunk)` at query time and never
+touches the stored index, so it is read live, not keyed. Eval-infra only —
+`domains/info/search.py` and the retrieval algorithm are untouched, so this is
+`no-baseline-needed` (a new benchmark row would measure nothing new).
+
+**Consequence for the older entries below:** the "one snapshot per arm" /
+"DROP the snapshot between arms" footgun they describe (e.g. the 2026-06-25 rerank
+entry) **no longer applies to any query-time change**. Flipping `rerank_enabled`,
+the rerank *model*, `rrf_k`, weights, `fusion`, or `graph_*` between arms under
+the default `cache_mode="read_write"` now takes effect correctly and reuses the
+embeddings (fast). Only an **ingest-time** change (the embedding model/dim, or
+`cjk_tokenizer`) forces a fresh snapshot — and the key does that automatically.
+
+**Verification:** the cache-**hit** regression this PR fixes is covered by the
+unit tests `tests/test_eval_runner.py::test_eval_cache_search_time_config_read_live_on_hit`
+(asserts the warm run builds the searcher from the live `rrf_k`, not the baked
+one — goes red on pre-fix code, which threaded `cfg.retrieval`) and
+`::test_eval_cache_cjk_tokenizer_change_forces_reingest`; a tripwire test
+(`::test_retrieval_config_fields_are_classified_for_eval_cache`) fails if a new
+`RetrievalConfig` field is added unclassified. A hermetic `mvp` run
+(`FakeEmbeddings`, `cache_mode="off"`) is only a flow sanity check — it
+fresh-builds a base each run, so it does NOT exercise the cache-hit path and
+would pass on pre-fix code too; it merely confirms the live config is honored at
+all (default config vs `fusion="combsum"` → `mrr` 1.0 vs 0.833, `ndcg@10` 1.0 vs
+0.877) and that the default-config numbers are unchanged (algorithm untouched).
+
 ## 2026-06-25 — rerank stage: post-fusion cross-encoder (opt-in), SciFact off-vs-on
 
 **Change under test:** the new optional rerank stage in `HybridSearcher.search`

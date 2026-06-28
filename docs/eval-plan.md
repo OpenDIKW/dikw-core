@@ -242,12 +242,19 @@ or non-destructiveness. Two gates:
    embedder**: the hermetic `FakeEmbeddings` is lexical bag-of-words and can't
    exercise the semantically-close-but-wrong failure mode rerank targets, so a
    fake-embedder run is non-informative for this change. scifact (large recall
-   pool) is the strongest signal; mvp is the dogfood sanity check. **Run each
-   arm with its own snapshot** (`cache_root`, or `cache_mode="off"`): the eval
-   cache key is `(corpus, embedder)` only and `_run_queries` reloads retrieval
-   config from the cached base's `dikw.yml`, so a shared `cache_root` makes the
-   second arm silently reuse the first arm's `rerank_enabled` — same reason RRF
-   weight A/B uses the offline re-fusion tools, not the `run_eval` cache.
+   pool) is the strongest signal; mvp is the dogfood sanity check. **Query-time
+   knobs are read live, so a shared `cache_root` is safe for these arms** — the
+   snapshot cache key covers only ingest-time inputs (corpus, embedding
+   model+dim, the one ingest-time retrieval field `cjk_tokenizer`, multimodal
+   identity), while everything applied at query time — the search-time
+   `RetrievalConfig` knobs (`rrf_k`, weights, `fusion`, `graph_*`,
+   `rerank_enabled`, `rerank_candidate_k`) **and** the rerank provider wiring
+   (`provider.rerank_model` / base_url) — is read from the caller's live config
+   in `_run_queries`, not the baked snapshot. So flipping `rerank_enabled`, the
+   rerank *model*, or any fusion knob between arms under the default
+   `cache_mode="read_write"` is both fast (no re-embed) and correct. Only an
+   **ingest-time** change (the embedding model/dim, or `cjk_tokenizer`) forces a
+   fresh snapshot — and the key handles that automatically.
 
 The Stage A K-layer fan-out + atomicity-lint baseline (2026-05-08), the
 wikilink graph leg ablation (2026-05-08), and the rerank-stage SciFact

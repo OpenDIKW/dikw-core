@@ -152,15 +152,17 @@ def _corpus_cache_key(
     model: str,
     dim: int | None,
     *,
+    cjk_tokenizer: str,
     mm_fingerprint: str | None = None,
 ) -> str:
-    """Stable cache key combining dataset name, model, dim, corpus hash, schema.
+    """Stable cache key combining dataset name, model, dim, corpus hash,
+    tokenizer, schema.
 
     Algorithm:
       1. sha256 over sorted (rel_posix_path, file_bytes) pairs in corpus_dir
       2. take first 8 hex chars (collision ~1/4B per dataset+model — acceptable;
          ``cache_mode="rebuild"`` is the escape hatch)
-      3. format: ``{dataset}/{model}__{dim}__{digest}__mm{mm}__sf{N}``
+      3. format: ``{dataset}/{model}__{dim}__{digest}__mm{mm}__cjk{tok}__sf{N}``
 
     ``as_posix()`` keeps the key cross-platform (Windows / Linux yield
     the same digest). Embedding ``dim=None`` is rendered as ``0`` so the
@@ -171,11 +173,14 @@ def _corpus_cache_key(
     index can't be silently reused by a real-vector multimodal eval.
     ``None`` is rendered as ``0`` for back-compat with pre-mm caches.
 
-    NOTE: ``RetrievalConfig`` (rrf_k, weights, fusion, graph_*, …) is
-    NOT in the key. Re-running with a different retrieval config under
-    ``cache_mode="read_write"`` silently reuses the first run's
-    ``dikw.yml`` — the snapshot's base carries the old block. Retrieval
-    ablations must use ``cache_mode="off"`` until this is fixed.
+    ``cjk_tokenizer`` is the one **ingest-time** ``RetrievalConfig`` field —
+    it's baked into the FTS index (and drives the chunker's token budget) at
+    ingest, so it MUST be in the key: changing it forces a fresh snapshot.
+    Every other ``RetrievalConfig`` knob (rrf_k, weights, fusion, graph_*,
+    rerank_*) is **search-time** and is read live in ``_run_queries`` from
+    the caller's config — never from the baked snapshot — so a retrieval
+    ablation under ``cache_mode="read_write"`` is both fast (no re-embed)
+    and correct.
     """
     h = hashlib.sha256()
     for path in sorted(spec.corpus_dir.rglob("*")):
@@ -195,7 +200,8 @@ def _corpus_cache_key(
     # distinct from the legacy ``mig`` prefix so caches stamped before
     # the per-migration-counter framework was deleted never match.
     return (
-        f"{spec.name}/{model}__{dim_str}__{digest}__mm{mm_str}__sf{SCHEMA_VERSION}"
+        f"{spec.name}/{model}__{dim_str}__{digest}"
+        f"__mm{mm_str}__cjk{cjk_tokenizer}__sf{SCHEMA_VERSION}"
     )
 
 
@@ -502,6 +508,8 @@ async def run_eval(
                 embedder=effective_embedder,
                 embedding_model=effective_provider_cfg.embedding_model,
                 modes=modes,
+                retrieval_config=effective_retrieval_cfg,
+                provider_config=effective_provider_cfg,
                 reporter=_reporter,
             )
     else:
@@ -511,6 +519,7 @@ async def run_eval(
             spec,
             effective_provider_cfg.embedding_model,
             effective_provider_cfg.embedding_dim,
+            cjk_tokenizer=effective_retrieval_cfg.cjk_tokenizer,
             mm_fingerprint=mm_fingerprint,
         )
         cache_dir = root / key
@@ -549,6 +558,8 @@ async def run_eval(
             embedder=effective_embedder,
             embedding_model=effective_provider_cfg.embedding_model,
             modes=modes,
+            retrieval_config=effective_retrieval_cfg,
+            provider_config=effective_provider_cfg,
             reporter=_reporter,
         )
 
@@ -615,11 +626,19 @@ def _materialise_base(
     """Scaffold a throwaway base + dikw.yml that matches ``spec``.
 
     ``provider_cfg`` / ``retrieval_cfg`` / ``assets_cfg`` are copied
-    verbatim into the written ``dikw.yml``. Downstream ``api.ingest``
-    reads the provider + assets blocks; ``_run_queries`` re-loads the
-    whole file to build ``HybridSearcher``, which picks up the retrieval
-    + multimodal blocks. This means eval reproducibly measures whatever
-    fusion knobs the caller passed, including the asset-vector leg.
+    verbatim into the written ``dikw.yml``. Downstream ``api.ingest`` reads
+    the provider + assets blocks plus the ingest-time
+    ``retrieval.cjk_tokenizer`` (which is baked into the FTS index). The
+    query-time knobs (the search-time ``RetrievalConfig`` fields rrf_k,
+    weights, fusion, graph_*, rerank_*, AND the rerank provider wiring) are
+    NOT read back from this file at query time — ``_run_queries`` receives
+    the caller's live ``RetrievalConfig`` + ``ProviderConfig`` directly
+    (#250). On a **cache hit** this file is the one the FIRST (snapshot-
+    building) arm wrote, so its query-time blocks are STALE relative to a
+    later arm's live config: trust it only for the ingest-time identity
+    (provider model+dim, ``cjk_tokenizer``, ``multimodal`` — the last is
+    still reloaded for the asset-vector leg), not to reproduce which fusion /
+    rerank knobs produced a given arm's numbers.
 
     ``schema_cfg`` is optional and only used by ``run_synth_eval`` so a
     synth-mode dataset can pin its own ``categories`` taxonomy into the
@@ -861,14 +880,46 @@ async def _run_queries(
     embedder: EmbeddingProvider,
     embedding_model: str,
     modes: list[RetrievalMode],
+    retrieval_config: RetrievalConfig,
+    provider_config: ProviderConfig,
     reporter: ProgressReporter | None = None,
 ) -> dict[RetrievalMode, tuple[list[PerQueryRow], list[NegativeRow]]]:
     """Run every query in ``spec`` once per mode against a single storage
     connection. Returns a dict keyed by mode.
+
+    Everything that shaped the on-disk snapshot is keyed into the cache and
+    read back from the baked ``cfg`` (corpus, embedding model+dim, the
+    ingest-time ``retrieval.cjk_tokenizer``, multimodal identity). Everything
+    that runs **at query time** is taken from the caller's **live** config so
+    an ablation under ``cache_mode="read_write"`` takes effect on a cache hit
+    instead of silently reusing the first run's config (#250):
+
+    * ``retrieval_config`` — search-time fusion knobs (rrf_k, weights, fusion,
+      graph_*, ``rerank_enabled``, ``rerank_candidate_k``, same_doc_penalty_alpha).
+    * ``provider_config`` — the rerank **provider** wiring (``rerank_model`` /
+      base_url / key). The reranker scores ``(query, chunk)`` at query time and
+      never touches the stored index, so it is read live (not keyed) — a
+      rerank-model A/B is correct on a cache hit. The text query embedder is
+      likewise the caller's live ``embedder`` + ``embedding_model``; its
+      identity is keyed so live == baked on a hit.
+
+    The one ingest-time retrieval field, ``cjk_tokenizer``, is pinned into the
+    snapshot cache key (``_corpus_cache_key``), so on a hit it is guaranteed to
+    match the baked FTS index.
     """
     cfg, _root = api.load_base(base)
+    # The snapshot's ingest-time tokenizer is pinned into the cache key, so a
+    # cache hit always matches the caller's live tokenizer. Assert it
+    # (defence-in-depth against a future key-format regression) before reusing
+    # the FTS index that was built with that tokenizer.
+    if cfg.retrieval.cjk_tokenizer != retrieval_config.cjk_tokenizer:
+        raise EvalError(
+            f"snapshot cjk_tokenizer {cfg.retrieval.cjk_tokenizer!r} != "
+            f"requested {retrieval_config.cjk_tokenizer!r}; the cache key should "
+            f"have forced a fresh snapshot (this indicates a _corpus_cache_key bug)"
+        )
     storage = build_storage(
-        cfg.storage, root=base, cjk_tokenizer=cfg.retrieval.cjk_tokenizer
+        cfg.storage, root=base, cjk_tokenizer=retrieval_config.cjk_tokenizer
     )
     await storage.connect()
     await storage.migrate()
@@ -913,19 +964,26 @@ async def _run_queries(
         # happened to carry in ``Hit.asset_refs``.
         mm_search = await _build_multimodal_search(cfg, storage)
         # Wire the rerank leg the same way ``_retrieve_inner`` does so eval
-        # measures rerank-on vs rerank-off at one config (flip
-        # ``retrieval.rerank_enabled`` between runs). ``None`` when the base
-        # configured no reranker or disabled it. Closed in the ``finally``.
-        if cfg.retrieval.rerank_enabled:
-            reranker = build_reranker(cfg.provider)
+        # measures rerank-on vs rerank-off at one config. Both halves are read
+        # from the caller's **live** config, not the baked snapshot, so flipping
+        # either between runs takes effect even on a cache hit: ``rerank_enabled``
+        # (the gate) from ``retrieval_config`` and the rerank provider wiring
+        # (``rerank_model`` / base_url / key) from ``provider_config``. The
+        # reranker scores ``(query, chunk)`` at query time and never touches the
+        # stored index, so it is correctly read live rather than keyed into the
+        # snapshot — a rerank-model A/B under ``read_write`` is correct.
+        # ``None`` when the caller's config has no reranker or disabled it.
+        # Closed in the ``finally``.
+        if retrieval_config.rerank_enabled:
+            reranker = build_reranker(provider_config)
         searcher = HybridSearcher.from_config(
             storage,
             embedder,
-            cfg.retrieval,
+            retrieval_config,
             embedding_model=embedding_model,
             multimodal=mm_search,
             reranker=reranker,
-            rerank_model=cfg.provider.rerank_model,
+            rerank_model=provider_config.rerank_model,
             # Eval must fail loud on a transient query-embed blip, not silently
             # degrade to FTS-only — a degraded query would bias the measured
             # hybrid metric and could false-flag the ``--against`` gate.
