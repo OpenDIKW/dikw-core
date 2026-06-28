@@ -167,7 +167,12 @@ embedder for benchmark-scale work).
 
 Tune the fusion weights by editing the `retrieval:` block in your
 base's `dikw.yml`, then re-run `dikw client eval --dataset <name>
---retrieval all` to compare. Pin the winning combination:
+--retrieval all` to compare. These are **search-time** knobs, read live
+each run, so re-running under the default `--cache read_write` is safe and
+fast (the snapshot is reused, only the ranking is recomputed). The one
+exception is `cjk_tokenizer`: it is **ingest-time** (baked into the FTS
+index), so it is part of the snapshot cache key — changing it
+automatically forces a fresh snapshot. Pin the winning combination:
 
 ```yaml
 retrieval:

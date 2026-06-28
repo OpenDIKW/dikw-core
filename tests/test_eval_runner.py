@@ -741,19 +741,19 @@ async def test_corpus_cache_key_is_deterministic_and_path_stable(
         queries=[("foo", ["alpha"])],
     )
     spec = load_dataset(ds)
-    k1 = _corpus_cache_key(spec, "fake", 64)
-    k2 = _corpus_cache_key(spec, "fake", 64)
+    k1 = _corpus_cache_key(spec, "fake", 64, cjk_tokenizer="jieba")
+    k2 = _corpus_cache_key(spec, "fake", 64, cjk_tokenizer="jieba")
     assert k1 == k2
 
     # Mutate one file's bytes — key must change.
     (ds / "corpus" / "alpha.md").write_text(
         "# Alpha\n\nDifferent body now.\n", encoding="utf-8"
     )
-    k3 = _corpus_cache_key(spec, "fake", 64)
+    k3 = _corpus_cache_key(spec, "fake", 64, cjk_tokenizer="jieba")
     assert k3 != k1
 
     # Different model → different key.
-    k4 = _corpus_cache_key(spec, "other-model", 64)
+    k4 = _corpus_cache_key(spec, "other-model", 64, cjk_tokenizer="jieba")
     assert k4 != k1
     # Format sanity.
     assert k1.startswith("toy/fake__64__")
@@ -762,9 +762,19 @@ async def test_corpus_cache_key_is_deterministic_and_path_stable(
     # Different multimodal fingerprint → different key (text-only and
     # multimodal eval runs against the same corpus must NOT share a
     # snapshot — the asset index lives in different vec tables).
-    k5 = _corpus_cache_key(spec, "fake", 64, mm_fingerprint="qwen3-vl-8b@4096")
+    k5 = _corpus_cache_key(
+        spec, "fake", 64, cjk_tokenizer="jieba", mm_fingerprint="qwen3-vl-8b@4096"
+    )
     assert k5 != k1
     assert "__mmqwen3-vl-8b@4096__" in k5
+
+    # #250: cjk_tokenizer is the one INGEST-TIME RetrievalConfig field — it's
+    # baked into the FTS index, so it must be in the key. Changing it must
+    # produce a distinct key (a fresh snapshot), never a stale reuse.
+    k6 = _corpus_cache_key(spec, "fake", 64, cjk_tokenizer="none")
+    assert k6 != k1
+    assert "__cjkjieba__" in k1
+    assert "__cjknone__" in k6
 
 
 async def test_eval_snapshot_cache_hit_skips_ingest(
@@ -898,6 +908,134 @@ async def test_eval_cache_mid_build_crash_leaves_partial_dir(
     # .partial/ should still be there for diagnostics.
     partial_dirs = list((cache_root / "toy").glob("fake__*.partial"))
     assert len(partial_dirs) == 1
+
+
+async def test_eval_cache_search_time_config_read_live_on_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#250: a SEARCH-TIME retrieval knob (rrf_k) changed under read_write takes
+    effect on a cache HIT — the searcher is built from the caller's LIVE config,
+    not the baked snapshot — and the change does NOT re-ingest (fast + correct).
+    """
+    from dikw_core.config import RetrievalConfig
+    from dikw_core.eval import runner as runner_mod
+
+    ds = _write_dataset(tmp_path / "ds", queries=[("alpha", ["alpha"])])
+    spec = load_dataset(ds)
+    cache_root = tmp_path / "cache"
+
+    ingest_calls = 0
+    real_ingest = runner_mod.api.ingest
+
+    async def spy_ingest(*args: object, **kwargs: object) -> object:
+        nonlocal ingest_calls
+        ingest_calls += 1
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.api, "ingest", spy_ingest)
+
+    # Capture the rrf_k the searcher is actually built with each run. The
+    # ``from_config`` classmethod, set as a plain attr on the class, is called
+    # unbound (``HybridSearcher.from_config(storage, embedder, cfg, ...)``), so
+    # the spy sees the same positional args.
+    seen_rrf_k: list[int] = []
+    real_from_config = runner_mod.HybridSearcher.from_config
+
+    def spy_from_config(storage, embedder, retrieval_cfg, **kwargs):  # type: ignore[no-untyped-def]
+        seen_rrf_k.append(retrieval_cfg.rrf_k)
+        return real_from_config(storage, embedder, retrieval_cfg, **kwargs)
+
+    monkeypatch.setattr(runner_mod.HybridSearcher, "from_config", spy_from_config)
+
+    await run_eval(
+        spec, cache_root=cache_root, retrieval_config=RetrievalConfig(rrf_k=60)
+    )
+    await run_eval(
+        spec, cache_root=cache_root, retrieval_config=RetrievalConfig(rrf_k=11)
+    )
+
+    assert ingest_calls == 1, "search-time change must reuse the snapshot (no re-ingest)"
+    assert seen_rrf_k == [60, 11], (
+        "warm run must build the searcher from the LIVE rrf_k (11), not the "
+        f"baked 60; saw {seen_rrf_k}"
+    )
+
+
+async def test_eval_cache_cjk_tokenizer_change_forces_reingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#250: cjk_tokenizer is INGEST-TIME — it's pinned into the cache key, so
+    changing it produces a fresh snapshot (re-ingest), never a stale reuse of an
+    index built with the old tokenizer.
+    """
+    from dikw_core.config import RetrievalConfig
+    from dikw_core.eval import runner as runner_mod
+
+    ds = _write_dataset(tmp_path / "ds", queries=[("alpha", ["alpha"])])
+    spec = load_dataset(ds)
+    cache_root = tmp_path / "cache"
+
+    ingest_calls = 0
+    real_ingest = runner_mod.api.ingest
+
+    async def spy_ingest(*args: object, **kwargs: object) -> object:
+        nonlocal ingest_calls
+        ingest_calls += 1
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.api, "ingest", spy_ingest)
+
+    await run_eval(
+        spec, cache_root=cache_root, retrieval_config=RetrievalConfig(cjk_tokenizer="jieba")
+    )
+    assert ingest_calls == 1
+    await run_eval(
+        spec, cache_root=cache_root, retrieval_config=RetrievalConfig(cjk_tokenizer="none")
+    )
+    assert ingest_calls == 2, "ingest-time tokenizer change must re-ingest"
+    # Two distinct snapshots coexist under the dataset's cache subdir.
+    snapshot_dirs = [
+        d for d in (cache_root / "toy").glob("fake__*") if not d.name.endswith(".partial")
+    ]
+    assert len(snapshot_dirs) == 2
+
+
+def test_retrieval_config_fields_are_classified_for_eval_cache() -> None:
+    """#250 tripwire: the eval snapshot cache hand-splits ``RetrievalConfig`` into
+    ONE ingest-time field (``cjk_tokenizer`` — baked into the FTS index, so keyed
+    in ``_corpus_cache_key``) and the rest search-time (read live in
+    ``_run_queries``, never keyed). That split is encoded by hand, so adding a new
+    ``RetrievalConfig`` field would silently default it to "search-time, read
+    live" — which is WRONG and reintroduces the #250 stale-snapshot bug if the new
+    field actually affects ingest. This test fails on any field-set change, forcing
+    the contributor to classify the new field:
+      * ingest-time (changes chunking / the FTS index / stored vectors) → add it
+        to ``_corpus_cache_key`` (and the ``cjk_tokenizer`` guard in
+        ``_run_queries``);
+      * search-time (query-time ranking only) → it is already read live; no key
+        change needed.
+    """
+    from dikw_core.config import RetrievalConfig
+
+    ingest_time = {"cjk_tokenizer"}
+    search_time = {
+        "rrf_k",
+        "bm25_weight",
+        "vector_weight",
+        "fusion",
+        "same_doc_penalty_alpha",
+        "graph_enabled",
+        "graph_seed_top_k",
+        "graph_weight",
+        "rerank_enabled",
+        "rerank_candidate_k",
+    }
+    assert set(RetrievalConfig.model_fields) == ingest_time | search_time, (
+        "RetrievalConfig fields changed — classify the new/removed field for the "
+        "eval snapshot cache (src/dikw_core/eval/runner.py): ingest-time → add to "
+        "_corpus_cache_key (+ the cjk_tokenizer assert in _run_queries); "
+        "search-time → it is read live, no key change needed. See #250."
+    )
 
 # ---- check_thresholds direction-aware ---------------------------------------
 
