@@ -26,7 +26,7 @@ services:
     # (``docker compose up --build``); it does NOT auto-pull. Its ``args``
     # forward the same DIKW_VERSION so a local build matches the pinned tag
     # instead of the Dockerfile's ARG default.
-    image: ghcr.io/opendikw/dikw-core:${DIKW_VERSION:?set DIKW_VERSION in .env to a released version, e.g. 0.6.4}
+    image: ghcr.io/opendikw/dikw-core:${DIKW_VERSION:?set DIKW_VERSION in .env to a released version, e.g. 0.6.5}
     build:
       context: .
       dockerfile: Dockerfile

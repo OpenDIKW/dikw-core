@@ -7,6 +7,23 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.5 — Default scaffold ships Gitee embed + rerank; eval cache keys retrieval config and surfaces absolute relevance scores
+
+### Added
+
+- **Eval rows surface absolute relevance scores for OOD calibration.**
+  (#249) Each retrieval-eval per-query and negative row now carries
+  `top1_score` (the top hit's score) and `top1_vec_cosine` — the
+  reranker/fusion-independent raw top-1 vector cosine, captured by an
+  eval-internal `HybridSearcher.top_vector_cosine` probe (the production
+  `search()` path and its ranking are untouched). Fusion scores (RRF is
+  rank-based; combsum/combmnz are per-leg min-max normalized) can't carry an
+  absolute magnitude, so `expect_none` / out-of-distribution robustness was
+  previously immeasurable from rank order alone; the absolute cosine makes it
+  observable (covered query high, OOD query low). The vector probe is skipped
+  for pure-`bm25` ablations so they stay embedding-free. A score-based OOD
+  *metric* is deferred — this release only surfaces the signals.
+
 ### Changed
 
 - **Default scaffold ships Gitee embed + rerank; unified rerank/embed
@@ -25,6 +42,20 @@ on each entry call out exactly what shape changes break.
   the silently-off leg is visible. **Permanent** provider errors (401/403/404,
   bad key/model) still fail fast on both the read path (→ 500) and the write
   path (ingest aborts) — the fail-fast-on-misconfig invariant is unchanged.
+
+### Fixed
+
+- **Eval snapshot cache keys the ingest-time tokenizer and reads query-time
+  retrieval config live.** (#250) The eval corpus-snapshot cache key omitted
+  `RetrievalConfig`, so under the default `--cache read_write` changing any
+  retrieval knob (`rrf_k` / weights / `fusion` / `rerank_enabled` / `graph_*`)
+  and re-running silently hit the stale snapshot and reused the *previous*
+  config — no error, wrong numbers, exactly on the retrieval-ablation workflow.
+  The cache key now includes the only ingest-time retrieval field,
+  `cjk_tokenizer` (a change forces re-ingest); every search-time knob is read
+  from the live config on each `_run_queries`, so ablations sharing one
+  `cache_root` are now both fast and correct. A defensive guard re-raises if a
+  cache hit's baked tokenizer ever disagrees with the live one.
 
 ## 0.6.4 — K-layer system prompts extracted to packaged `.md`; product self-reference unified to `dikw`
 
