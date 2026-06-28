@@ -926,6 +926,10 @@ async def _run_queries(
             multimodal=mm_search,
             reranker=reranker,
             rerank_model=cfg.provider.rerank_model,
+            # Eval must fail loud on a transient query-embed blip, not silently
+            # degrade to FTS-only — a degraded query would bias the measured
+            # hybrid metric and could false-flag the ``--against`` gate.
+            degrade_query_embed_on_transient=False,
         )
         results: dict[
             RetrievalMode, tuple[list[PerQueryRow], list[NegativeRow]]

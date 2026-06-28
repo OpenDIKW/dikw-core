@@ -53,12 +53,28 @@ def test_default_config_ships_gitee_embedding_and_rerank() -> None:
     # must drop from the OpenAI-tuned 64 or a fresh ingest fails out of the box.
     assert p.embedding_batch_size == 16
     assert p.rerank == "openai_compat_rerank"
-    assert p.rerank_model == "BAAI/bge-reranker-v2-m3"
+    # The Gitee-served id is bare ``bge-reranker-v2-m3``; the org-prefixed
+    # ``BAAI/...`` HuggingFace name 404s on Gitee → a fresh-base retrieve would
+    # 500 on every query. Pinned here so the suite catches a regression.
+    assert p.rerank_model == "bge-reranker-v2-m3"
     assert p.rerank_base_url == "https://ai.gitee.com/v1"
     assert p.rerank_api_key_env == "GITEE_API_KEY"
     # rerank is on once configured; the LLM leg stays Anthropic-by-default.
     assert cfg.retrieval.rerank_enabled is True
     assert p.llm_api_key_env == "ANTHROPIC_API_KEY"
+
+
+def test_default_provider_factory_matches_scaffold() -> None:
+    """The ``DikwConfig.provider`` field default factory and the ``dikw init``
+    scaffold must agree on the default provider — otherwise a bare
+    ``DikwConfig()`` and an init'd base ship two different 'default' embedders
+    (different dim / key var)."""
+    from dikw_core.config import _default_provider_config
+
+    assert _default_provider_config() == default_config().provider
+    # And a bare DikwConfig() (field default_factory) carries the Gitee identity.
+    assert DikwConfig().provider.embedding_api_key_env == "GITEE_API_KEY"
+    assert DikwConfig().provider.embedding_dim == 1024
 
 
 def test_load_config_discriminated_storage(tmp_path: Path) -> None:

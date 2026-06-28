@@ -607,7 +607,7 @@ regardless. Flip `rerank_enabled: false` to keep a configured reranker dark
 (this is how the eval harness compares rerank-off vs rerank-on at one config).
 
 **Default scaffold.** `dikw init` now ships a Gitee `bge-m3` embedder **and** a
-Gitee `BAAI/bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so
+Gitee `bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so
 rerank is on out of the box (OpenAI has no `/rerank` endpoint, so the prior
 OpenAI embedding default could not ship a matching reranker). A base that
 doesn't want rerank sets `rerank_enabled: false`.

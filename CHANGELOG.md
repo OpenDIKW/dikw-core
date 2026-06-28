@@ -12,7 +12,7 @@ on each entry call out exactly what shape changes break.
 - **Default scaffold ships Gitee embed + rerank; unified rerank/embed
   degrade-logging.** `dikw init` (`config.default_config`) now defaults the
   embedder to Gitee `bge-m3` (dim 1024) **and** ships a Gitee
-  `BAAI/bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so a
+  `bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so a
   fresh base reranks out of the box (OpenAI has no `/rerank` endpoint, so the
   prior OpenAI embedding default couldn't pair a matching reranker). The LLM
   default stays Anthropic. Read-path resilience is now uniformly observable: a

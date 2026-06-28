@@ -176,7 +176,7 @@ class ProviderConfig(BaseModel):
     # behavioural knobs). ``None`` (the default) means the base never wired a
     # reranker, so the search layer runs no rerank leg. ``openai_compat_rerank``
     # speaks the Jina/Cohere-compatible ``/rerank`` wire shape that Gitee AI
-    # (``BAAI/bge-reranker-v2-m3``), SiliconFlow, Jina, and Cohere converge on —
+    # (``bge-reranker-v2-m3``), SiliconFlow, Jina, and Cohere converge on —
     # the model/url/key pick the vendor (point ``rerank_api_key_env`` at the
     # same var as ``embedding_api_key_env`` to reuse, e.g., a Gitee key). The
     # validator below requires the three wiring fields once ``rerank`` is set,
@@ -220,7 +220,7 @@ class ProviderConfig(BaseModel):
                     f"rerank={self.rerank!r} requires {', '.join(missing)} to be "
                     f"set. A reranker needs a model, an endpoint, and the name of "
                     f"the env var holding its API key (e.g. rerank_model: "
-                    f"BAAI/bge-reranker-v2-m3, rerank_base_url: "
+                    f"bge-reranker-v2-m3, rerank_base_url: "
                     f"https://ai.gitee.com/v1, rerank_api_key_env: GITEE_API_KEY)."
                 )
         return self
@@ -531,18 +531,38 @@ class AssetsConfig(BaseModel):
 
 
 def _default_provider_config() -> ProviderConfig:
-    """``DikwConfig.provider`` factory — defaults to a text-embedding-3-small
-    profile. ``ProviderConfig`` itself still requires the embedding-identity
-    fields and the two ``*_api_key_env`` fields explicitly so user-provided yml
-    stays unambiguous; this factory exists so test fixtures and ``api.init_base``
-    can build a default ``DikwConfig`` without restating those values."""
+    """``DikwConfig.provider`` factory AND the ``dikw init`` scaffold provider
+    (``default_config`` reuses this — single source of truth so the field
+    default and the scaffolded ``dikw.yml`` never diverge).
+
+    Defaults the embedder + reranker to Gitee AI so one ``GITEE_API_KEY`` drives
+    both legs out of the box: OpenAI has no ``/rerank`` endpoint, so an OpenAI
+    embedding default could not ship a matching reranker. The model id is the
+    **Gitee-served** ``bge-reranker-v2-m3`` (bare, as the eval-verified baseline
+    uses) — the org-prefixed ``BAAI/...`` id is the HuggingFace name and 404s on
+    Gitee. ``embedding_batch_size=16`` stays under Gitee's 25-item cap. The LLM
+    default stays Anthropic. ``ProviderConfig`` requires the embedding-identity
+    fields + the two ``*_api_key_env`` fields explicitly so user yml stays
+    unambiguous; this factory supplies them so fixtures / ``api.init_base`` need
+    not restate them."""
     return ProviderConfig(
-        llm_api_key_env="ANTHROPIC_API_KEY",
-        embedding_dim=1536,
+        llm_api_key_env="ANTHROPIC_API_KEY",  # default LLM: Anthropic native
+        embedding="openai_compat",
+        embedding_model="bge-m3",
+        embedding_base_url="https://ai.gitee.com/v1",
+        embedding_dim=1024,  # bge-m3 native
         embedding_revision="",
         embedding_normalize=True,
         embedding_distance="cosine",
-        embedding_api_key_env="OPENAI_API_KEY",
+        embedding_api_key_env="GITEE_API_KEY",
+        # Gitee /v1/embeddings caps the input array at 25 (HTTP 400 above); 16 is
+        # the documented Gitee-safe default (docs/providers.md gotcha #2). The 64
+        # field default is tuned for OpenAI's ~2048 cap.
+        embedding_batch_size=16,
+        rerank="openai_compat_rerank",
+        rerank_model="bge-reranker-v2-m3",
+        rerank_base_url="https://ai.gitee.com/v1",
+        rerank_api_key_env="GITEE_API_KEY",
     )
 
 
@@ -659,29 +679,9 @@ def default_config(description: str = "A dikw-core knowledge base") -> DikwConfi
     a fresh knowledge base picks up `sources/**/*.md` without extra config.
     """
     return DikwConfig(
-        provider=ProviderConfig(
-            llm_api_key_env="ANTHROPIC_API_KEY",  # default LLM: Anthropic native
-            # Default embed + rerank both on Gitee AI so one GITEE_API_KEY drives
-            # both legs out of the box. OpenAI has no /rerank endpoint, so an
-            # OpenAI embedding default could not ship a matching reranker; Gitee
-            # offers both bge-m3 (embeddings) and bge-reranker-v2-m3 (/rerank).
-            embedding="openai_compat",
-            embedding_model="bge-m3",
-            embedding_base_url="https://ai.gitee.com/v1",
-            embedding_dim=1024,  # bge-m3 native
-            embedding_revision="",
-            embedding_normalize=True,
-            embedding_distance="cosine",
-            embedding_api_key_env="GITEE_API_KEY",
-            # Gitee /v1/embeddings caps the input array at 25 (HTTP 400 above);
-            # 16 is the documented Gitee-safe default (docs/providers.md gotcha
-            # #2). The 64 field default is tuned for OpenAI's ~2048 cap.
-            embedding_batch_size=16,
-            rerank="openai_compat_rerank",
-            rerank_model="BAAI/bge-reranker-v2-m3",
-            rerank_base_url="https://ai.gitee.com/v1",
-            rerank_api_key_env="GITEE_API_KEY",
-        ),
+        # Single source of truth with the ``DikwConfig.provider`` field default
+        # (Gitee embed + rerank) — see ``_default_provider_config``.
+        provider=_default_provider_config(),
         storage=SQLiteStorageConfig(),
         schema=SchemaConfig(description=description),
         sources=[

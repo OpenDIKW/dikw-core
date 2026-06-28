@@ -1135,6 +1135,28 @@ async def test_query_embed_transient_propagates_in_vector_mode(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_query_embed_transient_propagates_when_degrade_disabled(tmp_path) -> None:
+    """Eval opts out of the hybrid degrade (``degrade_query_embed_on_transient=
+    False``): a transient blip must fail the run loud rather than silently
+    biasing the measured hybrid metric / false-flagging the --against gate."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    _embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage,
+        RaisingEmbedder(TransientProviderError("embed vendor 503")),
+        embedding_model="fake",
+        text_version_id=version_id,
+        degrade_query_embed_on_transient=False,
+    )
+    with pytest.raises(TransientProviderError):
+        await searcher.search(_RERANK_QUERY, limit=5, mode="hybrid")
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_rerank_permanent_error_propagates(tmp_path) -> None:
     """A permanent rerank misconfig (bad key/model) fails fast rather than
     silently degrading — same fail-loud contract as the embedding path."""
