@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import prompts
-from .api_core import _with_storage
+from .api_core import _resolve_active_text_version_for_inline_embed, _with_storage
 from .api_types import (
     PagePersistError,
     SynthReport,
@@ -119,22 +119,43 @@ async def synthesize(
 
         text_version_id: int | None = None
         text_embed_model = cfg.provider.embedding_model
+        embed_deferred = False
         if embedder is not None:
             # Synthesize must NOT register a new embed version: it only
             # writes knowledge-page chunks, so flipping active here would strand
             # source-chunk vectors in the now-inactive table and gut dense
-            # retrieval. Re-embedding the full corpus belongs to ingest.
-            try:
-                active_text = await storage.get_active_embed_version(modality="text")
-            except NotSupported:
-                active_text = None
-            if active_text is not None and active_text.version_id is not None:
-                text_version_id = active_text.version_id
-                text_embed_model = active_text.model
+            # retrieval. Re-embedding the full corpus belongs to ingest. Resolve
+            # via the shared drift-aware helper (same as wisdom / lint apply):
+            # it returns None when there's no active text version OR when cfg's
+            # embedding identity has drifted from the active one, so a user who
+            # edits dikw.yml's embedder without re-ingesting doesn't embed
+            # synth output under the wrong model/space (it defers to the next
+            # ingest's resume scan instead — the documented inline-embed
+            # contract).
+            resolved = await _resolve_active_text_version_for_inline_embed(
+                storage, cfg.provider
+            )
+            if resolved is not None:
+                text_version_id, text_embed_model = resolved
             else:
-                embedder = None  # no active text version → nothing to embed against
+                embedder = None  # no active version / identity drift → defer
+                embed_deferred = True
 
         sources = list(await storage.list_documents(layer=Layer.SOURCE, active=True))
+        # Heads-up only when there's real work: an embedder was wired but no
+        # usable active text version (none yet, or cfg drifted from the active
+        # identity), so any pages synthesized below land without inline vectors
+        # (a future ingest's resume scan reconciles them) — warn rather than
+        # silently shipping vector-less K pages. Gated on ``sources`` so a no-op
+        # synth on an empty base stays quiet.
+        if embed_deferred and sources:
+            logger.warning(
+                "synth: embedder wired but no usable active text version (none "
+                "yet, or cfg embedding identity drifted from the active one); "
+                "%d source(s) will be synthesized without inline embeddings (a "
+                "future ingest will reconcile their vectors)",
+                len(sources),
+            )
         already: set[str] = set()
         if not force_all:
             # ``synth_source_done`` is the post-fan-out source-completion

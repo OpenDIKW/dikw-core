@@ -10,6 +10,7 @@ test needs no rerank vendor / network.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -88,3 +89,32 @@ async def test_retrieve_skips_reranker_when_unconfigured(
     )
     assert result.chunks
     assert fake.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_retrieve_warns_when_rerank_enabled_but_unconfigured(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``retrieval.rerank_enabled`` (default True) + no ``provider.rerank`` is an
+    enabled-but-unconfigured contradiction: warn once per retrieve so the
+    operator notices the rerank leg is silently off. Retrieve still returns
+    hits (a missing reranker degrades, never blocks). A base that genuinely
+    doesn't want rerank silences this with ``rerank_enabled: false``."""
+    wiki = tmp_path / "knowledge"
+    init_test_base(wiki)  # clears the default reranker; leaves rerank_enabled=True
+
+    src = wiki / "sources"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "a.md").write_text("# Alpha\n\nVector retrieval over chunks.\n", encoding="utf-8")
+    await api.ingest(wiki, embedder=FakeEmbeddings())
+
+    with caplog.at_level(logging.WARNING, logger="dikw_core.api_retrieve"):
+        result = await api.retrieve(
+            "vector retrieval", wiki, limit=3, embedder=FakeEmbeddings()
+        )
+
+    assert result.chunks
+    assert any(
+        r.levelno == logging.WARNING and "rerank" in r.getMessage().lower()
+        for r in caplog.records
+    ), "an enabled-but-unconfigured reranker must warn"

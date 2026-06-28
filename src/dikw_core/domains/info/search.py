@@ -333,6 +333,7 @@ class HybridSearcher:
         rerank_model: str | None = None,
         rerank_candidate_k: int = 40,
         rerank_enabled: bool = True,
+        degrade_query_embed_on_transient: bool = True,
     ) -> None:
         self._storage = storage
         self._embedder = embedder
@@ -358,6 +359,11 @@ class HybridSearcher:
         self._rerank_model = rerank_model
         self._rerank_candidate_k = rerank_candidate_k
         self._rerank_enabled = rerank_enabled
+        # Production retrieve degrades a transient query-embed failure to
+        # FTS-only (hybrid). Eval sets this False so a transient blip fails the
+        # run loud instead of silently biasing the measured hybrid metric — the
+        # ``--against`` gate must not mistake an outage for a regression.
+        self._degrade_query_embed_on_transient = degrade_query_embed_on_transient
 
     @classmethod
     def from_config(
@@ -371,6 +377,7 @@ class HybridSearcher:
         multimodal: MultimodalSearch | None = None,
         reranker: RerankProvider | None = None,
         rerank_model: str | None = None,
+        degrade_query_embed_on_transient: bool = True,
     ) -> HybridSearcher:
         """Unpack a ``RetrievalConfig`` into the keyword kwargs.
 
@@ -402,6 +409,7 @@ class HybridSearcher:
             rerank_model=rerank_model,
             rerank_candidate_k=cfg.rerank_candidate_k,
             rerank_enabled=cfg.rerank_enabled,
+            degrade_query_embed_on_transient=degrade_query_embed_on_transient,
         )
 
     async def search(
@@ -434,9 +442,40 @@ class HybridSearcher:
         q_vec_mm: list[float] | None = None
         if run_vec:
             if text_vec_active:
-                q_vec_text = await self._embed_query_text(q)
+                try:
+                    q_vec_text = await self._embed_query_text(q)
+                except TransientProviderError:
+                    # Read-path resilience: a transient query-embed failure on
+                    # the hybrid path drops the vec leg and lets FTS (+ graph)
+                    # carry the query rather than 500-ing on a vendor blip.
+                    # Single-leg ``vector`` mode has no FTS to fall back to, so
+                    # it must surface the failure — only degrade in hybrid. Eval
+                    # opts out entirely (``degrade_query_embed_on_transient``):
+                    # a transient blip must fail the run loud, not silently bias
+                    # the measured hybrid metric. A permanent ``ProviderError``
+                    # is never caught here, so a misconfig (bad key / model)
+                    # still fails fast — same contract as the rerank leg.
+                    if mode != "hybrid" or not self._degrade_query_embed_on_transient:
+                        raise
+                    logger.error(
+                        "query text embedding failed transiently; degrading to "
+                        "FTS-only for this query",
+                        exc_info=True,
+                    )
+                    q_vec_text = None
             if self._mm is not None:
-                q_vec_mm = await self._embed_query_multimodal(q)
+                try:
+                    q_vec_mm = await self._embed_query_multimodal(q)
+                except TransientProviderError:
+                    # Same hybrid-only, non-eval degrade for the asset leg.
+                    if mode != "hybrid" or not self._degrade_query_embed_on_transient:
+                        raise
+                    logger.error(
+                        "query multimodal embedding failed transiently; "
+                        "degrading without the asset leg for this query",
+                        exc_info=True,
+                    )
+                    q_vec_mm = None
 
         fts_task: asyncio.Task[list[FTSHit]] | None = None
         vec_task: asyncio.Task[list[VecHit]] | None = None
@@ -809,7 +848,7 @@ class HybridSearcher:
                     q, documents, model=self._rerank_model
                 )
             except TransientProviderError:
-                logger.warning(
+                logger.error(
                     "rerank degraded to fused order after a transient failure",
                     exc_info=True,
                 )

@@ -7,6 +7,25 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Changed
+
+- **Default scaffold ships Gitee embed + rerank; unified rerank/embed
+  degrade-logging.** `dikw init` (`config.default_config`) now defaults the
+  embedder to Gitee `bge-m3` (dim 1024) **and** ships a Gitee
+  `bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so a
+  fresh base reranks out of the box (OpenAI has no `/rerank` endpoint, so the
+  prior OpenAI embedding default couldn't pair a matching reranker). The LLM
+  default stays Anthropic. Read-path resilience is now uniformly observable: a
+  **transient** query-embedding failure degrades the hybrid query to FTS-only
+  (vec leg dropped) instead of 500-ing — **hybrid mode only**, single-leg
+  `vector`/`bm25` ablations re-raise for eval purity; transient rerank /
+  embed-batch-skip degrades now log at **ERROR** (a configured leg that failed,
+  was WARNING); an enabled-but-unconfigured reranker and a write path that
+  defers embedding (no embedder wired / version drift) each log a **WARNING** so
+  the silently-off leg is visible. **Permanent** provider errors (401/403/404,
+  bad key/model) still fail fast on both the read path (→ 500) and the write
+  path (ingest aborts) — the fail-fast-on-misconfig invariant is unchanged.
+
 ## 0.6.4 — K-layer system prompts extracted to packaged `.md`; product self-reference unified to `dikw`
 
 ### Changed

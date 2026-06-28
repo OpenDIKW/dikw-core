@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import logging
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -62,6 +63,8 @@ from .schemas import (
 )
 from .storage.base import NotSupported
 from .telemetry import DIKW_LAYER, DIKW_OP, record_ingest_metrics, traced_op
+
+logger = logging.getLogger(__name__)
 
 # One stderr Console for all embedding progress bars. Constructing one
 # per ingest pass would re-probe terminal capability + color system on
@@ -407,6 +410,22 @@ async def ingest(
                 to_embed.append(
                     ChunkToEmbed(chunk_id=chunk.chunk_id, text=chunk.text)
                 )
+
+        # No embedder wired (or no active text version): chunks were indexed
+        # for FTS but carry no vectors. Warn so the operator notices a
+        # vector-less corpus rather than the deferral being silent — a future
+        # ingest with an embedder reconciles them via the resume scan above.
+        # Not a failure (the pipeline never blocked); just an unconfigured-leg
+        # heads-up. Gated on ``report.chunks`` so a no-op re-ingest stays quiet.
+        if report.chunks and not (
+            embedder is not None and text_version_id is not None
+        ):
+            logger.warning(
+                "embedding deferred: %d chunk(s) indexed without vectors "
+                "(no embedder wired or no active text version); a future "
+                "ingest with an embedder will reconcile them",
+                report.chunks,
+            )
 
         # Chunk-text embeddings — text channel only. Streaming consume:
         # each batch is upserted as soon as the provider returns it, so

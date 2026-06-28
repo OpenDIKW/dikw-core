@@ -37,6 +37,46 @@ def test_default_config_roundtrip(tmp_path: Path) -> None:
     assert loaded.storage.backend == "sqlite"
 
 
+def test_default_config_ships_gitee_embedding_and_rerank() -> None:
+    """`dikw init` scaffolds a Gitee bge-m3 embedder + bge-reranker so one
+    ``GITEE_API_KEY`` drives both legs out of the box. OpenAI has no ``/rerank``
+    endpoint, so the prior OpenAI embedding default could not ship a matching
+    reranker; pairing both on Gitee keeps the default self-consistent."""
+    cfg = default_config()
+    p = cfg.provider
+    assert p.embedding == "openai_compat"
+    assert p.embedding_model == "bge-m3"
+    assert p.embedding_base_url == "https://ai.gitee.com/v1"
+    assert p.embedding_api_key_env == "GITEE_API_KEY"
+    assert p.embedding_dim == 1024
+    # Gitee caps the embeddings input array at 25 (HTTP 400 above) — the default
+    # must drop from the OpenAI-tuned 64 or a fresh ingest fails out of the box.
+    assert p.embedding_batch_size == 16
+    assert p.rerank == "openai_compat_rerank"
+    # The Gitee-served id is bare ``bge-reranker-v2-m3``; the org-prefixed
+    # ``BAAI/...`` HuggingFace name 404s on Gitee → a fresh-base retrieve would
+    # 500 on every query. Pinned here so the suite catches a regression.
+    assert p.rerank_model == "bge-reranker-v2-m3"
+    assert p.rerank_base_url == "https://ai.gitee.com/v1"
+    assert p.rerank_api_key_env == "GITEE_API_KEY"
+    # rerank is on once configured; the LLM leg stays Anthropic-by-default.
+    assert cfg.retrieval.rerank_enabled is True
+    assert p.llm_api_key_env == "ANTHROPIC_API_KEY"
+
+
+def test_default_provider_factory_matches_scaffold() -> None:
+    """The ``DikwConfig.provider`` field default factory and the ``dikw init``
+    scaffold must agree on the default provider — otherwise a bare
+    ``DikwConfig()`` and an init'd base ship two different 'default' embedders
+    (different dim / key var)."""
+    from dikw_core.config import _default_provider_config
+
+    assert _default_provider_config() == default_config().provider
+    # And a bare DikwConfig() (field default_factory) carries the Gitee identity.
+    assert DikwConfig().provider.embedding_api_key_env == "GITEE_API_KEY"
+    assert DikwConfig().provider.embedding_dim == 1024
+
+
 def test_load_config_discriminated_storage(tmp_path: Path) -> None:
     path = tmp_path / CONFIG_FILENAME
     path.write_text(

@@ -121,10 +121,10 @@ uv run dikw client import ./my-notes --format table
 uv run dikw client ingest --no-embed --wait
 
 # Or with embeddings (requires the env var named by
-# ``provider.embedding_api_key_env`` in dikw.yml — e.g. OPENAI_API_KEY for
-# OpenAI, GITEE_API_KEY for Gitee AI — on any OpenAI-compatible endpoint:
-# OpenAI, Gitee AI, Ollama, vLLM, …).
-export OPENAI_API_KEY=sk-...
+# ``provider.embedding_api_key_env`` in dikw.yml — the ``dikw init`` scaffold
+# defaults to GITEE_API_KEY for Gitee AI's bge-m3, but any OpenAI-compatible
+# endpoint works: Gitee AI, OpenAI, Ollama, vLLM, …).
+export GITEE_API_KEY=...
 uv run dikw client ingest --wait
 
 # Fire-and-forget (default): submit + capture the task_id; follow up

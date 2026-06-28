@@ -1,7 +1,7 @@
 """OpenAI/Jina/Cohere-compatible reranker provider.
 
 Wraps the de-facto-standard ``/rerank`` endpoint behind the
-``RerankProvider`` Protocol. Gitee AI (``BAAI/bge-reranker-v2-m3``,
+``RerankProvider`` Protocol. Gitee AI (``bge-reranker-v2-m3``,
 ``Qwen3-Reranker-*``), SiliconFlow, Jina, and Cohere all converge on the
 same wire shape, so one adapter covers every vendor — the base URL, model,
 and key env var pick which one runs.
@@ -45,7 +45,7 @@ class OpenAICompatReranker:
     surface.
 
     Vendor-agnostic: the same wire shape works for Gitee AI's
-    ``BAAI/bge-reranker-v2-m3``, SiliconFlow, Jina, and Cohere. The model name
+    ``bge-reranker-v2-m3``, SiliconFlow, Jina, and Cohere. The model name
     discriminates which reranker runs server-side; ``base_url`` + the key env
     var pick the vendor.
     """

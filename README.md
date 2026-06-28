@@ -163,11 +163,12 @@ provider:
   llm_model: claude-sonnet-4-6
   llm_base_url: null            # set for any Anthropic-protocol-compatible endpoint
   llm_api_key_env: ANTHROPIC_API_KEY      # required: names the env var holding the LLM key
-  embedding: openai_compat
-  embedding_model: text-embedding-3-small
-  embedding_base_url: https://api.openai.com/v1
-  embedding_api_key_env: OPENAI_API_KEY   # required: names the env var holding the embedding key
-  embedding_dim: 1536           # required: must match what the endpoint returns
+  embedding: openai_compat      # protocol; any OpenAI-compatible endpoint
+  embedding_model: bge-m3       # dikw init default: Gitee AI bge-m3
+  embedding_base_url: https://ai.gitee.com/v1
+  embedding_api_key_env: GITEE_API_KEY    # required: names the env var holding the embedding key
+  embedding_dim: 1024           # required: must match what the endpoint returns
+  embedding_batch_size: 16      # Gitee caps the input array at 25
   embedding_normalize: true
   embedding_distance: cosine
 ```

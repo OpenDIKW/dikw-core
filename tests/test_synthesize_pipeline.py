@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -111,6 +112,38 @@ async def test_synth_creates_linked_knowledge_pages_and_clean_lint(
     assert kinds.get("broken_wikilink", 0) == 0
     assert kinds.get("duplicate_title", 0) == 0
     assert kinds.get("orphan_page", 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_synth_defers_inline_embed_on_version_drift(
+    wiki_with_fixtures: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When cfg's embedding identity has drifted from the active text version
+    (user edited dikw.yml without re-ingesting), synth must NOT embed K pages
+    under the wrong model/space — it defers via the shared resolver (like
+    wisdom / lint apply) and warns, while still authoring the pages (degrade,
+    never block). Pins the fix for synth bypassing the drift guard."""
+    from dikw_core.config import dump_config_yaml, load_config
+
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki_with_fixtures, embedder=embedder)
+
+    # Drift cfg's embedding identity away from the just-registered active
+    # version (model change) without re-ingesting.
+    cfg_path = wiki_with_fixtures / "dikw.yml"
+    cfg = load_config(cfg_path)
+    cfg.provider.embedding_model = "some-other-embed-model"
+    cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
+
+    llm = ScriptedLLM(_SCRIPT)
+    with caplog.at_level(logging.WARNING, logger="dikw_core.api_synth"):
+        report = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+
+    assert report.created == 3, "pages are still authored — the degrade never blocks"
+    assert any(
+        r.levelno == logging.WARNING and "drift" in r.getMessage().lower()
+        for r in caplog.records
+    ), "synth must warn that inline embed was deferred on identity drift"
 
 
 @pytest.mark.asyncio

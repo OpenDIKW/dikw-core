@@ -102,6 +102,17 @@ async def _retrieve_inner(
         # in the ``finally`` below (its lifetime is local to this call).
         if cfg.retrieval.rerank_enabled:
             reranker = build_reranker(cfg.provider)
+            if reranker is None:
+                # ``rerank_enabled`` (the default) but no ``provider.rerank`` is
+                # an enabled-but-unconfigured contradiction: warn so the
+                # operator notices the rerank leg is silently off. Retrieval
+                # still runs (a missing reranker degrades, never blocks). A base
+                # that genuinely doesn't want rerank sets ``rerank_enabled:
+                # false`` to silence this.
+                logger.warning(
+                    "retrieval.rerank_enabled is set but provider.rerank is "
+                    "unconfigured; running retrieval without the rerank leg"
+                )
 
         mm_search: MultimodalSearch | None = None
         mm_cfg = cfg.assets.multimodal
