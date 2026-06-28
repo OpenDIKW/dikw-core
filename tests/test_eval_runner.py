@@ -316,6 +316,82 @@ async def test_run_eval_exposes_negative_diagnostics(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_eval_rows_surface_absolute_relevance_scores(tmp_path: Path) -> None:
+    """#249: per-query AND negative rows carry an absolute relevance score —
+    ``top1_score`` (the top hit's ``Hit.score``) and ``top1_vec_cosine`` (the
+    raw top-1 vector cosine) — so ``expect_none`` / OOD robustness becomes
+    measurable. The key signal: a covered query's ``top1_vec_cosine`` exceeds an
+    off-corpus query's, which the fused ``Hit.score`` (RRF rank-based) cannot
+    show on its own.
+    """
+    ds = _write_dataset(tmp_path, queries=[("foo and bar topics", ["alpha"])])
+    (ds / "queries.yaml").write_text(
+        "queries:\n"
+        "  - q: foo and bar topics\n"
+        "    expect_any: [alpha]\n"
+        "  - q: totally unrelated quantum gibberish\n"
+        "    expect_none: true\n",
+        encoding="utf-8",
+    )
+    spec = load_dataset(ds)
+    report = await run_eval(spec)
+
+    assert len(report.per_query) == 1
+    pos = report.per_query[0]
+    assert isinstance(pos["top1_score"], float)
+    assert isinstance(pos["top1_vec_cosine"], float)
+
+    assert len(report.negative_diagnostics) == 1
+    neg = report.negative_diagnostics[0]
+    assert isinstance(neg["top1_score"], float)
+    assert isinstance(neg["top1_vec_cosine"], float)
+
+    # OOD separation: the covered query scores a higher absolute vector cosine
+    # than the off-corpus negative — the whole point of surfacing the score.
+    assert pos["top1_vec_cosine"] > neg["top1_vec_cosine"]
+
+    # The human-readable breakdown renders both scores per positive and a
+    # dedicated negatives section (so OOD separation is eyeball-able).
+    table = report.diagnostics_table()
+    assert "vec_cos=" in table
+    assert "expect_none / OOD negatives" in table
+    assert "totally unrelated quantum gibberish"[:57] in table
+
+
+@pytest.mark.asyncio
+async def test_eval_bm25_mode_skips_vector_cosine_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#249 / bm25 purity: a pure ``--retrieval bm25`` eval must stay
+    embedder-free — `search(mode="bm25")` makes no embed call, and the OOD cosine
+    probe is gated off too, so it issues zero extra embeds and a real-embedder
+    bm25 ablation can't crash on an unreachable embedder. Rows get
+    ``top1_vec_cosine=None`` while ``top1_score`` (the fused bm25 score) still
+    surfaces.
+    """
+    from dikw_core.eval import runner as runner_mod
+
+    ds = _write_dataset(tmp_path, queries=[("foo and bar topics", ["alpha"])])
+    spec = load_dataset(ds)
+
+    calls = 0
+    real_probe = runner_mod.HybridSearcher.top_vector_cosine
+
+    async def spy_probe(self, q):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return await real_probe(self, q)
+
+    monkeypatch.setattr(runner_mod.HybridSearcher, "top_vector_cosine", spy_probe)
+
+    report = await run_eval(spec, mode="bm25")
+    assert calls == 0, "pure bm25 eval must not invoke the vector-cosine probe"
+    assert report.per_query
+    assert all(r["top1_vec_cosine"] is None for r in report.per_query)
+    assert all(isinstance(r["top1_score"], float) for r in report.per_query)
+
+
+@pytest.mark.asyncio
 async def test_run_eval_all_negative_dataset_metrics_empty(tmp_path: Path) -> None:
     """A dataset of only negatives produces no hit@k/MRR values — nothing
     to average. The report's ``passed`` flag still works (trivially True

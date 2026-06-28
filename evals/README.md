@@ -56,6 +56,24 @@ Semantics: a query is a "hit at k" if *any* stem in `expect_any` appears
 in the top-k retrieval result. Paraphrases often live in multiple docs,
 and requiring *all* stems would be artificially punitive.
 
+Mark an out-of-domain query with `expect_none: true` (and no `expect_any`).
+Doc-level retrieval never abstains, so rank order carries no robustness
+signal for these — instead each report row (positive **and** negative)
+exposes two absolute-relevance numbers (which describe *different* chunks
+once a reranker is active, by design):
+
+- `top1_vec_cosine` — the cosine of the **best text-vector match anywhere in
+  the corpus** (max cosine, not necessarily the top-*ranked* hit), so it
+  answers "is any chunk close to this query?". This is the OOD signal: with a
+  **real** embedder a covered query scores high (~0.7) and an off-corpus one
+  low (~0.2). Caveats: text-vector only (the multimodal/asset leg isn't
+  probed); `None` for a pure `--retrieval bm25` run (kept embedder-free); and
+  under the hermetic `FakeEmbeddings` the cosine is lexical bag-of-words and
+  won't separate OOD cleanly — use a real embedder to calibrate.
+- `top1_score` — the **top-ranked** hit's fused `Hit.score` (the cross-encoder
+  rerank score when the rerank leg ran; otherwise the rank-based RRF score,
+  which is ~constant across queries and does *not* encode absolute relevance).
+
 ## Usage
 
 ```bash

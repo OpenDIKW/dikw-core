@@ -437,6 +437,57 @@ async def _populate_fixture_corpus(storage):
     return embedder, version_id
 
 
+# ---- top_vector_cosine (eval OOD probe, #249) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_top_vector_cosine_discriminates_covered_vs_ood(tmp_path) -> None:
+    """``top_vector_cosine`` surfaces the absolute top-1 cosine similarity — a
+    covered query scores higher than an out-of-corpus one. This is the OOD /
+    expect_none signal the fused ``Hit.score`` cannot carry (RRF is rank-based;
+    CombSUM/CombMNZ min-max normalise per leg), so #249's eval rows read it
+    straight from the vector leg.
+    """
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_fixture_corpus(storage)
+    searcher = HybridSearcher(
+        storage, embedder, embedding_model="fake", text_version_id=version_id
+    )
+    covered = await searcher.top_vector_cosine(
+        "DIKW pyramid data information knowledge wisdom"
+    )
+    ood = await searcher.top_vector_cosine("zzzqqq nonexistent gibberish token")
+    assert covered is not None and ood is not None
+    assert covered > ood, f"covered ({covered}) must out-score OOD ({ood})"
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_top_vector_cosine_none_without_text_vector_leg(tmp_path) -> None:
+    """No text vector leg wired (no embedder) → ``None``, gracefully."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    searcher = HybridSearcher(storage, None)
+    assert await searcher.top_vector_cosine("anything") is None
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_top_vector_cosine_none_when_no_text_version(tmp_path) -> None:
+    """Embedder wired but no text embeddings indexed yet → ``vec_search`` raises
+    ``NotSupported``; the probe degrades to ``None`` (mirrors ``search``'s
+    graceful vec leg) rather than propagating."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    searcher = HybridSearcher(storage, FakeEmbeddings(), embedding_model="fake")
+    assert await searcher.top_vector_cosine("anything") is None
+    await storage.close()
+
+
 @pytest.mark.asyncio
 async def test_mode_bm25_skips_vector_leg(tmp_path) -> None:
     storage = SQLiteStorage(tmp_path / "idx.sqlite")
