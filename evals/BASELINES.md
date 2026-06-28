@@ -7,6 +7,36 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-06-28 — eval rows: surface absolute relevance scores (#249)
+
+**Change under test:** every eval report row (`PerQueryRow` + `NegativeRow`) now
+carries `top1_score` (the top-*ranked* hit's fused `Hit.score` — the cross-encoder
+rerank score when the rerank leg ran) and `top1_vec_cosine` (the cosine of the
+*best text-vector match in the corpus*, via a new `HybridSearcher.top_vector_cosine`
+probe — a different chunk than rank-0 once a reranker reorders, by design), so
+`expect_none` / OOD robustness is measurable. The probe is gated to vector-using
+modes, so a pure `--retrieval bm25` ablation stays embedder-free.
+`domains/info/search.py` gains only the **additive, read-only**
+`top_vector_cosine` method — `search()` and the ranking path are byte-untouched —
+so this is `no-baseline-needed`.
+
+**No-regression proof (hermetic, `FakeEmbeddings`, `cache_mode="off"`, packaged
+`mvp`):** retrieval metrics are unchanged — `hit@3 = hit@10 = mrr = ndcg@10 =
+recall@100 = 1.0`, identical to before the change (the new method never runs
+inside `search`). The new fields populate on every row.
+
+**Honest caveat — the cosine only discriminates with a real embedder.** On the
+same hermetic mvp run the OOD separation *overlaps* (min positive
+`top1_vec_cosine` 0.334 < max negative 0.445) because `FakeEmbeddings` is a
+lexical bag-of-words: off-corpus negatives ("weather in Tokyo") still share
+function words with the corpus. This is expected, not a defect — the feature
+*surfaces* the signal; its discriminating power is the embedder's job, which is
+exactly what #249 makes measurable. A real embedder gives covered ~0.7 vs OOD
+~0.2. The mechanism is pinned deterministically by
+`tests/test_eval_runner.py::test_eval_rows_surface_absolute_relevance_scores`
+(zero-lexical-overlap OOD query → covered cosine > negative cosine) and
+`tests/test_search.py::test_top_vector_cosine_discriminates_covered_vs_ood`.
+
 ## 2026-06-28 — eval-infra: two-level snapshot cache (fixes the RetrievalConfig footgun, #250)
 
 **Change under test:** `run_eval`'s snapshot cache key (`_corpus_cache_key`) now

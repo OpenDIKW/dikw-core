@@ -11,8 +11,11 @@
 # Stems:  karpathy-gist, karpathy-software-2-0, karpathy-recipe
 #
 # Mix: 3 in-domain (Karpathy essays) + 3 negatives = 6.
-# Negatives are observational — a Phase B answer-level judge (not Phase A
-# retrieval-only) would be the right place to gate them.
+# Negatives don't gate hit@k/MRR, but every report row (positive and
+# negative) now carries an absolute relevance — top1_vec_cosine + top1_score
+# (#249) — so OOD robustness is measurable: with a real embedder a covered
+# query out-scores an off-corpus one. (Under hermetic FakeEmbeddings the
+# cosine is lexical, so these particular negatives may not separate cleanly.)
 
 queries:
   # ---- In-domain (Karpathy essays) -----------------------------------------

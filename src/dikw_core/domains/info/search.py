@@ -915,6 +915,49 @@ class HybridSearcher:
         vectors = await self._embedder.embed([q], model=self._embedding_model)
         return vectors[0] if vectors else None
 
+    async def top_vector_cosine(self, q: str) -> float | None:
+        """Eval-only: the absolute cosine similarity of the **best text-vector
+        match** in the corpus for ``q`` — i.e. ``1 - min(distance)`` over the
+        text vector index — independent of fusion mode and reranking.
+
+        This is NOT "the top-ranked hit's score": it is the single nearest chunk
+        by vector distance, which a reranker may have demoted below rank 0. That
+        is deliberate — it answers "is ANY chunk semantically close to this
+        query?", the discriminating signal for OOD / ``expect_none`` (covered
+        queries have a close match, off-corpus queries do not). The fused
+        ``Hit.score`` cannot carry it: RRF is rank-based and CombSUM/CombMNZ
+        min-max normalise each leg, so the top fused score is ~1.0 for *any*
+        query. The eval runner surfaces this per query; ``search`` itself never
+        calls it.
+
+        Text leg only — the multimodal/asset leg (which ``search`` also fuses on
+        a multimodal base) is intentionally out of scope for this text-OOD probe.
+
+        Similarity is ``1 - distance``: both shipped storage adapters score
+        ``vec_search`` by cosine distance unconditionally (sqlite pins a cosine
+        vec table; postgres uses ``<=>``), regardless of the
+        ``embedding_distance`` config field, so this holds for any base. Returns
+        ``None`` for a blank query, when no text vector leg is wired, when the
+        backend has no vector search / no active text version, or when the index
+        is empty.
+        """
+        if not q.strip():
+            return None
+        if self._embedder is None or self._embedding_model is None:
+            return None
+        q_vec = await self._embed_query_text(q)
+        if q_vec is None:  # pragma: no cover - defensive: embed() of a non-blank query never returns []
+            return None
+        try:
+            hits = await self._storage.vec_search(
+                q_vec, version_id=self._text_version_id, limit=1, layer=None
+            )
+        except NotSupported:
+            # Mirror search()'s vec leg (graceful_notsupported): a backend with
+            # no vector search / no active text version has no cosine to report.
+            return None
+        return None if not hits else 1.0 - hits[0].distance
+
     async def _embed_query_multimodal(self, q: str) -> list[float] | None:
         assert self._mm is not None
         vectors = await self._mm.embedder.embed(

@@ -227,12 +227,25 @@ class PerQueryRow:
     ranked_docs: tuple[str, ...]
     ranked_chunks: tuple[str, ...]
     ranked_assets: tuple[str, ...]
+    # Absolute relevance signals for OOD / expect_none calibration (#249). These
+    # describe two DIFFERENT chunks once a reranker is active, by design:
+    # ``top1_score`` is the top-RANKED hit's fused ``Hit.score`` (the cross-encoder
+    # rerank score when the rerank leg ran; otherwise the rank-based fusion score,
+    # which is ~constant across queries and so non-discriminating on its own).
+    # ``top1_vec_cosine`` is the best vector match anywhere in the corpus (max
+    # cosine = ``1 - min distance``), fusion/rerank-independent — the signal that
+    # actually discriminates covered vs off-corpus queries ("is any chunk close?").
+    # ``None`` when there is no text vector leg (e.g. a pure ``bm25`` run).
+    top1_score: float | None = None
+    top1_vec_cosine: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "q": self.q,
             "expect_any": list(self.expect_doc_any),
             "ranked": list(self.ranked_docs),
+            "top1_score": self.top1_score,
+            "top1_vec_cosine": self.top1_vec_cosine,
         }
         if self.q_id is not None:
             d["id"] = self.q_id
@@ -247,17 +260,27 @@ class PerQueryRow:
 
 @dataclass(frozen=True)
 class NegativeRow:
-    """One ``expect_none=True`` query's observed retrieval. Diagnostic only —
-    retrieval always returns something from a non-empty corpus, so there's no
-    pass/fail here yet; scoring negatives requires a score threshold or an
-    answer-level judge that we don't have in Phase A.
+    """One ``expect_none=True`` query's observed retrieval. Retrieval always
+    returns something from a non-empty corpus, so rank order alone carries no
+    pass/fail. The absolute relevance of the top hit does, though: ``top1_score``
+    (top fused ``Hit.score`` — the rerank score when the rerank leg ran) and
+    ``top1_vec_cosine`` (raw top-1 vector cosine, fusion/rerank-independent) make
+    OOD robustness measurable (a healthy engine scores an off-corpus query low).
+    A score-based ``negative_satisfaction`` metric can consume these later (#249).
     """
 
     q: str
     ranked: tuple[str, ...]  # doc stems, top SEARCH_LIMIT
+    top1_score: float | None = None
+    top1_vec_cosine: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"q": self.q, "ranked": list(self.ranked)}
+        return {
+            "q": self.q,
+            "ranked": list(self.ranked),
+            "top1_score": self.top1_score,
+            "top1_vec_cosine": self.top1_vec_cosine,
+        }
 
 
 class EvalReport(BaseModel):
@@ -347,15 +370,37 @@ class EvalReport(BaseModel):
             verdict = "—" if thr is None else ("pass" if v >= thr else "FAIL")
             thr_str = f"{thr:.3f}" if thr is not None else "    -"
             lines.append(f"{key:18s}  {v:6.3f}  {thr_str:9s}  {verdict}")
+        def _fmt(v: object) -> str:
+            return f"{v:.3f}" if isinstance(v, int | float) else "—"
+
+        def _short(q: str) -> str:
+            return q if len(q) <= 60 else q[:57] + "..."
+
         lines.append("")
         lines.append("per-query top-5 (doc view):")
         for row in self.per_query:
-            q_short = row["q"] if len(row["q"]) <= 60 else row["q"][:57] + "..."
             top5 = row["ranked"][:5]
             mark = "✓" if any(e in top5 for e in row["expect_any"]) else "✗"
-            lines.append(f"  {mark} {q_short}")
+            lines.append(f"  {mark} {_short(row['q'])}")
             lines.append(f"       expected: {row['expect_any']}")
             lines.append(f"       top-5:    {top5}")
+            lines.append(
+                f"       score:    top1={_fmt(row.get('top1_score'))} "
+                f"vec_cos={_fmt(row.get('top1_vec_cosine'))}"
+            )
+        # Negatives carry no rank verdict (retrieval never abstains), so the
+        # absolute top vector cosine IS the signal: a healthy engine has no chunk
+        # close to an off-corpus query. (``top1`` is the rerank score when a
+        # reranker ran — meaningful then, ~constant otherwise.) Surface both so a
+        # human can eyeball OOD separation (#249).
+        if self.negative_diagnostics:
+            lines.append("")
+            lines.append("expect_none / OOD negatives (lower vec_cos = better):")
+            for row in self.negative_diagnostics:
+                lines.append(
+                    f"  · {_short(row['q'])}  vec_cos={_fmt(row.get('top1_vec_cosine'))} "
+                    f"top1={_fmt(row.get('top1_score'))}"
+                )
         return "\n".join(lines)
 
 
@@ -993,6 +1038,18 @@ async def _run_queries(
             RetrievalMode, tuple[list[PerQueryRow], list[NegativeRow]]
         ] = {}
         total_q = len(spec.queries)
+        # The top vector cosine is fusion/mode-independent (it reads the raw vec
+        # leg, not the fused result), so compute it once per distinct query text
+        # and reuse across modes — one extra query-embed per distinct query for
+        # the whole run, not per mode. It is the absolute OOD / expect_none signal
+        # the fused ``Hit.score`` cannot carry (RRF is rank-based; CombSUM/CombMNZ
+        # normalise per leg) (#249). Gate it on a vector-using mode so a PURE
+        # ``bm25`` ablation stays embedder-free (its whole point is FTS-only,
+        # comparable to published BM25 baselines, and it must not crash if a real
+        # embedder is unreachable). When the only mode is ``bm25``, every row's
+        # ``top1_vec_cosine`` is ``None``.
+        vec_probe_active = any(m in ("vector", "hybrid") for m in modes)
+        vec_cosine_by_q: dict[str, float | None] = {}
         for m in modes:
             positives: list[PerQueryRow] = []
             negatives: list[NegativeRow] = []
@@ -1000,6 +1057,15 @@ async def _run_queries(
                 if reporter is not None:
                     reporter.cancel_token().raise_if_cancelled()
                 hits = await searcher.search(q.q, limit=SEARCH_LIMIT, mode=m)
+                if vec_probe_active and q.q not in vec_cosine_by_q:
+                    vec_cosine_by_q[q.q] = await searcher.top_vector_cosine(q.q)
+                # ``top1_score`` is the top-RANKED hit's fused Hit.score (the
+                # cross-encoder rerank score when the rerank leg ran);
+                # ``top1_vec_cosine`` is the best vector match in the corpus
+                # (max cosine) — a different chunk than rank-0 once a reranker
+                # reorders, by design (it answers "is any chunk close?").
+                top1_score = hits[0].score if hits else None
+                top1_vec_cosine = vec_cosine_by_q.get(q.q)
                 ranked_docs = _project_doc_view(hits)
                 ranked_chunks = _project_chunk_view(
                     hits, chunk_runtime_to_named
@@ -1009,7 +1075,12 @@ async def _run_queries(
                 )
                 if q.expect_none:
                     negatives.append(
-                        NegativeRow(q=q.q, ranked=tuple(ranked_docs))
+                        NegativeRow(
+                            q=q.q,
+                            ranked=tuple(ranked_docs),
+                            top1_score=top1_score,
+                            top1_vec_cosine=top1_vec_cosine,
+                        )
                     )
                 else:
                     positives.append(
@@ -1022,6 +1093,8 @@ async def _run_queries(
                             ranked_docs=tuple(ranked_docs),
                             ranked_chunks=tuple(ranked_chunks),
                             ranked_assets=tuple(ranked_assets),
+                            top1_score=top1_score,
+                            top1_vec_cosine=top1_vec_cosine,
                         )
                     )
                 if reporter is not None:
