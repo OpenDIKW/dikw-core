@@ -7,6 +7,21 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Changed
+
+- **K-layer system prompts extracted to `prompts/*.md`; product self-reference
+  unified to `dikw`.** The three inline system-prompt constants under
+  `domains/knowledge` (`DEFAULT_SYNTH_SYSTEM`, `_MERGE_SYSTEM`, `_GROUNDED_SYSTEM`)
+  now load from packaged `prompts/synthesize_system.md`,
+  `prompts/lint_fix_orphan_merge_system.md`, and
+  `prompts/lint_fix_broken_wikilink_grounded_system.md` via `prompts.load(...)` —
+  like every other prompt (CLAUDE.md "Don't inline prompts in code"). Constant
+  names, call sites, and the public surface are unchanged. Every packaged prompt
+  (synth + lint + eval) now refers to the product as `dikw` rather than
+  `dikw-core`, and the two lint system prompts gained the same self-intro the
+  other authoring prompts already carry. No on-disk format, schema, CLI, or API
+  change.
+
 ## 0.6.3 — delivery-loop instrumentation (no engine changes)
 
 ### Changed

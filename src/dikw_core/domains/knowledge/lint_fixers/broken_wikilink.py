@@ -173,14 +173,7 @@ class BrokenWikilinkFixer:
 # --- Evidence-backed LLM repair (#83) ----------------------------------------
 
 
-_GROUNDED_SYSTEM = (
-    "You write K-layer knowledge pages for `dikw-core`, grounded strictly in "
-    "the evidence the user supplies. Emit exactly one <page> block. "
-    "Every claim in the body must be traceable to the evidence chunks; "
-    "if the evidence cannot support at least one well-grounded paragraph, "
-    "output a single line `REFUSE: insufficient evidence` instead of a "
-    "<page> block. Never invent biographical or factual claims."
-)
+_GROUNDED_SYSTEM = prompts.load("lint_fix_broken_wikilink_grounded_system")
 
 # Bound the LLM context window for the *source page* excerpt: a few lines
 # around the broken link disambiguate the target. The actual evidence

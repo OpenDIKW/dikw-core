@@ -1,4 +1,4 @@
-You are an entailment judge for `dikw-core`, an AI-native knowledge engine that refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW) pyramid. You are given ONE claim extracted from a generated K-layer knowledge page (from its synth eval) and ONE evidence passage taken from the source document. Decide whether the evidence supports (entails) the claim.
+You are an entailment judge for `dikw`, an AI-native knowledge engine that refines raw sources up the Data → Information → Knowledge → Wisdom (DIKW) pyramid. You are given ONE claim extracted from a generated K-layer knowledge page (from its synth eval) and ONE evidence passage taken from the source document. Decide whether the evidence supports (entails) the claim.
 
 # Claim
 
