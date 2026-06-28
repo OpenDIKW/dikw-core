@@ -80,7 +80,7 @@ are yours to choose (vendor-canonical by convention); the keys live in `.env`.
 
 | Vendor | `llm` | `llm_base_url` | `embedding` | `embedding_base_url` | `llm_api_key_env` | `embedding_api_key_env` |
 |---|---|---|---|---|---|---|
-| **OpenAI** (default embedder) | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `OPENAI_API_KEY` |
+| **OpenAI** | `openai_compat` | `https://api.openai.com/v1` | `openai_compat` | same | `OPENAI_API_KEY` | `OPENAI_API_KEY` |
 | **OpenAI Codex** (GPT-5 series) | `openai_codex` | `https://chatgpt.com/backend-api/codex` *(required)* | *(no embed — pair elsewhere)* | — | *ignored — OAuth via `<base>/.dikw/auth.json`; bootstrap with `dikw auth login openai-codex`* | — |
 | **Anthropic** (default LLM) | `anthropic_compat` | leave `null` | *(no embed — pair elsewhere)* | — | `ANTHROPIC_API_KEY` | — |
 | **DeepSeek** (anthropic-compat) | `anthropic_compat` | `https://api.deepseek.com/anthropic` | *(no embed — pair elsewhere)* | — | `DEEPSEEK_API_KEY` | — |
@@ -88,7 +88,7 @@ are yours to choose (vendor-canonical by convention); the keys live in `.env`.
 | **DeepSeek** (openai-compat) | `openai_compat` | `https://api.deepseek.com/v1` | *(no embed — pair elsewhere)* | — | `DEEPSEEK_API_KEY` | — |
 | **GLM / 智谱** | `openai_compat` | `https://open.bigmodel.cn/api/paas/v4` | `openai_compat` | same | `ZHIPUAI_API_KEY` | `ZHIPUAI_API_KEY` |
 | **Gemini** | `openai_compat` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `openai_compat` | same | `GEMINI_API_KEY` | `GEMINI_API_KEY` |
-| **Gitee AI** (`bge-m3`, `Qwen3-Embedding-*`) | *(often paired as embed only)* | — | `openai_compat` | `https://ai.gitee.com/v1` | — | `GITEE_API_KEY` |
+| **Gitee AI** (`bge-m3`, `Qwen3-Embedding-*`) — **default embed + rerank** | *(often paired as embed only)* | — | `openai_compat` | `https://ai.gitee.com/v1` | — | `GITEE_API_KEY` |
 | **Ollama / vLLM / TEI** (local) | `openai_compat` | `http://localhost:<port>/v1` | `openai_compat` | same or localhost | `LOCAL_API_KEY` (any name; any non-empty value) | `LOCAL_API_KEY` (any name; any non-empty value) |
 
 DeepSeek appears twice on purpose — it serves both an Anthropic-compatible
@@ -603,13 +603,22 @@ a configured reranker runs, and a base that configures none has no rerank leg
 regardless. Flip `rerank_enabled: false` to keep a configured reranker dark
 (this is how the eval harness compares rerank-off vs rerank-on at one config).
 
+**Default scaffold.** `dikw init` now ships a Gitee `bge-m3` embedder **and** a
+Gitee `BAAI/bge-reranker-v2-m3` reranker, both keyed by one `GITEE_API_KEY`, so
+rerank is on out of the box (OpenAI has no `/rerank` endpoint, so the prior
+OpenAI embedding default could not ship a matching reranker). A base that
+doesn't want rerank sets `rerank_enabled: false`.
+
 **Cost & resilience.** Rerank is paid **per query** (embeddings are paid once
 at ingest), so configure it where the corpus is large or noisy enough to need
 it. On the read path a transient rerank failure (5xx/timeout/connection drop)
-degrades to the fused order rather than failing the query; a permanent error
-(401/403/404, bad model) fails loud so a misconfig surfaces immediately. All
-the embedding gotchas about Gitee keepalive drops (gotcha #3) and the no-magic
-key-var rule (gotcha #6) apply to the rerank leg identically.
+degrades to the fused order rather than failing the query, logged at **ERROR**
+(a configured leg that failed); a permanent error (401/403/404, bad model) fails
+loud so a misconfig surfaces immediately. If `rerank_enabled` is set but no
+`provider.rerank` is configured, each retrieve logs one **WARNING** so the
+silently-off leg is visible. All the embedding gotchas about Gitee keepalive
+drops (gotcha #3) and the no-magic key-var rule (gotcha #6) apply to the rerank
+leg identically.
 
 Eval evidence (SciFact rerank-off-vs-on, Qwen3-Embedding-0.6B +
 `bge-reranker-v2-m3` via Gitee AI) is in [`evals/BASELINES.md`](../evals/BASELINES.md).

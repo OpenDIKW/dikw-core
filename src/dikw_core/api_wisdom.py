@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from .domains.data.path_norm import doc_id_for as _doc_id_for
 from .progress import NoopReporter, ProgressReporter
 from .providers import EmbeddingProvider, build_embedder
 from .schemas import KnowledgeLogEntry, Layer, WisdomStatus, WisdomWriteReport
+
+logger = logging.getLogger(__name__)
 
 # Per-(base, wisdom-path) locks serialise concurrent writers against the
 # same logical wisdom file. Two HTTP submissions for the same
@@ -177,7 +180,16 @@ async def write_wisdom_page(
                     # from the active identity — defer embedding to the
                     # next ingest's resume scan instead of activating a
                     # fresh version here or storing vectors under the
-                    # wrong version table.
+                    # wrong version table. Warn: embedding was requested
+                    # (``not no_embed``) but the page lands without vectors
+                    # until that resume scan, so surface the deferral rather
+                    # than silently shipping a vector-less wisdom page.
+                    logger.warning(
+                        "wisdom write '%s': embedding deferred (no active text "
+                        "version or cfg drifted from the active identity); a "
+                        "future ingest will reconcile its vectors",
+                        logical_path,
+                    )
                     active_embedder = None
 
             # Cooperative cancellation poll: synth/lint/ingest all check

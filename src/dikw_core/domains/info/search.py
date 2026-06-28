@@ -434,9 +434,38 @@ class HybridSearcher:
         q_vec_mm: list[float] | None = None
         if run_vec:
             if text_vec_active:
-                q_vec_text = await self._embed_query_text(q)
+                try:
+                    q_vec_text = await self._embed_query_text(q)
+                except TransientProviderError:
+                    # Read-path resilience: a transient query-embed failure on
+                    # the hybrid path drops the vec leg and lets FTS (+ graph)
+                    # carry the query rather than 500-ing on a vendor blip.
+                    # Single-leg ``vector`` mode has no FTS to fall back to, so
+                    # it must surface the failure (eval-ablation purity) — only
+                    # degrade in hybrid. A permanent ``ProviderError`` is never
+                    # caught here, so a misconfig (bad key / model) still fails
+                    # fast — same fail-loud contract as the rerank leg.
+                    if mode != "hybrid":
+                        raise
+                    logger.error(
+                        "query text embedding failed transiently; degrading to "
+                        "FTS-only for this query",
+                        exc_info=True,
+                    )
+                    q_vec_text = None
             if self._mm is not None:
-                q_vec_mm = await self._embed_query_multimodal(q)
+                try:
+                    q_vec_mm = await self._embed_query_multimodal(q)
+                except TransientProviderError:
+                    # Same hybrid-only degrade for the multimodal/asset leg.
+                    if mode != "hybrid":
+                        raise
+                    logger.error(
+                        "query multimodal embedding failed transiently; "
+                        "degrading without the asset leg for this query",
+                        exc_info=True,
+                    )
+                    q_vec_mm = None
 
         fts_task: asyncio.Task[list[FTSHit]] | None = None
         vec_task: asyncio.Task[list[VecHit]] | None = None
@@ -809,7 +838,7 @@ class HybridSearcher:
                     q, documents, model=self._rerank_model
                 )
             except TransientProviderError:
-                logger.warning(
+                logger.error(
                     "rerank degraded to fused order after a transient failure",
                     exc_info=True,
                 )

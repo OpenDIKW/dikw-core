@@ -297,7 +297,11 @@ async def _run_batch_with_retry(
                 if reporter is not None:
                     reporter.cancel_token().raise_if_cancelled()
             else:
-                logger.warning(
+                # Retries exhausted → the batch is skipped (chunks left without
+                # vectors for the next ingest's resume scan). A configured embed
+                # that ultimately failed → ERROR; the in-progress retry lines
+                # above stay WARNING (they may still self-heal).
+                logger.error(
                     "embed batch %d/%d skipped after %d attempt(s): %s",
                     batch_idx + 1,
                     total_batches,
@@ -488,7 +492,9 @@ async def embed_assets(
                     if backoff_seconds > 0:
                         await asyncio.sleep(backoff_seconds * attempt)
                 else:
-                    logger.warning(
+                    # Retries exhausted → asset batch skipped (reconciled on the
+                    # next ingest's resume scan). Configured-but-failed → ERROR.
+                    logger.error(
                         "asset batch skipped after %d attempt(s): %s",
                         attempt,
                         pe,

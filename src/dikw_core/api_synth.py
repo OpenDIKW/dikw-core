@@ -132,6 +132,16 @@ async def synthesize(
                 text_version_id = active_text.version_id
                 text_embed_model = active_text.model
             else:
+                # An embedder was wired but there's no active text version to
+                # embed against (e.g. a base that never ran a full ingest).
+                # Defer: pages are authored without inline vectors and the next
+                # ingest's resume scan reconciles them. Warn rather than silently
+                # shipping vector-less K pages.
+                logger.warning(
+                    "synth: embedder wired but no active text version; pages "
+                    "will be authored without inline embeddings (a future "
+                    "ingest will reconcile their vectors)"
+                )
                 embedder = None  # no active text version → nothing to embed against
 
         sources = list(await storage.list_documents(layer=Layer.SOURCE, active=True))

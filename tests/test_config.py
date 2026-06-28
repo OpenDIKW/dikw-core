@@ -37,6 +37,27 @@ def test_default_config_roundtrip(tmp_path: Path) -> None:
     assert loaded.storage.backend == "sqlite"
 
 
+def test_default_config_ships_gitee_embedding_and_rerank() -> None:
+    """`dikw init` scaffolds a Gitee bge-m3 embedder + bge-reranker so one
+    ``GITEE_API_KEY`` drives both legs out of the box. OpenAI has no ``/rerank``
+    endpoint, so the prior OpenAI embedding default could not ship a matching
+    reranker; pairing both on Gitee keeps the default self-consistent."""
+    cfg = default_config()
+    p = cfg.provider
+    assert p.embedding == "openai_compat"
+    assert p.embedding_model == "bge-m3"
+    assert p.embedding_base_url == "https://ai.gitee.com/v1"
+    assert p.embedding_api_key_env == "GITEE_API_KEY"
+    assert p.embedding_dim == 1024
+    assert p.rerank == "openai_compat_rerank"
+    assert p.rerank_model == "BAAI/bge-reranker-v2-m3"
+    assert p.rerank_base_url == "https://ai.gitee.com/v1"
+    assert p.rerank_api_key_env == "GITEE_API_KEY"
+    # rerank is on once configured; the LLM leg stays Anthropic-by-default.
+    assert cfg.retrieval.rerank_enabled is True
+    assert p.llm_api_key_env == "ANTHROPIC_API_KEY"
+
+
 def test_load_config_discriminated_storage(tmp_path: Path) -> None:
     path = tmp_path / CONFIG_FILENAME
     path.write_text(

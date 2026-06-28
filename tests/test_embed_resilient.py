@@ -11,6 +11,7 @@ by the next ingest's ``list_chunks_missing_embedding`` resume scan.
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -114,6 +115,44 @@ async def test_embed_chunks_skips_batch_after_exhausted_retries(
         assert results[1].attempts == 1
         # Total provider calls: 3 (batch 0 attempts) + 1 (batch 1) = 4.
         assert embedder.embed_calls == 4
+    finally:
+        await storage.close()
+
+
+async def test_embed_batch_skip_after_exhausted_retries_logs_at_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A batch skipped after exhausted transient retries is a configured-but-
+    failed embed → logged at ERROR. The in-progress retry lines stay at
+    WARNING (they self-heal on the next attempt)."""
+    storage = await _new_storage(tmp_path)
+    try:
+        version_id = await register_text_version(storage)
+        # retries=2 → 3 attempts; all raise so the batch is skipped.
+        embedder = FlakyEmbedder(raise_on_calls={0, 1, 2})
+        with caplog.at_level(logging.WARNING, logger="dikw_core.domains.info.embed"):
+            async for _ in embed_chunks(
+                embedder,
+                _chunks(2),
+                model="fake",
+                version_id=version_id,
+                batch_size=2,
+                retries=2,
+                backoff_seconds=0.0,
+            ):
+                pass
+        skip_errors = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and "skipped" in r.getMessage()
+        ]
+        retry_warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "retrying" in r.getMessage()
+        ]
+        assert skip_errors, "exhausted-retry skip must log at ERROR"
+        assert retry_warnings, "in-progress retries stay at WARNING"
     finally:
         await storage.close()
 

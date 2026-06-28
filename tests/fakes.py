@@ -35,6 +35,7 @@ __all__ = [
     "FakeMultimodalEmbedding",
     "FakeReranker",
     "FlakyEmbedder",
+    "RaisingEmbedder",
     "assert_codex_request_kwargs_clean",
     "codex_create_sentinel",
     "ingest_wisdom_files",
@@ -319,9 +320,17 @@ def make_jwt(claims: dict[str, Any]) -> str:
 
 
 def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBED_DIM) -> None:
-    """``api.init_base`` + patch the dikw.yml so ``embedding_dim`` matches
-    the test embedder. ``FakeEmbeddings`` produces ``EMBED_DIM`` (64) by
-    default; tests using a different embedder pass ``dim``.
+    """``api.init_base`` + patch the dikw.yml so the base carries a stable
+    test identity. ``FakeEmbeddings`` produces ``EMBED_DIM`` (64) by default;
+    tests using a different embedder pass ``dim``.
+
+    Pins the historical ``openai_compat`` / ``text-embedding-3-small``
+    embedding identity (so :func:`register_text_version`'s default matches cfg
+    and inline-embed tests still land vectors) and DROPS the shipping default
+    reranker (so ``api.retrieve`` runs no rerank leg in tests unless one opts in
+    via ``test_rerank_api_wiring._configure_rerank``). The shipping Gitee
+    embed + rerank default is exercised directly in ``test_config.py``; the
+    rest of the suite stays insulated from it here.
     """
     from dikw_core import api
     from dikw_core.config import dump_config_yaml, load_config
@@ -329,7 +338,15 @@ def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBE
     api.init_base(path, description=description)
     cfg_path = path / "dikw.yml"
     cfg = load_config(cfg_path)
+    cfg.provider.embedding = "openai_compat"
+    cfg.provider.embedding_model = "text-embedding-3-small"
+    cfg.provider.embedding_base_url = "https://api.openai.com/v1"
+    cfg.provider.embedding_api_key_env = "OPENAI_API_KEY"
     cfg.provider.embedding_dim = dim
+    cfg.provider.rerank = None
+    cfg.provider.rerank_model = ""
+    cfg.provider.rerank_base_url = None
+    cfg.provider.rerank_api_key_env = None
     cfg_path.write_text(dump_config_yaml(cfg), encoding="utf-8")
 
 
@@ -546,6 +563,27 @@ class FlakyEmbedder:
                 f"FlakyEmbedder simulated TransientProviderError on call {idx}"
             )
         return await self.inner.embed(texts, model=model)
+
+
+@dataclass
+class RaisingEmbedder:
+    """Raises the configured error on every ``embed`` call.
+
+    Drives the read-path query-embedding branches in
+    ``HybridSearcher.search``: a ``TransientProviderError`` must degrade
+    (hybrid → FTS-only) while a bare ``ProviderError`` must propagate
+    (fail fast → 500). Unlike ``FlakyEmbedder`` (transient-only, indexed
+    so a retry can succeed), this raises the exact error handed in on the
+    first and every call — the query embed is a single un-retried call.
+    """
+
+    error: BaseException
+    embed_calls: int = field(default=0, init=False)
+
+    async def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        _ = (texts, model)
+        self.embed_calls += 1
+        raise self.error
 
 
 @dataclass

@@ -661,11 +661,22 @@ def default_config(description: str = "A dikw-core knowledge base") -> DikwConfi
     return DikwConfig(
         provider=ProviderConfig(
             llm_api_key_env="ANTHROPIC_API_KEY",  # default LLM: Anthropic native
-            embedding_dim=1536,  # text-embedding-3-small native
+            # Default embed + rerank both on Gitee AI so one GITEE_API_KEY drives
+            # both legs out of the box. OpenAI has no /rerank endpoint, so an
+            # OpenAI embedding default could not ship a matching reranker; Gitee
+            # offers both bge-m3 (embeddings) and bge-reranker-v2-m3 (/rerank).
+            embedding="openai_compat",
+            embedding_model="bge-m3",
+            embedding_base_url="https://ai.gitee.com/v1",
+            embedding_dim=1024,  # bge-m3 native
             embedding_revision="",
             embedding_normalize=True,
             embedding_distance="cosine",
-            embedding_api_key_env="OPENAI_API_KEY",  # default embed: OpenAI
+            embedding_api_key_env="GITEE_API_KEY",
+            rerank="openai_compat_rerank",
+            rerank_model="BAAI/bge-reranker-v2-m3",
+            rerank_base_url="https://ai.gitee.com/v1",
+            rerank_api_key_env="GITEE_API_KEY",
         ),
         storage=SQLiteStorageConfig(),
         schema=SchemaConfig(description=description),

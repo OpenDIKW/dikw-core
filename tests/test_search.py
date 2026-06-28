@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -23,6 +24,7 @@ from .fakes import (
     FakeEmbeddings,
     FakeMultimodalEmbedding,
     FakeReranker,
+    RaisingEmbedder,
     register_text_version,
 )
 
@@ -1034,9 +1036,9 @@ async def test_rerank_all_window_chunks_vanished_degrades(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rerank_transient_error_degrades_to_fused_order(tmp_path) -> None:
+async def test_rerank_transient_error_degrades_to_fused_order(tmp_path, caplog) -> None:
     """A transient rerank failure must not 500 the read path — the searcher
-    logs and falls back to the fused order."""
+    logs at ERROR (configured-but-failed) and falls back to the fused order."""
     storage = SQLiteStorage(tmp_path / "idx.sqlite")
     await storage.connect()
     await storage.migrate()
@@ -1056,10 +1058,80 @@ async def test_rerank_transient_error_degrades_to_fused_order(tmp_path) -> None:
         rerank_model="fake-rerank",
         rerank_candidate_k=40,
     )
-    hits = await searcher.search(_RERANK_QUERY, limit=5)
+    with caplog.at_level(logging.ERROR, logger="dikw_core.domains.info.search"):
+        hits = await searcher.search(_RERANK_QUERY, limit=5)
     await storage.close()
 
     assert [h.chunk_id for h in hits] == fused
+    assert any(
+        r.levelno == logging.ERROR and "rerank" in r.getMessage().lower()
+        for r in caplog.records
+    ), "a configured-but-failed rerank degrade must log at ERROR"
+
+
+@pytest.mark.asyncio
+async def test_query_embed_transient_degrades_to_fts_only(tmp_path, caplog) -> None:
+    """A transient query-embedding failure on the hybrid read path must not
+    500 — the vec leg drops out and the FTS leg still returns hits. Logged at
+    ERROR (configured embedder, call failed)."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    _embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage,
+        RaisingEmbedder(TransientProviderError("embed vendor 503")),
+        embedding_model="fake",
+        text_version_id=version_id,
+    )
+    with caplog.at_level(logging.ERROR, logger="dikw_core.domains.info.search"):
+        hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert hits, "the FTS leg must still return hits after the vec leg degrades"
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_query_embed_permanent_error_propagates(tmp_path) -> None:
+    """A permanent query-embedding misconfig (bad key / invalid model) fails
+    fast → 500, the same fail-loud contract as the rerank permanent path."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    _embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage,
+        RaisingEmbedder(ProviderError("embed 401 bad key")),
+        embedding_model="fake",
+        text_version_id=version_id,
+    )
+    with pytest.raises(ProviderError):
+        await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_query_embed_transient_propagates_in_vector_mode(tmp_path) -> None:
+    """The degrade-to-FTS fallback is hybrid-only: a single-leg ``vector``
+    ablation has no FTS leg to fall back to, so it surfaces the transient
+    failure rather than silently returning an empty result set (eval purity)."""
+    storage = SQLiteStorage(tmp_path / "idx.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    _embedder, version_id = await _populate_multi_chunk_corpus(storage)
+
+    searcher = HybridSearcher(
+        storage,
+        RaisingEmbedder(TransientProviderError("embed vendor 503")),
+        embedding_model="fake",
+        text_version_id=version_id,
+    )
+    with pytest.raises(TransientProviderError):
+        await searcher.search(_RERANK_QUERY, limit=5, mode="vector")
+    await storage.close()
 
 
 @pytest.mark.asyncio
