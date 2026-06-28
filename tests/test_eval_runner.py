@@ -1037,6 +1037,50 @@ def test_retrieval_config_fields_are_classified_for_eval_cache() -> None:
         "search-time → it is read live, no key change needed. See #250."
     )
 
+
+async def test_run_queries_guards_against_tokenizer_mismatch(
+    tmp_path: Path,
+) -> None:
+    """#250 defence-in-depth: if a future ``_corpus_cache_key`` regression ever let
+    a snapshot built with one ``cjk_tokenizer`` be reused under a different live
+    tokenizer, ``_run_queries`` fails loud rather than querying an FTS index built
+    with the wrong tokenizer. The cache key makes this impossible in normal
+    operation, so it's exercised here by calling ``_run_queries`` directly on a
+    jieba-built snapshot with a mismatched live ``cjk_tokenizer``.
+    """
+    from dikw_core.config import ProviderConfig, RetrievalConfig
+    from dikw_core.eval.fake_embedder import FakeEmbeddings
+    from dikw_core.eval.runner import _run_queries
+
+    ds = _write_dataset(tmp_path / "ds", queries=[("alpha", ["alpha"])])
+    spec = load_dataset(ds)
+    cache_root = tmp_path / "cache"
+    await run_eval(
+        spec, cache_root=cache_root, retrieval_config=RetrievalConfig(cjk_tokenizer="jieba")
+    )
+    base = next((cache_root / "toy").glob("fake__*")) / "base"
+    assert base.is_dir()
+
+    provider = ProviderConfig(
+        llm_api_key_env="ANTHROPIC_API_KEY",
+        embedding_model="fake",
+        embedding_dim=64,
+        embedding_revision="",
+        embedding_normalize=True,
+        embedding_distance="cosine",
+        embedding_api_key_env="OPENAI_API_KEY",
+    )
+    with pytest.raises(EvalError, match="snapshot cjk_tokenizer"):
+        await _run_queries(
+            base,
+            spec,
+            embedder=FakeEmbeddings(),
+            embedding_model="fake",
+            modes=["hybrid"],
+            retrieval_config=RetrievalConfig(cjk_tokenizer="none"),
+            provider_config=provider,
+        )
+
 # ---- check_thresholds direction-aware ---------------------------------------
 
 
