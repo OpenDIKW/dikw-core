@@ -461,6 +461,8 @@ async def test_top_vector_cosine_discriminates_covered_vs_ood(tmp_path) -> None:
     ood = await searcher.top_vector_cosine("zzzqqq nonexistent gibberish token")
     assert covered is not None and ood is not None
     assert covered > ood, f"covered ({covered}) must out-score OOD ({ood})"
+    # Blank / whitespace-only query → None (mirrors search()'s empty-query guard).
+    assert await searcher.top_vector_cosine("   ") is None
     await storage.close()
 
 

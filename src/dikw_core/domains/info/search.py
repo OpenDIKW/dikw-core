@@ -946,7 +946,7 @@ class HybridSearcher:
         if self._embedder is None or self._embedding_model is None:
             return None
         q_vec = await self._embed_query_text(q)
-        if q_vec is None:
+        if q_vec is None:  # pragma: no cover - defensive: embed() of a non-blank query never returns []
             return None
         try:
             hits = await self._storage.vec_search(
