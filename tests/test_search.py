@@ -1157,6 +1157,84 @@ async def test_query_embed_transient_propagates_when_degrade_disabled(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_multimodal_query_embed_transient_degrades(tmp_path, caplog) -> None:
+    """A transient *multimodal* (asset-leg) query-embed failure degrades like
+    the text leg: the asset leg drops out, the text-vec + FTS legs still answer,
+    and the degrade is logged at ERROR. Mirrors the text-leg hybrid-only,
+    non-eval degrade for the asset query-embed call."""
+    from dikw_core.schemas import EmbeddingVersion
+
+    storage = SQLiteStorage(tmp_path / "mm.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+    mm_v = await storage.upsert_embed_version(
+        EmbeddingVersion(
+            provider="fake_mm", model="mm-fake", dim=4,
+            normalize=True, distance="cosine", modality="multimodal",
+        )
+    )
+
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        multimodal=MultimodalSearch(
+            embedder=RaisingEmbedder(TransientProviderError("mm embed 503")),
+            model="mm-fake",
+            asset_version_id=mm_v,
+        ),
+    )
+    with caplog.at_level(logging.ERROR, logger="dikw_core.domains.info.search"):
+        hits = await searcher.search(_RERANK_QUERY, limit=5)
+    await storage.close()
+
+    assert hits, "the text-vec + FTS legs must still answer after the asset leg degrades"
+    assert any(
+        r.levelno == logging.ERROR and "multimodal" in r.getMessage().lower()
+        for r in caplog.records
+    ), "a configured-but-failed multimodal query-embed degrade must log at ERROR"
+
+
+@pytest.mark.asyncio
+async def test_multimodal_query_embed_transient_propagates_when_degrade_disabled(
+    tmp_path,
+) -> None:
+    """The asset-leg query-embed honours the same eval opt-out as the text leg:
+    with ``degrade_query_embed_on_transient=False`` a transient multimodal blip
+    propagates (fail loud) rather than silently dropping the asset leg."""
+    from dikw_core.schemas import EmbeddingVersion
+
+    storage = SQLiteStorage(tmp_path / "mm.sqlite")
+    await storage.connect()
+    await storage.migrate()
+    embedder, version_id = await _populate_multi_chunk_corpus(storage)
+    mm_v = await storage.upsert_embed_version(
+        EmbeddingVersion(
+            provider="fake_mm", model="mm-fake", dim=4,
+            normalize=True, distance="cosine", modality="multimodal",
+        )
+    )
+
+    searcher = HybridSearcher(
+        storage,
+        embedder,
+        embedding_model="fake",
+        text_version_id=version_id,
+        multimodal=MultimodalSearch(
+            embedder=RaisingEmbedder(TransientProviderError("mm embed 503")),
+            model="mm-fake",
+            asset_version_id=mm_v,
+        ),
+        degrade_query_embed_on_transient=False,
+    )
+    with pytest.raises(TransientProviderError):
+        await searcher.search(_RERANK_QUERY, limit=5, mode="hybrid")
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_rerank_permanent_error_propagates(tmp_path) -> None:
     """A permanent rerank misconfig (bad key/model) fails fast rather than
     silently degrading — same fail-loud contract as the embedding path."""

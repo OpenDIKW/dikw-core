@@ -405,3 +405,42 @@ async def test_embed_chunks_retry_calls_asyncio_sleep(
         assert sleep_calls == [1.5]
     finally:
         await storage.close()
+
+
+async def test_embed_assets_skip_after_exhausted_retries_logs_at_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The asset-embedding leg mirrors the chunk leg: a batch skipped after
+    exhausted transient retries is a configured-but-failed embed → logged at
+    ERROR (the in-progress retry lines stay WARNING)."""
+    from dikw_core.domains.info.embed import embed_assets
+    from dikw_core.schemas import AssetKind, AssetRecord
+
+    img = tmp_path / "a.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n fake-png-bytes")
+    asset = AssetRecord(
+        asset_id="a1",
+        kind=AssetKind.IMAGE,
+        mime="image/png",
+        stored_path="a.png",
+        bytes=img.stat().st_size,
+        created_ts=time.time(),
+    )
+    # retries=0 → single attempt; the one call raises transient → batch skipped.
+    embedder = FlakyEmbedder(raise_on_calls={0})
+    with caplog.at_level(logging.WARNING, logger="dikw_core.domains.info.embed"):
+        async for _ in embed_assets(
+            embedder,
+            [asset],
+            project_root=tmp_path,
+            model="mm-fake",
+            version_id=1,
+            batch_size=16,
+            retries=0,
+            backoff_seconds=0.0,
+        ):
+            pass
+    assert any(
+        r.levelno == logging.ERROR and "asset batch skipped" in r.getMessage()
+        for r in caplog.records
+    ), "an exhausted-retry asset skip must log at ERROR"
