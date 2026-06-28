@@ -34,7 +34,7 @@ body:
     attributes:
       label: Version
       description: Output of `dikw version`.
-      placeholder: "0.6.4"
+      placeholder: "0.6.5"
     validations:
       required: true
   - type: dropdown
