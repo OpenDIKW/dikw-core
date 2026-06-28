@@ -673,6 +673,10 @@ def default_config(description: str = "A dikw-core knowledge base") -> DikwConfi
             embedding_normalize=True,
             embedding_distance="cosine",
             embedding_api_key_env="GITEE_API_KEY",
+            # Gitee /v1/embeddings caps the input array at 25 (HTTP 400 above);
+            # 16 is the documented Gitee-safe default (docs/providers.md gotcha
+            # #2). The 64 field default is tuned for OpenAI's ~2048 cap.
+            embedding_batch_size=16,
             rerank="openai_compat_rerank",
             rerank_model="BAAI/bge-reranker-v2-m3",
             rerank_base_url="https://ai.gitee.com/v1",

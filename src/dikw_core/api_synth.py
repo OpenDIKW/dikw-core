@@ -119,6 +119,7 @@ async def synthesize(
 
         text_version_id: int | None = None
         text_embed_model = cfg.provider.embedding_model
+        embed_deferred_no_version = False
         if embedder is not None:
             # Synthesize must NOT register a new embed version: it only
             # writes knowledge-page chunks, so flipping active here would strand
@@ -135,16 +136,24 @@ async def synthesize(
                 # An embedder was wired but there's no active text version to
                 # embed against (e.g. a base that never ran a full ingest).
                 # Defer: pages are authored without inline vectors and the next
-                # ingest's resume scan reconciles them. Warn rather than silently
-                # shipping vector-less K pages.
-                logger.warning(
-                    "synth: embedder wired but no active text version; pages "
-                    "will be authored without inline embeddings (a future "
-                    "ingest will reconcile their vectors)"
-                )
+                # ingest's resume scan reconciles them. Flagged here; warned
+                # below only if there's actually source material to synth.
                 embedder = None  # no active text version → nothing to embed against
+                embed_deferred_no_version = True
 
         sources = list(await storage.list_documents(layer=Layer.SOURCE, active=True))
+        # Heads-up only when there's real work: an embedder was wired but no
+        # active text version exists, so any pages synthesized below land
+        # without inline vectors (a future ingest's resume scan reconciles
+        # them) — warn rather than silently shipping vector-less K pages. Gated
+        # on ``sources`` so a no-op synth on an empty base stays quiet.
+        if embed_deferred_no_version and sources:
+            logger.warning(
+                "synth: embedder wired but no active text version; %d source(s) "
+                "will be synthesized without inline embeddings (a future ingest "
+                "will reconcile their vectors)",
+                len(sources),
+            )
         already: set[str] = set()
         if not force_all:
             # ``synth_source_done`` is the post-fan-out source-completion

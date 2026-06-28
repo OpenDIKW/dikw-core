@@ -343,6 +343,10 @@ def init_test_base(path: Any, *, description: str = "test base", dim: int = EMBE
     cfg.provider.embedding_base_url = "https://api.openai.com/v1"
     cfg.provider.embedding_api_key_env = "OPENAI_API_KEY"
     cfg.provider.embedding_dim = dim
+    # Pin the historical OpenAI-tuned batch (the shipping Gitee default is 16);
+    # streaming tests string-replace ``embedding_batch_size: 64`` to force tiny
+    # batches, and other tests assume one batch on small corpora.
+    cfg.provider.embedding_batch_size = 64
     cfg.provider.rerank = None
     cfg.provider.rerank_model = ""
     cfg.provider.rerank_base_url = None

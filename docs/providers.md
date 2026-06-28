@@ -155,8 +155,11 @@ next insert.
 
 ### 2. Batch size varies per vendor
 
-Default `embedding_batch_size: 64` is safe for OpenAI (~2048 cap) but
-violates other vendors:
+The `embedding_batch_size` **field** default is `64` (safe for OpenAI's ~2048
+cap) but violates other vendors. The `dikw init` scaffold now defaults the
+embedder to Gitee, so its generated `dikw.yml` already sets
+`embedding_batch_size: 16` (Gitee caps at 25); the `64` field default still
+applies to any base that omits the field:
 
 | Vendor | Observed cap | Recommended config |
 |---|---|---|

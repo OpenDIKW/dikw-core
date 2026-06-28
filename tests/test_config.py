@@ -49,6 +49,9 @@ def test_default_config_ships_gitee_embedding_and_rerank() -> None:
     assert p.embedding_base_url == "https://ai.gitee.com/v1"
     assert p.embedding_api_key_env == "GITEE_API_KEY"
     assert p.embedding_dim == 1024
+    # Gitee caps the embeddings input array at 25 (HTTP 400 above) — the default
+    # must drop from the OpenAI-tuned 64 or a fresh ingest fails out of the box.
+    assert p.embedding_batch_size == 16
     assert p.rerank == "openai_compat_rerank"
     assert p.rerank_model == "BAAI/bge-reranker-v2-m3"
     assert p.rerank_base_url == "https://ai.gitee.com/v1"
