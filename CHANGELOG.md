@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.4 — K-layer system prompts extracted to packaged `.md`; product self-reference unified to `dikw`
+
 ### Changed
 
 - **K-layer system prompts extracted to `prompts/*.md`; product self-reference

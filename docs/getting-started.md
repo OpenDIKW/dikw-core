@@ -23,7 +23,7 @@ dikw init my-base --description "my research base"
 cd my-base
 ```
 
-Pin an exact version (`uv pip install 'dikw-core[postgres]==0.6.3'`) so your
+Pin an exact version (`uv pip install 'dikw-core[postgres]==0.6.4'`) so your
 client stays on the same release as the server it talks to — `dikw client`
 runs a [version handshake](server.md) and hard-fails on a mismatch.
 

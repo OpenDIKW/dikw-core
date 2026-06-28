@@ -42,8 +42,8 @@ keeps the quick-start under a screenful.
   against it too:
 
   ```bash
-  docker run --rm -v ./base:/base ghcr.io/opendikw/dikw-core:0.6.3 init /base
-  docker run --rm ghcr.io/opendikw/dikw-core:0.6.3 version
+  docker run --rm -v ./base:/base ghcr.io/opendikw/dikw-core:0.6.4 init /base
+  docker run --rm ghcr.io/opendikw/dikw-core:0.6.4 version
   ```
 
   There is intentionally **no floating `:latest`** — downstream pins an
