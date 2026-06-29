@@ -20,6 +20,7 @@ from dikw_core.providers import LLMResponse
 from dikw_core.server import synth_op as synth_op_module
 
 from ..fakes import FakeEmbeddings, FakeLLM
+from .conftest import wait_event_tape_final as _wait_tape_final
 from .conftest import wait_task_terminal as _wait_terminal
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "notes"
@@ -136,11 +137,10 @@ async def test_synth_task_emits_per_source_progress_and_final_report(
     assert result["errors"] == 0
 
     # Event tape carries one progress event per source, all phase=synth.
-    resp = await server_client.get(
-        f"/v1/tasks/{task_id}/events",
-        params={"from_seq": 0, "limit": 1000, "wait": 0},
-    )
-    events = resp.json()["events"]
+    # Wait for ``final`` to land on the tape — the status row (already
+    # terminal above) is flipped *before* ``final`` is appended, so a bare
+    # ``wait=0`` read races the trailing event (see ``wait_event_tape_final``).
+    events = await _wait_tape_final(server_client, task_id)
     synth_progress = [
         e for e in events if e["type"] == "progress" and e["phase"] == "synth"
     ]
