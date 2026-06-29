@@ -12,11 +12,13 @@ target DB, created on ``init()`` if missing.
 from __future__ import annotations
 
 import json
+import logging
 import zlib
 from typing import TYPE_CHECKING, Any
 
 from .._time import isoformat_utc_ms as _isoformat
 from .store import (
+    TERMINAL_STATUS_VALUES,
     TERMINAL_STATUSES,
     TaskNotFound,
     TaskRow,
@@ -27,6 +29,8 @@ from .store import (
 
 if TYPE_CHECKING:  # imports happen in init() so base install works without pg deps
     from psycopg_pool import AsyncConnectionPool
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA_DDL = """
@@ -293,8 +297,6 @@ class PostgresTaskStore:
     async def append_event(
         self, task_id: str, event: dict[str, Any]
     ) -> int:
-        ts = event.pop("ts", None) or _isoformat()
-        body = {k: v for k, v in event.items() if k not in ("seq", "ts")}
         async with self._acquire() as conn, conn.cursor() as cur:
             try:
                 # Per-task advisory lock keeps cross-process appenders
@@ -305,13 +307,36 @@ class PostgresTaskStore:
                 # defeat the lock entirely.
                 lock_id = _advisory_lock_id(task_id)
                 await cur.execute("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
+                # Read max(seq) + the row's status in one round-trip (both are
+                # PK/aggregate lookups under the advisory lock).
                 await cur.execute(
-                    f"SELECT COALESCE(MAX(seq), 0) FROM "
-                    f"{self._schema}.task_events WHERE task_id = %s",
-                    (task_id,),
+                    f"SELECT (SELECT COALESCE(MAX(seq), 0) FROM "
+                    f"{self._schema}.task_events WHERE task_id = %s), "
+                    f"(SELECT status FROM {self._schema}.tasks WHERE task_id = %s)",
+                    (task_id, task_id),
                 )
                 row = await cur.fetchone()
-                seq = int(row[0] if row is not None else 0) + 1
+                max_seq = int(row[0]) if row is not None else 0
+                status = row[1] if row is not None else None
+                # Enforce the tape invariant "``final`` is always the last
+                # event": once the task row is terminal the manager has
+                # committed (or is about to commit) its ``final``, so a later
+                # NON-final append is an obsolete late write (e.g. a cancelled
+                # runner's in-flight ``reporter.progress`` whose ``to_thread``
+                # write keeps running after its await was cancelled) and must
+                # not land after the ``final``. Drop it; the ``final`` itself is
+                # always allowed (terminal status is committed just before it).
+                if event.get("type") != "final" and status in TERMINAL_STATUS_VALUES:
+                    await conn.commit()
+                    logger.debug(
+                        "dropped late %s event after terminal status for task %s",
+                        event.get("type"),
+                        task_id,
+                    )
+                    return max_seq
+                ts = event.pop("ts", None) or _isoformat()
+                body = {k: v for k, v in event.items() if k not in ("seq", "ts")}
+                seq = max_seq + 1
                 await cur.execute(
                     f"INSERT INTO {self._schema}.task_events "
                     "(task_id, seq, ts, body) VALUES (%s, %s, %s, %s::jsonb)",

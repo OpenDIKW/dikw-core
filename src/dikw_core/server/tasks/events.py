@@ -11,7 +11,14 @@ Sequence ordering invariants (enforced by ``TaskStore.append_event``):
   * ``progress`` / ``log`` / ``partial`` events fire in real time and
     increment seq.
   * ``final`` is always the last event for a task (status =
-    succeeded / failed / cancelled).
+    succeeded / failed / cancelled). ``append_event`` upholds this by
+    dropping any NON-``final`` event that arrives once the row is terminal
+    (an obsolete late write from a cancelled runner whose ``to_thread``
+    emit outlived its await). In the rare case a cancel lands *during* the
+    ``task_started`` emit, that detached write is dropped too, so the tape
+    can collapse to ``[final]`` only — ``final``-last is preserved at the
+    cost of the seq=1 ``task_started`` (a consumer keys on ``final``, so
+    this is benign).
   * ``heartbeat`` is injected by the streamer, NOT persisted, so it has
     seq=0 and is recognisable as ephemeral.
 """
