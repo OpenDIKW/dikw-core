@@ -84,21 +84,26 @@ async def test_task_span_marks_cancel_not_error(
     from opentelemetry.trace import StatusCode
 
     manager, store = manager_only
+    started = asyncio.Event()
 
     async def _blocker(reporter: ProgressReporter) -> dict[str, Any]:
+        started.set()
         while True:
             reporter.cancel_token().raise_if_cancelled()
             await asyncio.sleep(0.01)
 
     row = await manager.submit(op="echo", runner=_blocker, base_id="b")
-    # Wait until the coroutine has actually entered the try block (status
-    # RUNNING) before cancelling — cancelling a not-yet-scheduled task throws
-    # CancelledError before the span/try opens, so no final event is emitted.
-    for _ in range(500):
-        r = await store.get(row.task_id)
-        if r is not None and r.status.value == "running":
-            break
-        await asyncio.sleep(0.01)
+    # Wait deterministically until the runner has actually started — i.e.
+    # ``_run`` is inside its try block, past the RUNNING update + the
+    # ``task_started`` emit — before cancelling. The cancel must land there so
+    # the except arm can record a CANCELLED terminal + ``final`` event.
+    # Polling the status row instead races: under CI scheduling load a bounded
+    # poll can fall through before RUNNING is observed, cancelling a task whose
+    # ``_run`` hasn't entered its try — the CancelledError then fires before the
+    # span/try opens, no ``final`` is ever emitted, and the row stays PENDING →
+    # the ~30s ``_wait_terminal`` flake. The ``started`` Event removes the race
+    # (same pattern as ``test_cancel_after_terminal_emits_no_contradictory_final``).
+    await asyncio.wait_for(started.wait(), timeout=10.0)
     assert await manager.cancel(row.task_id) is True
 
     await _wait_terminal(store, row.task_id)

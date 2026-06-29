@@ -32,6 +32,9 @@ class TaskStatus(StrEnum):
 TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
     {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 )
+# The same set as raw column values, for adapters comparing against a
+# ``status`` string read straight out of SQL without re-wrapping in the enum.
+TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_STATUSES)
 
 
 class TaskRow(BaseModel):
@@ -85,9 +88,17 @@ class TaskStore(Protocol):
     """Persistent storage for tasks + event tape.
 
     All implementations MUST guarantee:
-      * ``append_event`` is atomic and returns a strictly increasing seq
-        (per task_id); the store is the source of truth for the seq
-        numbering, not the bus.
+      * ``append_event`` is atomic and assigns a strictly increasing seq
+        (per task_id) on the **append** path; the store is the source of
+        truth for the seq numbering, not the bus. To uphold the event-tape
+        invariant that ``final`` is always the last event (see ``events.py``),
+        a NON-``final`` event appended once the task row is already terminal
+        is **dropped** — no row inserted — and returns the current max seq, so
+        an obsolete late write (e.g. a cancelled runner's in-flight
+        ``reporter.progress`` whose ``to_thread`` DB write outlives the
+        cancelled await — ``run_in_executor`` does not stop the worker thread)
+        cannot land after the ``final``. The ``final`` itself is always
+        appended (the runner commits the terminal status immediately before it).
       * ``list_events(task_id, from_seq=N)`` returns every event with
         seq >= N, in seq order.
       * ``update_status`` is idempotent on the same target status, and a
@@ -166,9 +177,12 @@ class TaskStore(Protocol):
     ) -> int:
         """Persist an event dict and return the assigned seq.
 
-        ``event`` must be the in-flight representation — the store
-        injects ``seq`` and ``ts`` on its way to the wire (the same
-        dict, mutated in place, is what the bus fans out)."""
+        On the normal append path the store injects ``seq`` and ``ts`` into
+        ``event`` in place (the same dict, mutated, is what the bus fans out).
+        A NON-``final`` event arriving after the task row is terminal is
+        dropped to keep ``final`` last (see the MUST-list above): nothing is
+        inserted, ``event`` is left unstamped, and the current max seq is
+        returned."""
         ...
 
     async def list_events(
@@ -208,6 +222,7 @@ class TaskCounters(BaseModel):
 
 __all__ = [
     "TERMINAL_STATUSES",
+    "TERMINAL_STATUS_VALUES",
     "TaskCounters",
     "TaskNotFound",
     "TaskRow",

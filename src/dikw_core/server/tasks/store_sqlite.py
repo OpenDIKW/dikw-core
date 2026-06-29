@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .._time import isoformat_utc_ms as _isoformat
 from .store import (
+    TERMINAL_STATUS_VALUES,
     TERMINAL_STATUSES,
     TaskNotFound,
     TaskRow,
@@ -35,6 +37,8 @@ from .store import (
     TaskStoreError,
     summary_row_to_task,
 )
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -344,12 +348,34 @@ class SqliteTaskStore:
         try:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                cur = conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) FROM task_events WHERE task_id = ?",
-                    (task_id,),
-                )
-                (max_seq,) = cur.fetchone()
-                seq = int(max_seq) + 1
+                # Read max(seq) + the row's status in one statement (both are
+                # PK/aggregate lookups under the write lock).
+                max_seq, status = conn.execute(
+                    "SELECT (SELECT COALESCE(MAX(seq), 0) FROM task_events "
+                    "        WHERE task_id = ?), "
+                    "(SELECT status FROM tasks WHERE task_id = ?)",
+                    (task_id, task_id),
+                ).fetchone()
+                max_seq = int(max_seq)
+                # Enforce the tape invariant "``final`` is always the last
+                # event": once the task row is terminal the manager has
+                # committed (or is about to commit) its ``final`` event, so a
+                # later NON-final append is an obsolete late write — e.g. a
+                # cancelled runner's in-flight ``reporter.progress`` whose
+                # ``to_thread`` DB write keeps running after the await was
+                # cancelled (``run_in_executor`` cancellation does not stop the
+                # worker thread) — and must not land after the ``final``. Drop
+                # it. The ``final`` itself is always allowed: the manager
+                # commits the terminal status immediately before appending it.
+                if event.get("type") != "final" and status in TERMINAL_STATUS_VALUES:
+                    conn.execute("COMMIT")
+                    logger.debug(
+                        "dropped late %s event after terminal status for task %s",
+                        event.get("type"),
+                        task_id,
+                    )
+                    return max_seq
+                seq = max_seq + 1
                 ts = event.pop("ts", None) or _isoformat()
                 event["seq"] = seq
                 event["ts"] = ts

@@ -332,6 +332,41 @@ async def test_list_events_replays_in_seq_order(store: TaskStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_append_after_terminal_dropped_keeping_final_last(
+    store: TaskStore,
+) -> None:
+    """A NON-final event appended after the task row is terminal is dropped,
+    so the ``final`` stays the last event on the tape (events.py invariant
+    "final is always the last event"). Without this guard a cancelled runner's
+    in-flight ``reporter.progress`` — whose ``to_thread`` DB write keeps running
+    after its await was cancelled (``run_in_executor`` does not stop the worker
+    thread) — could land a ``progress`` after the manager's ``final``, stranding
+    every consumer that waits for ``events[-1] == 'final'`` (issue #256)."""
+    row = _row()
+    await store.create(row)
+    await store.update_status(row.task_id, TaskStatus.RUNNING)
+    await store.append_event(row.task_id, {"type": "task_started"})
+    # A non-final event BEFORE the row goes terminal is appended normally.
+    await store.append_event(row.task_id, {"type": "progress", "phase": "p"})
+    # The manager commits the terminal status immediately before the final.
+    await store.update_status(row.task_id, TaskStatus.CANCELLED)
+    final_seq = await store.append_event(
+        row.task_id, {"type": "final", "status": "cancelled"}
+    )
+    # An obsolete late progress arriving AFTER terminal + final is dropped:
+    # it returns the current max seq and does not advance the tape.
+    dropped = await store.append_event(
+        row.task_id, {"type": "progress", "phase": "late"}
+    )
+
+    events = await store.list_events(row.task_id)
+    assert [e["type"] for e in events] == ["task_started", "progress", "final"]
+    assert events[-1]["type"] == "final"
+    assert dropped == final_seq
+    assert await store.max_seq(row.task_id) == final_seq
+
+
+@pytest.mark.asyncio
 async def test_list_events_from_seq_truncates(store: TaskStore) -> None:
     row = _row()
     await store.create(row)

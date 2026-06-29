@@ -113,8 +113,10 @@ async def test_pre_cancel_via_token(
     manager_only: tuple[TaskManager, SqliteTaskStore],
 ) -> None:
     manager, store = manager_only
+    started = asyncio.Event()
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
+        started.set()
         # Honour cancel token at the first checkpoint.
         for i in range(10):
             reporter.cancel_token().raise_if_cancelled()
@@ -123,12 +125,15 @@ async def test_pre_cancel_via_token(
         return {"done": True}
 
     row = await manager.submit(op="echo", runner=_runner)
-    # Race a cancel against the runner's first checkpoint. Yield long
-    # enough that the asyncio.Task is reliably scheduled (a single
-    # ``sleep(0)`` was tight enough on 3.13 + slow CI to occasionally
-    # leave the task PENDING when ``cancel()`` arrived, producing a
-    # phantom hang the 5s wait couldn't recover).
-    await asyncio.sleep(0.05)
+    # Wait deterministically until the runner has started (``_run`` is inside
+    # its try block) before cancelling, so the cancel lands where the except
+    # arm records a CANCELLED terminal + ``final``. A bare ``sleep`` here only
+    # *probably* schedules the task — a single ``sleep(0)`` was tight enough on
+    # 3.13 + slow CI to occasionally leave the task PENDING when ``cancel()``
+    # arrived, stranding it (no ``final``) → a phantom 5s-wait hang. The
+    # ``started`` Event removes the race entirely (same pattern as
+    # ``test_cancel_after_terminal_emits_no_contradictory_final``).
+    await asyncio.wait_for(started.wait(), timeout=10.0)
     await manager.cancel(row.task_id)
     await _wait_terminal(store, row.task_id)
     final_row = await store.get(row.task_id)
