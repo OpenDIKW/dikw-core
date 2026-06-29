@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from .conftest import wait_event_tape_final as _wait_tape_final
 from .conftest import wait_task_terminal as _wait_terminal
 
 # ---- happy path ---------------------------------------------------------
@@ -81,14 +82,11 @@ async def test_event_tape_replay_after_terminal(
         "/v1/ingest", json={"no_embed": True}
     )
     task_id = submit.json()["task_id"]
-    await _wait_terminal(server_client, task_id)
-
-    resp = await server_client.get(
-        f"/v1/tasks/{task_id}/events",
-        params={"from_seq": 0, "limit": 1000, "wait": 0},
-    )
-    assert resp.status_code == 200
-    events = resp.json()["events"]
+    # Wait for the ``final`` event to land on the tape, not just the status
+    # row — the manager flips the row terminal *before* appending ``final``,
+    # so a bare ``wait=0`` read races the trailing ``progress`` event onto
+    # the last slot (see ``wait_event_tape_final``).
+    events = await _wait_tape_final(server_client, task_id)
     assert events[0]["type"] == "task_started"
     assert events[0]["op"] == "ingest"
     assert events[-1]["type"] == "final"
@@ -112,14 +110,9 @@ async def test_resume_from_seq_returns_tail_only(
         "/v1/ingest", json={"no_embed": True}
     )
     task_id = submit.json()["task_id"]
-    await _wait_terminal(server_client, task_id)
-
-    # First read the full tape to learn the seq range.
-    full_resp = await server_client.get(
-        f"/v1/tasks/{task_id}/events",
-        params={"from_seq": 0, "limit": 1000, "wait": 0},
-    )
-    full = full_resp.json()["events"]
+    # Read the full tape once ``final`` has landed, to learn the seq range
+    # without racing the status-row/tape ordering (see ``wait_event_tape_final``).
+    full = await _wait_tape_final(server_client, task_id)
     last_seq = full[-1]["seq"]
 
     # Resume from the middle.
