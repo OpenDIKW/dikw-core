@@ -11,8 +11,14 @@ updates:
       prefix: ci
       include: scope
     # codeql-action's init / analyze / upload-sarif must share one version
-    # (CodeQL fails on a mismatch), so bump them in a single PR.
+    # (CodeQL fails on a mismatch), so bump them in a single PR — for both
+    # version and security updates (a group without `applies-to` covers
+    # version updates only).
     groups:
       codeql-action:
+        patterns:
+          - "github/codeql-action*"
+      codeql-action-security:
+        applies-to: security-updates
         patterns:
           - "github/codeql-action*"
