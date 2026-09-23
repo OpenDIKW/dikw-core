@@ -44,7 +44,7 @@ jobs:
         # Guard against missing artifact when an upstream step (e.g.
         # docker build) fails before SARIF is written.
         if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         with:
           sarif_file: trivy-results.sarif
           category: trivy
