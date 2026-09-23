@@ -10,3 +10,9 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+    # codeql-action's init / analyze / upload-sarif must share one version
+    # (CodeQL fails on a mismatch), so bump them in a single PR.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
