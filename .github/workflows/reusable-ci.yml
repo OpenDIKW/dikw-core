@@ -48,7 +48,7 @@ jobs:
       - name: Upload coverage to Codecov
         # Avoid duplicate upload; 3.13 coverage is identical.
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           files: coverage.xml
           fail_ci_if_error: false
@@ -151,7 +151,7 @@ jobs:
             tests/server/test_task_store_contract.py
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           files: coverage.xml
           fail_ci_if_error: false
