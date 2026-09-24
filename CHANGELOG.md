@@ -7,6 +7,19 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.6 — Docker image drops pip; cancelled tasks keep `final` last on the event tape
+
+### Fixed
+
+- **Cancelled tasks keep `final` as the last event on the tape.** (#258) A
+  cancelled runner's in-flight `progress` write runs in a worker thread that
+  cancellation doesn't stop, so it could commit *after* the manager's `final`
+  event. The tape then ended on `progress` and any consumer waiting for
+  `final` hung. `append_event` (sqlite + postgres) now drops a non-`final`
+  event once the task row is terminal, so the documented "final is always the
+  last event" rule actually holds. A new task-store contract test covers both
+  adapters.
+
 ### Security
 
 - **Docker image no longer ships pip.** `examples/docker/Dockerfile` now
