@@ -11,7 +11,12 @@ handshake) resolves it at runtime via `importlib.metadata.version("dikw-core")`,
 release is: bump that one field, write the CHANGELOG section, tag, push.
 
 ```bash
-# 1. Bump pyproject.toml [project].version to X.Y.Z (and let uv.lock pick it up).
+# 1. Bump pyproject.toml [project].version to X.Y.Z (and let uv.lock pick it up),
+#    plus the user-facing pins: examples/docker/.env.example, the
+#    docker-compose.yml example, docs/deployment-docker.md,
+#    docs/getting-started.md and the bug_report.yml placeholder
+#    (`git grep` the old version). NOT examples/docker/Dockerfile — the
+#    post-publish sync-dockerfile PR bumps that one.
 # 2. Rename the CHANGELOG "## Unreleased" section to "## X.Y.Z — <subtitle>"
 #    and add a fresh empty "## Unreleased" above it.
 # 3. Open a normal PR, get it green + merged.
