@@ -12,7 +12,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Bump pip ahead of the install step — the python:3.12-slim base ships
-# an older pip with known CVEs (CVE-2025-8869, CVE-2026-6357).
+# an older pip with known CVEs (CVE-2025-8869, CVE-2026-6357). This only
+# hardens the build-time install; pip itself is removed below.
 RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 
 # Pinned to the latest version already published to PyPI. Synced
@@ -27,6 +28,13 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # PyPI) so any drift introduced by hand fails CI.
 ARG DIKW_VERSION=0.6.5
 RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
+
+# The server never needs pip at runtime, and pip's vendored SBOM
+# (pip/_vendor/bom.cdx.json) pins stale copies of setuptools/msgpack that
+# Trivy flags (CVE-2025-47273, CVE-2026-59890, GHSA-6v7p-g79w-8964) with no
+# pip release that fixes them. Uninstall it so the shipped image carries no
+# pip attack surface; `python -m ensurepip` restores it for ad-hoc debugging.
+RUN pip uninstall -y pip
 
 RUN useradd --create-home --uid 1000 dikw
 USER dikw
