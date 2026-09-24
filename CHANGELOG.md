@@ -7,6 +7,16 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Security
+
+- **Docker image no longer ships pip.** `examples/docker/Dockerfile` now
+  uninstalls pip after installing `dikw-core`. pip's vendored SBOM
+  (`pip/_vendor/bom.cdx.json`) pins stale `setuptools==70.3.0` and
+  `msgpack==1.1.2`, which Trivy flagged (CVE-2025-47273, CVE-2026-59890,
+  GHSA-6v7p-g79w-8964), and no pip release fixes them. The server doesn't use
+  pip at runtime; run `python -m ensurepip` inside the container if you need
+  it for debugging.
+
 ## 0.6.5 — Default scaffold ships Gitee embed + rerank; eval cache keys retrieval config and surfaces absolute relevance scores
 
 ### Added
