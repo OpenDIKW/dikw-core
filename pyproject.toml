@@ -1,5 +1,9 @@
 [build-system]
-requires = ["hatchling"]
+# Capped at the minor: hatchling changes wheel output in minor releases
+# (1.32.0 bumped Metadata-Version to 2.5, which broke the v0.6.6 publish
+# until the PyPI action's twine caught up). Raise it deliberately — see
+# docs/releasing.md "Gotchas".
+requires = ["hatchling>=1.32,<1.33"]
 build-backend = "hatchling.build"
 
 [project]
