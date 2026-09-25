@@ -9,6 +9,7 @@ must claim a unique name atomically rather than via an exists()-probe.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,10 @@ def test_atomic_write_text_failure_preserves_old_and_cleans_tmp(
     assert not list(tmp_path.glob("*.tmp"))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows chmod only toggles read-only",
+)
 def test_atomic_write_text_preserves_existing_mode(tmp_path: Path) -> None:
     import stat
 
