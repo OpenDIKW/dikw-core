@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # ``.github/workflows/reusable-ci.yml`` enforces the invariant
 # (DIKW_VERSION must equal pyproject.toml's version OR be published on
 # PyPI) so any drift introduced by hand fails CI.
-ARG DIKW_VERSION=0.6.5
+ARG DIKW_VERSION=0.6.6
 RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
 
 # The server never needs pip at runtime, and pip's vendored SBOM
