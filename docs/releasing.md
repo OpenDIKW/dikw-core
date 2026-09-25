@@ -103,6 +103,15 @@ not per-release.
 
 ## Gotchas
 
+- **Build backend is capped at a hatchling minor.** `[build-system].requires` pins
+  `hatchling>=1.32,<1.33` because hatchling changes wheel output in minor releases —
+  1.32.0 bumped `Metadata-Version` to 2.5, and the release's PyPI-publish action
+  (bundled twine) rejected it, failing the first v0.6.6 publish. Dependabot does not
+  track this pin. To raise it: bump the cap in a PR, `uv build`, then run
+  `twine check --strict dist/*` with the twine version bundled by the
+  `pypa/gh-action-pypi-publish` pin in `release.yml` (its
+  `requirements/runtime.txt`) before tagging.
+
 - **Trivy CDN race on the bump PR.** The `Scan dikw-core image` (Trivy) check on the
   Dockerfile-bump PR can fail fast with `pip install dikw-core[...]==X.Y.Z` →
   `No matching distribution found`, because Trivy builds the image locally before
