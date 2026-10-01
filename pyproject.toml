@@ -32,7 +32,11 @@ dependencies = [
     "markdown-it-py>=4.0",
     "python-frontmatter>=1.1",
     "sqlite-vec>=0.1.9",
-    "anthropic>=0.96",
+    # Capped below 1.0: anthropic 1.x moved its transport to `httpx2` and
+    # rejects the `httpx.AsyncClient` AnthropicCompatLLM passes as
+    # `http_client` (#279). Lifting the cap means migrating that client off
+    # `httpx` — tests/test_provider_anthropic_http_client.py guards it.
+    "anthropic>=0.96,<1",
     "openai>=2.32",
     "httpx>=0.28",
     # client/server architecture (Phase 2+ of the in-process → HTTP migration).

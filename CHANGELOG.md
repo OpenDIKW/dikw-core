@@ -7,6 +7,22 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Fixed
+
+- **`anthropic_compat` works again on fresh installs and the Docker image.**
+  (#279) `anthropic` 1.0 moved the SDK transport from `httpx` to `httpx2` and
+  rejects the `httpx.AsyncClient` that `anthropic_compat` passes as
+  `http_client` — which it does on every default config
+  (`llm_timeout_seconds` defaults to 120). The dependency was uncapped, so the
+  v0.6.6 image and any fresh `pip install dikw-core` resolved `anthropic` 1.x
+  and every LLM call (synth, lint fixers, `check`) failed with
+  ``TypeError: Invalid `http_client` argument``. The dependency is now capped at
+  `anthropic>=0.96,<1` (resolves 0.125.0, now also the locked version), and a
+  new test builds the real SDK client so lifting the cap without migrating the
+  client construction fails CI. `openai` 3.x also moved to `httpx2` but still
+  accepts an `httpx` client, so `openai_compat` / `openai_codex` are
+  unaffected.
+
 ## 0.6.6 — Docker image drops pip; cancelled tasks keep `final` last on the event tape
 
 ### Fixed

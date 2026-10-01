@@ -65,6 +65,8 @@ class AnthropicCompatLLM:
             # than looping on the same dead pooled socket — the failure
             # mode observed against Gitee AI's batch embedding endpoint
             # also happens with some Anthropic-compatible LLM proxies.
+            # These are ``httpx`` objects: anthropic>=1 moved to ``httpx2``
+            # and rejects them, hence the ``anthropic<1`` cap (#279).
             if self._timeout_seconds is not None:
                 timeout = httpx.Timeout(
                     connect=10.0,
