@@ -119,9 +119,11 @@ not per-release.
   That's how the v0.6.6 image picked up `anthropic` 1.x (whose `httpx2` transport
   rejects the `httpx` client `anthropic_compat` passes) and failed every
   `anthropic_compat` call while lockfile-pinned CI stayed green (#279); `anthropic` is
-  now capped `<1`. Before tagging, `uv build`, install the wheel into a fresh venv
-  with `uv pip install --resolution highest`, and compare the vendor SDK majors it
-  resolves (`anthropic`, `openai`) against `uv.lock`.
+  now capped `<1`. Before tagging, `uv build`, `uv pip install` the wheel into a
+  fresh venv (no `uv.lock` involved), and compare the vendor SDK majors it resolves
+  (`anthropic`, `openai`) against `uv.lock`. If they differ, CI never tested what
+  ships: bump the lock (`uv lock --upgrade-package <sdk>`) and get the suite green,
+  or cap the range.
 
 - **Trivy CDN race on the bump PR.** The `Scan dikw-core image` (Trivy) check on the
   Dockerfile-bump PR can fail fast with `pip install dikw-core[...]==X.Y.Z` →

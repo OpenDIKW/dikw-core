@@ -1,13 +1,12 @@
-"""Build the REAL ``anthropic.AsyncAnthropic`` client — no SDK stub.
+"""Regression guard for #279: the real ``AsyncAnthropic`` must accept our client.
 
-The other ``test_provider_anthropic_*`` files swap ``AsyncAnthropic`` for a
-kwargs-recording stub, so they can't see the SDK reject what we hand it.
-That's how #279 shipped: ``anthropic`` 1.x moved its transport to ``httpx2``
-and raises ``TypeError`` on the ``httpx.AsyncClient`` that ``_get_client``
-passes whenever ``timeout_seconds`` is set — i.e. on every default config
-(``ProviderConfig.llm_timeout_seconds`` defaults to 120). ``pyproject.toml``
-caps ``anthropic<1``; this fails loudly if the cap is lifted without
-migrating the client construction.
+``build_llm`` always threads ``llm_timeout_seconds`` (default 120), so
+``_get_client`` always hands the SDK an ``httpx.AsyncClient``. ``anthropic``
+1.x moved to ``httpx2`` and raises ``TypeError`` on it. CI missed that because
+``uv.lock`` pinned 0.x while the published wheel's open range resolved 1.x;
+``pyproject.toml`` now caps ``anthropic<1``. This goes red once the lock
+resolves ``anthropic>=1`` — so lifting the cap needs both
+``uv lock --upgrade-package anthropic`` and moving that client off ``httpx``.
 """
 
 from __future__ import annotations
@@ -26,8 +25,6 @@ async def test_default_config_builds_real_sdk_client(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
     cfg = make_provider_cfg(llm="anthropic_compat")
-    # The default timeout is what routes construction through ``http_client``.
-    assert cfg.llm_timeout_seconds is not None
 
     llm = build_llm(cfg)
     assert isinstance(llm, AnthropicCompatLLM)
