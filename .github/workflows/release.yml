@@ -114,13 +114,16 @@ jobs:
         # API: that URL is cache-cold so it answers 200 right after upload,
         # while the CDN can still serve a stale cached /simple/dikw-core/ page.
         # Gating on the JSON API let the v0.6.7 image build fail with "No
-        # matching distribution found" on the same runner seconds later.
+        # matching distribution found" on the same runner seconds later. The
+        # page varies on Accept (PEP 691 JSON vs HTML, cached separately), so
+        # send pip's own Accept header to check the representation pip gets.
         run: |
           set -euo pipefail
           url="https://pypi.org/simple/dikw-core/"
+          accept="application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html; q=0.1, text/html; q=0.01"
           wheel="dikw_core-${VERSION}-py3-none-any.whl"
           for i in $(seq 1 30); do
-            body=$(curl -fsS --max-time 10 "$url" || true)
+            body=$(curl -fsS --max-time 10 -H "Accept: ${accept}" "$url" || true)
             if grep -qF "$wheel" <<<"$body"; then
               echo "dikw-core ${VERSION} is on the PyPI simple index"
               exit 0
