@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.7 — SDK caps: `anthropic_compat` works again; `openai_codex` keeps its zero-delta safeguard
+
 ### Fixed
 
 - **`anthropic_compat` works again on fresh installs and the Docker image.**
@@ -19,9 +21,7 @@ on each entry call out exactly what shape changes break.
   ``TypeError: Invalid `http_client` argument``. The dependency is now capped at
   `anthropic>=0.96,<1` (resolves 0.125.0, now also the locked version), and a
   new test builds the real SDK client from the default config, so a lock that
-  resolves `anthropic` 1.x fails CI. `openai` 3.x also moved to `httpx2` but still
-  accepts an `httpx` client, so `openai_compat` / `openai_codex` still reach
-  their backends.
+  resolves `anthropic` 1.x fails CI.
 - **`openai_codex` no longer silently drops a source on fresh installs.**
   (#285) `openai` was uncapped, so fresh installs (including the 0.6.6 image)
   resolved `openai` 3.x while `uv.lock` pinned 2.33.0 and CI never ran it. 3.x
