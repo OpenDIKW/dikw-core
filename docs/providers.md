@@ -375,7 +375,12 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   the recovered partial from a clean completion. If zero deltas arrived
   before the reducer fired (auth / quota / refusal failures), the
   provider raises `ProviderError` instead of returning an empty
-  response, so synth doesn't silently drop a source page.
+  response, so synth doesn't silently drop a source page. This relies on
+  the `openai` **2.x** reducer, which is why dikw caps `openai<3`: 3.x
+  no longer crashes — it rebuilds `output` from the streamed
+  `response.output_item.done` events (`[]` if there were none) — so the
+  zero-delta safeguard can't fire there and such a turn would come back
+  as empty text (#285).
 - **Empty-final-output recovery (issue #160).** A *different* codex
   backend quirk: the terminal `response.completed` sometimes ships
   `output = []` (an empty **list**, not `None` — so the reducer above
