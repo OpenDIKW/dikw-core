@@ -23,6 +23,18 @@ on each entry call out exactly what shape changes break.
   accepts an `httpx` client, so `openai_compat` / `openai_codex` are
   unaffected.
 
+### Changed
+
+- **`openai` is capped `<4` and CI now tests the 3.x SDK that installs ship.**
+  Fresh installs already resolved `openai` 3.x (an `httpx2`-based SDK), while
+  `uv.lock` still pinned 2.33.0, so CI never ran the SDK users got. The lock
+  moves to 3.23.0. `openai_compat` and `openai_codex` keep working through the
+  SDK's legacy-`httpx` shim, and OTel's httpx instrumentation still emits the
+  provider's outbound spans. A new test sends a real `embed` request through the
+  SDK with our client (every other openai test stubs the SDK). The new `<4` cap
+  keeps an already-published release from breaking the way 0.6.6 did if a
+  future major drops that shim.
+
 ## 0.6.6 — Docker image drops pip; cancelled tasks keep `final` last on the event tape
 
 ### Fixed

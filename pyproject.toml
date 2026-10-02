@@ -38,7 +38,11 @@ dependencies = [
     # `uv lock --upgrade-package anthropic` — a plain `uv lock` keeps 0.x, and
     # tests/test_provider_anthropic_http_client.py only goes red on a 1.x lock.
     "anthropic>=0.96,<1",
-    "openai>=2.32",
+    # Capped below 4.0: openai 3.x moved to `httpx2` but still accepts the
+    # `httpx.AsyncClient` our providers pass (`providers/_http.py`) through a
+    # legacy shim; a major that drops it would break openai_compat/openai_codex
+    # the way anthropic 1.x broke anthropic_compat (#279). Raise deliberately.
+    "openai>=2.32,<4",
     "httpx>=0.28",
     # client/server architecture (Phase 2+ of the in-process → HTTP migration).
     # Adding these in Phase 0 so subsequent PRs can land server/ and client/
