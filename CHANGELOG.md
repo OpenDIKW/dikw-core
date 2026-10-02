@@ -7,6 +7,18 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Fixed
+
+- **`openai_codex` keeps its total-loss safeguard on OpenAI SDK 3.x.**
+  (#285) A final with no message output items and zero text deltas now raises
+  `TransientProviderError` on both SDK generations, so synth retries rather
+  than silently dropping a source. This also retries genuinely itemless
+  turns, since 3.x rebuilds backend `output=None` as `[]`; explicit empty
+  message items remain valid empty answers. Reasoning-only finals also
+  recover streamed text or raise if no text arrived. Streamed text recovery is
+  preserved, including final status and usage on 3.x. Real-SDK Responses
+  SSE tests cover these cases, and the temporary `openai<3` cap is lifted.
+
 ## 0.6.7 — SDK caps: `anthropic_compat` works again; `openai_codex` keeps its zero-delta safeguard
 
 ### Fixed
