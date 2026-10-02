@@ -28,12 +28,17 @@ on each entry call out exactly what shape changes break.
 - **`openai` is capped `<4` and CI now tests the 3.x SDK that installs ship.**
   Fresh installs already resolved `openai` 3.x (an `httpx2`-based SDK), while
   `uv.lock` still pinned 2.33.0, so CI never ran the SDK users got. The lock
-  moves to 3.23.0. `openai_compat` and `openai_codex` keep working through the
-  SDK's legacy-`httpx` shim, and OTel's httpx instrumentation still emits the
-  provider's outbound spans. A new test sends a real `embed` request through the
-  SDK with our client (every other openai test stubs the SDK). The new `<4` cap
-  keeps an already-published release from breaking the way 0.6.6 did if a
-  future major drops that shim.
+  moves to 3.23.0. `openai_compat` and `openai_codex` still reach their backends
+  through the SDK's legacy-`httpx` shim, and OTel's httpx instrumentation still
+  emits the provider's outbound spans. A new test sends a real `embed` request
+  through the SDK with our client (every other CI-run openai test stubs the SDK).
+  The new `<4` cap keeps an already-published release from breaking the way 0.6.6
+  did if a future major drops that shim. **Known gap on 3.x (#285):** the SDK now
+  rebuilds a codex `response.completed` whose `output` is `None` instead of
+  crashing, so `openai_codex`'s zero-delta safeguard (#134/#135) no longer fires
+  and such a turn returns empty text — synth can treat it as "zero pages". Fresh
+  installs have resolved openai 3.x since 3.0.0, so this is not new in this
+  release.
 
 ## 0.6.6 — Docker image drops pip; cancelled tasks keep `final` last on the event tape
 
