@@ -20,25 +20,20 @@ on each entry call out exactly what shape changes break.
   `anthropic>=0.96,<1` (resolves 0.125.0, now also the locked version), and a
   new test builds the real SDK client from the default config, so a lock that
   resolves `anthropic` 1.x fails CI. `openai` 3.x also moved to `httpx2` but still
-  accepts an `httpx` client, so `openai_compat` / `openai_codex` are
-  unaffected.
-
-### Changed
-
-- **`openai` is capped `<4` and CI now tests the 3.x SDK that installs ship.**
-  Fresh installs already resolved `openai` 3.x (an `httpx2`-based SDK), while
-  `uv.lock` still pinned 2.33.0, so CI never ran the SDK users got. The lock
-  moves to 3.23.0. `openai_compat` and `openai_codex` still reach their backends
-  through the SDK's legacy-`httpx` shim, and OTel's httpx instrumentation still
-  emits the provider's outbound spans. A new test sends a real `embed` request
-  through the SDK with our client (every other CI-run openai test stubs the SDK).
-  The new `<4` cap keeps an already-published release from breaking the way 0.6.6
-  did if a future major drops that shim. **Known gap on 3.x (#285):** the SDK now
+  accepts an `httpx` client, so `openai_compat` / `openai_codex` still reach
+  their backends.
+- **`openai_codex` no longer silently drops a source on fresh installs.**
+  (#285) `openai` was uncapped, so fresh installs (including the 0.6.6 image)
+  resolved `openai` 3.x while `uv.lock` pinned 2.33.0 and CI never ran it. 3.x
   rebuilds a codex `response.completed` whose `output` is `None` instead of
-  crashing, so `openai_codex`'s zero-delta safeguard (#134/#135) no longer fires
-  and such a turn returns empty text — synth can treat it as "zero pages". Fresh
-  installs have resolved openai 3.x since 3.0.0, so this is not new in this
-  release.
+  raising, so `openai_codex`'s zero-delta safeguard (#134/#135) never fired:
+  such a turn came back as empty text and synth recorded the source as "zero
+  pages" instead of retrying it. `openai` is now capped `<3` until the provider
+  handles 3.x, and the lock moves to 2.54.0 (the last 2.x), so CI tests what
+  installs get. A new test sends a real `embed` request through the SDK with
+  dikw's `httpx` client (every other CI-run openai test stubs the SDK), which
+  guards lifting the cap: 3.x is `httpx2`-based and accepts that client only
+  through a legacy shim.
 
 ## 0.6.6 — Docker image drops pip; cancelled tasks keep `final` last on the event tape
 

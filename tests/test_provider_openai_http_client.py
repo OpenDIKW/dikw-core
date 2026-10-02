@@ -2,9 +2,10 @@
 
 ``providers/_http.py`` hands ``AsyncOpenAI`` an ``httpx.AsyncClient``. openai
 3.x moved to ``httpx2`` and accepts that client only through a legacy shim —
-the support anthropic 1.x dropped (#279). Every other CI-run openai test stubs
-``AsyncOpenAI`` out, so drive a real ``embed`` through the SDK over a
-``MockTransport`` (no network), covering both construction and the request.
+the support anthropic 1.x dropped (#279) — so this guards lifting the
+``openai<3`` cap (#285). Every other CI-run openai test stubs ``AsyncOpenAI``
+out, so drive a real ``embed`` through the SDK over a ``MockTransport`` (no
+network), covering both construction and the request.
 """
 
 from __future__ import annotations
