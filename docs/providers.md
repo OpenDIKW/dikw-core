@@ -367,31 +367,39 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
 - **SDK reducer-bug compatibility shim.** The ChatGPT codex backend
   ships `response.output = None` in its terminal `response.completed`
   payload, while the public OpenAI Responses API ships a list. The
-  `openai` Python SDK's high-level `responses.stream(...)` reducer dies
+  `openai` **2.x** Python SDK's high-level `responses.stream(...)` reducer dies
   on this with `TypeError: 'NoneType' object is not iterable`. The dikw
   provider catches this exact signature (and the matching
   `AttributeError("attribute 'output'")` form) and falls back to the
   locally-collected delta text — `finish_reason="error"` distinguishes
-  the recovered partial from a clean completion. If zero deltas arrived
-  before the reducer fired (auth / quota / refusal failures), the
-  provider raises `ProviderError` instead of returning an empty
-  response, so synth doesn't silently drop a source page. This relies on
-  the `openai` **2.x** reducer, which is why dikw caps `openai<3`: 3.x
-  no longer crashes — it rebuilds `output` from the streamed
-  `response.output_item.done` events (`[]` if there were none) — so the
-  zero-delta safeguard can't fire there and such a turn would come back
-  as empty text (#285).
+  the recovered partial from a clean completion. **3.x** no longer
+  crashes: it rebuilds a missing `output` from streamed
+  `response.output_item.done` events (`[]` if there were none). Dikw
+  recovers text from those items or the accumulated deltas and retains
+  the final status and usage, so a recovered completed turn reports
+  `finish_reason="stop"` on 3.x.
+- **Total-loss safeguard (issues #134/#135/#285).** On both SDK generations,
+  a final with **no message output items and zero text deltas** raises
+  `TransientProviderError` so synth retries rather than silently recording
+  a source as "zero pages". SDK 3.x makes backend `output=None` and `output=[]`
+  indistinguishable when no items were finalized, so dikw also retries a
+  genuinely itemless turn. A reconstructed reasoning-only output also has
+  no final answer: dikw recovers streamed text, or raises if no text arrived.
+  A final holding an explicit empty message
+  (`output=[message("")]`) remains a valid empty answer, including when it
+  clears earlier streamed text. Real-SDK SSE tests pin these cases against
+  the locked version; the temporary `openai<3` cap is lifted.
 - **Empty-final-output recovery (issue #160).** A *different* codex
   backend quirk: the terminal `response.completed` sometimes ships
-  `output = []` (an empty **list**, not `None` — so the reducer above
-  does *not* fire) even though valid `response.output_text.delta`
+  `output = []` (an empty list) even though valid `response.output_text.delta`
   events already streamed the full answer. The SDK hands back a
   well-formed final `Response`, so the provider used to trust it and
   return `text=""`, discarding a complete completion (observed live:
   every synth group returning `response_chars: 0` while the model had
   actually produced `<page>` blocks). The provider now falls back to
-  the streamed delta text when the final carries **no output items at
-  all** but deltas did arrive. This is deliberately narrow: a final
+  the streamed delta text when the final carries **no message output items**
+  but deltas did arrive, including reasoning-only finals on SDK 3.x.
+  This is deliberately narrow: a final
   holding an explicit empty *message* item (`output=[message("")]` — a
   non-empty list, a real cleared turn) still surfaces as `text=""`.
 - **`synth` retries `ProviderError` per group, then skips.** Since

@@ -23,7 +23,12 @@ from typing import Any
 
 import pytest
 
-from dikw_core.providers.base import LLMResponse, LLMStreamEvent, ProviderError
+from dikw_core.providers.base import (
+    LLMResponse,
+    LLMStreamEvent,
+    ProviderError,
+    TransientProviderError,
+)
 from dikw_core.providers.codex_auth import DEFAULT_CODEX_BASE_URL
 from dikw_core.providers.openai_codex import OpenAICodexLLM
 
@@ -1091,20 +1096,19 @@ async def test_complete_recovers_deltas_when_final_output_empty(
     assert resp.finish_reason == "stop"
 
 
-async def test_empty_output_list_with_no_deltas_stays_empty(
+async def test_empty_output_list_with_no_deltas_raises_transient_error(
     stream_captured: dict[str, Any],
 ) -> None:
-    """Guard the recovery's lower bound: a final with ``output=[]`` AND zero
-    streamed deltas is a genuinely empty turn — there is nothing to recover,
-    so ``text`` stays ``""`` (no fabrication)."""
+    """#285: SDK 3.x collapses backend output=None and output=[] into the
+    same empty list. With zero deltas, retry rather than silently losing a
+    source. An explicit empty message still represents a valid empty turn."""
     stream_captured["events"] = []
     stream_captured["final"] = make_codex_response(output=[], status="completed")
     provider = OpenAICodexLLM(
         base_url=DEFAULT_CODEX_BASE_URL, base_root=_DUMMY_BASE
     )
-    resp = await provider.complete(system="s", user="u", model="gpt-5.5")
-    assert resp.text == ""
-    assert resp.finish_reason == "stop"
+    with pytest.raises(TransientProviderError, match="zero text deltas"):
+        await provider.complete(system="s", user="u", model="gpt-5.5")
 
 
 async def test_reducer_bug_fallback_warning_excludes_delta_text(

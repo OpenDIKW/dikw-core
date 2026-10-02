@@ -38,12 +38,10 @@ dependencies = [
     # `uv lock --upgrade-package anthropic` — a plain `uv lock` keeps 0.x, and
     # tests/test_provider_anthropic_http_client.py only goes red on a 1.x lock.
     "anthropic>=0.96,<1",
-    # Capped below 3.0 until openai_codex handles 3.x (#285): 3.x rebuilds a
-    # codex `response.completed` whose `output` is None instead of raising, so
-    # the zero-delta safeguard (#134/#135) never fires. 3.x is also `httpx2`
-    # based and takes our `httpx.AsyncClient` only via a legacy shim
-    # (tests/test_provider_openai_http_client.py) — cf. anthropic 1.x (#279).
-    "openai>=2.32,<3",
+    # Real-SDK tests guard both codex's total-loss safeguard on 2.x/3.x
+    # (test_provider_openai_codex_sse.py) and 3.x's legacy httpx-client shim
+    # (test_provider_openai_http_client.py) — cf. anthropic 1.x (#279).
+    "openai>=2.32",
     "httpx>=0.28",
     # client/server architecture (Phase 2+ of the in-process → HTTP migration).
     # Adding these in Phase 0 so subsequent PRs can land server/ and client/

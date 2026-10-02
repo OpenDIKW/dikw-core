@@ -52,7 +52,7 @@ _FINISH_REASON_MAP: dict[str, str] = {
     "cancelled": "error",
 }
 
-# Signature of the OpenAI Python SDK's reducer failure when ChatGPT's
+# Signature of the OpenAI Python SDK 2.x reducer failure when ChatGPT's
 # codex backend ships ``response.output = None`` in its terminal
 # ``response.completed`` event. We refuse to swallow any other
 # TypeError/AttributeError — a real None-attribute bug in our own code
@@ -76,7 +76,7 @@ def _is_codex_final_response_reducer_bug(exc: BaseException) -> bool:
     """True iff ``exc`` matches the openai SDK's reducer failure on
     ``response.output = None`` from the chatgpt.com codex backend.
 
-    The SDK reducer iterates ``response.output`` to assemble a typed
+    The 2.x SDK reducer iterates ``response.output`` to assemble a typed
     final ``Response``; when ``output`` is None it raises
     ``TypeError("'NoneType' object is not iterable")``. Older / future
     SDK versions may surface the same root cause as an ``AttributeError``
@@ -285,7 +285,7 @@ class OpenAICodexLLM:
             ):
                 # ChatGPT's codex backend ships ``response.output = None``
                 # in its terminal ``response.completed`` payload (the
-                # public Responses API ships a list). The openai SDK's
+                # public Responses API ships a list). The openai 2.x SDK's
                 # reducer assembles a typed final ``Response`` via
                 # ``for output in response.output`` and dies with
                 # ``TypeError: 'NoneType' object is not iterable``. The
@@ -358,62 +358,37 @@ class OpenAICodexLLM:
                         reducer_bug_seen = True
                         final = None
 
-            # Trust the SDK's authoritative final payload when present,
-            # even if its assembled text is empty — a model that emits a
-            # legitimate empty-turn retraction must surface as ``text=""``,
-            # not as whatever happened to stream in earlier (the previous
-            # ``or "".join(parts)`` fallthrough fabricated content the
-            # model authoritatively cleared). ``parts`` only carries the
-            # done payload on the reducer-bug branch where ``final`` is
-            # explicitly ``None``.
-            #
-            # EXCEPTION (issue #160): the ChatGPT codex backend ships a
-            # terminal ``response.completed`` whose ``output`` is an EMPTY
-            # LIST (``[]`` — zero items) even though valid
-            # ``response.output_text.delta`` events already streamed the real
-            # answer (reproduced live: 90 token events / 332 chars, usage
-            # output_tokens=132, status "completed"). ``final`` is a well-
-            # formed Response (NOT the ``output=None`` reducer bug, which
-            # raises), so the code reached here and ``_extract_text_from_response``
-            # returns "" from the empty list — discarding a complete
-            # completion. When the final carries NO output items at all but
-            # deltas DID arrive, the streamed ``parts`` are authoritative.
-            # This is deliberately narrow: an explicit empty *message* item
-            # (``output=[message(output_text="")]`` — a non-empty list, a real
-            # cleared turn) keeps ``text=""`` because that output list is
-            # truthy, so the authoritative-empty-retraction contract above
-            # still holds.
+            # Final message items are authoritative, including an explicit
+            # empty message that retracts earlier text. Without a message,
+            # recover streamed text (#160/#285). SDK 3.x can rebuild a null
+            # output as reasoning-only items, which carry no final answer
+            # and must not hide either delta recovery or total loss.
+            output = getattr(final, "output", None) or []
+            has_message = any(getattr(item, "type", None) == "message" for item in output)
             extracted = "" if final is None else _extract_text_from_response(final)
             if final is None:
                 final_text = "".join(parts)
             elif extracted:
                 final_text = extracted
-            elif parts and not (getattr(final, "output", None) or []):
+            elif parts and not has_message:
                 final_text = "".join(parts)
             else:
                 final_text = extracted
 
-            # Total-loss safeguard: when the reducer bug fires before any
-            # text delta has arrived, there is no partial response to
-            # surface and ``final_text=""`` would slip through the engine
-            # silently — synth (``domains/knowledge/synthesize.py``) reads
-            # ``response.text`` only and treats empty text as
-            # "model emitted zero pages", so an auth/refusal failure on
-            # chatgpt.com/backend-api/codex would drop a knowledge page from
-            # the source set on every reducer hit. Raise instead so the
-            # failure surfaces on the NDJSON progress stream and the
-            # caller can retry or skip with intent.
-            if reducer_bug_seen and not parts:
-                # TransientProviderError so synth's per-group retry-skip
-                # (api.py group LLM retry loop) re-tries this — the
-                # reducer bug is empirically transient (auth flap,
-                # quota throttle, content-refusal that resolves on a
-                # second attempt). Issue #134/#135 fix expected synth
-                # to catch and retry this case.
+            # Total loss (#134/#135/#285): SDK 3.x rebuilds output=None from
+            # output_item.done events instead of raising the 2.x reducer
+            # error. The rebuilt output may be empty or reasoning-only, so an
+            # exception alone cannot identify loss. No message AND no text
+            # deltas must raise on both generations, or synth records the
+            # source as "zero pages". This also retries a truly itemless turn;
+            # an explicit empty message item still keeps text="" above.
+            if not parts and not has_message:
+                # Keep the existing transient classification so synth's
+                # per-group retry-skip loop can recover from backend flaps.
                 raise TransientProviderError(
-                    "OpenAI codex backend returned response.output=None "
-                    "and shipped zero text deltas; the SDK reducer "
-                    "fallback has no partial response to surface. This "
+                    "OpenAI codex backend returned no message output items "
+                    "and shipped zero text deltas; no response text "
+                    "can be recovered. This "
                     "typically indicates an auth, quota, or content-"
                     "refusal failure on chatgpt.com/backend-api/codex — "
                     "check ``dikw auth status`` and the request payload."
