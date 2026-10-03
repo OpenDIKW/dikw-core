@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.8 — `openai_codex` supports OpenAI SDK 3.x without silent source loss
+
 ### Fixed
 
 - **`openai_codex` keeps its total-loss safeguard on OpenAI SDK 3.x.**
