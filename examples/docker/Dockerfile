@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # ``.github/workflows/reusable-ci.yml`` enforces the invariant
 # (DIKW_VERSION must equal pyproject.toml's version OR be published on
 # PyPI) so any drift introduced by hand fails CI.
-ARG DIKW_VERSION=0.6.9
+ARG DIKW_VERSION=0.6.10
 # The default jieba tokenizer must also work for Chinese sources out of the box.
 RUN pip install --no-cache-dir "dikw-core[postgres,cjk]==${DIKW_VERSION}"
 
