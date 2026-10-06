@@ -7,6 +7,8 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.9 — synth recovers normal-stop formatting slips
+
 ### Fixed
 
 - **Synth accepts normal-stop formatting slips without repeatedly regenerating
