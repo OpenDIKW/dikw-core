@@ -27,7 +27,8 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1"
 # (DIKW_VERSION must equal pyproject.toml's version OR be published on
 # PyPI) so any drift introduced by hand fails CI.
 ARG DIKW_VERSION=0.6.9
-RUN pip install --no-cache-dir "dikw-core[postgres]==${DIKW_VERSION}"
+# The default jieba tokenizer must also work for Chinese sources out of the box.
+RUN pip install --no-cache-dir "dikw-core[postgres,cjk]==${DIKW_VERSION}"
 
 # The server never needs pip at runtime, and pip's vendored SBOM
 # (pip/_vendor/bom.cdx.json) pins stale copies of setuptools/msgpack that
@@ -39,6 +40,12 @@ RUN pip uninstall -y pip
 RUN useradd --create-home --uid 1000 dikw
 USER dikw
 WORKDIR /base
+
+# Exercise the installed wheel's default CJK path on both release architectures,
+# as the runtime user (jieba's dictionary cache must not be owned by root).
+# The development environment's all-extras install cannot catch a missing extra.
+RUN python -c 'from dikw_core.domains.info.tokenize import preprocess_for_fts; text = preprocess_for_fts("机器学习入门 retrieval.rrf_k", tokenizer="jieba"); assert "机器" in text.split() and "学习" in text.split() and "retrieval.rrf_k" in text.split(), text'
+
 VOLUME ["/base"]
 
 EXPOSE 8765
