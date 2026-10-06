@@ -261,8 +261,9 @@ refuses outright). Raising `llm_max_tokens_synth` is still the fix — this
 just makes an under-budget run loud and recoverable instead of lossy.
 Normal stops (`stop`, `end_turn`, `stop_sequence`) are handled separately:
 an attributed page missing its closing tag is recovered at the next opener
-or the end of the response. Bare page tags and inline-code examples in
-commentary do not count as truncation. These format slips no longer keep
+or the end of the response. Bare page tags, inline-code examples in
+commentary, and fenced examples in page bodies do not count as truncation.
+Code examples remain intact in stored pages. These format slips no longer keep
 otherwise successful sources unfinished (#294); raising the token budget
 is only relevant when the provider actually reports a cutoff.
 Override per-base by adding the field to your `dikw.yml` `provider:`

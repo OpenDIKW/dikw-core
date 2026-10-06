@@ -30,6 +30,9 @@ Both `length` and `max_tokens` controls still raise with retry required.
 Hermetic pipeline regressions additionally prove completion and zero LLM
 calls / zero page writes on the next default synth, including quoted
 zero-page answers and valid pages alongside a title-less placeholder.
+Parser regressions preserve fenced page-tag examples byte-for-byte, including
+an unfinished example followed by another fenced response. Whole-response
+XML fences remain parseable.
 
 **Limits:** no fresh `elon-musk` LLM run or live seven-metric `mvp` synth
 quality evaluation was performed. The packaged `mvp` hermetic eval remains

@@ -434,7 +434,9 @@ and reference the existing page via `[[Title]]` in its other pages instead.
 If every candidate is covered, the response should be empty, without
 commentary or comparisons with the existing-pages list.
 
-The parser counts only attributed page openers outside inline-code spans.
+The parser counts only attributed page openers outside inline-code spans and
+fenced code examples in page bodies. Code stays unchanged in the stored body;
+a fence around the whole XML response remains parseable.
 On a clean `stop`, `end_turn`, or `stop_sequence`, a missing closing tag
 is recovered at the next opener or the response end; bodies still must pass
 the YAML/title validation. This allows the source-completion marker to be

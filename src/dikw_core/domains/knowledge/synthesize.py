@@ -26,7 +26,11 @@ from .page import KnowledgePage, build_page, default_page_path, now_iso
 # examples occur in the model's commentary and must not count as lost pages.
 _PAGE_OPEN_TAG = re.compile(r"<page\s+(\w+\s*=[^>]+?)>", flags=re.IGNORECASE)
 _PAGE_CLOSE_TAG = re.compile(r"</page>", flags=re.IGNORECASE)
+# Track page context with short prefixes: an unfinished example must not
+# consume a later real closing tag while looking for its own closing bracket.
+_PAGE_CONTEXT_TAG = re.compile(r"<page\s+\w+\s*=|</page>", flags=re.IGNORECASE)
 _INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)")
+_CODE_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
 # finish_reason values that mean the model was cut off mid-generation rather
 # than stopping on its own. ``openai_compat`` / ``openai_codex`` normalize to
 # ``"length"``; ``anthropic_compat`` passes Anthropic's raw ``stop_reason``
@@ -168,12 +172,45 @@ def _is_truncation_finish_reason(reason: str | None) -> bool:
     return reason is not None and reason.strip().lower() in _TRUNCATION_FINISH_REASONS
 
 
-def _extract_page_blocks(
-    raw: str, *, recover_unclosed: bool
-) -> tuple[list[tuple[str, str]], int]:
+def _mask_page_code(raw: str) -> str:
     # Mask code only for boundary detection. Slice bodies from the original
     # response so real Markdown code examples survive byte-for-byte.
     boundaries = _INLINE_CODE.sub(lambda m: " " * len(m.group()), raw)
+    tags = iter(_PAGE_CONTEXT_TAG.finditer(boundaries))
+    tag = next(tags, None)
+    in_page = False
+    fence: str | None = None
+    offset = 0
+    masked: list[str] = []
+    for line in boundaries.splitlines(keepends=True):
+        match = _CODE_FENCE.fullmatch(line.rstrip("\r\n"))
+        is_code = fence is not None
+        if fence is not None:
+            if (
+                match is not None
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+                and not match.group(2).strip()
+            ):
+                fence = None
+        elif in_page and match is not None:
+            fence = match.group(1)
+            is_code = True
+        # Fences outside a page can wrap the whole XML response. Keep those
+        # envelopes parseable; only a page body's fenced examples are code.
+        masked.append(re.sub(r"[^\r\n]", " ", line) if is_code else line)
+        offset += len(line)
+        while tag is not None and tag.end() <= offset:
+            if not is_code:
+                in_page = not tag.group().lower().startswith("</")
+            tag = next(tags, None)
+    return "".join(masked)
+
+
+def _extract_page_blocks(
+    raw: str, *, recover_unclosed: bool
+) -> tuple[list[tuple[str, str]], int]:
+    boundaries = _mask_page_code(raw)
     openers = list(_PAGE_OPEN_TAG.finditer(boundaries))
     blocks: list[tuple[str, str]] = []
     unclosed = 0
@@ -222,8 +259,8 @@ def parse_synthesis_response(
     raise ``SynthesisPartialError(retry=True)`` so the source is not marked done.
     On a clean stop signal (``end_turn``, ``stop``, or ``stop_sequence``),
     missing closing tags are format slips: a page ends at the next attributed
-    opener or the end of the response. Bare tags and inline-code examples are
-    ignored as boundaries. ``None`` (the default) keeps unclosed-tag protection
+    opener or the end of the response. Bare tags and code examples inside
+    page bodies are ignored as boundaries. ``None`` keeps unclosed-tag protection
     for callers that don't thread the stop signal through.
     """
     length_truncated = _is_truncation_finish_reason(finish_reason)
