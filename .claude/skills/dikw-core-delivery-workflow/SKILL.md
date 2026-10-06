@@ -15,7 +15,7 @@ This skill is the only definition of the dikw-core delivery loop. CLAUDE.md poin
 
 If you cannot reach the finish line, stop on a block signal and report it.
 
-**Run autonomously.** The loop is standing approval to commit, push, open the PR, and squash-merge.
+**Run autonomously.** The loop is standing approval to commit, push, open the PR, squash-merge, and delete the merged feature branch.
 Do not ask again at the tail of the loop. Stop only on a block signal (see `<block-signals>`).
 Put status notes in the same message as your next tool call.
 
@@ -23,7 +23,7 @@ Companion skills:
 
 - `dikw-core-verify` — step 3. Routes the diff to the checks it needs.
 - `dikw-core-verify-synth` — the K-layer leg of step 3. `dikw-core-verify` calls it.
-- `dikw-core-fresh-review` — step 5 for tier-L changes. A clean subagent reviews the diff against the invariants.
+- `dikw-core-fresh-review` — step 4 for tier-L changes. A clean subagent reviews the diff against the invariants.
 
 </what-this-is>
 
@@ -64,9 +64,9 @@ Find the highest tier that any file in the diff hits. When in doubt, go one tier
 
 | tier | the diff touches | review |
 |---|---|---|
-| **S** | only `*.md`, `docs/**`, `.claude/**`; or a version / release / `DIKW_VERSION` bump | `/code-review` once |
+| **S** | only docs outside `src/` (`*.md`, `docs/**`, `.claude/**`); or a version / release / `DIKW_VERSION` bump | `/code-review` once |
 | **M** | anything else: code, tests, tools, dependencies, CI | codex (≤ 3 rounds) + `/code-review` |
-| **L** | `domains/knowledge/**`, `domains/info/**`, `RetrievalConfig`, `storage/**`, a Protocol in `providers/base.py` or `storage/base.py`, the persist pipeline (`persist_*`, `page_index.py`), `server/auth.py` | tier M + `dikw-core-fresh-review` |
+| **L** | `domains/knowledge/**`, `api_synth.py`, the LLM prompts (`src/dikw_core/prompts/**`), `domains/info/**`, `RetrievalConfig`, `storage/**`, a Protocol in `providers/base.py` or `storage/base.py`, the persist pipeline (`persist_*`, `page_index.py`), `server/auth.py` | tier M + `dikw-core-fresh-review` |
 
 Run the reviews in this order:
 
@@ -76,8 +76,9 @@ Run the reviews in this order:
 
 Triage every finding the same way:
 
-- Act only on a finding that would block the merge. For each one, record the file and line, why it is wrong, and how to show that it fails.
+- Ask each reviewer to report merge-blocking problems first, each with the file and line, why it is wrong, and how to show that it fails.
 - Before you fix a finding, read the cited code. A reviewer can be wrong.
+- Fix every actionable finding, blocking or not.
 - Reject a nitpick or a false positive with a one-line reason.
 - If a finding names one CLI string, symbol, route, or env var, grep the whole repo for it before you call it fixed. Include `CLAUDE.md`, `docs/**`, `CHANGELOG.md`, `.claude/**`.
 
@@ -173,6 +174,7 @@ STOP and ask the user only when one of these occurs. For everything else, contin
 4. A merge conflict needs a domain decision, not a mechanical resolve.
 5. **WARNING:** a force-push would be necessary. Force-push is forbidden. Describe the situation and let the user do it.
 6. The request is ambiguous on a decision that the code and docs cannot answer (step 1).
+7. The next action is destructive and this loop does not already approve it: deleting data or files you did not create, or changing anything outside this repository.
 
 Nitpicks, style preferences, and non-actionable suggestions are **not** block signals. Note them and continue.
 

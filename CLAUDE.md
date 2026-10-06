@@ -73,7 +73,7 @@ Before you design a change in an area, read its rule file.
 
 - **Karpathy's rule:** scoping is deterministic, reasoning is probabilistic. LLMs enter only at synth. `retrieve` never calls a generative LLM. A cross-encoder reranker is scoping; an LLM reranker is excluded (ADR-0006). → `retrieval.md`
 - **Rerank** is on once `provider.rerank` is set. It reorders the fused pool and never adds a chunk to it. → `retrieval.md`
-- **On-disk format is the product.** K and W pages are plain Markdown + YAML front matter + `[[wikilinks]]`. The synth LLM contributes only `tags`. → `knowledge-layer.md`
+- **On-disk format is the product.** K and W pages are plain Markdown + YAML front matter + `[[wikilinks]]`. The synth LLM contributes only the `tags` front-matter key. → `knowledge-layer.md`
 - **Categories are a closed set** from `schema.categories`. A page that fits no category goes to `schema.fallback`. → `knowledge-layer.md`
 - **Re-persisting a K page replaces** its outgoing links and provenance edges. It does not merge them. → `knowledge-layer.md`
 - **Wikilink resolve refuses an ambiguous fuzzy match.** A wrong merge is irreversible; a broken link is a fixable lint warning. → `knowledge-layer.md`
@@ -117,11 +117,11 @@ Before you design a change in an area, read its rule file.
 ## Autonomy
 
 - When a step does not need my input, continue. Put status notes in the same message as your next action.
-- Treat explicit steps in a `/goal` request as approval for those steps. The delivery loop is approval to commit, push, open the PR, and squash-merge.
+- Treat explicit steps in a `/goal` request as approval for those steps. The delivery loop is approval to commit, push, open the PR, squash-merge, and delete the merged feature branch.
 - Stop and ask only when one of these is true:
   - You cannot continue without my decision.
   - A block signal from the `dikw-core-delivery-workflow` skill fires.
-  - The next action is destructive: delete data, or change anything outside this repository.
+  - The next action is destructive and not approved above: delete data or files you did not create, or change anything outside this repository.
 - Do not end a turn in these ways while work is still owed:
   1. A summary that announces the next step but does not take it.
   2. An offer to continue "unless you prefer otherwise".

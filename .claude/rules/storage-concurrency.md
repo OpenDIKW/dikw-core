@@ -4,6 +4,8 @@ paths:
   - "src/dikw_core/server/runtime.py"
   - "src/dikw_core/server/tasks/**"
   - "src/dikw_core/server/*_op.py"
+  - "src/dikw_core/server/routes_{tasks,import}.py"
+  - "tests/server/test_route_write_lock_wiring.py"
   - "tests/test_storage_contract.py"
   - "tests/server/test_task_store_contract.py"
 ---

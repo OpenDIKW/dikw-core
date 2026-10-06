@@ -5,6 +5,7 @@ paths:
   - "src/dikw_core/providers/rerank.py"
   - "src/dikw_core/eval/**"
   - "src/dikw_core/server/routes_retrieve.py"
+  - "src/dikw_core/config.py"
   - "tests/test_{search,retrieval,rerank,sweep_rrf,eval}*.py"
   - "evals/*.md"
 ---

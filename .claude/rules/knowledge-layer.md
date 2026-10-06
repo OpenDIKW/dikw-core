@@ -6,6 +6,7 @@ paths:
   - "src/dikw_core/api_lint.py"
   - "src/dikw_core/api_wisdom.py"
   - "src/dikw_core/prompts/**"
+  - "src/dikw_core/config.py"
   - "src/dikw_core/server/synth_op.py"
   - "src/dikw_core/server/lint_op.py"
   - "tests/test_{synth,lint,links,knowledge,persist_knowledge,prompt,wisdom}*.py"
