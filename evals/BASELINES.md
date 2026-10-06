@@ -7,6 +7,38 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-10-06 — synth parser: normal-stop format-slip recovery (#294)
+
+**Method:** deterministic differential replay of 506 existing real knowledge
+pages citing `sources/elon-musk.md` from a local base, rewrapped with their
+original bodies and tags. Compare the pre-fix parser (`388b828`, v0.6.8) with
+the working tree under `finish_reason="end_turn"`. This is a non-destructive
+parser benchmark over exported generated content, not a new LLM baseline.
+The driver and result are in
+[`experiments/synth-format-slips-294/`](experiments/synth-format-slips-294/README.md).
+
+| Response shape | Before | After |
+|---|---|---|
+| Valid blocks | 506 pages accepted | 506 pages accepted |
+| Missing closing tags | hard error, 0 surviving pages | 506 pages accepted |
+| Stray bare openers | partial error, 506 surviving pages, retry required | 506 pages accepted |
+| Quoted instruction before blocks | partial error, 506 surviving pages, retry required | 506 pages accepted |
+
+Page paths, titles, bodies (including inline code), tags, and provenance are
+**byte-identical** to the valid-block output in every recovered variant.
+Both `length` and `max_tokens` controls still raise with retry required.
+Hermetic pipeline regressions additionally prove completion and zero LLM
+calls / zero page writes on the next default synth, including quoted
+zero-page answers and valid pages alongside a title-less placeholder.
+Parser regressions preserve fenced page-tag examples byte-for-byte, including
+an unfinished example followed by another fenced response. Whole-response
+XML fences remain parseable.
+
+**Limits:** no fresh `elon-musk` LLM run or live seven-metric `mvp` synth
+quality evaluation was performed. The packaged `mvp` hermetic eval remains
+covered by the local test gate; the output-only prompt hardening is checked
+by its existing real-parser worked-example and prompt-contract tests.
+
 ## 2026-06-28 — eval rows: surface absolute relevance scores (#249)
 
 **Change under test:** every eval report row (`PerQueryRow` + `NegativeRow`) now

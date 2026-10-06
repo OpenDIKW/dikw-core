@@ -1131,7 +1131,7 @@ _TRUNCATED_NON_ATOMIC_RESPONSE = (
     "<page category=\"concept\" slug=\"topic-b\">\n"
     "---\ntags: [child]\n---\n\n# Topic B\n\nSecond child.\n"
     "</page>\n\n"
-    # Third <page> opener with no </page> — synth marks this retry=True.
+    # Third opener has no close; with max_tokens this requires retry.
     "<page category=\"concept\" slug=\"topic-c\">\n"
     "---\ntags: [child]\n---\n\n# Topic C\n\nThird child body keeps "
     "going but max_tokens cut it off here."
@@ -1140,7 +1140,7 @@ _TRUNCATED_NON_ATOMIC_RESPONSE = (
 
 @pytest.mark.asyncio
 async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
-    """A response with two complete <page> blocks plus an unclosed third
+    """A budget cutoff with two complete blocks plus an unclosed third
     is a SynthesisPartialError(retry=True). The destructive non_atomic_page
     fixer must NOT accept it — applying would delete the original page
     and silently drop Topic C's content with it."""
@@ -1149,7 +1149,7 @@ async def test_non_atomic_page_refuses_truncated_split(tmp_path: Path) -> None:
     )
 
     base_root, page, issue = _make_fat_page_on_disk(tmp_path)
-    fake = FakeLLM(response_text=_TRUNCATED_NON_ATOMIC_RESPONSE)
+    fake = FakeLLM(response_text=_TRUNCATED_NON_ATOMIC_RESPONSE, finish_reason="max_tokens")
     fixer = NonAtomicPageFixer()
     proposal = await fixer.propose(
         issue,

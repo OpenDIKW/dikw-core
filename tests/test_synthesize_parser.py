@@ -359,6 +359,84 @@ def test_parse_truncation_finish_reason_is_case_and_space_insensitive(
     assert excinfo.value.retry is True
 
 
+@pytest.mark.parametrize("reason", ["end_turn", "stop", "stop_sequence", " END_TURN "])
+@pytest.mark.parametrize(
+    ("raw", "titles"),
+    [
+        (_SINGLE_PAGE_RESPONSE.replace("</page>", ""), ["DIKW pyramid"]),
+        (_TWO_COMPLETE_PAGES.replace("</page>", "", 1), ["SpaceX", "Tesla"]),
+        (
+            _TWO_COMPLETE_PAGES.replace("<page category=", "<page>\n<page category="),
+            ["SpaceX", "Tesla"],
+        ),
+        ("Already covered. Emit **ZERO** `<page>` blocks.", []),
+        ('The example is `<page category="concept" slug="example">`. Nothing new.', []),
+    ],
+    ids=["missing-close", "next-opener", "bare-openers", "quoted-bare", "quoted-attributed"],
+)
+def test_parse_clean_finish_recovers_format_slips(
+    raw: str, titles: list[str], reason: str
+) -> None:
+    """Issue #294: normal model stops must not create endless source retries."""
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason=reason)
+    assert [page.title for page in pages] == titles
+
+
+def test_parse_inline_code_is_preserved_inside_page() -> None:
+    raw = _SINGLE_PAGE_RESPONSE.replace(
+        "See also [[Karpathy LLM Wiki]].",
+        'Use `<page category="concept" slug="example">` and `</page>` as examples.',
+    )
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason="end_turn")
+    assert len(pages) == 1
+    assert '`<page category="concept" slug="example">`' in pages[0].body
+    assert '`</page>`' in pages[0].body
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~", "````"])
+@pytest.mark.parametrize("reason", ["end_turn", None])
+def test_parse_fenced_examples_are_preserved_inside_page(
+    fence: str, reason: str | None,
+) -> None:
+    example = (
+        f'{fence}xml\n<page category="concept" slug="example">\n'
+        f'(see Article body below)\n</page>\n{fence}{fence[0]}\n'
+        'The real page continues after its code example.'
+    )
+    raw = _SINGLE_PAGE_RESPONSE.replace("See also [[Karpathy LLM Wiki]].", example)
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason=reason)
+    assert len(pages) == 1
+    assert example in pages[0].body
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_parse_response_fence_wrapper_still_returns_real_pages(fence: str) -> None:
+    raw = f"Commentary before the wrapper.\n{fence}xml\n{_SINGLE_PAGE_RESPONSE}\n{fence}\n"
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason="end_turn")
+    expected = parse_synthesis_response(_SINGLE_PAGE_RESPONSE, source_path="src.md")
+    assert len(pages) == 1
+    assert pages[0].body == expected[0].body
+
+
+def test_parse_unfinished_tag_in_code_does_not_hide_later_response_wrapper() -> None:
+    first = _SINGLE_PAGE_RESPONSE.replace(
+        "See also [[Karpathy LLM Wiki]].", '```xml\n<page category="concept"\n```',
+    )
+    raw = f"```xml\n{first}\n```\n\n```xml\n{_TWO_COMPLETE_PAGES}\n```"
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason="end_turn")
+    assert [page.title for page in pages] == ["DIKW pyramid", "SpaceX", "Tesla"]
+
+
+@pytest.mark.parametrize("reason", ["length", "max_tokens", None, "", "content_filter"])
+def test_parse_missing_close_keeps_truncation_protection(reason: str | None) -> None:
+    with pytest.raises(SynthesisError, match="truncated"):
+        parse_synthesis_response(
+            _SINGLE_PAGE_RESPONSE.replace("</page>", ""),
+            source_path="src.md",
+            finish_reason=reason,
+        )
+
+
 _MULTI_PAGE_RESPONSE = """
 <page category="entity" slug="elon-musk">
 ---

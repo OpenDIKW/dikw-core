@@ -7,6 +7,17 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+### Fixed
+
+- **Synth accepts normal-stop formatting slips without repeatedly regenerating
+  a source.** (#294) Bare page tags and code examples no longer count as
+  truncated pages. On a clean provider stop, an attributed page missing its
+  closing tag ends at the next page opener or the response end. Legal empty
+  answers and recovered pages can now complete the source; real `length` /
+  `max_tokens` cutoffs still withhold completion. Page bodies retain their
+  inline and fenced code, and the prompt asks for complete blocks or an empty response
+  without commentary.
+
 ## 0.6.8 — `openai_codex` supports OpenAI SDK 3.x without silent source loss
 
 ### Fixed

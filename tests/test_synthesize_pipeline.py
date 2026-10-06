@@ -163,6 +163,49 @@ async def test_synth_is_idempotent_without_force_all(wiki_with_fixtures: Path) -
     assert second.groups_processed == 0
 
 
+@pytest.mark.parametrize("shape", ["missing_close", "bare_tags", "quoted_zero", "placeholder"])
+async def test_synth_format_slips_complete_sources_without_regenerating(
+    wiki_with_fixtures: Path, shape: str
+) -> None:
+    """Issue #294: recovered normal stops are done, including legal empty turns."""
+    script = {}
+    for path, response in _SCRIPT.items():
+        if shape == "missing_close":
+            response = response.replace("</page>", "")
+        elif shape == "bare_tags":
+            response = "<page>\n" + response
+        elif shape == "quoted_zero":
+            response = "Already covered by existing pages. Emit ZERO `<page>` blocks."
+        else:
+            response += (
+                '\n<page category="concept" slug="placeholder">\n'
+                '(see Article body below)\n</page>'
+            )
+        script[path] = response
+
+    class CountingLLM(ScriptedLLM):
+        calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            return await super().complete(**kwargs)
+
+    embedder = FakeEmbeddings()
+    await api.ingest(wiki_with_fixtures, embedder=embedder)
+    llm = CountingLLM(script)
+    first = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+    assert first.errors == 0
+    assert first.created == (0 if shape == "quoted_zero" else 3)
+    assert llm.calls == 3
+    paths = set((wiki_with_fixtures / "knowledge").rglob("*.md"))
+
+    second = await api.synthesize(wiki_with_fixtures, llm=llm, embedder=embedder)
+    assert second.skipped == 3
+    assert second.groups_processed == second.created == second.updated == 0
+    assert llm.calls == 3
+    assert set((wiki_with_fixtures / "knowledge").rglob("*.md")) == paths
+
+
 @pytest.mark.asyncio
 async def test_synth_empty_response_is_legal_zero_pages(
     wiki_with_fixtures: Path,

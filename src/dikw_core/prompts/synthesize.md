@@ -10,18 +10,18 @@ The atomicity rule is standing policy; these are the length norms it defers to.
 
 ## Fan-out
 
-This call sees only **one section** of the source document — the section numbers and the page cap appear under **Task** near the end of this prompt, and the section text follows as the **SOURCE DOCUMENT** block at the very end. Identify the distinct concepts, entities, and notes in this section that deserve their own page in the knowledge base. Output one `<page>` block per item.
+This call sees only **one section** of the source document — the section numbers and the page cap appear under **Task** near the end of this prompt, and the section text follows as the **SOURCE DOCUMENT** block at the very end. Identify the distinct concepts, entities, and notes in this section that deserve their own page in the knowledge base. Output one page block per item.
 
-- Emit **zero** blocks if this section contains nothing worth a knowledge page (boilerplate, navigation, copyright notices, table of contents).
+- Emit an **empty response** if this section contains nothing worth a knowledge page (boilerplate, navigation, copyright notices, table of contents) or all its ideas are already covered. Do not explain why you are emitting no pages.
 - Emit at most the stated **page cap**. If the section has fewer distinct topics, emit fewer.
-- Emit pages in **descending order of importance**, and never open a `<page>` block you cannot finish — if your output budget cuts the response short, the least important page should be the one lost.
+- Emit pages in **descending order of importance**, and never start a page block you cannot finish — if your output budget cuts the response short, the least important page should be the one lost.
 - Reuse the section's heading structure as a hint for natural page boundaries, but do not feel bound by it — merge two H2 sections into one page when they cover the same atomic subject, or split one H2 into multiple pages when it conflates topics.
 
 ## Linking
 
 The honest-linking and faithfulness rules are standing policy; these are the mechanics they defer to.
 
-1. Link **inline**, where the reference occurs in the prose — never as a trailing "see also" list. Every `[[wikilink]]` target must be one of: **(a)** a page listed in the knowledge-base context near the end of this prompt (write its title **verbatim**), **(b)** the title of another `<page>` you emit in this response, or **(c)** a concept or entity clearly substantial enough to deserve its own page later — a deliberate forward link that `dikw client lint` tracks until the page exists. Do **not** wikilink names, places, or terms that merely appear in passing: a link must point at something a reader would genuinely open.
+1. Link **inline**, where the reference occurs in the prose — never as a trailing "see also" list. Every `[[wikilink]]` target must be one of: **(a)** a page listed in the knowledge-base context near the end of this prompt (write its title **verbatim**), **(b)** the title of another page you emit in this response, or **(c)** a concept or entity clearly substantial enough to deserve its own page later — a deliberate forward link that `dikw client lint` tracks until the page exists. Do **not** wikilink names, places, or terms that merely appear in passing: a link must point at something a reader would genuinely open.
 2. **Link density**: a well-linked page naturally lands around **2–4 wikilinks per 500 characters** once every load-bearing reference is linked — substantially more than that usually signals manufactured links, which dilute the graph and lower grounding. When in doubt, leave plain text.
 
 ## Tags
@@ -65,7 +65,7 @@ tags: [entity, historical]
 
 ## Output format
 
-For each page, emit exactly one `<page>` block, wrapped verbatim. Do **not** emit prose outside the blocks.
+For each page, emit exactly one block in the format below, with an attributed opening tag and a closing `</page>` tag. **Close every block.** Output only these blocks, with no commentary, reasoning, quoted instructions, or surrounding code fences. If there are no new pages, return an **empty response**.
 
 ```
 <page category="<category-path>" slug="<slug>">
@@ -82,7 +82,7 @@ Body paragraphs here. Use [[Wikilinks]] for references.
 - `category` is one path copied **verbatim** from the Category list below; omitting the attribute is a **last resort**, per the Closed-taxonomy invariant (the engine then files the page under its fallback bucket for a human to reclassify).
 - `slug` is lowercase, kebab-case, ASCII-only. The engine files the page at `knowledge/<category>/<slug>.md`.
 - The first line of the body must be an ATX `# Page Title` matching the page title you choose.
-- In the front-matter, emit **only** `tags`. Do **not** add `title`, `id`, `category`, `sources`, `created`, `updated`, or `lint` — the engine manages those and silently ignores them if you include them (`title` comes from the body `# Page Title`; `category` and `slug` from the `<page>` attributes).
+- In the front-matter, emit **only** `tags`. Do **not** add `title`, `id`, `category`, `sources`, `created`, `updated`, or `lint` — the engine manages those and silently ignores them if you include them (`title` comes from the body `# Page Title`; `category` and `slug` from the opening tag's attributes).
 
 ## Category list
 
@@ -90,7 +90,7 @@ Body paragraphs here. Use [[Wikilinks]] for references.
 
 ## Task
 
-This call covers **section {group_index} of {group_total}** of the source document — emit at most **{max_pages}** `<page>` blocks for this section.
+This call covers **section {group_index} of {group_total}** of the source document — emit at most **{max_pages}** page blocks for this section.
 
 ## Knowledge-base context
 
@@ -98,7 +98,7 @@ This call covers **section {group_index} of {group_total}** of the source docume
 
 **Reusing an existing page is always better than regenerating similar content.** When the section above lists pages — under `Existing knowledge pages` or `Already created in this batch` — scan them before emitting any page and decide:
 
-- **Semantic duplicate** — the candidate states the same fact at the same granularity as a listed page. Emit **ZERO** `<page>` blocks for it; instead reference the existing page via `[[Title]]` in your other pages' bodies. Do not regenerate it.
+- **Semantic duplicate** — the candidate states the same fact at the same granularity as a listed page. Emit no page for it; instead reference the existing page via `[[Title]]` in your other pages' bodies. Do not regenerate it. If every candidate is already covered, return an empty response without commentary.
 - **Different facet** — the candidate is a genuinely new angle, sub-topic, or finer slice. Emit a new page and link it to the related existing one. Example: if `[[Elon Musk]]` already exists, a page on `[[SpaceX reusable-rocket program]]` is a new facet, not a duplicate.
 
 This applies to BOTH:
