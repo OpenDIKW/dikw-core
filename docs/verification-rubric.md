@@ -4,7 +4,7 @@ A checklist a **fresh-agent reviewer** scores a diff against before merge — a 
 pass, a clean subagent that did not write the code, or a human. Each line is
 **yes / no / N/A**. A `no` on any line is a **blocking finding** — surface it, don't wave it through.
 
-These restate CLAUDE.md's *Core invariants* and *Layering invariants* in checkable form.
+These restate CLAUDE.md's *Core invariants* (full text in `.claude/rules/*.md`) and *Layering invariants* in checkable form.
 ruff/mypy/pytest are blind to all of them — that's exactly why a reading reviewer exists.
 
 ## Karpathy's rule — scoping deterministic, reasoning probabilistic

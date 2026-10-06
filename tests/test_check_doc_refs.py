@@ -193,6 +193,23 @@ def test_claude_skills_dir_is_scanned(tmp_path: Path) -> None:
     assert [f for f in findings if f.kind == "env" and f.ref == "DIKW_BOGUS_VAR"]
 
 
+def test_claude_rules_dir_is_scanned(tmp_path: Path) -> None:
+    """Path-scoped rules under ``.claude/rules/`` carry the area invariants that
+    moved out of CLAUDE.md — a renamed verb or env var there must still fail
+    the gate."""
+    repo = _make_repo(tmp_path, "clean doc\n")
+    rules = repo / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "area.md").write_text(
+        "---\npaths:\n  - \"src/**\"\n---\n"
+        "Run `dikw client bogus` then set `DIKW_BOGUS_VAR`.\n",
+        encoding="utf-8",
+    )
+    findings = cdr.check_doc_refs(repo)
+    assert [f for f in findings if f.kind == "cli" and "bogus" in f.ref]
+    assert [f for f in findings if f.kind == "env" and f.ref == "DIKW_BOGUS_VAR"]
+
+
 def test_adr_dir_is_excluded(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path, "clean doc\n")
     adr = repo / "docs" / "adr"

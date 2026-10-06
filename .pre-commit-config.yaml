@@ -3,7 +3,7 @@
 # Local hooks shell out to `uv run` so they use the EXACT ruff / mypy pinned in
 # pyproject — no version drift between the hook, `tools/check.py`, and CI. The
 # cheap deterministic stages (ruff, mypy) run on every commit; the fuller floor
-# incl. pytest is `uv run python tools/check.py` (see CLAUDE.md "Dev workflow").
+# incl. pytest is `uv run python tools/check.py` (see CLAUDE.md "Commands").
 repos:
   - repo: local
     hooks:

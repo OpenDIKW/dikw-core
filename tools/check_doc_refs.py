@@ -26,7 +26,7 @@ Routes (``/v1/...``) are a deliberate follow-up: FastAPI path-template
 normalization (param-name + ``:path`` converter differences) carries enough
 false-positive risk that it is not worth shipping in this first advisory pass.
 
-Doc set: ``CLAUDE.md`` + ``docs/**/*.md`` + ``README.md`` + ``.claude/skills/**/*.md``.
+Doc set: ``CLAUDE.md`` + ``docs/**/*.md`` + ``README.md`` + ``.claude/{skills,rules}/**/*.md``.
 ``CHANGELOG.md`` is excluded — it is a historical record that intentionally cites
 removed verbs/vars.
 
@@ -163,7 +163,9 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
 
     Includes ``.claude/skills/**`` — skill docs cite CLI verbs and env vars
     the same way ``docs/**`` does, and drift there silently breaks the agent
-    workflows that follow them.
+    workflows that follow them. Includes ``.claude/rules/**`` for the same
+    reason — the path-scoped rules hold the area invariants moved out of
+    CLAUDE.md.
     """
     files: list[Path] = []
     claude = repo_root / "CLAUDE.md"
@@ -178,9 +180,10 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
         files.extend(
             p for p in sorted(docs_dir.rglob("*.md")) if adr_dir not in p.parents
         )
-    skills_dir = repo_root / ".claude" / "skills"
-    if skills_dir.is_dir():
-        files.extend(sorted(skills_dir.rglob("*.md")))
+    for sub in ("skills", "rules"):
+        claude_dir = repo_root / ".claude" / sub
+        if claude_dir.is_dir():
+            files.extend(sorted(claude_dir.rglob("*.md")))
     return files
 
 
