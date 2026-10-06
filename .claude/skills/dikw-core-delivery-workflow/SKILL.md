@@ -63,8 +63,8 @@ Find the highest tier that any file in the diff hits. When in doubt, go one tier
 
 | tier | the diff touches | review |
 |---|---|---|
-| **S** | only docs outside `src/` (`*.md`, `docs/**`, `.claude/**`); or a version / release / `DIKW_VERSION` bump | `/code-review` once |
-| **M** | anything else: code, tests, tools, dependencies, CI | codex (≤ 3 rounds) + `/code-review` |
+| **S** | only docs outside `src/` (`*.md`, `docs/**`) that are not instruction files; or a version / release / `DIKW_VERSION` bump | `/code-review` once |
+| **M** | anything else: code, tests, tools, dependencies, CI, and the instruction files (`CLAUDE.md`, `.claude/**`), because they change agent behavior | codex (≤ 3 rounds) + `/code-review` |
 | **L** | `src/dikw_core/domains/knowledge/**`, `src/dikw_core/api_synth.py`, `src/dikw_core/prompts/**`, `src/dikw_core/domains/info/**`, `RetrievalConfig` in `src/dikw_core/config.py`, `src/dikw_core/storage/**`, `src/dikw_core/providers/base.py`, the persist pipeline (`src/dikw_core/domains/data/persist.py`, `src/dikw_core/domains/wisdom/persist.py`, `src/dikw_core/domains/knowledge/page_index.py`), `src/dikw_core/server/auth.py`; or any other `src/` file that matches the `paths:` of `.claude/rules/{knowledge-layer,persist-pipeline,retrieval,storage-concurrency,delete-trash}.md` | tier M + `dikw-core-fresh-review` |
 
 Run the reviews in this order:
