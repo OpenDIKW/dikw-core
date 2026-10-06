@@ -6,7 +6,7 @@ Guidance for Claude Code in the `dikw-core` repository.
 
 `dikw-core` is a Python 3.12+ AI-native knowledge engine for the DIKW pyramid
 (**D**ata → **I**nformation → **K**nowledge → **W**isdom). Status: **alpha**.
-APIs, on-disk formats, the database schema, and the CLI will change.
+APIs, on-disk formats, database schema, and CLI will change.
 
 - Architecture is **client/server**. A `dikw serve` process (FastAPI + NDJSON) hosts the engine.
 - Every HTTP-bound command is under `dikw client …`, spelled out. There are no top-level short aliases.
@@ -58,7 +58,7 @@ uv run python tools/e2e_verify.py --mode local   # real-env e2e: every `dikw cli
 ### Layering invariants
 
 - `server/*` may import `dikw_core.api`, `schemas`, `storage`, `providers`. The reverse is forbidden — engine code must not depend on FastAPI / uvicorn / server task plumbing.
-- `client/*` only depends on `schemas` (for response type alignment) and stdlib + httpx + typer + rich. It must not import any `dikw_core.{api,storage,providers,server}` symbol — the client is meant to be packagable as a standalone wheel later.
+- `client/*` only depends on `schemas` (for response type alignment) and stdlib + httpx + typer + rich. It must not import any `dikw_core.{api,storage,providers,server,eval}` symbol — the client is meant to be packagable as a standalone wheel later.
 
 ### Named seams — extend here, not elsewhere
 
@@ -76,7 +76,11 @@ Before you design a change in an area, read its rule file.
 - **On-disk format is the product.** K and W pages are plain Markdown + YAML front matter + `[[wikilinks]]`. The synth LLM contributes only the `tags` front-matter key. → `knowledge-layer.md`
 - **Categories are a closed set** from `schema.categories`. A page that fits no category goes to `schema.fallback`. → `knowledge-layer.md`
 - **Re-persisting a K page replaces** its outgoing links and provenance edges. It does not merge them. → `knowledge-layer.md`
+- **Provenance is a separate edge.** A K page's `sources:` front matter is stored in the `provenance` table, never in the wikilink graph (ADR-0001). → `knowledge-layer.md`
 - **Wikilink resolve refuses an ambiguous fuzzy match.** A wrong merge is irreversible; a broken link is a fixable lint warning. → `knowledge-layer.md`
+- **Synth sees the existing pages.** Each synth call gets the pages already written in its batch and in the base, so it links to them instead of writing duplicates. → `knowledge-layer.md`
+- **Orphan pages are routed deterministically first:** delete a tiny stub, merge (LLM, opt-in), link from a parent, or mark as a leaf. → `knowledge-layer.md`
+- **Ingest is idempotent.** An unchanged content hash is skipped; only a broken stored `mtime` makes a row re-persist once. → `persist-pipeline.md`
 - **One write entry per layer:** `persist_source` (D), `persist_knowledge` (K), `persist_wisdom` (W). Only `ingest` may register a new embed version. → `persist-pipeline.md`
 - **`documents.active` is the commit marker.** A document is active only after its full pipeline completes. On a hard exception, deactivate it. → `persist-pipeline.md`
 - **Delete purges storage rows first**, then moves the file to `<base>/trash/`. → `delete-trash.md`

@@ -2,6 +2,7 @@
 paths:
   - "src/dikw_core/logging.py"
   - "src/dikw_core/telemetry.py"
+  - "src/dikw_core/config.py"
   - "src/dikw_core/server/app.py"
   - "src/dikw_core/client/cli_app.py"
   - "docs/observability.md"

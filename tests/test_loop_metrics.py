@@ -308,6 +308,24 @@ pasted --help output:
     assert facts.fresh_review == "pass"
 
 
+def test_parse_receipt_reads_the_skill_template_shape() -> None:
+    # The delivery-workflow skill's template merges codex + /code-review +
+    # fresh-review into one step-4 row and one evidence block; both spellings
+    # must keep feeding codex_rounds / fresh_review.
+    body = """## Delivery receipt
+
+| 4 | review          | done   | codex (3 rounds); /code-review; fresh-review **blocking** |
+
+### step 4 — review
+- codex (3 rounds): 2 fixed, 1 rejected
+- /code-review: no issues
+- fresh-review **blocking** (tier L only): 1 TP fixed
+"""
+    facts = parse_receipt(body)
+    assert facts.codex_rounds == 3
+    assert facts.fresh_review == "blocking"
+
+
 def test_receipt_section_absent_returns_none() -> None:
     assert receipt_section("## What\n\nno receipt here\n") is None
 

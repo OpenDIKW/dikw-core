@@ -9,6 +9,8 @@ paths:
   - "src/dikw_core/config.py"
   - "src/dikw_core/server/synth_op.py"
   - "src/dikw_core/server/lint_op.py"
+  - "src/dikw_core/api_graph.py"
+  - "src/dikw_core/server/routes_pages.py"
   - "tests/test_{synth,lint,links,knowledge,persist_knowledge,prompt,wisdom}*.py"
   - "docs/design.md"
 ---

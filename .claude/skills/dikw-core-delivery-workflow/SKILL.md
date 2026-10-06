@@ -1,6 +1,6 @@
 ---
 name: dikw-core-delivery-workflow
-description: The dikw-core delivery loop — drive a non-trivial change from request to squash-merged PR. Steps: resume → clarify → plan/TDD → in-loop verify → review (tiered by risk: codex, /code-review, fresh-review) → doc-sync → PR with delivery receipt → CI green → squash. Stops only on the 6 block signals. Use for any non-trivial dikw-core change (feature, bugfix, refactor), so the sequence is run, not remembered.
+description: The dikw-core delivery loop — drive a non-trivial change from request to squash-merged PR through resume → clarify → plan/TDD → in-loop verify → review tiered by risk (codex, /code-review, fresh-review) → doc-sync → PR with delivery receipt → CI green → squash. Stops only on its block signals. Use for any non-trivial dikw-core change (feature, bugfix, refactor), so the sequence is run, not remembered.
 ---
 
 <what-this-is>
@@ -43,8 +43,7 @@ Do not skip a step because it "feels unnecessary".
 
 - Restate the goal. List your assumptions. Name the alternatives.
 - For work with several design decisions, use the `grill-with-docs` skill until a written plan exists.
-- Ask questions with the AskUserQuestion tool. Put your recommended answer first.
-- **STOP** only if a decision blocks you and the code and docs cannot answer it.
+- **STOP** and ask only if a decision blocks you and the code and docs cannot answer it. Then ask one question with the AskUserQuestion tool, with your recommended answer first.
 
 ## 2. Plan in Chinese, test first
 
@@ -66,7 +65,7 @@ Find the highest tier that any file in the diff hits. When in doubt, go one tier
 |---|---|---|
 | **S** | only docs outside `src/` (`*.md`, `docs/**`, `.claude/**`); or a version / release / `DIKW_VERSION` bump | `/code-review` once |
 | **M** | anything else: code, tests, tools, dependencies, CI | codex (≤ 3 rounds) + `/code-review` |
-| **L** | `domains/knowledge/**`, `api_synth.py`, the LLM prompts (`src/dikw_core/prompts/**`), `domains/info/**`, `RetrievalConfig`, `storage/**`, a Protocol in `providers/base.py` or `storage/base.py`, the persist pipeline (`persist_*`, `page_index.py`), `server/auth.py` | tier M + `dikw-core-fresh-review` |
+| **L** | `src/dikw_core/domains/knowledge/**`, `src/dikw_core/api_synth.py`, `src/dikw_core/prompts/**`, `src/dikw_core/domains/info/**`, `RetrievalConfig` in `src/dikw_core/config.py`, `src/dikw_core/storage/**`, `src/dikw_core/providers/base.py`, the persist pipeline (`src/dikw_core/domains/data/persist.py`, `src/dikw_core/domains/wisdom/persist.py`, `src/dikw_core/domains/knowledge/page_index.py`), `src/dikw_core/server/auth.py`; or any other `src/` file that matches the `paths:` of `.claude/rules/{knowledge-layer,persist-pipeline,retrieval,storage-concurrency,delete-trash}.md` | tier M + `dikw-core-fresh-review` |
 
 Run the reviews in this order:
 
@@ -121,7 +120,7 @@ Every run keeps one Markdown file: **`.claude/delivery/<branch>.md`**.
 It has three roles:
 
 - **State** (in progress) — step 0 reads it to resume a task that a session left unfinished.
-- **Receipt** (at the PR) — proves that the review and verify steps ran.
+- **Receipt** (at the PR) — records that the review and verify steps ran, with their machine output. It does not re-run them the way CI re-runs the deterministic floor, so it is not a hard gate. It makes a silently skipped step visible.
 - **Metrics source** (after merge) — `tools/loop_metrics.py` reads the receipts in merged PR bodies, plus the GitHub API.
 
 Template:
@@ -141,7 +140,7 @@ Template:
 | 1 | clarify         | …      | assumptions / plan link                    |
 | 2 | plan / TDD      | …      | failing-test refs                          |
 | 3 | verify          | …      | per-leg table ↓                            |
-| 4 | review          | …      | codex rounds; /code-review; fresh-review   |
+| 4 | review          | …      | codex (N rounds); /code-review; fresh-review **pass** / **blocking** / N-A |
 | 5 | re-verify       | …      | check.py after review fixes                |
 | 6 | doc-sync        | …      | BASELINES link / no-baseline-needed / N-A  |
 | 7 | commit+push+PR  | …      | PR #                                       |
@@ -151,13 +150,17 @@ Template:
 ### step 3 — verify
 <paste the dikw-core-verify per-leg PASS/FAIL/SKIPPED table verbatim>
 ### step 4 — review
-<codex rounds: findings fixed / rejected; /code-review result; fresh-review verdict + TP/FP table>
+- codex (N rounds): <findings fixed / rejected>
+- /code-review: <result>
+- fresh-review **pass** | **blocking** (tier L only): <TP/FP table>
 
 ## Open findings
 - <findings the next session must still resolve>
 ```
 
 Rules for the Evidence section:
+
+- Keep `codex (N rounds)` and `fresh-review **<verdict>**` each on one line. `tools/loop_metrics.py` parses exactly these forms.
 
 - Paste **real machine output**. A free-text "I ran it" is not evidence.
 - **Redact when you write**, not later. Remove secrets, absolute paths, and endpoints before the text goes into the file. `.env` is the only place for secrets.

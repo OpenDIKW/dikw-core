@@ -27,13 +27,15 @@ git diff --name-only main...HEAD     # (or vs the working tree if pre-commit)
 
 Put each path in a bucket:
 
-- `storage/**`
-- `domains/info/**` + `RetrievalConfig`
-- `domains/knowledge/**` + `api_synth.py` + the authoring prompts
-- `providers/**`
-- `cli.py` / `server/**` / `client/**`
+- `src/dikw_core/storage/**`
+- `src/dikw_core/domains/info/**` + `RetrievalConfig`
+- `src/dikw_core/domains/knowledge/**` + `src/dikw_core/api_synth.py` + the authoring prompts (`src/dikw_core/prompts/**`)
+- `src/dikw_core/providers/**`
+- `src/dikw_core/cli.py` / `src/dikw_core/server/**` / `src/dikw_core/client/**`
 - `docs/**` + `*.md` + `.claude/**`
-- `config.py` / other
+- `src/dikw_core/config.py` / other
+
+The routing table below uses the short form of the same buckets.
 
 A diff can hit several buckets. Run every leg that matches.
 
