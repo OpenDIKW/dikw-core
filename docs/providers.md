@@ -259,6 +259,12 @@ withholds the `synth_source_done` marker so a re-run with a bigger budget
 recovers the dropped pages (the destructive `non_atomic_page` split fixer
 refuses outright). Raising `llm_max_tokens_synth` is still the fix — this
 just makes an under-budget run loud and recoverable instead of lossy.
+Normal stops (`stop`, `end_turn`, `stop_sequence`) are handled separately:
+an attributed page missing its closing tag is recovered at the next opener
+or the end of the response. Bare page tags and inline-code examples in
+commentary do not count as truncation. These format slips no longer keep
+otherwise successful sources unfinished (#294); raising the token budget
+is only relevant when the provider actually reports a cutoff.
 Override per-base by adding the field to your `dikw.yml` `provider:`
 block — no code change needed. There is no `llm_max_tokens_query` knob;
 `retrieve` doesn't call an LLM, so the read-path budget lives on the

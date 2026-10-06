@@ -22,15 +22,11 @@ from ... import prompts
 from ...providers.base import LLMProvider
 from .page import KnowledgePage, build_page, default_page_path, now_iso
 
-_PAGE_BLOCK = re.compile(
-    r"<page\s+([^>]+?)>\s*(.*?)\s*</page>",
-    flags=re.DOTALL | re.IGNORECASE,
-)
-# Used to detect truncated responses: an open ``<page ...>`` tag without
-# a matching ``</page>`` close indicates the LLM ran out of tokens
-# mid-block. Treating it as a legal "zero pages" response would silently
-# drop the truncated page AND mark the source done so it never retries.
-_PAGE_OPEN_TAG = re.compile(r"<page\b[^>]*>", flags=re.IGNORECASE)
+# Only attributed openers are page boundaries. Bare tags and inline-code
+# examples occur in the model's commentary and must not count as lost pages.
+_PAGE_OPEN_TAG = re.compile(r"<page\s+(\w+\s*=[^>]+?)>", flags=re.IGNORECASE)
+_PAGE_CLOSE_TAG = re.compile(r"</page>", flags=re.IGNORECASE)
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)")
 # finish_reason values that mean the model was cut off mid-generation rather
 # than stopping on its own. ``openai_compat`` / ``openai_codex`` normalize to
 # ``"length"``; ``anthropic_compat`` passes Anthropic's raw ``stop_reason``
@@ -40,6 +36,7 @@ _PAGE_OPEN_TAG = re.compile(r"<page\b[^>]*>", flags=re.IGNORECASE)
 # next run with a bigger budget. MiniMax-M3, the synth workhorse, runs on
 # ``anthropic_compat``, so a ``== "length"`` check alone would miss it.
 _TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+_CLEAN_FINISH_REASONS = frozenset({"stop", "end_turn", "stop_sequence"})
 _ATTR = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", flags=re.DOTALL)
 _ATX_TITLE = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$", flags=re.MULTILINE)
@@ -58,9 +55,10 @@ class SynthesisPartialError(SynthesisError):
     Carries the ``pages`` that did parse so the caller can persist what
     succeeded; ``errors`` describes what was lost. ``retry=True`` means
     the missing content can be recovered next run (the response was
-    truncated by the token budget — either an unclosed ``<page>`` tag or a
-    truncation ``finish_reason`` reported by the provider) — callers should
-    bump their parse-error counter so the source is NOT marked done.
+    truncated by the token budget — either an unclosed attributed tag without
+    a clean provider stop signal or a truncation ``finish_reason`` reported by
+    the provider) — callers should bump their parse-error counter so the
+    source is NOT marked done.
     ``retry=False`` means the failure was deterministic (e.g. malformed
     block) and rerunning would just hit the same warning.
     """
@@ -170,6 +168,27 @@ def _is_truncation_finish_reason(reason: str | None) -> bool:
     return reason is not None and reason.strip().lower() in _TRUNCATION_FINISH_REASONS
 
 
+def _extract_page_blocks(
+    raw: str, *, recover_unclosed: bool
+) -> tuple[list[tuple[str, str]], int]:
+    # Mask code only for boundary detection. Slice bodies from the original
+    # response so real Markdown code examples survive byte-for-byte.
+    boundaries = _INLINE_CODE.sub(lambda m: " " * len(m.group()), raw)
+    openers = list(_PAGE_OPEN_TAG.finditer(boundaries))
+    blocks: list[tuple[str, str]] = []
+    unclosed = 0
+    for idx, opener in enumerate(openers):
+        end = openers[idx + 1].start() if idx + 1 < len(openers) else len(raw)
+        close = _PAGE_CLOSE_TAG.search(boundaries, opener.end(), end)
+        if close is not None:
+            end = close.start()
+        elif not recover_unclosed:
+            unclosed += 1
+            continue
+        blocks.append((opener.group(1), raw[opener.end():end].strip()))
+    return blocks, unclosed
+
+
 def parse_synthesis_response(
     raw: str,
     *,
@@ -201,13 +220,17 @@ def parse_synthesis_response(
     it like unclosed-tag truncation — zero parsed blocks becomes a hard
     ``SynthesisError`` (not the legal zero-page signal), and surviving blocks
     raise ``SynthesisPartialError(retry=True)`` so the source is not marked done.
-    ``None`` (the default) preserves the tag-only behaviour for callers that
-    don't thread it through.
+    On a clean stop signal (``end_turn``, ``stop``, or ``stop_sequence``),
+    missing closing tags are format slips: a page ends at the next attributed
+    opener or the end of the response. Bare tags and inline-code examples are
+    ignored as boundaries. ``None`` (the default) keeps unclosed-tag protection
+    for callers that don't thread the stop signal through.
     """
-    blocks = list(_PAGE_BLOCK.finditer(raw))
-    open_tags = len(_PAGE_OPEN_TAG.findall(raw))
-    truncated = max(open_tags - len(blocks), 0)
     length_truncated = _is_truncation_finish_reason(finish_reason)
+    blocks, truncated = _extract_page_blocks(
+        raw,
+        recover_unclosed=(finish_reason or "").strip().lower() in _CLEAN_FINISH_REASONS,
+    )
 
     if not blocks:
         if truncated > 0 or length_truncated:
@@ -226,12 +249,12 @@ def parse_synthesis_response(
     categories = allowed_categories or DEFAULT_ALLOWED_CATEGORIES
     pages: list[KnowledgePage] = []
     errors: list[str] = []
-    for m in blocks:
+    for attrs, inner in blocks:
         try:
             pages.append(
                 _parse_one_page_block(
-                    m.group(1),
-                    m.group(2),
+                    attrs,
+                    inner,
                     source_path=source_path,
                     allowed_categories=categories,
                     fallback=fallback,

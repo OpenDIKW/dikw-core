@@ -428,11 +428,20 @@ stranding a broken `[[wikilink]]`. It is pure deterministic scoping over
 data the loop already has (parsed wikilinks + the title index) — no
 extra LLM call, no new Storage primitive.
 
-The S2 prompt strategy: strong instruction + zero-block escape hatch.
-On a detected duplicate the LLM is told to emit **zero `<page>` blocks
-for that candidate** and reference the existing page via `[[Title]]`
-in its other pages instead. The "zero blocks" path is the only clean
-way the LLM can comply without partial-output ambiguity.
+The S2 prompt strategy: strong instruction + an empty-response escape hatch.
+On a detected duplicate the LLM is told to emit no page for that candidate
+and reference the existing page via `[[Title]]` in its other pages instead.
+If every candidate is covered, the response should be empty, without
+commentary or comparisons with the existing-pages list.
+
+The parser counts only attributed page openers outside inline-code spans.
+On a clean `stop`, `end_turn`, or `stop_sequence`, a missing closing tag
+is recovered at the next opener or the response end; bodies still must pass
+the YAML/title validation. This allows the source-completion marker to be
+written after harmless formatting slips. `length` / `max_tokens` still
+signal truncation even if every block is closed, and an absent or unknown
+stop signal retains unclosed-tag protection. Deterministic malformed blocks
+are reported while their valid siblings survive, as before.
 
 Why per-chunk vec_search → union → top-K (rather than re-embed the
 group text once)? The locked design keeps the original "per-chunk

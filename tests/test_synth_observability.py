@@ -17,7 +17,7 @@ from .fakes import FakeLLM, make_provider_cfg
 from .test_progress_reporter import ListReporter
 
 _VALID_PAGE = '<page category="concept" slug="x">\n# X\n\nbody\n</page>'
-_UNPARSEABLE = "not a <page> block"
+_UNPARSEABLE = '<page category="concept" slug="broken">\nno ATX title\n</page>'
 # One closed page + one truncated opener → SynthesisPartialError.
 _PARTIAL_PAGE = (
     '<page category="concept" slug="x">\n# X\n\nbody\n</page>\n'
@@ -250,15 +250,15 @@ async def test_synth_logs_per_group_at_debug(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("response", "marker"),
+    ("response", "marker", "finish_reason"),
     [
-        (_UNPARSEABLE, "FAILED"),  # SynthesisError branch
-        (_PARTIAL_PAGE, "PARTIAL"),  # SynthesisPartialError branch
+        (_UNPARSEABLE, "FAILED", "end_turn"),  # SynthesisError branch
+        (_PARTIAL_PAGE, "PARTIAL", "max_tokens"),  # genuine budget cutoff
     ],
     ids=["full-failure", "partial-failure"],
 )
 async def test_synth_logs_group_failure_at_warning(
-    caplog: pytest.LogCaptureFixture, response: str, marker: str
+    caplog: pytest.LogCaptureFixture, response: str, marker: str, finish_reason: str
 ) -> None:
     """Both parser failure variants surface at WARNING — visible at
     default INFO. SynthesisPartialError is a subclass of SynthesisError
@@ -272,7 +272,7 @@ async def test_synth_logs_group_failure_at_warning(
     cfg = _build_cfg()
 
     await api._synth_pages_from_source(
-        llm=FakeLLM(response_text=response),
+        llm=FakeLLM(response_text=response, finish_reason=finish_reason),
         template=_TEMPLATE,
         cfg=cfg,
         source_path="sources/multi.md",

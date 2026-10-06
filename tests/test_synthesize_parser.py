@@ -359,6 +359,50 @@ def test_parse_truncation_finish_reason_is_case_and_space_insensitive(
     assert excinfo.value.retry is True
 
 
+@pytest.mark.parametrize("reason", ["end_turn", "stop", "stop_sequence", " END_TURN "])
+@pytest.mark.parametrize(
+    ("raw", "titles"),
+    [
+        (_SINGLE_PAGE_RESPONSE.replace("</page>", ""), ["DIKW pyramid"]),
+        (_TWO_COMPLETE_PAGES.replace("</page>", "", 1), ["SpaceX", "Tesla"]),
+        (
+            _TWO_COMPLETE_PAGES.replace("<page category=", "<page>\n<page category="),
+            ["SpaceX", "Tesla"],
+        ),
+        ("Already covered. Emit **ZERO** `<page>` blocks.", []),
+        ('The example is `<page category="concept" slug="example">`. Nothing new.', []),
+    ],
+    ids=["missing-close", "next-opener", "bare-openers", "quoted-bare", "quoted-attributed"],
+)
+def test_parse_clean_finish_recovers_format_slips(
+    raw: str, titles: list[str], reason: str
+) -> None:
+    """Issue #294: normal model stops must not create endless source retries."""
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason=reason)
+    assert [page.title for page in pages] == titles
+
+
+def test_parse_inline_code_is_preserved_inside_page() -> None:
+    raw = _SINGLE_PAGE_RESPONSE.replace(
+        "See also [[Karpathy LLM Wiki]].",
+        'Use `<page category="concept" slug="example">` and `</page>` as examples.',
+    )
+    pages = parse_synthesis_response(raw, source_path="src.md", finish_reason="end_turn")
+    assert len(pages) == 1
+    assert '`<page category="concept" slug="example">`' in pages[0].body
+    assert '`</page>`' in pages[0].body
+
+
+@pytest.mark.parametrize("reason", ["length", "max_tokens", None, "", "content_filter"])
+def test_parse_missing_close_keeps_truncation_protection(reason: str | None) -> None:
+    with pytest.raises(SynthesisError, match="truncated"):
+        parse_synthesis_response(
+            _SINGLE_PAGE_RESPONSE.replace("</page>", ""),
+            source_path="src.md",
+            finish_reason=reason,
+        )
+
+
 _MULTI_PAGE_RESPONSE = """
 <page category="entity" slug="elon-musk">
 ---

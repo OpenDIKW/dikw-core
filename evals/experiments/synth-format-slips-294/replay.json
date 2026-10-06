@@ -1,0 +1,39 @@
+{
+  "input_pages": 506,
+  "input_sha256": "c93107e6d0ea14f0e2afd044684586371d33e6b2bccbd612a9a3b0ba12378cd6",
+  "rows": {
+    "valid": {
+      "before": {
+        "accepted": true,
+        "pages": 506
+      },
+      "after_pages": 506,
+      "content_identical": true
+    },
+    "missing_closes": {
+      "before": {
+        "accepted": false,
+        "surviving_pages": 0
+      },
+      "after_pages": 506,
+      "content_identical": true
+    },
+    "bare_openers": {
+      "before": {
+        "accepted": false,
+        "surviving_pages": 506
+      },
+      "after_pages": 506,
+      "content_identical": true
+    },
+    "quoted_instruction": {
+      "before": {
+        "accepted": false,
+        "surviving_pages": 506
+      },
+      "after_pages": 506,
+      "content_identical": true
+    }
+  },
+  "truncation_controls": "passed"
+}
