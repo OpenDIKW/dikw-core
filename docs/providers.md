@@ -192,6 +192,15 @@ steadily-streaming generation never trips it regardless of total length.
 its hidden chain-of-thought, max inter-event gap ~2 s — far under any sane
 `llm_timeout_seconds`. The hidden reasoning is *not* a silent gap.)
 
+The Anthropic adapter consumes the SDK's raw `messages.create(stream=True)`
+events rather than its message-accumulation helper. MiniMax sometimes emits
+`message_start(content=[])`, an unmatched `content_block_stop(index=0)`,
+then `message_delta(stop_reason=end_turn)` and `message_stop` for an empty
+answer. This specific empty normal-stop shape is accepted as zero text, with
+usage preserved. Other unmatched blocks and incomplete streams raise
+`TransientProviderError` so synthesis retries the group; actual `max_tokens`
+responses retain their cutoff signal and cannot complete a source.
+
 **Exception classification.** A streamed completion that fails is sorted into
 two buckets, mirroring the embedding leg:
 
@@ -317,6 +326,10 @@ retrieval:
 ```bash
 uv sync --extra cjk          # pulls in jieba ≥ 0.42
 ```
+
+The official Docker image includes this extra. On a Python install, add
+`[cjk]` explicitly; changing `cjk_tokenizer` to `none` trades away word-level
+Chinese retrieval and is not needed for the official image.
 
 The preprocessor runs `jieba.cut_for_search` over **CJK runs only** —
 ASCII identifiers (``retrieval.rrf_k``, code snippets, …) are passed

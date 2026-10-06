@@ -18,10 +18,12 @@ keeps the quick-start under a screenful.
   wheels but not musl wheels — `alpine` would force a source build with
   PostgreSQL headers and a C toolchain. The slim image is ~140 MB before
   the install; the final image lands around 280 MB.
-- **Install**: `pip install dikw-core[postgres]==${DIKW_VERSION}` from
+- **Install**: `pip install dikw-core[postgres,cjk]==${DIKW_VERSION}` from
   PyPI. No source tree is copied — the image is a pure consumer of the
   published wheel, which means the build is reproducible per version and
   the build context stays empty.
+  The `cjk` extra includes jieba so the default tokenizer supports Chinese
+  sources and queries. Each image build checks mixed Chinese/ASCII segmentation.
 - **User**: non-root `dikw` (UID 1000). Mount points need
   `chown 1000:1000` on the host (or use Docker Desktop's user namespacing).
 - **Entry**: `ENTRYPOINT ["dikw"]` plus `CMD ["serve", "--base", "/base",
@@ -42,8 +44,8 @@ keeps the quick-start under a screenful.
   against it too:
 
   ```bash
-  docker run --rm -v ./base:/base ghcr.io/opendikw/dikw-core:0.6.9 init /base
-  docker run --rm ghcr.io/opendikw/dikw-core:0.6.9 version
+  docker run --rm -v ./base:/base ghcr.io/opendikw/dikw-core:0.6.10 init /base
+  docker run --rm ghcr.io/opendikw/dikw-core:0.6.10 version
   ```
 
   There is intentionally **no floating `:latest`** — downstream pins an

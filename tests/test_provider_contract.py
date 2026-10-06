@@ -44,7 +44,6 @@ from dikw_core.schemas import MultimodalInput
 
 from .fakes import (
     CodexResponsesStreamStub,
-    anthropic_create_sentinel,
     assert_codex_request_kwargs_clean,
     codex_create_sentinel,
     make_codex_response,
@@ -212,18 +211,18 @@ class _OpenAICompatHarness:
 
 
 # --------------------------------------------------------------------------- #
-# anthropic_compat harness — messages.create + messages.stream
+# anthropic_compat harness — messages.create(stream=True), raw SDK events
 # --------------------------------------------------------------------------- #
 
 
 class _AnthropicHarness:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._complete = _CompleteScript()
-        # ``None`` → ``complete()`` (collapsed over ``messages.stream``) reads
+        # ``None`` → ``complete()`` (collapsed over the raw event stream) reads
         # the ``_complete`` script with no token deltas, mirroring _CodexHarness.
         self._stream: _StreamScript | None = None
         # Optional fault injection for the classification / cancel contract:
-        # raise ``_exc_factory()`` at "aenter" | "text_stream" | "final".
+        # raise ``_exc_factory()`` at "create" | "iteration".
         self._raise_at: str | None = None
         self._exc_factory: Callable[[], BaseException] | None = None
         harness = self
@@ -234,27 +233,37 @@ class _AnthropicHarness:
                 self._final = final
 
             async def __aenter__(self) -> _FakeMessageStream:
-                if harness._raise_at == "aenter" and harness._exc_factory:
-                    raise harness._exc_factory()
                 return self
 
             async def __aexit__(self, *_: Any) -> None:
                 return None
 
-            @property
-            def text_stream(self) -> AsyncIterator[str]:
-                async def _gen() -> AsyncIterator[str]:
-                    for d in self._deltas:
-                        yield d
-                    if harness._raise_at == "text_stream" and harness._exc_factory:
-                        raise harness._exc_factory()
-
-                return _gen()
-
-            async def get_final_message(self) -> SimpleNamespace:
-                if harness._raise_at == "final" and harness._exc_factory:
+            async def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
+                yield SimpleNamespace(
+                    type="message_start",
+                    message=SimpleNamespace(content=[], usage=self._final.usage),
+                )
+                # Include any non-delta text in the block's initial value.
+                full_text = "".join(b.text for b in self._final.content)
+                delta_text = "".join(self._deltas)
+                initial = full_text.removesuffix(delta_text) if delta_text else full_text
+                yield SimpleNamespace(
+                    type="content_block_start", index=0,
+                    content_block=SimpleNamespace(type="text", text=initial),
+                )
+                for d in self._deltas:
+                    yield SimpleNamespace(
+                        type="content_block_delta", index=0,
+                        delta=SimpleNamespace(type="text_delta", text=d),
+                    )
+                if harness._raise_at == "iteration" and harness._exc_factory:
                     raise harness._exc_factory()
-                return self._final
+                yield SimpleNamespace(type="content_block_stop", index=0)
+                yield SimpleNamespace(
+                    type="message_delta", delta=SimpleNamespace(stop_reason=self._final.stop_reason),
+                    usage=self._final.usage,
+                )
+                yield SimpleNamespace(type="message_stop")
 
         def _make_final(
             text: str, finish_reason: str, input_tokens: int, output_tokens: int
@@ -271,11 +280,12 @@ class _AnthropicHarness:
             )
 
         class _FakeMessages:
-            # ``complete`` must collapse ``messages.stream``; calling the
-            # non-streaming ``create`` fails the test loudly.
-            create = anthropic_create_sentinel
-
-            def stream(self, **_kwargs: Any) -> _FakeMessageStream:
+            async def create(self, **kwargs: Any) -> _FakeMessageStream:
+                # Raw streaming create still applies the read timeout per SSE
+                # event; never regress to a whole-response non-streaming call.
+                assert kwargs["stream"] is True
+                if harness._raise_at == "create" and harness._exc_factory:
+                    raise harness._exc_factory()
                 if harness._stream is not None:
                     s = harness._stream
                     final = _make_final(
@@ -305,7 +315,7 @@ class _AnthropicHarness:
         self._stream = script
 
     def arrange_stream_raises(
-        self, exc_factory: Callable[[], BaseException], *, at: str = "text_stream"
+        self, exc_factory: Callable[[], BaseException], *, at: str = "iteration"
     ) -> None:
         self._exc_factory = exc_factory
         self._raise_at = at
@@ -639,7 +649,7 @@ def classifier(
 
         return _Classifier(
             harness=_AnthropicHarness(monkeypatch),
-            open_at="aenter",
+            open_at="create",
             timeout=lambda: anthropic.APITimeoutError(request=req),
             connection=lambda: anthropic.APIConnectionError(request=req),
             status=lambda code: anthropic.APIStatusError(

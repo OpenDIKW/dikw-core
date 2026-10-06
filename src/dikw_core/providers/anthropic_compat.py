@@ -27,6 +27,7 @@ from .base import (
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
+    from anthropic.types import TextBlockParam
 
 
 class AnthropicCompatLLM:
@@ -132,7 +133,7 @@ class AnthropicCompatLLM:
         # Same cache-eligible system block as ``complete`` so a streamed
         # call still benefits from prompt cache hits across query/synth
         # bursts. cache_control + streaming are orthogonal in the SDK.
-        system_block: list[dict[str, Any]] = [
+        system_block: list[TextBlockParam] = [
             {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
         ]
 
@@ -155,38 +156,81 @@ class AnthropicCompatLLM:
             parts: list[str] = []
             usage: dict[str, int] = {}
             finish_reason: str | None = None
+            started = False
+            stopped = False
+            block_types: list[str] = []
+            open_blocks: set[int] = set()
+            empty_block_stop = False
             try:
-                async with client.messages.stream(
+                # The raw SDK stream keeps transport/retries/per-event timeouts,
+                # without its message accumulator indexing a nonexistent block
+                # on MiniMax's empty-turn content_block_stop(index=0).
+                raw_stream = await client.messages.create(
                     model=model,
-                    system=system_block,  # type: ignore[arg-type]
+                    system=system_block,
                     messages=[{"role": "user", "content": user}],
                     max_tokens=max_tokens,
                     temperature=temperature,
-                ) as stream:
-                    async for delta in stream.text_stream:
-                        if delta:
-                            yield LLMStreamEvent(type="token", delta=delta)
-                    final = await stream.get_final_message()
-                for block in final.content:
-                    text = getattr(block, "text", None)
-                    if isinstance(text, str):
-                        parts.append(text)
-                if final.usage is not None:
-                    usage = {
-                        "input_tokens": int(
-                            getattr(final.usage, "input_tokens", 0) or 0
-                        ),
-                        "output_tokens": int(
-                            getattr(final.usage, "output_tokens", 0) or 0
-                        ),
-                        "cache_creation_input_tokens": int(
-                            getattr(final.usage, "cache_creation_input_tokens", 0) or 0
-                        ),
-                        "cache_read_input_tokens": int(
-                            getattr(final.usage, "cache_read_input_tokens", 0) or 0
-                        ),
-                    }
-                finish_reason = final.stop_reason
+                    stream=True,
+                )
+                async with raw_stream:
+                    async for event in raw_stream:
+                        if event.type == "message_start":
+                            if started:
+                                raise _stream_error("duplicate message_start")
+                            started = True
+                            for block in event.message.content:
+                                block_types.append(block.type)
+                                open_blocks.add(len(block_types) - 1)
+                                if block.type == "text":
+                                    parts.append(block.text)
+                            usage = {
+                                name: int(getattr(event.message.usage, name, 0) or 0)
+                                for name in _USAGE_FIELDS
+                            }
+                        elif not started:
+                            raise _stream_error("event before message_start")
+                        elif event.type == "content_block_start":
+                            if empty_block_stop or event.index != len(block_types):
+                                raise _stream_error("invalid content_block_start index")
+                            block_types.append(event.content_block.type)
+                            open_blocks.add(event.index)
+                            if event.content_block.type == "text":
+                                parts.append(event.content_block.text)
+                        elif event.type == "content_block_delta":
+                            if event.index not in open_blocks:
+                                raise _stream_error("content_block_delta without an open block")
+                            if event.delta.type == "text_delta":
+                                if block_types[event.index] != "text":
+                                    raise _stream_error("text_delta for a non-text block")
+                                if event.delta.text:
+                                    parts.append(event.delta.text)
+                                    yield LLMStreamEvent(type="token", delta=event.delta.text)
+                        elif event.type == "content_block_stop":
+                            if event.index in open_blocks:
+                                open_blocks.remove(event.index)
+                            elif event.index == 0 and not block_types and not empty_block_stop:
+                                # Permit only the captured empty-turn shape. A
+                                # later start/delta, wrong index or duplicate stop
+                                # is still malformed, and the terminal reason must
+                                # confirm a normal stop before emitting done.
+                                empty_block_stop = True
+                            else:
+                                raise _stream_error("content_block_stop without an open block")
+                        elif event.type == "message_delta":
+                            if event.delta.stop_reason is not None:
+                                finish_reason = event.delta.stop_reason
+                            for name in _USAGE_FIELDS:
+                                value = getattr(event.usage, name, None)
+                                if value is not None:
+                                    usage[name] = int(value)
+                        elif event.type == "message_stop":
+                            stopped = True
+                            break
+                if not started or not stopped or open_blocks or finish_reason is None:
+                    raise _stream_error("incomplete message")
+                if empty_block_stop and finish_reason not in ("end_turn", "stop_sequence", "stop"):
+                    raise _stream_error("orphan block stop without a normal message stop")
             except asyncio.CancelledError:
                 # BaseException — must propagate so synth's per-group cancel
                 # contract holds; never reclassify a cancel as transient.
@@ -228,3 +272,14 @@ class AnthropicCompatLLM:
             max_tokens=max_tokens,
             temperature=temperature,
         )
+
+
+_USAGE_FIELDS = (
+    "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+)
+
+
+def _stream_error(detail: str) -> TransientProviderError:
+    # The synth loop can retry the whole request, then skip a failing group.
+    # Never report an incomplete/misindexed stream as a successful empty turn.
+    return TransientProviderError(f"Anthropic-compat malformed stream: {detail}")

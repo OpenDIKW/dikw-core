@@ -114,7 +114,7 @@ not per-release.
 
 - **Published installs don't use `uv.lock`.** The wheel carries only the
   `[project].dependencies` ranges, and `examples/docker/Dockerfile` runs a plain
-  `pip install "dikw-core[postgres]==X.Y.Z"`, so the image and every user install
+  `pip install "dikw-core[postgres,cjk]==X.Y.Z"`, so the image and every user install
   resolve the newest versions those ranges allow at build time — not what CI tested.
   That's how the v0.6.6 image picked up `anthropic` 1.x (whose `httpx2` transport
   rejects the `httpx` client `anthropic_compat` passes) and failed every

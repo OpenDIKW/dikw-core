@@ -7,6 +7,21 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.10 — Chinese-ready images and MiniMax empty-stream recovery
+
+### Fixed
+
+- **The official image includes Chinese tokenization.** Install the `cjk`
+  extra alongside `postgres`, and exercise mixed Chinese/ASCII segmentation
+  during every image build so default jieba ingest and retrieval work.
+- **MiniMax empty streamed answers no longer crash synthesis inside the
+  Anthropic SDK.** Consume raw SDK events to accept the observed empty
+  normal-stop turn with an unmatched block-zero stop, preserving finish reason
+  and token/cache usage. Other malformed or incomplete streams raise a
+  retryable provider error; real token-budget cutoffs still withhold source
+  completion. Streaming timeouts, cancellation and permanent-error handling
+  remain intact.
+
 ## 0.6.9 — synth recovers normal-stop formatting slips
 
 ### Fixed
