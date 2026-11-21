@@ -12,7 +12,23 @@ Read this rule before you change `tools/check.py`, `tools/e2e_verify.py`, or CI.
 
 `tools/check.py` is the single in-loop gate to run before every commit; it runs
 the same ruff/mypy/pytest CI runs, in CI order, without `--cov` (which flakes
-ASGI/CliRunner tests locally on Windows).
+ASGI/CliRunner tests locally on Windows), and writes a gitignored verification
+stamp (`.claude/.verify-stamp.json`) when all stages pass and the working tree
+stayed unchanged during the run.
+
+`tools/verify_hook.py` is wired into `.claude/settings.json` as a `PreToolUse`
+hook on `Bash` commands invoking `git commit` (preferring `.venv/bin/python`
+with `python3` fallback). Mode is controlled by `DIKW_VERIFY_GATE_MODE`
+(`off` / `observe` [default] / `enforce`): `observe` logs unverified commits to
+`.claude/verify-gate-observe.jsonl` without blocking; `enforce` blocks
+unverified commits (exit 2) unless the target worktree's stamp matches the tree
+and staged content, the command carries `[skip-verify: <reason>]`, or the same
+session has already been blocked twice (escape hatch).
+
+`.github/workflows/eval-gate.yml` runs on `pull_request_target` with read-only
+`contents` permission, checking out the base commit and fetching the PR head
+strictly as git diff objects, so both the workflow and `tools/check_baselines.py`
+stay base-branch-controlled and a PR cannot weaken the gate that judges it.
 
 `tools/e2e_verify.py` is the real-environment e2e harness (delivery-loop step 3,
 `cli/server/client` bucket): it spins a throwaway server, drives **every** `dikw

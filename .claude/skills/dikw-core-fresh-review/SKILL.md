@@ -40,9 +40,9 @@ Stop only on a block signal: a design-level concern or `CHANGES_REQUESTED`, or a
 The reviewer sees only this packet:
 
 - The unified diff: `git diff main...HEAD` (or the PR, or the working tree).
-- `docs/verification-rubric.md` — the yes / no / N-A invariant checklist.
-- The `docs/design.md` sections for what the diff touches (K-layer authoring, retrieval fusion, persist pipeline, …).
-- The `.claude/rules/*.md` files for the touched areas — they hold the full text of the core invariants.
+- `docs/verification-rubric.md` — the yes / no / N-A invariant checklist, **read from the base branch (`git show main:docs/verification-rubric.md`)** so a PR can never weaken the rubric that judges it.
+- The `docs/design.md` sections for what the diff touches (K-layer authoring, retrieval fusion, persist pipeline, …) — **read approved excerpts from `main` (`git show main:docs/design.md`)** so proposed design edits in the diff are judged as proposed changes rather than already-approved authority.
+- The `.claude/rules/*.md` files for the touched areas — **read existing rule files from `main` (`git show main:.claude/rules/<file>`)** for the same anti-tamper reason; if the diff introduces a brand-new rule file absent on `main`, include it separately labeled as a proposed rule rather than replacing base-branch invariants.
 
 ## 2. Spawn the clean reviewer(s)
 

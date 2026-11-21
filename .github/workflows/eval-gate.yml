@@ -21,7 +21,11 @@ name: Eval gate
 # comment-only refactors that genuinely don't shift behavior.
 
 on:
-  pull_request:
+  # Anti-tamper isolation: ``pull_request_target`` executes BOTH the workflow
+  # definition and ``tools/check_baselines.py`` from the base branch (never the
+  # PR's working tree). The job holds only ``contents: read``, never checks out
+  # or executes PR code, and fetches the PR head strictly as git diff data.
+  pull_request_target:
     paths:
       - 'src/dikw_core/domains/knowledge/**'
       - 'src/dikw_core/domains/info/**'
@@ -39,6 +43,9 @@ on:
       - 'src/dikw_core/prompts/lint_fix_orphan_merge.md'
       - 'src/dikw_core/prompts/lint_fix_broken_wikilink_grounded.md'
 
+permissions:
+  contents: read
+
 jobs:
   baseline-must-update:
     runs-on: ubuntu-latest
@@ -46,6 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
 
       # Override via a native expression (no shell): a label containing a quote
@@ -63,10 +71,25 @@ jobs:
       # non-destructiveness claim + the elon-musk corpus; retrieval metrics for
       # info diffs. stdlib-only, so no uv/setup-python needed. See
       # tools/check_baselines.py and tests/test_check_baselines.py.
-      - name: Content-check evals/BASELINES.md
+      #
+      # Because ``actions/checkout`` pinned ``base.sha``, both this workflow and
+      # ``tools/check_baselines.py`` come from the base branch. Fetching
+      # ``pull/<N>/head`` loads only git objects (works for fork PRs too) so we
+      # diff against HEAD_SHA without ever checking out untrusted PR files.
+      - name: Content-check evals/BASELINES.md (from base branch)
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-baseline-needed') }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head"
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$HEAD_SHA"
+          fi
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" -- tools/check_baselines.py .github/workflows/eval-gate.yml | grep -q .; then
+            echo "::warning::This PR modifies the eval-gate workflow or checker; running the immutable base-branch checker ($BASE_SHA)."
+          fi
           python3 tools/check_baselines.py --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
