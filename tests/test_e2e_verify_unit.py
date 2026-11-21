@@ -163,10 +163,10 @@ def test_build_provider_yaml_local_is_sqlite_no_secrets() -> None:
 
 
 def test_build_provider_yaml_docker_is_postgres() -> None:
-    out = build_provider_yaml(mode="docker", observe=False, env={})
+    out = build_provider_yaml(mode="docker", observe=False, env={}, pg_password="ephemeral-pw")
     doc = yaml.safe_load(out)
     assert doc["storage"]["backend"] == "postgres"
-    assert "postgres:5432" in doc["storage"]["dsn"]
+    assert doc["storage"]["dsn"] == "postgresql://dikw:ephemeral-pw@postgres:5432/dikw"
 
 
 def test_build_provider_yaml_observe_wires_telemetry() -> None:
