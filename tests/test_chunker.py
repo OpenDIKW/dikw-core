@@ -91,3 +91,25 @@ def test_ascii_token_count_equals_whitespace_split() -> None:
         "retrieval.rrf_k tuning_param weight_a",
     ]:
         assert count_tokens(body) == len(body.split())
+
+
+def test_heading_flush_does_not_emit_duplicate_sub_chunk() -> None:
+    """When step 1 flushes before a heading and carries tail overlap that still
+    overflows ``max_tokens`` with the heading, step 2 must drop the carry
+    instead of re-emitting the just-flushed span as a duplicate chunk."""
+    # Exact counterexample at overlap_ratio=0.0:
+    chunks_zero = chunk_markdown("a\n\n## b c d", max_tokens=4, overlap_ratio=0.0)
+    assert [c.text for c in chunks_zero] == ["a", "## b c d"]
+
+    # Multi-paragraph strict sub-span suppression (carry "c" was already inside
+    # the just-emitted "a b\n\nc" chunk and must not be re-emitted standalone):
+    chunks_subspan = chunk_markdown("a b\n\nc\n\n## d e f g", max_tokens=4, overlap_ratio=0.0)
+    assert [c.text for c in chunks_subspan] == ["a b\n\nc", "## d e f g"]
+
+    # Same hazard at the default overlap_ratio=0.15 when carry + heading > max_tokens:
+    body = "alpha beta\n\n## " + " ".join(f"w{i}" for i in range(9))
+    chunks_default = chunk_markdown(body, max_tokens=10, overlap_ratio=0.15)
+    assert len(chunks_default) == 2
+    assert chunks_default[0].text == "alpha beta"
+    assert chunks_default[1].text.startswith("## ")
+    assert chunks_default[1].end > chunks_default[0].end

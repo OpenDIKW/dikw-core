@@ -832,8 +832,11 @@ async def test_corpus_cache_key_is_deterministic_and_path_stable(
     k4 = _corpus_cache_key(spec, "other-model", 64, cjk_tokenizer="jieba")
     assert k4 != k1
     # Format sanity.
+    from dikw_core.domains.info.chunk import CHUNKER_VERSION
+
     assert k1.startswith("toy/fake__64__")
     assert "__sf" in k1
+    assert f"__chk{CHUNKER_VERSION}" in k1
 
     # Different multimodal fingerprint → different key (text-only and
     # multimodal eval runs against the same corpus must NOT share a

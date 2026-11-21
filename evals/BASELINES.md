@@ -7,6 +7,25 @@ regression from a re-run variance.
 Newest first. `dikw client eval` thresholds in each dataset's `dataset.yaml`
 are calibrated ~2-3 % below the most recent canonical-mode run.
 
+## 2026-11-21 — retrieval/chunk edge-case fixes (`comb_mnz_fusion` zero-weight, `chunk_markdown` heading flush)
+
+**Changes under test:**
+1. `src/dikw_core/domains/info/search.py`: `comb_mnz_fusion` now uses `leg_count.get(k, 0)` instead of `leg_count[k]` so a key appearing only in a disabled (`weights[i] == 0.0`) leg scores `0.0` (matching `comb_sum_fusion` and `reciprocal_rank_fusion`) instead of raising `KeyError`.
+2. `src/dikw_core/domains/info/chunk.py`: when step 1 flushes before an ATX heading and carries tail overlap that would immediately overflow `max_tokens` with the heading at step 2, drop the carry instead of re-emitting an identical/sub-span chunk. Bumped `CHUNKER_VERSION = 2` and wired `__chk{CHUNKER_VERSION}` into `eval/runner._corpus_cache_key` so pre-fix snapshots rebuild automatically.
+
+**Differential before-vs-after proof (packaged corpora):**
+- Replayed `main:chunk_markdown` vs patched `chunk_markdown` across all 10 Markdown files under `evals/datasets/` (`mvp`, `wiki-mini-mm`): **0 chunk diffs (100% byte-identical)**, confirming non-overflowing chunk boundaries and real-embedder retrieval rankings on packaged corpora are untouched (behavior-neutral / no-regression outside the fixed crash & duplicate-flush edge cases).
+
+**Hermetic retrieval sanity (`FakeEmbeddings`, `cache_mode="off"`, packaged `mvp`):**
+
+| mode | hit_at_3 | hit_at_10 | mrr | ndcg_at_10 | recall_at_100 | passed |
+|---|---|---|---|---|---|---|
+| bm25 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | yes |
+| vector | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | yes |
+| hybrid | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | yes |
+
+**Limits:** no live embedding API key in this local environment; non-regression on real-embedder packaged datasets follows from the 0-diff byte-identical chunk replay above and the fact that `comb_mnz_fusion` only alters the previously-crashing `weights[i] == 0.0` path. Tightened Hypothesis property tests in `tests/test_properties.py` (strict `c.end > prev.end` and `weights >= 0.0`) plus unit regressions in `tests/test_search.py`, `tests/test_chunker.py`, and `tests/test_eval_runner.py` all pass.
+
 ## 2026-10-06 — synth parser: normal-stop format-slip recovery (#294)
 
 **Method:** deterministic differential replay of 506 existing real knowledge

@@ -243,9 +243,10 @@ def test_chunk_markdown_offsets_monotonicity_and_coverage(
         assert c.text == body[c.start : c.end]
         if i > 0:
             prev = chunks[i - 1]
-            # Offsets never move backwards across emitted chunks.
+            # Chunks strictly advance in end offset and never re-emit an
+            # already-covered sub-span or duplicate chunk.
             assert c.start >= prev.start
-            assert c.end >= prev.end
+            assert c.end > prev.end
 
     # Every non-empty paragraph must appear wholly inside at least one chunk.
     offset = 0
@@ -522,7 +523,7 @@ def test_comb_sum_and_comb_mnz_bounds(
 ) -> None:
     w = weights.draw(
         st.lists(
-            st.floats(min_value=0.01, max_value=5.0, allow_nan=False, allow_infinity=False),
+            st.floats(min_value=0.0, max_value=5.0, allow_nan=False, allow_infinity=False),
             min_size=len(scored_lists),
             max_size=len(scored_lists),
         )
@@ -533,11 +534,12 @@ def test_comb_sum_and_comb_mnz_bounds(
     assert set(cs) == expected_keys
     assert set(mnz) == expected_keys
     max_sum = sum(w)
+    positive_legs = sum(1 for weight in w if weight > 0.0)
     for key, val in cs.items():
         assert 0.0 <= val <= max_sum + 1e-9
-        # CombMNZ multiplies CombSUM by the number of positive-weight legs (>= 1).
-        assert mnz[key] >= val - 1e-9
-        assert mnz[key] <= val * len(scored_lists) + 1e-9
+        assert 0.0 <= mnz[key] <= val * max(positive_legs, 1) + 1e-9
+        if val > 0.0:
+            assert mnz[key] >= val - 1e-9
 
 
 @_PROP_SETTINGS

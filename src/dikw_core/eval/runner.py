@@ -193,15 +193,15 @@ def _corpus_cache_key(
     digest = h.hexdigest()[:8]
     dim_str = str(dim if dim is not None else 0)
     mm_str = mm_fingerprint or "0"
-    # ``sf`` = schema fingerprint. Any change to ``SCHEMA_VERSION`` (or
-    # the key name behind it) must invalidate every snapshot — opening
-    # an old snapshot under a new code version would risk a fingerprint
-    # mismatch error or silent schema drift. The ``sf`` prefix is also
-    # distinct from the legacy ``mig`` prefix so caches stamped before
-    # the per-migration-counter framework was deleted never match.
+    # ``sf`` = schema fingerprint, ``chk`` = chunker revision. Any change to
+    # ``SCHEMA_VERSION`` or ``CHUNKER_VERSION`` must invalidate every snapshot
+    # so an eval never silently reuses an index built with stale schema or
+    # chunk boundaries.
+    from ..domains.info.chunk import CHUNKER_VERSION
+
     return (
         f"{spec.name}/{model}__{dim_str}__{digest}"
-        f"__mm{mm_str}__cjk{cjk_tokenizer}__sf{SCHEMA_VERSION}"
+        f"__mm{mm_str}__cjk{cjk_tokenizer}__sf{SCHEMA_VERSION}__chk{CHUNKER_VERSION}"
     )
 
 
