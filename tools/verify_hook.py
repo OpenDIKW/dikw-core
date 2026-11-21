@@ -128,6 +128,12 @@ _ADD_SAFE_LONG_FLAGS = frozenset(
     {"--all", "--update", "--verbose", "--no-dry-run", "--no-ignore-removal"}
 )
 _ADD_SAFE_SHORT_FLAGS = frozenset("Auv")
+_SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}~")
+
+
+def _is_literal_pathspec(tok: str) -> bool:
+    """True when ``tok`` is a non-empty literal path that shell expansion cannot erase."""
+    return bool(tok) and not any(ch in _SHELL_EXPANSION_CHARS for ch in tok)
 # Repo-local Git env vars that could redirect subprocesses away from `cwd` when
 # invoked from a user Git hook.
 _GIT_LOCAL_ENV_VARS = frozenset(
@@ -462,7 +468,7 @@ def _parse_commit_args(
     while idx < n:
         tok = args[idx]
         if tok == "--":
-            if idx + 1 < n:
+            if any(_is_literal_pathspec(p) for p in args[idx + 1 :]):
                 has_pathspec = True
             break
         if tok == "--help":
@@ -584,7 +590,11 @@ def _parse_commit_args(
                     has_unknown_flag = True
             idx += 2 if consumed_next else 1
             continue
-        has_pathspec = True
+        if _is_literal_pathspec(tok):
+            has_pathspec = True
+        elif "$" in tok or "`" in tok:
+            # Unquoted shell expansion before `--` could vanish or expand to flags.
+            has_unknown_flag = True
         idx += 1
 
     is_preview = (dry_run or status_format is not None or use_null) and not has_unknown_flag
