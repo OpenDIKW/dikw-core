@@ -142,33 +142,44 @@ async def test_get_bytes_404_raises_client_error(
     assert excinfo.value.code == "asset_not_found"
 
 
+async def _wait_events_final(
+    client_transport: Transport, task_id: str, *, timeout: float = 5.0
+) -> dict[str, object]:
+    """Poll ``get_task_events_page`` until the trailing ``final`` event lands.
+
+    ``TaskManager._run`` flips the task status row to terminal *before*
+    appending ``final`` to the event tape, so waiting on ``GET /v1/tasks/{id}``
+    alone races the trailing ``partial`` event onto the last slot under load.
+    """
+    import asyncio as _asyncio
+
+    deadline = _asyncio.get_event_loop().time() + timeout
+    while _asyncio.get_event_loop().time() < deadline:
+        page = await client_transport.get_task_events_page(
+            task_id, from_seq=0, limit=100, wait=0
+        )
+        events = page.get("events")
+        if isinstance(events, list) and events and events[-1].get("type") == "final":
+            return page
+        await _asyncio.sleep(0.01)
+    raise AssertionError(f"task {task_id} event tape never ended with a 'final' event")
+
+
 @pytest.mark.asyncio
 async def test_get_task_events_page_basic(
     client_transport: Transport,
 ) -> None:
     """``get_task_events_page`` returns the cursor JSON shape verbatim.
 
-    Submits a tiny echo task, waits for it to finish, then asks for the
-    full tape with ``wait=0`` — the response is the ``EventsPage`` dict
-    as decoded JSON (no streaming, no shape massaging at the transport
-    layer)."""
+    Submits a tiny echo task, waits for its event tape to reach ``final``, then
+    verifies the ``EventsPage`` dict as decoded JSON (no streaming, no shape
+    massaging at the transport layer)."""
     handle = await client_transport.post_json(
         "/v1/echo", json_body={"count": 2}
     )
     task_id = str(handle["task_id"])
 
-    import asyncio as _asyncio
-
-    deadline = _asyncio.get_event_loop().time() + 5.0
-    while _asyncio.get_event_loop().time() < deadline:
-        row = await client_transport.get_json(f"/v1/tasks/{task_id}")
-        if row["status"] in {"succeeded", "failed", "cancelled"}:
-            break
-        await _asyncio.sleep(0.05)
-
-    page = await client_transport.get_task_events_page(
-        task_id, from_seq=0, limit=100, wait=0
-    )
+    page = await _wait_events_final(client_transport, task_id)
     assert isinstance(page, dict)
     assert page["task_id"] == task_id
     assert page["task_status"] in {"succeeded", "failed", "cancelled"}
@@ -190,14 +201,7 @@ async def test_get_task_events_page_passes_params(
     )
     task_id = str(handle["task_id"])
 
-    import asyncio as _asyncio
-
-    deadline = _asyncio.get_event_loop().time() + 5.0
-    while _asyncio.get_event_loop().time() < deadline:
-        row = await client_transport.get_json(f"/v1/tasks/{task_id}")
-        if row["status"] in {"succeeded", "failed", "cancelled"}:
-            break
-        await _asyncio.sleep(0.05)
+    await _wait_events_final(client_transport, task_id)
 
     # limit=2 must actually cap the page — proves ``limit`` reaches the
     # server, not just defaulted client-side.
