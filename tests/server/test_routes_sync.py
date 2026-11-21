@@ -197,13 +197,38 @@ async def test_events_snapshot_caught_up_returns_empty_events(
     assert body["task_status"] == row["status"]
 
 
+async def _wait_event_seq(
+    server_client: httpx.AsyncClient,
+    task_id: str,
+    *,
+    min_seq: int = 1,
+    timeout: float = 5.0,
+) -> int:
+    """Poll ``/events?wait=0`` until ``last_seq >= min_seq`` and return it."""
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snap = await server_client.get(
+            f"/v1/tasks/{task_id}/events", params={"from_seq": 0, "wait": 0}
+        )
+        assert snap.status_code == 200
+        last_seq = int(snap.json()["last_seq"])
+        if last_seq >= min_seq:
+            return last_seq
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"task {task_id} did not reach seq {min_seq} within {timeout}s"
+    )
+
+
 @pytest.mark.asyncio
 async def test_events_long_poll_wakes_on_append(
     server_client: httpx.AsyncClient,
 ) -> None:
     """``wait>0`` with no backlog but a task still producing events:
     response arrives within notify latency (≪ wait timeout)."""
-    import asyncio
     import time
 
     submit = await server_client.post(
@@ -211,12 +236,8 @@ async def test_events_long_poll_wakes_on_append(
     )
     task_id = submit.json()["task_id"]
 
-    # Let task_started land, then snapshot to learn current cursor.
-    await asyncio.sleep(0.05)
-    snap = await server_client.get(
-        f"/v1/tasks/{task_id}/events", params={"from_seq": 0, "wait": 0}
-    )
-    last_seen = snap.json()["last_seq"]
+    # Wait deterministically until task_started lands, then learn current cursor.
+    last_seen = await _wait_event_seq(server_client, task_id, min_seq=1)
 
     start = time.monotonic()
     resp = await server_client.get(
@@ -254,17 +275,13 @@ async def test_events_long_poll_returns_on_terminal(
     import time
 
     submit = await server_client.post(
-        "/v1/echo", json={"count": 1, "delay_ms": 100}
+        "/v1/echo", json={"count": 1, "delay_ms": 150}
     )
     task_id = submit.json()["task_id"]
-    # Get a cursor that's likely past task_started + the one progress
-    # already emitted, so the long-poll genuinely waits for the next
-    # event (partial or final).
-    await asyncio.sleep(0.05)
-    snap = await server_client.get(
-        f"/v1/tasks/{task_id}/events", params={"from_seq": 0, "wait": 0}
-    )
-    last_seen = snap.json()["last_seq"]
+    # Wait past task_started (seq 1) AND echo's initial progress event (seq 2,
+    # emitted before delay_ms) so the long-poll genuinely waits for the
+    # post-delay completion event (partial/final).
+    last_seen = await _wait_event_seq(server_client, task_id, min_seq=2)
 
     start = time.monotonic()
     resp = await server_client.get(

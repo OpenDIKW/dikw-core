@@ -38,6 +38,7 @@ from tools.loop_metrics import (  # noqa: E402
     ReviewComment,
     _parse_gh_objects,
     classify_first_pass_green,
+    classify_revert,
     count_escapes,
     has_changes_requested,
     parse_receipt,
@@ -381,3 +382,69 @@ def test_summarize_empty() -> None:
     assert agg.first_pass_green_rate is None
     assert agg.mean_escapes is None
     assert agg.mean_codex_rounds is None
+    assert agg.reverts == 0
+    assert agg.revert_rate is None
+
+
+# --- classify_revert -----------------------------------------------------------
+
+
+def test_classify_revert_detects_github_and_conventional_reverts() -> None:
+    is_rev, refs = classify_revert('Revert "feat: add foo (#123)"')
+    assert is_rev is True
+    assert refs == (123,)
+
+    # Explicit GitHub repo-qualified footer takes precedence over an issue # in the quoted title.
+    is_rev_gh, refs_gh = classify_revert('Revert "Fix #12"', "Reverts OpenDIKW/dikw-core#123")
+    assert is_rev_gh is True
+    assert refs_gh == (123,)
+
+    is_rev2, refs2 = classify_revert("revert(storage): roll back migration", "Reverts #201 and #202")
+    assert is_rev2 is True
+    assert refs2 == (201, 202)
+
+    is_rev3, refs3 = classify_revert("fix: undo regression", "This PR reverts PR #88.")
+    assert is_rev3 is True
+    assert refs3 == (88,)
+
+
+def test_classify_revert_ignores_normal_prs_and_quoted_evidence() -> None:
+    assert classify_revert("feat: add revert-safe backup", "Does not revert #123.") == (
+        False,
+        (),
+    )
+    assert classify_revert("Revert detection for delivery metrics", "Adds revert rate.") == (
+        False,
+        (),
+    )
+    # Quoted examples inside code fences or Delivery receipt must not inflate revert counts.
+    body_with_evidence = (
+        "## Summary\n\nAdds revert tracking.\n\n"
+        "```\nReverts #99\n```\n\n"
+        "## Delivery receipt\n\nReverts #42\n"
+    )
+    assert classify_revert("feat(tools): track reverts", body_with_evidence) == (False, ())
+
+
+def test_summarize_counts_reverts() -> None:
+    records = [
+        _m(1, green=True, escapes=0, full=True),
+        PRMetrics(
+            number=2,
+            title='Revert "PR 1 (#1)"',
+            author="holo",
+            first_pass_green=True,
+            escapes=0,
+            required_checks_seen=len(DEFAULT_REQUIRED_FRAGMENTS),
+            full_required=True,
+            codex_rounds=None,
+            fresh_review=None,
+            has_receipt=False,
+            changes_requested=False,
+            is_revert=True,
+            reverted_prs=(1,),
+        ),
+    ]
+    agg = summarize(records)
+    assert agg.reverts == 1
+    assert agg.revert_rate == 0.5

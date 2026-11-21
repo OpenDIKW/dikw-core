@@ -92,6 +92,23 @@ _FRESH_REVIEW_RE = re.compile(
     r"fresh-review\b[^\n]*?\*{0,2}\b(pass|blocking|changes[ _]requested)\b",
     re.IGNORECASE,
 )
+# Deterministic post-merge revert detection:
+#   * GitHub revert button title: ``Revert "..."``
+#   * Conventional revert title: ``revert: ...`` / ``revert(scope): ...``
+#   * Line-leading declaration in PR narrative (outside code fences and delivery
+#     receipts): ``Reverts #123``, ``Reverts owner/repo#123``, ``Reverts PR #123``
+_REVERT_TITLE_RE = re.compile(
+    r'^\s*(?:revert(?:\([^)]*\))?:\s*|revert\s+")',
+    re.IGNORECASE,
+)
+_REVERT_BODY_DECL_RE = re.compile(
+    r"^\s*(?:this\s+pr\s+)?reverts\s+"
+    r"(?:(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr\s+))?#\d+"
+    r"(?:\s*(?:,|and)\s*(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr\s+))?#\d+)*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REVERT_TITLE_SUFFIX_PR_RE = re.compile(r'\(#(\d+)\)"?\s*$')
+_PR_NUM_RE = re.compile(r"#(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -141,6 +158,8 @@ class PRMetrics:
     fresh_review: str | None
     has_receipt: bool
     changes_requested: bool
+    is_revert: bool = False
+    reverted_prs: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -157,6 +176,8 @@ class Aggregate:
     receipt_coverage: float | None
     mean_codex_rounds: float | None
     changes_requested: int
+    reverts: int = 0
+    revert_rate: float | None = None
 
 
 # --- pure functions ------------------------------------------------------------
@@ -210,6 +231,55 @@ def count_escapes(comments: Sequence[ReviewComment], author: str) -> int:
 def has_changes_requested(reviews: Sequence[Review], author: str) -> bool:
     """True iff a non-author submitted a CHANGES_REQUESTED review."""
     return any(r.author != author and r.state.upper() == "CHANGES_REQUESTED" for r in reviews)
+
+
+def _strip_fences_and_receipt(body: str) -> str:
+    """Drop fenced code blocks and the ``## Delivery receipt`` section so quoted
+    evidence / command output never trips revert detection."""
+    lines: list[str] = []
+    in_fence = False
+    in_receipt = False
+    for line in body.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if _RECEIPT_HEADING_RE.match(line):
+            in_receipt = True
+            continue
+        if in_receipt and _H2_LINE_RE.match(line):
+            in_receipt = False
+        if not in_receipt:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def classify_revert(title: str, body: str = "") -> tuple[bool, tuple[int, ...]]:
+    """Deterministically detect whether a merged PR reverts an earlier change.
+
+    Matches GitHub's ``Revert "..."`` / conventional ``revert:`` title forms, or
+    a line-leading ``Reverts [owner/repo|PR ]#N`` declaration in the PR body
+    outside fenced code blocks and the ``## Delivery receipt`` section. Prefers
+    explicit footer/body target PR numbers over the quoted title suffix so an
+    issue reference inside a reverted title (e.g. ``Revert "Fix #12"`` with
+    ``Reverts owner/repo#123``) is not misread as the reverted PR.
+    """
+    title_is_revert = bool(_REVERT_TITLE_RE.match(title))
+    cleaned_body = _strip_fences_and_receipt(body)
+    body_refs: set[int] = set()
+    for decl in _REVERT_BODY_DECL_RE.finditer(cleaned_body):
+        body_refs.update(int(m.group(1)) for m in _PR_NUM_RE.finditer(decl.group(0)))
+
+    if body_refs:
+        return True, tuple(sorted(body_refs))
+
+    if title_is_revert:
+        suffix = _REVERT_TITLE_SUFFIX_PR_RE.search(title)
+        title_refs = (int(suffix.group(1)),) if suffix else ()
+        return True, title_refs
+
+    return False, ()
 
 
 def receipt_section(body: str) -> str | None:
@@ -266,6 +336,7 @@ def summarize(records: Sequence[PRMetrics]) -> Aggregate:
     total_escapes = sum(r.escapes for r in records)
     with_receipt = sum(1 for r in records if r.has_receipt)
     changes_requested = sum(1 for r in records if r.changes_requested)
+    reverts = sum(1 for r in records if r.is_revert)
     codex_values = [r.codex_rounds for r in records if r.codex_rounds is not None]
     return Aggregate(
         total=total,
@@ -278,6 +349,8 @@ def summarize(records: Sequence[PRMetrics]) -> Aggregate:
         receipt_coverage=(with_receipt / total) if total else None,
         mean_codex_rounds=(sum(codex_values) / len(codex_values)) if codex_values else None,
         changes_requested=changes_requested,
+        reverts=reverts,
+        revert_rate=(reverts / total) if total else None,
     )
 
 
@@ -429,11 +502,14 @@ def _collect_pr(
         for r in _as_list(pr.get("reviews"))
         if isinstance(r, dict)
     ]
-    facts = parse_receipt(str(pr.get("body") or ""))
+    body_text = str(pr.get("body") or "")
+    title_text = str(pr.get("title", ""))
+    facts = parse_receipt(body_text)
+    is_revert, reverted_prs = classify_revert(title_text, body_text)
     number_val = pr.get("number")
     return PRMetrics(
         number=number_val if isinstance(number_val, int) else number,
-        title=str(pr.get("title", "")),
+        title=title_text,
         author=author,
         first_pass_green=classify_first_pass_green(all_checks, required_fragments),
         escapes=count_escapes(review_comments, author),
@@ -443,6 +519,8 @@ def _collect_pr(
         fresh_review=facts.fresh_review,
         has_receipt=facts.has_receipt,
         changes_requested=has_changes_requested(reviews, author),
+        is_revert=is_revert,
+        reverted_prs=reverted_prs,
     )
 
 
@@ -499,23 +577,25 @@ def _render_text(records: Sequence[PRMetrics], agg: Aggregate) -> str:
             f"mean {_fmt_num(agg.mean_escapes)}/PR"
         ),
         f"changes-requested PRs: {agg.changes_requested}",
+        f"reverts: {agg.reverts}/{agg.total} = {_fmt_rate(agg.revert_rate)}",
         (
             f"receipt coverage: {agg.with_receipt}/{agg.total} "
             f"= {_fmt_rate(agg.receipt_coverage)}"
         ),
         f"mean codex rounds (where recorded): {_fmt_num(agg.mean_codex_rounds)}",
         "",
-        "| PR | green | escapes | CR | codex | fresh-review | title |",
-        "|---|---|---|---|---|---|---|",
+        "| PR | green | escapes | CR | rev | codex | fresh-review | title |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in records:
         green = "?" if not r.full_required else ("✓" if r.first_pass_green else "✗")
         cr = "✗" if r.changes_requested else ""
+        rev = "✗" if r.is_revert else ""
         codex = str(r.codex_rounds) if r.codex_rounds is not None else "—"
         fresh = r.fresh_review or "—"
         title = r.title if len(r.title) <= 50 else r.title[:47] + "..."
         lines.append(
-            f"| #{r.number} | {green} | {r.escapes} | {cr} | {codex} | {fresh} | {title} |"
+            f"| #{r.number} | {green} | {r.escapes} | {cr} | {rev} | {codex} | {fresh} | {title} |"
         )
     return "\n".join(lines)
 

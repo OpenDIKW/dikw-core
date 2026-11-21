@@ -231,27 +231,37 @@ async def test_condition_notifies_on_append(
     event. This is the foundation of the long-poll endpoint — without
     it the `wait=K` handler would always burn its full timeout."""
     manager, store = manager_only
+    entered = asyncio.Event()
     gate = asyncio.Event()
 
     async def _runner(reporter: ProgressReporter) -> dict[str, Any]:
+        entered.set()
         await gate.wait()
         await reporter.progress(phase="x", current=1, total=1)
         return {"done": True}
 
     row = await manager.submit(op="echo", runner=_runner)
+    # Wait until the runner enters its body so ``task_started`` (and its notify)
+    # has already completed before parking ``_waiter``.
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
     cond = manager.condition_for(row.task_id)
 
     woke = asyncio.Event()
+    parked = asyncio.Event()
 
     async def _waiter() -> None:
         async with cond:
+            parked.set()
             await cond.wait()
             woke.set()
 
     waiter_task = asyncio.create_task(_waiter())
-    # Yield long enough for the waiter coro to actually park on cond.wait()
-    # before we unblock the runner.
-    await asyncio.sleep(0.05)
+    # Deterministic handoff: once ``parked`` fires inside ``async with cond``,
+    # re-acquiring ``cond`` guarantees ``_waiter`` has released the lock inside
+    # ``cond.wait()`` and is genuinely parked before we unblock the runner.
+    await asyncio.wait_for(parked.wait(), timeout=2.0)
+    async with cond:
+        pass
     gate.set()
 
     try:
@@ -272,25 +282,31 @@ async def test_condition_notifies_on_terminal_transition(
     would silently stall every long-poll handler until their wait
     timeout fires."""
     manager, store = manager_only
+    entered = asyncio.Event()
     gate = asyncio.Event()
 
     async def _runner(_reporter: ProgressReporter) -> dict[str, Any]:
+        entered.set()
         await gate.wait()
         return {"ok": True}
 
     row = await manager.submit(op="echo", runner=_runner)
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
     cond = manager.condition_for(row.task_id)
 
     woke = asyncio.Event()
+    parked = asyncio.Event()
 
     async def _waiter() -> None:
         async with cond:
+            parked.set()
             await cond.wait()
             woke.set()
 
     waiter_task = asyncio.create_task(_waiter())
-    # Let the waiter park before letting the runner finish.
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(parked.wait(), timeout=2.0)
+    async with cond:
+        pass
     gate.set()
 
     try:
@@ -309,56 +325,60 @@ async def test_condition_per_task_isolation(
     """Notify on task A's condition must not wake a waiter parked on
     task B's condition. Per-task isolation; conditions are not shared."""
     manager, store = manager_only
+    a_entered = asyncio.Event()
+    b_entered = asyncio.Event()
     gate_a = asyncio.Event()
     gate_b_finishes = asyncio.Event()
 
     async def _runner_a(reporter: ProgressReporter) -> dict[str, Any]:
+        a_entered.set()
         await gate_a.wait()
         await reporter.progress(phase="a", current=1, total=1)
         return {"a": True}
 
     async def _runner_b(_reporter: ProgressReporter) -> dict[str, Any]:
+        b_entered.set()
         await gate_b_finishes.wait()
         return {"b": True}
 
     row_a = await manager.submit(op="echo", runner=_runner_a)
     row_b = await manager.submit(op="echo", runner=_runner_b)
 
-    # Drain the initial ``task_started`` notifies on both Conditions —
-    # those fire before any waiter is parked, but we need to be SURE
-    # they're done before attaching B's waiter, otherwise the waiter
-    # races into the gap between ``store.append_event`` and the
-    # ``notify_all`` for B's own task_started, catching that notify
-    # and producing a false positive.
-    async def _has_first_event(task_id: str) -> bool:
-        evs = await store.list_events(task_id)
-        return bool(evs)
-
-    for _ in range(200):
-        if await _has_first_event(row_a.task_id) and await _has_first_event(
-            row_b.task_id
-        ):
-            break
-        await asyncio.sleep(0.01)
-    # Belt-and-braces: yield long enough for the notify_all coroutines
-    # following those appends to complete.
-    await asyncio.sleep(0.1)
+    # Waiting for both runners to enter their bodies guarantees TaskManager has
+    # already finished appending AND notifying ``task_started`` on both tasks
+    # before we park B's waiter — zero timing sleeps needed.
+    await asyncio.wait_for(a_entered.wait(), timeout=5.0)
+    await asyncio.wait_for(b_entered.wait(), timeout=5.0)
 
     cond_b = manager.condition_for(row_b.task_id)
-
     b_woke = asyncio.Event()
+    b_parked = asyncio.Event()
 
     async def _waiter_b() -> None:
         async with cond_b:
+            b_parked.set()
             await cond_b.wait()
             b_woke.set()
 
     waiter_b_task = asyncio.create_task(_waiter_b())
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(b_parked.wait(), timeout=2.0)
+    async with cond_b:
+        pass
 
-    # Trigger A's event. B's waiter must NOT wake.
+    # Let A run all the way through progress + terminal notifies + manager
+    # cleanup before asserting B's waiter stayed asleep.
     gate_a.set()
-    await asyncio.sleep(0.2)
+    await _wait_terminal(store, row_a.task_id)
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline:
+        async with manager._lock:
+            done_a = row_a.task_id not in manager._running
+        if done_a:
+            break
+        await asyncio.sleep(0.005)
+    else:  # pragma: no cover - only on a hang
+        raise AssertionError("task A did not finish manager cleanup")
+    await asyncio.sleep(0)
     assert not b_woke.is_set(), "B's waiter woke on A's notify — conditions not per-task"
 
     # Cleanup: let B finish so the waiter does wake (proves the waiter
