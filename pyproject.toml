@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dikw-core"
-version = "0.6.10"
+version = "0.6.11"
 description = "AI-native knowledge engine across the DIKW pyramid (Data → Information → Knowledge → Wisdom)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -38,10 +38,10 @@ dependencies = [
     # `uv lock --upgrade-package anthropic` — a plain `uv lock` keeps 0.x, and
     # tests/test_provider_anthropic_http_client.py only goes red on a 1.x lock.
     "anthropic>=0.96,<1",
-    # Real-SDK tests guard both codex's total-loss safeguard on 2.x/3.x
-    # (test_provider_openai_codex_sse.py) and 3.x's legacy httpx-client shim
-    # (test_provider_openai_http_client.py) — cf. anthropic 1.x (#279).
-    "openai>=2.32",
+    # OpenAI 3.31+ rejects completed Codex streams with unfinished items
+    # before dikw can recover their streamed text. Keep the cap until the
+    # real-SDK regressions in test_provider_openai_codex_sse.py pass above it.
+    "openai>=2.32,<3.31",
     "httpx>=0.28",
     # client/server architecture (Phase 2+ of the in-process → HTTP migration).
     # Adding these in Phase 0 so subsequent PRs can land server/ and client/
