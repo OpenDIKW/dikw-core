@@ -70,8 +70,9 @@ def _record_verify_stamp(repo_root: Path, before: tuple[str, str] | None) -> boo
     for label, _ in STAGES:
         cmd.extend(["--stage", label])
     proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-    if proc.returncode != 0 and proc.stderr.strip():
-        print(f"\n[WARN] {proc.stderr.strip()}", file=sys.stderr)
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or f"verify-hook stamp exited with code {proc.returncode}"
+        print(f"\n[WARN] {detail}", file=sys.stderr)
         return False
     return True
 

@@ -22,6 +22,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,21 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _scrub_git_repo_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent inherited Git hook env vars from redirecting temp-repo calls."""
+    for var in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _load_module():
@@ -188,27 +204,69 @@ def test_partially_staged_file_rejected_on_plain_commit(tmp_path: Path) -> None:
         assert d_plain.allowed is False, cmd
         assert "staged index differs" in d_plain.message
 
-    # `git commit -am ...` commits the tested working-tree version 3 -> allowed.
-    d_all = vh.evaluate_commit_gate(
-        repo, command="git commit -am 'all'", mode="enforce", session_id="s-partial-all"
-    )
-    assert d_all.allowed is True
+    # `git commit -am ...`, `git commit --gpg-sign -a ...`, and `git add -A && git commit`
+    # commit the tested working-tree version 3 -> allowed.
+    for cmd in (
+        "git commit -am 'all'",
+        "git commit --gpg-sign -a -m 'signed all'",
+        "git add -A && git commit -m 'full stage then commit'",
+    ):
+        d_all = vh.evaluate_commit_gate(
+            repo, command=cmd, mode="enforce", session_id=f"s-partial-ok-{cmd}"
+        )
+        assert d_all.allowed is True, cmd
 
 
-def test_compound_command_with_mutator_before_commit_is_blocked(tmp_path: Path) -> None:
+def test_compound_command_with_mutator_or_redirect_before_commit_is_blocked(tmp_path: Path) -> None:
     vh = _load_module()
     repo = _init_git_repo(tmp_path)
     (repo / "hello.py").write_text("x = 2\n", encoding="utf-8")
     vh.write_stamp(repo, stages=["ruff", "mypy", "pytest"])
 
+    for cmd in (
+        "ruff format . && git add . && git commit -m 'formatted'",
+        "printf 'x = 999\\n' > hello.py && git add . && git commit -m 'redirected'",
+    ):
+        decision = vh.evaluate_commit_gate(
+            repo,
+            command=cmd,
+            mode="enforce",
+            session_id=f"s-mutator-{cmd}",
+        )
+        assert decision.allowed is False, cmd
+        assert "separate calls" in decision.message
+
+
+def test_stamp_invalidates_on_executable_bit_change(tmp_path: Path) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    script = repo / "hello.py"
+    script.write_text("x = 2\n", encoding="utf-8")
+    script.chmod(0o644)
+    vh.write_stamp(repo, stages=["ruff"])
+    assert vh.verify_stamp(repo)[0] is True
+
+    script.chmod(0o755)
+    ok, reason = vh.verify_stamp(repo)
+    assert ok is False
+    assert "stale" in reason.lower()
+
+
+def test_enforce_block_survives_unwritable_log_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    (repo / "hello.py").write_text("x = 2\n", encoding="utf-8")
+
+    # Point observe log path at a directory so opening it for append raises OSError.
+    log_dir = repo / ".claude" / "verify-gate-observe.jsonl"
+    log_dir.mkdir(parents=True)
     decision = vh.evaluate_commit_gate(
-        repo,
-        command="ruff format . && git add . && git commit -m 'formatted'",
-        mode="enforce",
-        session_id="s-mutator",
+        repo, command="git commit -m 'unverified'", mode="enforce", session_id="s-log-err"
     )
     assert decision.allowed is False
-    assert "separate calls" in decision.message
+    assert decision.exit_code == 2
 
 
 def test_claude_pretool_uses_payload_cwd_for_sibling_worktree(
@@ -267,7 +325,7 @@ def test_git_dash_c_checks_target_worktree_stamp(tmp_path: Path) -> None:
     # Committing in repo_b via `git -C repo_b commit` from repo_a must NOT use repo_a's stamp.
     d_unverified = vh.evaluate_commit_gate(
         repo_a,
-        command=f"git -C {repo_b} commit -m 'in b'",
+        command=f"git -C {shlex.quote(str(repo_b))} commit -m 'in b'",
         mode="enforce",
         session_id="s-wt",
     )
@@ -277,7 +335,7 @@ def test_git_dash_c_checks_target_worktree_stamp(tmp_path: Path) -> None:
     vh.write_stamp(repo_b, stages=["ruff"])
     d_verified = vh.evaluate_commit_gate(
         repo_a,
-        command=f"git -C {repo_b} commit -m 'in b'",
+        command=f"git -C {shlex.quote(str(repo_b))} commit -m 'in b'",
         mode="enforce",
         session_id="s-wt",
     )

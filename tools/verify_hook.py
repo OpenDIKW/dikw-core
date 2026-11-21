@@ -62,8 +62,11 @@ _SKIP_REASON_RE = re.compile(r"\[skip-verify:\s*([^\]\r\n]+?)\s*\]", re.IGNORECA
 _GIT_FLAGS_WITH_ARG = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
 )
-# Short/long `git commit` options that take a value (attached or next token).
-_COMMIT_SHORT_VALUE_FLAGS = frozenset("mFCctuSo")
+# Short/long `git commit` options that ALWAYS consume a following argument
+# (attached or next token). Note: `-S`/`--gpg-sign` and `-u`/`--untracked-files`
+# take OPTIONAL args that Git requires to be attached, so bare `-S -a` must NOT
+# consume `-a`.
+_COMMIT_SHORT_VALUE_FLAGS = frozenset("mFCcto")
 _COMMIT_LONG_VALUE_FLAGS = frozenset(
     {
         "--message",
@@ -76,10 +79,21 @@ _COMMIT_LONG_VALUE_FLAGS = frozenset(
         "--author",
         "--date",
         "--cleanup",
-        "--untracked-files",
-        "--gpg-sign",
         "--trailer",
         "--pathspec-from-file",
+    }
+)
+# Repo-local Git env vars that could redirect subprocesses away from `cwd` when
+# invoked from a user Git hook.
+_GIT_LOCAL_ENV_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
     }
 )
 # Commands safe to precede `git commit` in the same Bash call without mutating
@@ -102,6 +116,8 @@ class CommitInvocation:
     target_dir: Path
     commit_all: bool
     preceded_by_mutator: bool
+    preceded_by_full_stage: bool = False
+    preceded_by_selective_stage: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -184,7 +200,7 @@ def _is_separator(tok: str) -> bool:
 def _split_shell_segments(command: str) -> list[list[str]] | None:
     cleaned = _strip_shell_comments(command)
     try:
-        lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|\n")
+        lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|>\n")
         lexer.commenters = ""
         lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
@@ -204,6 +220,32 @@ def _split_shell_segments(command: str) -> list[list[str]] | None:
     if current:
         segments.append(current)
     return segments
+
+
+def _segment_has_output_redirection(tokens: list[str]) -> bool:
+    """True if any unquoted shell token performs output redirection (e.g. ``>``, ``>>``)."""
+    return any(tok.startswith(">") or tok in ("&>", "&>>") for tok in tokens)
+
+
+def _git_add_stages_all_tracked(args: list[str]) -> bool:
+    """True for ``git add -A/--all/-u/--update`` with no narrowing pathspec."""
+    has_all_flag = False
+    positional: list[str] = []
+    after_dd = False
+    for tok in args:
+        if after_dd:
+            positional.append(tok)
+            continue
+        if tok == "--":
+            after_dd = True
+            continue
+        if tok in ("-A", "--all", "-u", "--update"):
+            has_all_flag = True
+            continue
+        if tok.startswith("-"):
+            continue
+        positional.append(tok)
+    return has_all_flag and not positional
 
 
 def _segment_command_name(tokens: list[str]) -> str | None:
@@ -317,21 +359,35 @@ def find_commit_invocations(command: str, base_dir: Path) -> list[CommitInvocati
     invocations: list[CommitInvocation] = []
     cwd = base_dir
     saw_mutator = False
+    full_staged_dirs: set[Path] = set()
+    selective_staged_dirs: set[Path] = set()
     for seg in segments:
+        if _segment_has_output_redirection(seg):
+            saw_mutator = True
+            continue
         cmd_name = _segment_command_name(seg)
         if cmd_name == "cd" and len(seg) >= 2:
             target = Path(seg[1])
             cwd = target if target.is_absolute() else (cwd / target)
             continue
         subcmd, target_dir, sub_args = _parse_git_segment(seg, cwd)
+        resolved_target = target_dir.resolve()
         if subcmd == "commit":
             invocations.append(
                 CommitInvocation(
-                    target_dir=target_dir.resolve(),
+                    target_dir=resolved_target,
                     commit_all=_commit_has_all_flag(sub_args),
                     preceded_by_mutator=saw_mutator,
+                    preceded_by_full_stage=resolved_target in full_staged_dirs,
+                    preceded_by_selective_stage=resolved_target in selective_staged_dirs,
                 )
             )
+            continue
+        if subcmd in ("add", "stage"):
+            if _git_add_stages_all_tracked(sub_args):
+                full_staged_dirs.add(resolved_target)
+            else:
+                selective_staged_dirs.add(resolved_target)
             continue
         if subcmd in _BENIGN_PRE_COMMIT_GIT or cmd_name in _BENIGN_PRE_COMMIT_CMDS:
             continue
@@ -344,10 +400,15 @@ def is_git_commit_command(command: str) -> bool:
     return bool(find_commit_invocations(command, Path(".")))
 
 
+def _clean_git_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _GIT_LOCAL_ENV_VARS}
+
+
 def _git(repo_root: Path, args: list[str]) -> bytes:
     return subprocess.run(
         ["git", *args],
         cwd=repo_root,
+        env=_clean_git_env(),
         check=True,
         capture_output=True,
     ).stdout
@@ -370,10 +431,12 @@ def _git_head_sha(repo_root: Path) -> str:
         return "UNBORN"
 
 
-def _git_name_set(repo_root: Path, args: list[str]) -> set[str]:
+def _git_name_set(repo_root: Path, args: list[str], *, strict: bool = False) -> set[str]:
     try:
         raw = _git(repo_root, args)
     except subprocess.CalledProcessError:
+        if strict:
+            raise
         return set()
     out: set[str] = set()
     for entry in raw.split(b"\x00"):
@@ -387,10 +450,11 @@ def _git_name_set(repo_root: Path, args: list[str]) -> set[str]:
 def compute_tree_fingerprint(repo_root: Path) -> tuple[str, str]:
     """Return ``(head_sha, fingerprint)`` invariant under ``git add`` (incl. renames).
 
-    Hashes the current working-tree bytes of every path differing from HEAD
-    (staged or unstaged, with ``--no-renames``) plus untracked non-ignored files.
-    Any post-check edit or new file changes the fingerprint; staging already-
-    checked files or renames does not.
+    Hashes the current working-tree bytes and Git-relevant executable mode bit
+    of every path differing from HEAD (staged or unstaged, with ``--no-renames``)
+    plus untracked non-ignored files. Any post-check edit, mode change, or new
+    file changes the fingerprint; staging already-checked files or renames does
+    not.
     """
     head_sha = _git_head_sha(repo_root)
     paths: set[str] = set()
@@ -412,6 +476,8 @@ def compute_tree_fingerprint(repo_root: Path) -> tuple[str, str]:
             digest.update(b"SYMLINK:")
             digest.update(os.readlink(target).encode("utf-8", errors="surrogateescape"))
         elif target.is_file():
+            mode_tag = b"EXEC:" if (target.stat().st_mode & 0o111) else b"FILE:"
+            digest.update(mode_tag)
             digest.update(hashlib.sha256(target.read_bytes()).hexdigest().encode("ascii"))
         else:
             digest.update(b"DELETED")
@@ -419,12 +485,22 @@ def compute_tree_fingerprint(repo_root: Path) -> tuple[str, str]:
     return head_sha, digest.hexdigest()
 
 
-def _partially_staged_paths(repo_root: Path) -> list[str]:
-    """Paths whose staged (index) content differs from the verified working tree."""
-    staged = _git_name_set(repo_root, ["diff", "--cached", "--no-renames", "--name-only", "-z"])
-    if not staged:
-        return []
-    unstaged = _git_name_set(repo_root, ["diff", "--no-renames", "--name-only", "-z"])
+def _partially_staged_paths(repo_root: Path) -> list[str] | None:
+    """Paths whose staged (index) content differs from the verified working tree.
+
+    Returns ``None`` if Git fails to answer either diff query (fail-closed).
+    """
+    try:
+        staged = _git_name_set(
+            repo_root, ["diff", "--cached", "--no-renames", "--name-only", "-z"], strict=True
+        )
+        if not staged:
+            return []
+        unstaged = _git_name_set(
+            repo_root, ["diff", "--no-renames", "--name-only", "-z"], strict=True
+        )
+    except subprocess.CalledProcessError:
+        return None
     return sorted(staged & unstaged)
 
 
@@ -480,13 +556,15 @@ def verify_stamp(
         return False, "verification stamp is stale (files changed since last check)"
     if check_staged_parity:
         partial = _partially_staged_paths(repo_root)
+        if partial is None:
+            return False, "could not verify staged index parity (git diff failed)"
         if partial:
             preview = ", ".join(partial[:3])
             suffix = f" (+{len(partial) - 3} more)" if len(partial) > 3 else ""
             return (
                 False,
                 f"staged index differs from verified working tree for: {preview}{suffix} "
-                "(stage the tested files or re-verify before committing)",
+                "(stage the tested files in a separate command before committing)",
             )
     return True, "verified"
 
@@ -505,16 +583,24 @@ def _load_state(repo_root: Path) -> dict[str, int]:
 
 
 def _save_state(repo_root: Path, state: dict[str, int]) -> None:
+    """Best-effort state persistence; I/O errors must never cancel a gate decision."""
     path = repo_root / STATE_REL
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _append_observe_log(repo_root: Path, entry: dict[str, Any]) -> None:
+    """Best-effort audit logging; I/O errors must never override a gate decision."""
     log_path = repo_root / OBSERVE_LOG_REL
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 def evaluate_commit_gate(
@@ -570,8 +656,14 @@ def evaluate_commit_gate(
                 )
             )
             continue
-        ok, reason = verify_stamp(target_root, check_staged_parity=not inv.commit_all)
+        check_staged = not (inv.commit_all or inv.preceded_by_full_stage)
+        ok, reason = verify_stamp(target_root, check_staged_parity=check_staged)
         if not ok:
+            if inv.preceded_by_selective_stage and "staged index differs" in reason:
+                reason = (
+                    f"{reason}; run `git add` in a separate command before `git commit` "
+                    "so staged parity can be verified after staging"
+                )
             failures.append((target_root, reason))
 
     if not failures:
