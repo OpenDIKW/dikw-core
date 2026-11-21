@@ -12,8 +12,7 @@ Code team's verification-gate pattern:
     partial staging mismatch, or new commit invalidates it.
   * Wired as a Claude Code ``PreToolUse`` hook on ``Bash`` in
     ``.claude/settings.json`` (mode controlled by ``DIKW_VERIFY_GATE_MODE``,
-    defaulting to ``observe`` so new rollout surfaces false positives before
-    blocking).
+    defaulting to ``enforce``; set ``observe`` or ``off`` to downgrade).
   * In ``enforce`` mode, an unverified ``git commit`` is blocked (exit 2)
     unless:
       1. the target worktree's stamp matches the tree and staged content (and no
@@ -52,7 +51,7 @@ _INTERNAL_STATE_PATHS = frozenset(
 )
 
 ENV_MODE_VAR = "DIKW_VERIFY_GATE_MODE"
-DEFAULT_MODE: GateMode = "observe"
+DEFAULT_MODE: GateMode = "enforce"
 MAX_SESSION_BLOCKS = 2
 
 _SEPARATOR_CHARS = frozenset(";&|\n")
@@ -65,8 +64,11 @@ _GIT_FLAGS_WITH_ARG = frozenset(
 # Short/long `git commit` options that ALWAYS consume a following argument
 # (attached or next token). Note: `-S`/`--gpg-sign` and `-u`/`--untracked-files`
 # take OPTIONAL args that Git requires to be attached, so bare `-S -a` must NOT
-# consume `-a`.
-_COMMIT_SHORT_VALUE_FLAGS = frozenset("mFCcto")
+# consume `-a`, while `-Skey` consumes the rest of the token as the key id.
+# `-o` is `--only` (boolean, no argument).
+_COMMIT_SHORT_VALUE_FLAGS = frozenset("mFCct")
+_COMMIT_SHORT_OPTIONAL_VALUE_FLAGS = frozenset("Su")
+_COMMIT_SHORT_KNOWN_BOOL_FLAGS = frozenset("qvsenzohai" + "p")
 _COMMIT_LONG_VALUE_FLAGS = frozenset(
     {
         "--message",
@@ -83,6 +85,55 @@ _COMMIT_LONG_VALUE_FLAGS = frozenset(
         "--pathspec-from-file",
     }
 )
+_COMMIT_LONG_OPTIONAL_VALUE_FLAGS = frozenset({"--gpg-sign", "--untracked-files"})
+_COMMIT_LONG_KNOWN_BOOL_FLAGS = frozenset(
+    {
+        "--quiet",
+        "--no-quiet",
+        "--verbose",
+        "--no-verbose",
+        "--reset-author",
+        "--no-reset-author",
+        "--signoff",
+        "--no-signoff",
+        "--edit",
+        "--no-edit",
+        "--status",
+        "--no-status",
+        "--only",
+        "--no-only",
+        "--no-verify",
+        "--verify",
+        "--branch",
+        "--no-branch",
+        "--ahead-behind",
+        "--no-ahead-behind",
+        "--amend",
+        "--no-amend",
+        "--no-post-rewrite",
+        "--post-rewrite",
+        "--allow-empty",
+        "--allow-empty-message",
+        "--no-gpg-sign",
+        "--no-untracked-files",
+        "--pathspec-file-nul",
+        "--no-pathspec-file-nul",
+    }
+)
+# Allowlist of `git add` flags known not to narrow, skip, dry-run, force-stage
+# ignored files, or alter index modes. Any other option (including `--force` or
+# abbreviations like `--dry`) fails closed so partial-staging parity checks
+# remain active.
+_ADD_SAFE_LONG_FLAGS = frozenset(
+    {"--all", "--update", "--verbose", "--no-dry-run", "--no-ignore-removal"}
+)
+_ADD_SAFE_SHORT_FLAGS = frozenset("Auv")
+_SHELL_EXPANSION_CHARS = frozenset("$`*?[]{}~")
+
+
+def _is_literal_pathspec(tok: str) -> bool:
+    """True when ``tok`` is a non-empty literal path that shell expansion cannot erase."""
+    return bool(tok) and not any(ch in _SHELL_EXPANSION_CHARS for ch in tok)
 # Repo-local Git env vars that could redirect subprocesses away from `cwd` when
 # invoked from a user Git hook.
 _GIT_LOCAL_ENV_VARS = frozenset(
@@ -197,10 +248,11 @@ def _is_separator(tok: str) -> bool:
     return bool(tok) and all(ch in _SEPARATOR_CHARS for ch in tok)
 
 
-def _split_shell_segments(command: str) -> list[list[str]] | None:
+def _split_shell_segments_with_ops(command: str) -> list[tuple[str | None, list[str]]] | None:
+    """Split ``command`` into ``(preceding_separator, tokens)`` pairs."""
     cleaned = _strip_shell_comments(command)
     try:
-        lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|>\n")
+        lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|<>\n")
         lexer.commenters = ""
         lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
@@ -208,18 +260,33 @@ def _split_shell_segments(command: str) -> list[list[str]] | None:
     except ValueError:
         return None
 
-    segments: list[list[str]] = []
+    segments: list[tuple[str | None, list[str]]] = []
     current: list[str] = []
+    pending_op: str | None = None
     for tok in tokens:
         if _is_separator(tok):
+            # shlex joins adjacent punctuation such as `||\n` or `&&\n` into one
+            # token; strip continuation newlines so operator comparisons match.
+            norm_op = tok.replace("\n", "") or "\n"
             if current:
-                segments.append(current)
+                segments.append((pending_op, current))
                 current = []
+                pending_op = norm_op
+            elif pending_op is None or norm_op != "\n":
+                # Preserve `&&` / `||` across a following line-continuation newline.
+                pending_op = norm_op
         else:
             current.append(tok)
     if current:
-        segments.append(current)
+        segments.append((pending_op, current))
     return segments
+
+
+def _split_shell_segments(command: str) -> list[list[str]] | None:
+    paired = _split_shell_segments_with_ops(command)
+    if paired is None:
+        return None
+    return [seg for _, seg in paired]
 
 
 def _segment_has_output_redirection(tokens: list[str]) -> bool:
@@ -227,8 +294,33 @@ def _segment_has_output_redirection(tokens: list[str]) -> bool:
     return any(tok.startswith(">") or tok in ("&>", "&>>") for tok in tokens)
 
 
-def _git_add_stages_all_tracked(args: list[str]) -> bool:
-    """True for ``git add -A/--all/-u/--update`` with no narrowing pathspec."""
+def _segment_has_input_redirection(tokens: list[str]) -> bool:
+    """True if any unquoted shell token performs input redirection (e.g. ``<``, ``<<``)."""
+    return any(tok.startswith("<") for tok in tokens)
+
+
+def _git_add_may_force_stage_ignored(args: list[str]) -> bool:
+    """True if ``git add`` passes ``-f`` / ``--force`` (or an abbreviation of it)."""
+    for tok in args:
+        if tok == "--":
+            break
+        if tok.startswith("--"):
+            if tok != "--" and "--force".startswith(tok) and len(tok) >= 3:
+                return True
+            continue
+        if tok.startswith("-") and len(tok) > 1 and "f" in tok[1:]:
+            return True
+    return False
+
+
+def _git_add_stages_all_tracked(args: list[str], target_dir: Path | None = None) -> bool:
+    """True when ``git add`` is guaranteed to stage the full working tree.
+
+    Uses a strict allowlist of safe options so unknown flags or abbreviations
+    (e.g. ``--dry``, ``--chmod``, ``-p``, ``--pathspec-from-file``) fail closed.
+    Matches ``git add -A/--all/-u/--update`` with no narrowing pathspec, and
+    ``git add .`` (or ``./``) when executed at the Git repository root.
+    """
     has_all_flag = False
     positional: list[str] = []
     after_dd = False
@@ -239,13 +331,27 @@ def _git_add_stages_all_tracked(args: list[str]) -> bool:
         if tok == "--":
             after_dd = True
             continue
-        if tok in ("-A", "--all", "-u", "--update"):
-            has_all_flag = True
+        if tok.startswith("--"):
+            if tok not in _ADD_SAFE_LONG_FLAGS:
+                return False
+            if tok in ("--all", "--update"):
+                has_all_flag = True
             continue
-        if tok.startswith("-"):
+        if tok.startswith("-") and len(tok) > 1:
+            flags = tok[1:]
+            if any(ch not in _ADD_SAFE_SHORT_FLAGS for ch in flags):
+                return False
+            if any(ch in "Au" for ch in flags):
+                has_all_flag = True
             continue
         positional.append(tok)
-    return has_all_flag and not positional
+
+    if has_all_flag and not positional:
+        return True
+    if positional and all(p in (".", "./") for p in positional) and target_dir is not None:
+        repo_root = _try_resolve_repo_root(target_dir)
+        return repo_root is not None and target_dir.resolve() == repo_root
+    return False
 
 
 def _segment_command_name(tokens: list[str]) -> str | None:
@@ -261,15 +367,20 @@ def _segment_command_name(tokens: list[str]) -> str | None:
 
 def _parse_git_segment(
     tokens: list[str], base_dir: Path
-) -> tuple[str | None, Path, list[str]]:
-    """Return ``(subcommand, effective_dir, subcommand_args)`` for a git segment."""
+) -> tuple[str | None, Path, list[str], bool]:
+    """Return ``(subcommand, effective_dir, subcommand_args, uses_custom_git_env)``."""
     idx = 0
+    uses_custom_git_env = False
     while idx < len(tokens) and (
         _ENV_ASSIGN_RE.match(tokens[idx]) or tokens[idx] in {"env", "command"}
     ):
+        if _ENV_ASSIGN_RE.match(tokens[idx]):
+            var_name = tokens[idx].split("=", 1)[0]
+            if var_name in _GIT_LOCAL_ENV_VARS:
+                uses_custom_git_env = True
         idx += 1
     if idx >= len(tokens) or Path(tokens[idx]).name != "git":
-        return None, base_dir, []
+        return None, base_dir, [], uses_custom_git_env
 
     idx += 1
     effective_dir = base_dir
@@ -289,11 +400,21 @@ def _parse_git_segment(
         if tok == "--work-tree" and idx + 1 < len(tokens):
             arg = Path(tokens[idx + 1])
             work_tree = arg if arg.is_absolute() else (effective_dir / arg)
+            uses_custom_git_env = True
             idx += 2
             continue
         if tok.startswith("--work-tree="):
             arg = Path(tok.split("=", 1)[1])
             work_tree = arg if arg.is_absolute() else (effective_dir / arg)
+            uses_custom_git_env = True
+            idx += 1
+            continue
+        if tok == "--git-dir" and idx + 1 < len(tokens):
+            uses_custom_git_env = True
+            idx += 2
+            continue
+        if tok.startswith("--git-dir="):
+            uses_custom_git_env = True
             idx += 1
             continue
         if tok in _GIT_FLAGS_WITH_ARG:
@@ -302,51 +423,202 @@ def _parse_git_segment(
         if tok.startswith("-"):
             idx += 1
             continue
-        return tok, (work_tree or effective_dir), tokens[idx + 1 :]
-    return None, (work_tree or effective_dir), []
+        return tok, (work_tree or effective_dir), tokens[idx + 1 :], uses_custom_git_env
+    return None, (work_tree or effective_dir), [], uses_custom_git_env
 
 
-def _commit_has_all_flag(args: list[str]) -> bool:
-    """Return True iff ``git commit`` args include ``-a`` or ``--all``."""
+@dataclass(frozen=True)
+class _ParsedCommitArgs:
+    read_only: bool
+    commits_worktree: bool
+
+
+def _parse_commit_args(
+    args: list[str], *, has_shell_redirection: bool = False
+) -> _ParsedCommitArgs:
+    """Inspect ``git commit`` arguments for read-only previews and worktree commits.
+
+    ``read_only`` is True for ``-h``/``--help``, or when ``--dry-run``,
+    ``-z``/``--null``, or an explicit status preview format (``--short``,
+    ``--porcelain[=...]``, ``--long``) remains active after honoring their
+    respective ``--no-*`` negations and value-taking flags (so
+    ``-m "--dry-run"`` and ``-Skeyh`` are never treated as previews).
+
+    ``commits_worktree`` is True only when all options are recognized and Git
+    commits working-tree bytes rather than the pre-existing index: either
+    ``-a``/``--all`` or explicit positional pathspecs (with no shell input
+    redirection that could mimic an operand) without ``-i``/``--include``,
+    ``-p``/``--patch``, or ``--interactive``. Unrecognized/abbreviated options
+    (e.g. ``--incl``) and ``--pathspec-from-file`` fail closed so index parity
+    checks stay enabled.
+    """
+    dry_run = False
+    status_format: str | None = None
+    use_null = False
+    is_help = False
+    has_all = False
+    has_include = False
+    has_patch = False
+    has_interactive = False
+    has_pathspec = False
+    has_unknown_flag = False
+
     idx = 0
     n = len(args)
     while idx < n:
         tok = args[idx]
         if tok == "--":
+            if any(_is_literal_pathspec(p) for p in args[idx + 1 :]):
+                has_pathspec = True
             break
+        if tok == "--help":
+            is_help = True
+            idx += 1
+            continue
+        if tok == "--dry-run":
+            dry_run = True
+            idx += 1
+            continue
+        if tok == "--no-dry-run":
+            dry_run = False
+            idx += 1
+            continue
+        if tok == "--short":
+            status_format = "short"
+            idx += 1
+            continue
+        if tok == "--porcelain" or tok.startswith("--porcelain="):
+            status_format = "porcelain"
+            idx += 1
+            continue
+        if tok == "--long":
+            status_format = "long"
+            idx += 1
+            continue
+        if tok in ("--no-short", "--no-porcelain", "--no-long"):
+            status_format = None
+            idx += 1
+            continue
+        if tok == "--null":
+            use_null = True
+            idx += 1
+            continue
+        if tok == "--no-null":
+            use_null = False
+            idx += 1
+            continue
         if tok == "--all":
-            return True
+            has_all = True
+            idx += 1
+            continue
+        if tok == "--no-all":
+            has_all = False
+            idx += 1
+            continue
+        if tok == "--include":
+            has_include = True
+            idx += 1
+            continue
+        if tok == "--no-include":
+            has_include = False
+            idx += 1
+            continue
+        if tok == "--patch":
+            has_patch = True
+            idx += 1
+            continue
+        if tok == "--no-patch":
+            has_patch = False
+            idx += 1
+            continue
+        if tok == "--interactive":
+            has_interactive = True
+            idx += 1
+            continue
+        if tok == "--no-interactive":
+            has_interactive = False
+            idx += 1
+            continue
         if tok.startswith("--"):
             if tok in _COMMIT_LONG_VALUE_FLAGS:
                 idx += 2
-            else:
+                continue
+            flag_name, has_eq, _ = tok.partition("=")
+            if has_eq and (
+                flag_name in _COMMIT_LONG_VALUE_FLAGS
+                or flag_name in _COMMIT_LONG_OPTIONAL_VALUE_FLAGS
+            ):
                 idx += 1
+                continue
+            if not has_eq and (
+                tok in _COMMIT_LONG_KNOWN_BOOL_FLAGS or tok in _COMMIT_LONG_OPTIONAL_VALUE_FLAGS
+            ):
+                idx += 1
+                continue
+            # Unrecognized or abbreviated long flag (e.g. `--incl`, `--no-shor`):
+            # fail closed so neither preview nor worktree exemptions trigger.
+            has_unknown_flag = True
+            idx += 1
             continue
         if tok.startswith("-") and len(tok) > 1:
             flags = tok[1:]
             consumed_next = False
             for pos, ch in enumerate(flags):
-                if ch == "a":
-                    return True
-                if ch in _COMMIT_SHORT_VALUE_FLAGS:
+                if ch == "h":
+                    is_help = True
+                elif ch == "z":
+                    use_null = True
+                elif ch == "a":
+                    has_all = True
+                elif ch == "i":
+                    has_include = True
+                elif ch == "p":
+                    has_patch = True
+                elif ch in _COMMIT_SHORT_VALUE_FLAGS:
                     # Remaining chars in this token (if any) are the option's value
                     # (e.g. `-m"add tests"`). Only consume the next token when this
                     # flag is the final character of the cluster.
                     if pos == len(flags) - 1:
                         consumed_next = True
                     break
+                elif ch in _COMMIT_SHORT_OPTIONAL_VALUE_FLAGS:
+                    # `-S[<key-id>]` / `-u[<mode>]`: any remaining chars in this
+                    # token are the attached argument, not more flags; bare `-S`
+                    # never consumes the next token.
+                    break
+                elif ch not in _COMMIT_SHORT_KNOWN_BOOL_FLAGS:
+                    has_unknown_flag = True
             idx += 2 if consumed_next else 1
             continue
+        if _is_literal_pathspec(tok):
+            has_pathspec = True
+        elif "$" in tok or "`" in tok:
+            # Unquoted shell expansion before `--` could vanish or expand to flags.
+            has_unknown_flag = True
         idx += 1
-    return False
+
+    is_preview = (dry_run or status_format is not None or use_null) and not has_unknown_flag
+    confirmed_pathspec = has_pathspec and not has_shell_redirection
+    commits_worktree = (
+        (not has_unknown_flag)
+        and (not has_patch)
+        and (not has_interactive)
+        and (has_all or (confirmed_pathspec and not has_include))
+    )
+    return _ParsedCommitArgs(read_only=(is_help or is_preview), commits_worktree=commits_worktree)
+
+
+def _commit_has_all_flag(args: list[str]) -> bool:
+    """Return True iff ``git commit`` commits working-tree bytes directly."""
+    return _parse_commit_args(args).commits_worktree
 
 
 def find_commit_invocations(command: str, base_dir: Path) -> list[CommitInvocation]:
-    """Return all ``git commit`` invocations in ``command`` with their target dirs."""
+    """Return all mutating ``git commit`` invocations in ``command`` with target dirs."""
     if "git" not in command or "commit" not in command:
         return []
-    segments = _split_shell_segments(command)
-    if segments is None:
+    paired_segments = _split_shell_segments_with_ops(command)
+    if paired_segments is None:
         # Unbalanced quotes — fall back conservatively to unquoted segment check.
         if re.search(r"(?:^|[;&|\n]\s*)git(?:\s+\S+)*\s+commit\b", command):
             return [
@@ -361,32 +633,58 @@ def find_commit_invocations(command: str, base_dir: Path) -> list[CommitInvocati
     saw_mutator = False
     full_staged_dirs: set[Path] = set()
     selective_staged_dirs: set[Path] = set()
-    for seg in segments:
+    for preceding_op, seg in paired_segments:
+        # A full-stage exemption only carries forward while the next command
+        # depends on the preceding command succeeding (`&&`). `;`, `||`, `|`,
+        # `&`, or newline can execute the commit even if staging failed or was
+        # skipped by an earlier conditional.
+        if preceding_op != "&&":
+            full_staged_dirs.clear()
         if _segment_has_output_redirection(seg):
             saw_mutator = True
             continue
+        has_input_redir = _segment_has_input_redirection(seg)
         cmd_name = _segment_command_name(seg)
         if cmd_name == "cd" and len(seg) >= 2:
             target = Path(seg[1])
             cwd = target if target.is_absolute() else (cwd / target)
             continue
-        subcmd, target_dir, sub_args = _parse_git_segment(seg, cwd)
+        subcmd, target_dir, sub_args, uses_custom_git_env = _parse_git_segment(seg, cwd)
         resolved_target = target_dir.resolve()
         if subcmd == "commit":
+            parsed = _parse_commit_args(sub_args, has_shell_redirection=has_input_redir)
+            if parsed.read_only:
+                continue
             invocations.append(
                 CommitInvocation(
                     target_dir=resolved_target,
-                    commit_all=_commit_has_all_flag(sub_args),
+                    commit_all=parsed.commits_worktree,
                     preceded_by_mutator=saw_mutator,
-                    preceded_by_full_stage=resolved_target in full_staged_dirs,
+                    preceded_by_full_stage=(
+                        not uses_custom_git_env and resolved_target in full_staged_dirs
+                    ),
                     preceded_by_selective_stage=resolved_target in selective_staged_dirs,
                 )
             )
             continue
         if subcmd in ("add", "stage"):
-            if _git_add_stages_all_tracked(sub_args):
+            if _git_add_may_force_stage_ignored(sub_args):
+                # Force-staging can add ignored files absent from the stamped
+                # working-tree fingerprint; require fresh verification first.
+                full_staged_dirs.discard(resolved_target)
+                saw_mutator = True
+                continue
+            if (
+                not uses_custom_git_env
+                and not has_input_redir
+                and preceding_op not in ("||", "|")
+                and _git_add_stages_all_tracked(sub_args, resolved_target)
+            ):
                 full_staged_dirs.add(resolved_target)
             else:
+                # Any non-full add (including abbreviated `--chmod`) may leave
+                # index modes or entries out of sync with the stamped tree.
+                full_staged_dirs.discard(resolved_target)
                 selective_staged_dirs.add(resolved_target)
             continue
         if subcmd in _BENIGN_PRE_COMMIT_GIT or cmd_name in _BENIGN_PRE_COMMIT_CMDS:
@@ -414,14 +712,19 @@ def _git(repo_root: Path, args: list[str]) -> bytes:
     ).stdout
 
 
-def _resolve_repo_root(target_dir: Path, fallback: Path) -> Path:
+def _try_resolve_repo_root(target_dir: Path) -> Path | None:
     if not target_dir.is_dir():
-        return fallback
+        return None
     try:
         top = _git(target_dir, ["rev-parse", "--show-toplevel"]).decode("utf-8").strip()
-        return Path(top).resolve() if top else fallback
+        return Path(top).resolve() if top else None
     except subprocess.CalledProcessError:
-        return fallback
+        return None
+
+
+def _resolve_repo_root(target_dir: Path, fallback: Path) -> Path:
+    resolved = _try_resolve_repo_root(target_dir)
+    return resolved if resolved is not None else fallback
 
 
 def _git_head_sha(repo_root: Path) -> str:
