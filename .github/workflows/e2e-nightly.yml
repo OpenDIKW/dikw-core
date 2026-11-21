@@ -1,0 +1,56 @@
+name: Nightly E2E (Docker)
+
+# Scheduled & manual real-environment E2E sweep via ``tools/e2e_verify.py``.
+# Builds the dikw-core Docker image from HEAD, starts server + pgvector
+# Postgres, and drives every ``dikw client`` verb across all packaged corpora.
+# When repository secrets ``MINIMAX_API_KEY`` and ``GITEE_API_KEY`` are set,
+# tier-2 live-provider legs also execute; otherwise they loudly SKIP while the
+# structural Docker + Postgres + CLI-coverage floor is still verified.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "E2E harness mode"
+        required: false
+        default: "docker"
+        type: choice
+        options:
+          - docker
+          - local
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-verify:
+    name: E2E verify (${{ inputs.mode || 'docker' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Run real-environment E2E harness
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          GITEE_API_KEY: ${{ secrets.GITEE_API_KEY }}
+          E2E_MODE: ${{ inputs.mode || 'docker' }}
+        run: |
+          uv run python tools/e2e_verify.py --mode "$E2E_MODE" --corpus all

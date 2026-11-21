@@ -267,7 +267,8 @@ def assert_full_cli_coverage(manifest: CoverageManifest, legs: list[LegResult]) 
 # Provider dikw.yml builder
 # --------------------------------------------------------------------------- #
 def build_provider_yaml(*, mode: str, observe: bool, env: dict[str, str],
-                        template: Path = _TEMPLATE) -> str:
+                        template: Path = _TEMPLATE,
+                        pg_password: str = "dikw") -> str:
     """Render the base's ``dikw.yml`` from the committed live template, applying
     per-vendor ``DIKW_E2E_*`` overrides and patching storage/telemetry per mode.
 
@@ -299,8 +300,11 @@ def build_provider_yaml(*, mode: str, observe: bool, env: dict[str, str],
     if mode == "docker":
         # Wiki index on Postgres (the task store is wired separately via
         # DIKW_SERVER_TASKS_DSN in the compose env). ``postgres`` is the
-        # compose service hostname on the internal network.
-        cfg.storage = PostgresStorageConfig(dsn="postgresql://dikw:dikw@postgres:5432/dikw")
+        # compose service hostname on the internal network, using the same
+        # ephemeral password Compose passes to the Postgres container.
+        cfg.storage = PostgresStorageConfig(
+            dsn=f"postgresql://dikw:{pg_password}@postgres:5432/dikw"
+        )
     else:
         cfg.storage = SQLiteStorageConfig()
 
@@ -758,13 +762,16 @@ class DockerLifecycle:
         _run_or_raise([*_PYTHON_M_DIKW, "init", str(self.base)], self.env)
         (self.base / "dikw.yml").write_text(
             build_provider_yaml(mode="docker", observe=self.args.observe, env=self.env,
-                                 template=Path(self.args.provider_profile)),
+                                 template=Path(self.args.provider_profile),
+                                 pg_password=self.pg_password),
             encoding="utf-8")
         self.seeded = seed_corpus(self.base / "sources", self.args.corpus)
 
         self.host_port = find_free_port()
         self.project = f"dikw-e2e-{self.host_port}"
-        extras = "postgres,otel" if self.args.observe else "postgres"
+        # Install ``cjk`` (jieba) alongside ``postgres`` so the default CJK
+        # tokenizer indexes multi-language corpora (e.g. ``--corpus all``).
+        extras = "postgres,cjk,otel" if self.args.observe else "postgres,cjk"
         (self.ctx_dir / "Dockerfile").write_text(_harness_dockerfile(wheel.name, extras),
                                                   encoding="utf-8")
         # Keep the build context lean: the seeded corpus + uv-build out dir are
@@ -1088,7 +1095,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = build_coverage_manifest()
     lifecycle = LocalLifecycle(args, env) if args.mode == "local" else DockerLifecycle(args, env)
     redact = make_redactor(
-        [env.get(k) for k in required_keys] + [getattr(lifecycle, "token", None)]
+        [env.get(k) for k in required_keys]
+        + [getattr(lifecycle, "token", None), getattr(lifecycle, "pg_password", None)]
     )
 
     def _sigterm(_signo: int, _frame: Any) -> None:
