@@ -11,7 +11,8 @@ It adds no new checks. It routes the diff to the deterministic checks that exist
 - **Routing is deterministic.** The `git diff` paths decide which legs run. This is dispatch, not judgment (Karpathy's rule).
 - **Every leg runs without a human:** `tools/check.py`, the Postgres contract, a retrieval ablation, the provider contract, server e2e, a doc-ref check.
 - **Judgment lives elsewhere.** K-layer synth quality goes to `dikw-core-verify-synth`. The design review is `dikw-core-fresh-review` (step 4, tier L).
-- **Fix red legs yourself.** Fix the cause and run the leg again. Do not hand a runnable check back to the user. Stop only on a real block signal: a Protocol or on-disk layout change, or a Postgres-only failure that you cannot reproduce locally.
+- **Fix red legs yourself — up to 3 rounds.** Fix the cause and run the leg again. Do not hand a runnable check back to the user. If the **same** failing leg stays red after **3 consecutive fix-and-reverify rounds**, stop and escalate to a human (block signal) rather than looping or loosening tests. Also stop immediately on a Protocol or on-disk layout change, or a Postgres-only failure that you cannot reproduce locally.
+- **No flaky-test workarounds.** Never silence a failing or flaky test by adding `skip`/`xfail`, inserting `sleep`, or retrying until green. Find and fix the root cause; if a test is genuinely unfixable or invalid, delete it and record why in the PR.
 
 </what-this-is>
 

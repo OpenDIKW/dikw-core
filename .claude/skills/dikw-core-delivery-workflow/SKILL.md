@@ -171,7 +171,7 @@ Rules for the Evidence section:
 
 STOP and ask the user only when one of these occurs. For everything else, continue.
 
-1. A required check fails and the cause is not clear.
+1. A required check fails and the cause is not clear, or the same verify leg remains red after 3 consecutive fix rounds.
 2. A reviewer sets `CHANGES_REQUESTED` or raises a design-level concern.
 3. A finding needs a wider Storage or Provider Protocol, or a change to the on-disk knowledge/wisdom layout. (Update `docs/design.md` first.)
 4. A merge conflict needs a domain decision, not a mechanical resolve.
