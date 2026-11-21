@@ -102,13 +102,14 @@ _REVERT_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 _REVERT_BODY_DECL_RE = re.compile(
-    r"^\s*(?:this\s+pr\s+)?reverts\s+"
-    r"(?:(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr\s+))?#\d+"
-    r"(?:\s*(?:,|and)\s*(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr\s+))?#\d+)*)",
+    r"^[ \t]*(?:this[ \t]+pr[ \t]+)?reverts[ \t]+"
+    r"(?:(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr[ \t]+))?#\d+"
+    r"(?:[ \t]*(?:,|[ \t]+and)[ \t]*(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)|(?:pr[ \t]+))?#\d+)*)",
     re.IGNORECASE | re.MULTILINE,
 )
 _REVERT_TITLE_SUFFIX_PR_RE = re.compile(r'\(#(\d+)\)"?\s*$')
 _PR_NUM_RE = re.compile(r"#(\d+)\b")
+_MD_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
 
 
 @dataclass(frozen=True)
@@ -234,16 +235,28 @@ def has_changes_requested(reviews: Sequence[Review], author: str) -> bool:
 
 
 def _strip_fences_and_receipt(body: str) -> str:
-    """Drop fenced code blocks and the ``## Delivery receipt`` section so quoted
-    evidence / command output never trips revert detection."""
+    """Drop fenced code blocks (backtick or tilde, respecting fence length) and
+    the ``## Delivery receipt`` section so quoted evidence never trips revert
+    detection."""
     lines: list[str] = []
-    in_fence = False
+    fence_char: str | None = None
+    fence_len = 0
     in_receipt = False
     for line in body.splitlines():
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
+        m = _MD_FENCE_RE.match(line)
+        if fence_char is not None:
+            if (
+                m is not None
+                and m.group(1)[0] == fence_char
+                and len(m.group(1)) >= fence_len
+                and not m.group(2).strip()
+            ):
+                fence_char = None
+                fence_len = 0
             continue
-        if in_fence:
+        if m is not None:
+            fence_char = m.group(1)[0]
+            fence_len = len(m.group(1))
             continue
         if _RECEIPT_HEADING_RE.match(line):
             in_receipt = True

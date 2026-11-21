@@ -417,13 +417,19 @@ def test_classify_revert_ignores_normal_prs_and_quoted_evidence() -> None:
         False,
         (),
     )
-    # Quoted examples inside code fences or Delivery receipt must not inflate revert counts.
+    # Quoted examples inside backtick, tilde, nested longer fences, or Delivery
+    # receipt must not inflate revert counts.
     body_with_evidence = (
         "## Summary\n\nAdds revert tracking.\n\n"
         "```\nReverts #99\n```\n\n"
+        "~~~text\nReverts #77\n~~~\n\n"
+        "````markdown\n```\nReverts #55\n```\n````\n\n"
         "## Delivery receipt\n\nReverts #42\n"
     )
     assert classify_revert("feat(tools): track reverts", body_with_evidence) == (False, ())
+
+    # Multi-line trailing reference on a separate line must not be swallowed.
+    assert classify_revert("fix: rollback", "Reverts #10,\n#20 is unrelated") == (True, (10,))
 
 
 def test_summarize_counts_reverts() -> None:
