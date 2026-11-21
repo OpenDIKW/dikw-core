@@ -105,11 +105,72 @@ def test_is_git_commit_command_matches_real_commits(cmd: str) -> None:
         "echo 'line1\ngit commit -m quoted'",
         "pytest tests/test_verify_hook.py",
         "git show HEAD",
+        "git commit --dry-run",
+        "git commit --short",
+        "git commit --porcelain",
+        "git commit --porcelain=v2",
+        "git commit --long",
+        "git commit -z",
+        "git commit --null",
+        "git commit -h",
+        "git commit --help",
     ],
 )
 def test_is_git_commit_command_ignores_non_commits(cmd: str) -> None:
     vh = _load_module()
     assert vh.is_git_commit_command(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'git commit -m "--dry-run"',
+        "git commit --message --dry-run",
+        'git commit -m"--short"',
+        "git commit --dry-run --no-dry-run -m 'real commit'",
+        "git commit --short --no-short -m 'negated short'",
+        "git commit --porcelain --no-porcelain -m 'negated porcelain'",
+        "git commit --long --no-long -m 'negated long'",
+        "git commit -z --no-null -m 'negated null'",
+        "git commit -Sabc123h -m 'signing key containing h'",
+        "git commit -uall -m 'untracked mode with a'",
+        "git commit -m 'flag as path' -- --dry-run",
+    ],
+)
+def test_dry_run_lookalikes_are_still_gated(tmp_path: Path, cmd: str) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    (repo / "hello.py").write_text("x = 2\n", encoding="utf-8")
+
+    assert vh.is_git_commit_command(cmd) is True
+    decision = vh.evaluate_commit_gate(
+        repo, command=cmd, mode="enforce", session_id=f"s-lookalike-{cmd}"
+    )
+    assert decision.allowed is False
+    assert decision.exit_code == 2
+
+
+def test_read_only_commit_preview_allowed_without_stamp_or_state_mutation(tmp_path: Path) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    (repo / "hello.py").write_text("x = 2\n", encoding="utf-8")
+
+    for cmd in (
+        "git commit --dry-run",
+        "git commit --short",
+        "git commit --short --no-dry-run",
+        "git commit --porcelain",
+        "git commit -z",
+        "git commit --null",
+        "git commit --help",
+    ):
+        decision = vh.evaluate_commit_gate(
+            repo, command=cmd, mode="enforce", session_id="s-dry-run"
+        )
+        assert decision.allowed is True, cmd
+        assert decision.exit_code == 0
+
+    assert not (repo / ".claude" / ".verify-gate-state.json").exists()
 
 
 def test_extract_skip_reason() -> None:
@@ -191,12 +252,34 @@ def test_partially_staged_file_rejected_on_plain_commit(tmp_path: Path) -> None:
     (repo / "hello.py").write_text("x = 3\n", encoding="utf-8")
     vh.write_stamp(repo, stages=["ruff", "mypy", "pytest"])
 
-    # Plain `git commit` (including attached `-m"add tests"` with 'a' in the message)
-    # would commit the untested staged version 2 -> must fail.
+    # Plain `git commit` (including attached `-m"add tests"` with 'a' in the message),
+    # `--include` / `-i` path commits (which also commit other staged files),
+    # interactive/patch commits, and selective/subdir staging -> must fail.
+    sub = repo / "sub"
+    sub.mkdir()
     for cmd in (
         "git commit -m 'partial'",
         'git commit -m"add tests"',
         "git add README.md && git commit -m 'selective add'",
+        "git commit -i -m 'include' -- hello.py",
+        "git commit --include -m 'include long' hello.py",
+        "git commit --incl -m 'abbreviated include' hello.py",
+        "git commit -p -m 'patch' -- hello.py",
+        "git commit --patch --no-interactive -m 'patch beats no-interactive' hello.py",
+        "git commit --pathspec-from-file=paths.txt -m 'file pathspec'",
+        "git commit --pathspec-from-file paths.txt -m 'file pathspec sep'",
+        "git commit -Skeya -m 'attached signing key with a'",
+        "git commit -uall -m 'attached untracked mode with a'",
+        "git commit -m 'stdin redir' < /dev/null",
+        "cd sub && git add . && git commit -m 'subdir dot add'",
+        "git add -p . && git commit -m 'patch dot add'",
+        "git add --dry . && git commit -m 'abbreviated dry add'",
+        "git diff --cached --quiet && git add .; git commit -m 'conditional add then semi'",
+        "git add . ; git commit -m 'unconditional commit after add'",
+        "git status || git add . && git commit -m 'or-skipped add'",
+        "git status ||\ngit add . && git commit -m 'or-newline skipped add'",
+        "GIT_INDEX_FILE=/tmp/other git add . && git commit -m 'different index file'",
+        "git add . && git add --ch=+x hello.py && git commit -m 'abbreviated chmod after add'",
     ):
         d_plain = vh.evaluate_commit_gate(
             repo, command=cmd, mode="enforce", session_id=f"s-partial-{cmd}"
@@ -204,12 +287,42 @@ def test_partially_staged_file_rejected_on_plain_commit(tmp_path: Path) -> None:
         assert d_plain.allowed is False, cmd
         assert "staged index differs" in d_plain.message
 
-    # `git commit -am ...`, `git commit --gpg-sign -a ...`, and `git add -A && git commit`
-    # commit the tested working-tree version 3 -> allowed.
+    # `git add --force` can stage ignored files outside the stamped fingerprint.
+    for cmd in (
+        "git add --force . && git commit -m 'force dot add'",
+        "git add -f . && git commit -m 'short force dot add'",
+    ):
+        d_force = vh.evaluate_commit_gate(
+            repo, command=cmd, mode="enforce", session_id=f"s-force-{cmd}"
+        )
+        assert d_force.allowed is False, cmd
+        assert "separate calls" in d_force.message
+
+    # `git add .` when command_cwd is a subdirectory must still be blocked.
+    d_sub_cwd = vh.evaluate_commit_gate(
+        repo,
+        command="git add . && git commit -m 'sub cwd'",
+        mode="enforce",
+        session_id="s-partial-sub-cwd",
+        command_cwd=sub,
+    )
+    assert d_sub_cwd.allowed is False
+    assert "staged index differs" in d_sub_cwd.message
+
+    # `git commit -am ...`, `git commit --gpg-sign -a ...`, repo-root `git add .`,
+    # `git add -A`, and path-limited (`--only` / default) commits all commit the
+    # tested working-tree bytes -> allowed.
     for cmd in (
         "git commit -am 'all'",
         "git commit --gpg-sign -a -m 'signed all'",
         "git add -A && git commit -m 'full stage then commit'",
+        "git add . && git commit -m 'root dot add then commit'",
+        "git add . &&\ngit commit -m 'root dot add newline continuation'",
+        "git add -- . && git commit -m 'root dd dot add then commit'",
+        "git commit --only -- hello.py -m 'only'",
+        "git commit -o -m 'short only' hello.py",
+        "git commit -m 'path' -- hello.py",
+        "git commit -m 'path positional' hello.py",
     ):
         d_all = vh.evaluate_commit_gate(
             repo, command=cmd, mode="enforce", session_id=f"s-partial-ok-{cmd}"
@@ -470,6 +583,27 @@ def test_check_subcommand_is_read_only_and_nonzero_when_missing(tmp_path: Path) 
     # Once stamped, check returns 0.
     assert vh.main(["--repo-root", str(repo), "stamp", "--stage", "ruff"]) == 0
     assert vh.main(["--repo-root", str(repo), "check"]) == 0
+
+
+def test_default_mode_is_enforce_when_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    (repo / "hello.py").write_text("x = 2\n", encoding="utf-8")
+    monkeypatch.delenv("DIKW_VERIFY_GATE_MODE", raising=False)
+
+    assert vh.resolve_mode() == "enforce"
+    payload = json.dumps(
+        {
+            "session_id": "s-default-enforce",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m 'unverified default'"},
+        }
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
+    assert vh.main(["--repo-root", str(repo), "claude-pretool"]) == 2
+    assert "verify-gate:enforce" in capsys.readouterr().err
 
 
 def test_claude_pretool_reads_env_mode_and_handles_payloads(
