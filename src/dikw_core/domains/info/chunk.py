@@ -34,6 +34,11 @@ from .tokenize import CjkTokenizer, count_tokens
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
 _PARA_SEP = re.compile(r"\n\s*\n")
 
+# Bump whenever ``chunk_markdown`` changes emitted chunk boundaries so eval
+# snapshot caches (``eval/runner._corpus_cache_key``) rebuild instead of
+# silently reusing pre-fix indexes.
+CHUNKER_VERSION = 2
+
 
 class MarkdownChunk(BaseModel):
     """A paragraph-aligned slice of a document body."""
@@ -155,23 +160,32 @@ def chunk_markdown(
 
     for p in paras:
         heading = _is_heading(p)
+        flushed_for_heading = False
 
         # 1) Start a new chunk before a heading when the current chunk has real content.
         if heading and current_tokens > max_overlap and current:
             carry = _flush_and_overlap()
             current = list(carry)
             current_tokens = sum(c.tokens for c in current)
+            flushed_for_heading = True
 
         # 2) Close the current chunk if adding this paragraph would blow the budget.
         if current and current_tokens + p.tokens > max_tokens:
-            carry = _flush_and_overlap()
-            current = list(carry)
-            current_tokens = sum(c.tokens for c in current)
-            # Guard against an endless loop: if the carry itself already overflows
-            # (shouldn't happen because of the overlap cap) discard it.
-            if current_tokens + p.tokens > max_tokens and current:
+            if flushed_for_heading:
+                # ``current`` holds only tail overlap carried from the chunk just
+                # emitted at step 1; flushing again would re-emit an already-
+                # covered sub-span. Drop the carry so the heading starts cleanly.
                 current = []
                 current_tokens = 0
+            else:
+                carry = _flush_and_overlap()
+                current = list(carry)
+                current_tokens = sum(c.tokens for c in current)
+                # Guard against an endless loop: if the carry itself already overflows
+                # (shouldn't happen because of the overlap cap) discard it.
+                if current_tokens + p.tokens > max_tokens and current:
+                    current = []
+                    current_tokens = 0
 
         current.append(p)
         current_tokens += p.tokens

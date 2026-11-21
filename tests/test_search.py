@@ -194,6 +194,18 @@ def test_comb_mnz_zero_weight_leg_excluded_from_count() -> None:
     assert mnz == sum_
 
 
+def test_comb_mnz_zero_weight_only_key_scores_zero_without_keyerror() -> None:
+    """A key retrieved ONLY by a disabled (weight == 0.0) leg appears in
+    ``comb_sum_fusion`` with score 0.0; ``comb_mnz_fusion`` must keep the same
+    key set with score 0.0 rather than raising ``KeyError``."""
+    leg_disabled = [("shared", 1.0), ("only_disabled", 0.5)]
+    leg_active = [("shared", 1.0), ("only_active", 0.8)]
+    mnz = comb_mnz_fusion([leg_disabled, leg_active], weights=[0.0, 1.0])
+    sum_ = comb_sum_fusion([leg_disabled, leg_active], weights=[0.0, 1.0])
+    assert mnz == sum_
+    assert mnz["only_disabled"] == 0.0
+
+
 # ---- apply_source_diversity_penalty (1.3.1) --------------------------------
 
 

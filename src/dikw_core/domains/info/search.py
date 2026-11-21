@@ -301,7 +301,7 @@ def comb_mnz_fusion[K: Hashable](
             continue
         for key in _normalise_per_leg(leg):
             leg_count[key] = leg_count.get(key, 0) + 1
-    return {k: s * leg_count[k] for k, s in fused.items()}
+    return {k: s * leg_count.get(k, 0) for k, s in fused.items()}
 
 
 class HybridSearcher:
