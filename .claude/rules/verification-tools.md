@@ -51,3 +51,4 @@ Tooling config lives in `pyproject.toml`:
 - ruff: line-length 100, rules `E,F,W,I,UP,B,SIM,C4,RUF` (E501 ignored)
 - mypy: `strict = true`, `packages = ["dikw_core"]`, `mypy_path = "src"`
 - pytest: `asyncio_mode = "auto"`, `testpaths = ["tests"]`
+- hypothesis: property-based invariants live in `tests/test_properties.py` (fast suite)
