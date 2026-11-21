@@ -7,6 +7,23 @@ on each entry call out exactly what shape changes break.
 
 ## Unreleased
 
+## 0.6.11 — Codex SDK compatibility and release tooling maintenance
+
+### Fixed
+
+- Cap the OpenAI SDK below 3.31. Its stream reducer can reject completed
+  Codex responses before dikw recovers their streamed text when the final
+  response omits the message.
+
+### Changed
+
+- Update the locked OpenTelemetry API and SDK to 1.45.2 and the related
+  instrumentation packages to 0.66b2 (#307).
+- Refresh other locked dependencies (#302, #303) and update the CodeQL and
+  Python setup actions used by CI (#304, #306).
+- Update the release workflow to `actions/download-artifact` 8.0.2 for the
+  wheel and source distribution consumed by PyPI and GitHub Releases (#305).
+
 ## 0.6.10 — Chinese-ready images and MiniMax empty-stream recovery
 
 ### Fixed

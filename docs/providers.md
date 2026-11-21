@@ -392,8 +392,8 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   provider catches this exact signature (and the matching
   `AttributeError("attribute 'output'")` form) and falls back to the
   locally-collected delta text — `finish_reason="error"` distinguishes
-  the recovered partial from a clean completion. **3.x** no longer
-  crashes: it rebuilds a missing `output` from streamed
+  the recovered partial from a clean completion. Supported **3.x** versions
+  rebuild a missing `output` from streamed
   `response.output_item.done` events (`[]` if there were none). Dikw
   recovers text from those items or the accumulated deltas and retains
   the final status and usage, so a recovered completed turn reports
@@ -408,7 +408,9 @@ flagging — keep these in mind before flipping `llm: openai_codex`:
   A final holding an explicit empty message
   (`output=[message("")]`) remains a valid empty answer, including when it
   clears earlier streamed text. Real-SDK SSE tests pin these cases against
-  the locked version; the temporary `openai<3` cap is lifted.
+  the locked version. The SDK is capped at `openai<3.31` because 3.31 and
+  later can reject a completed stream with unfinished output items before
+  dikw can recover the deltas.
 - **Empty-final-output recovery (issue #160).** A *different* codex
   backend quirk: the terminal `response.completed` sometimes ships
   `output = []` (an empty list) even though valid `response.output_text.delta`
