@@ -1,0 +1,9 @@
+# Keep generated text and executable scripts identical after checkout and sync.
+/.agents/** text=auto eol=lf
+/.claude/agents/** text=auto eol=lf
+/.claude/rules/** text=auto eol=lf
+/.claude/skills/** text=auto eol=lf
+/.claude/settings.json text eol=lf
+/.codex/** text=auto eol=lf
+/harness/** text=auto eol=lf
+/scripts/harness-doctor text eol=lf

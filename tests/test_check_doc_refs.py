@@ -178,12 +178,12 @@ def test_allowlisted_future_verb_passes(tmp_path: Path) -> None:
     assert cdr.check_doc_refs(repo) == []
 
 
-def test_claude_skills_dir_is_scanned(tmp_path: Path) -> None:
-    """Skill docs under ``.claude/skills/`` cite CLI verbs and env vars the
+def test_harness_skills_dir_is_scanned(tmp_path: Path) -> None:
+    """Skill docs under ``harness/skills/`` cite CLI verbs and env vars the
     same way ``docs/**`` does — a typo'd verb there drifts silently unless the
     gate scans them too."""
     repo = _make_repo(tmp_path, "clean doc\n")
-    skill = repo / ".claude" / "skills" / "my-skill"
+    skill = repo / "harness" / "skills" / "my-skill"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
         "Run `dikw client bogus` then set `DIKW_BOGUS_VAR`.\n", encoding="utf-8"
@@ -193,12 +193,12 @@ def test_claude_skills_dir_is_scanned(tmp_path: Path) -> None:
     assert [f for f in findings if f.kind == "env" and f.ref == "DIKW_BOGUS_VAR"]
 
 
-def test_claude_rules_dir_is_scanned(tmp_path: Path) -> None:
-    """Path-scoped rules under ``.claude/rules/`` carry the area invariants that
-    moved out of CLAUDE.md — a renamed verb or env var there must still fail
+def test_harness_rules_dir_is_scanned(tmp_path: Path) -> None:
+    """Path-scoped rules under ``harness/rules/`` carry the area invariants that
+    moved out of AGENTS.md — a renamed verb or env var there must still fail
     the gate."""
     repo = _make_repo(tmp_path, "clean doc\n")
-    rules = repo / ".claude" / "rules"
+    rules = repo / "harness" / "rules"
     rules.mkdir(parents=True)
     (rules / "area.md").write_text(
         "---\npaths:\n  - \"src/**\"\n---\n"

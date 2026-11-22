@@ -1,6 +1,6 @@
 ---
 name: dikw-core-verify
-description: The delivery-loop step-3 in-loop verify router — classify what the diff touches, run the shared deterministic floor (tools/check.py) plus only the change-specific legs that path needs (storage→Postgres contract, info→retrieval ablation, knowledge→dikw-core-verify-synth, providers→contract+check, cli/server/client→e2e+import-direction+CLI-grep, docs→ref-resolve), emit a per-leg pass/fail table, and self-heal red legs by fixing and re-running. Use at delivery-loop step 3 after implementing a non-trivial change, before the review step.
+description: "The delivery-loop step-3 in-loop verify router — classify what the diff touches, run the shared deterministic floor (tools/check.py) plus only the change-specific legs that path needs (storage→Postgres contract, info→retrieval ablation, knowledge→dikw-core-verify-synth, providers→contract+check, cli/server/client→e2e+import-direction+CLI-grep, docs→ref-resolve), emit a per-leg pass/fail table, and self-heal red legs by fixing and re-running. Use at delivery-loop step 3 after implementing a non-trivial change, before the review step."
 ---
 
 <what-this-is>
@@ -23,17 +23,20 @@ Track each leg that fires. Run the shared floor first, then the change-specific 
 ## 0. Classify the diff
 
 ```
-git diff --name-only main...HEAD     # (or vs the working tree if pre-commit)
+git diff --name-only main...HEAD
+git diff --name-only HEAD
+git diff --cached --name-only
+git ls-files --others --exclude-standard
 ```
 
-Put each path in a bucket:
+Combine the outputs and classify each distinct path, including untracked files and pending edits.
 
 - `src/dikw_core/storage/**`
 - `src/dikw_core/domains/info/**` + `RetrievalConfig`
 - `src/dikw_core/domains/knowledge/**` + `src/dikw_core/api_synth.py` + the authoring prompts (`src/dikw_core/prompts/**`)
 - `src/dikw_core/providers/**`
 - `src/dikw_core/cli.py` / `src/dikw_core/server/**` / `src/dikw_core/client/**`
-- `docs/**` + `*.md` + `.claude/**`
+- `docs/**` + `*.md` + `harness/**`, `scripts/harness-doctor` and the three client adapters
 - `src/dikw_core/config.py` / other
 
 The routing table below uses the short form of the same buckets.
@@ -57,13 +60,13 @@ The cheap stages (ruff + mypy) also run as a git pre-commit hook after `uv run p
 | `domains/knowledge/**`, `api_synth.py`, the LLM authoring prompts | Run **`dikw-core-verify-synth`** (`synth --verify [--judge]` + scoped lint + `eval --eval synth` on the real elon-musk corpus). |
 | `providers/**` | The provider contract harness and the retry/error tests. A green SDK fake does not prove the real backend works: confirm that a sentinel fixture exists for the backend behavior you changed. Then `dikw client check` against a real or stub endpoint; assert exit 0 and sane dims. |
 | `cli.py`, `server/**`, `client/**` | `uv run pytest tests/server tests/client`; `uv run pytest -v -m slow` (server e2e). Then the real-environment harness `uv run python tools/e2e_verify.py --mode local`, plus `--mode docker` when a Docker daemon runs (else SKIPPED, said loudly). It starts a live server and drives **every** `dikw client` verb; a new verb without a step fails the run. Tier-2 legs (`check`/embed/`synth`/vector-`retrieve`/`eval`) need `.env` keys and SKIP loudly without them. Assert that `client/*` imports no `dikw_core.{api,storage,providers,server,eval}` symbol (`tests/test_layering_contract.py`). |
-| `docs/**`, `*.md`, `.claude/**` only | `uv run python tools/check_doc_refs.py`. It asserts that every `dikw <verb>` and `DIKW_*` env var in `CLAUDE.md`, `docs/**`, `README.md`, and `.claude/{skills,rules}/**` resolves in source. It is also a pytest gate. Read any `/v1/...` route or front-matter key in the diff by eye; nothing checks them yet. |
+| `docs/**`, `*.md`, `harness/**`, `scripts/harness-doctor` and the three client adapters only | `uv run python tools/check_doc_refs.py`. It asserts that every `dikw <verb>` and `DIKW_*` env var in `AGENTS.md`, `docs/**`, `README.md`, and `harness/**` resolves in source. It is also a pytest gate. Read any `/v1/...` route or front-matter key in the diff by eye; nothing checks them yet. |
 
 ## 3. CLI-string grep gate (any rename or removal)
 
 For each CLI verb, route, env var, or public symbol that the diff **renamed or removed**:
 
-- Grep the whole repo for the old spelling: `CLAUDE.md`, `docs/**`, `CHANGELOG.md`, `.claude/**`.
+- Grep the whole repo for the old spelling: `AGENTS.md`, `docs/**`, `CHANGELOG.md`, `harness/**`, `scripts/harness-doctor` and the three client adapters.
 - Also grep the read sites of any guard you added or removed.
 - A reference that survives is a finding.
 

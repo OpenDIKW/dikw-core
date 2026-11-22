@@ -1,0 +1,27 @@
+# Native policy covers literal prefixes. AGENTS.md applies to every force-push spelling.
+force_options = ["--force", "-f", "--force-with-lease"]
+reason = "Force-pushing requires the maintainer to handle the branch."
+
+prefix_rule(
+    pattern = ["git", "push", force_options],
+    decision = "forbidden",
+    justification = reason,
+    match = ["git push --force origin HEAD", "git push -f", "git push --force-with-lease"],
+    not_match = ["git push origin HEAD", "git fetch origin"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", force_options],
+    decision = "forbidden",
+    justification = reason,
+    match = ["git push origin --force-with-lease HEAD"],
+    not_match = ["git push origin HEAD"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", ["HEAD", "main"], force_options],
+    decision = "forbidden",
+    justification = reason,
+    match = ["git push origin HEAD --force", "git push origin main -f"],
+    not_match = ["git push origin HEAD", "git push origin main"],
+)

@@ -1,0 +1,38 @@
+{
+  "patterns": {
+    "all": ["src/**"],
+    "config": ["src/**/config.{py,ts}"],
+    "docs": ["docs/Design Notes.md"],
+    "nested": ["src/nested/*.ts"]
+  },
+  "cases": [
+    {
+      "paths": ["guide"],
+      "want": []
+    },
+    {
+      "paths": ["src/config.py"],
+      "want": ["all", "config"]
+    },
+    {
+      "paths": ["src\\nested\\config.ts"],
+      "want": ["all", "config", "nested"]
+    },
+    {
+      "paths": ["docs/Design Notes.md"],
+      "want": ["docs"]
+    },
+    {
+      "paths": ["src/x.py", "docs/Design Notes.md"],
+      "want": ["all", "docs"]
+    },
+    {
+      "paths": ["docs/archive/Design Notes.md"],
+      "want": []
+    },
+    {
+      "paths": ["src/nested/extra/config.ts"],
+      "want": ["all", "config"]
+    }
+  ]
+}

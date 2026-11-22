@@ -11,19 +11,19 @@ paths:
 Read this rule before you change `tools/check.py`, `tools/e2e_verify.py`, or CI.
 
 `tools/check.py` is the single in-loop gate to run before every commit; it runs
-the same ruff/mypy/pytest CI runs, in CI order, without `--cov` (which flakes
+the same harness-doctor, ruff, mypy and pytest checks as CI, in CI order, without `--cov` (which flakes
 ASGI/CliRunner tests locally on Windows), and writes a gitignored verification
 stamp (`.claude/.verify-stamp.json`) when all stages pass and the working tree
 stayed unchanged during the run.
 
-`tools/verify_hook.py` is wired into `.claude/settings.json` as a `PreToolUse`
-hook on `Bash` commands invoking `git commit` (preferring `.venv/bin/python`
-with `python3` fallback). Mode is controlled by `DIKW_VERIFY_GATE_MODE`
+The three clients call `tools/verify_hook.py` before commit commands. Mode is controlled by `DIKW_VERIFY_GATE_MODE`
 (`off` / `observe` / `enforce` [default]): `enforce` blocks unverified commits
 (exit 2) unless the target worktree's stamp matches the tree and staged
 content, the command carries `[skip-verify: <reason>]`, or the same session has
 already been blocked twice (escape hatch); `observe` logs unverified commits to
 `.claude/verify-gate-observe.jsonl` without blocking.
+
+Codex 0.160.0 reports the shell command without its execution directory. Use `git -C "<absolute worktree path>" commit` in Codex so the hook can verify the intended worktree. Forward slashes and quotes work in both PowerShell and Bash.
 
 `.github/workflows/eval-gate.yml` runs on `pull_request_target` with read-only
 `contents` permission, checking out the base commit and fetching the PR head

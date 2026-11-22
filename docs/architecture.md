@@ -262,7 +262,7 @@ connect:
 
 There is **no in-place upgrade path** — bumping `SCHEMA_VERSION` in code
 invalidates every existing DB at the next connect. This is fit for
-alpha (`CLAUDE.md` warns "APIs, on-disk formats, database schema, and
+alpha (`README.md` warns "APIs, on-disk formats, database schema, and
 CLI will change"); a real migration framework lands when we declare
 beta. Schema history lives in `git log` on `migrations/`, not in a
 deprecated-tables inventory.

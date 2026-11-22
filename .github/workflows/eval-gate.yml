@@ -1,6 +1,6 @@
 name: Eval gate
 
-# Codifies CLAUDE.md's "Things not to do" final bullet:
+# Enforces the real-data baseline requirement in AGENTS.md:
 #   "Don't ship K-layer / Retrieval changes without an entry in
 #    evals/BASELINES.md showing real-data outcome."
 #

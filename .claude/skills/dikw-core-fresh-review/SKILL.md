@@ -1,6 +1,6 @@
 ---
 name: dikw-core-fresh-review
-description: The pre-merge design review for tier-L changes — spawn a clean subagent that did NOT write the code, hand it ONLY the diff + dikw-core's design-invariant rubric + the relevant docs/design.md and .claude/rules sections, and have it judge correctness, scope discipline, and invariant adherence (the checks ruff/mypy/pytest and /code-review's bug-hunt cannot make), plus sample-read synth-produced pages for K-layer changes. Emits a pass/blocking verdict with a triaged true-positive/false-positive table. Use at delivery-loop step 4 for tier-L diffs, after the codex rounds are quiet, before the PR merges.
+description: "The pre-merge design review for tier-L changes — spawn a clean subagent that did NOT write the code, hand it ONLY the diff + dikw-core's design-invariant rubric + the relevant docs/design.md and harness/rules sections, and have it judge correctness, scope discipline, and invariant adherence (the checks ruff/mypy/pytest and independent code review's bug-hunt cannot make), plus sample-read synth-produced pages for K-layer changes. Emits a pass/blocking verdict with a triaged true-positive/false-positive table. Use at delivery-loop step 4 for tier-L diffs, after the codex rounds are quiet, before the PR merges."
 ---
 
 <what-this-is>
@@ -13,14 +13,14 @@ It is **not** a bug hunt and **not** a test run:
 | lens | tool | what it catches |
 |---|---|---|
 | deterministic floor | `tools/check.py` (step 3) | ruff / mypy / pytest |
-| bug hunt | `/code-review` (step 4) | concrete defects, edge cases |
+| bug hunt | independent code review (step 4) | concrete defects, edge cases |
 | **invariant / design / scope** | **this skill** (step 4, tier L) | fixes at the wrong depth, seam violations, scope drift, Karpathy-rule breaks |
 
-Run `/code-review` **and** this skill. They are different lenses, not substitutes.
+Run both the independent code review and this skill. They are different lenses, not substitutes.
 This skill scores the diff against `docs/verification-rubric.md` (a checkable form of the invariants) and the intent in `docs/design.md`:
 is this the right change, at the right depth, through the named seams, with scoping deterministic and reasoning probabilistic?
 
-**Clean context is the point.** Spawn the reviewer with the Agent tool and a **self-contained** prompt (diff + rubric + design excerpts).
+**Clean context is the point.** Spawn the reviewer using the client's independent `reviewer` subagent and a **self-contained** prompt (diff + rubric + design excerpts).
 Never give it the build conversation. A reviewer that knows the author's reasons approves too easily.
 
 **Run autonomously.** Fix every confirmed blocking finding. Reject false positives and nitpicks with a one-line reason.
@@ -33,20 +33,20 @@ Stop only on a block signal: a design-level concern or `CHANGES_REQUESTED`, or a
 ## 0. Scope — when this runs
 
 - Step 4 of the delivery loop, for tier-L diffs, after the codex rounds are quiet.
-- If `git diff main...HEAD` is empty, diff the working tree. The review often runs before the commit.
+- Include pending edits even when the branch already has commits.
 
 ## 1. Gather the review packet
 
 The reviewer sees only this packet:
 
-- The unified diff: `git diff main...HEAD` (or the PR, or the working tree).
+- The committed patch (`git diff main...HEAD` or the PR), the staged patch (`git diff --cached`), the unstaged patch (`git diff`), and the contents of relevant new files listed by `git ls-files --others --exclude-standard`.
 - `docs/verification-rubric.md` — the yes / no / N-A invariant checklist, **read from the base branch (`git show main:docs/verification-rubric.md`)** so a PR can never weaken the rubric that judges it.
 - The `docs/design.md` sections for what the diff touches (K-layer authoring, retrieval fusion, persist pipeline, …) — **read approved excerpts from `main` (`git show main:docs/design.md`)** so proposed design edits in the diff are judged as proposed changes rather than already-approved authority.
-- The `.claude/rules/*.md` files for the touched areas — **read existing rule files from `main` (`git show main:.claude/rules/<file>`)** for the same anti-tamper reason; if the diff introduces a brand-new rule file absent on `main`, include it separately labeled as a proposed rule rather than replacing base-branch invariants.
+- The `harness/rules/*.md` files for the touched areas — **read existing rule files from `main` (`git show main:harness/rules/<file>`)** for the same anti-tamper reason; if the diff introduces a brand-new rule file absent on `main`, include it separately labeled as a proposed rule rather than replacing base-branch invariants.
 
 ## 2. Spawn the clean reviewer(s)
 
-Use the Agent tool. Scale the panel to the change:
+Delegate to the independent `reviewer` subagent. Scale the panel to the change:
 
 - **Default (1 reviewer):** score every rubric line yes / no / N-A, and read the diff for correctness and scope drift.
 - **Large or cross-cutting diff:** add a 2nd reviewer. One owns invariant adherence. The other owns scope, simplicity, and design fit.
@@ -94,7 +94,7 @@ A reviewer can invent a finding. Before you act, **check each finding against th
 <notes>
 
 - **Keep the context clean.** Never paste the implementation conversation into the reviewer prompt. If you start to explain "why" to the reviewer, you have already biased it.
-- **This skill adds to the other lenses; it does not replace them.** `/code-review` runs beside it. Step 3 already gated the deterministic floor. This skill owns the invariant, design, and scope judgment that ruff, mypy, and pytest cannot make.
+- **This skill adds to the other lenses; it does not replace them.** independent code review runs beside it. Step 3 already gated the deterministic floor. This skill owns the invariant, design, and scope judgment that ruff, mypy, and pytest cannot make.
 - **The review can be wrong.** Step 4's TP/FP triage handles that. Honest triage is better than both approving everything and chasing invented findings.
 - **Karpathy framing.** Step 3 hard-gates the deterministic floor. This skill is the probabilistic pre-merge judgment (right change? right depth? right seam?). The same split applies to `synth --verify --judge`, whose grounding pass/fail is left to `dikw-core-verify-synth`.
 

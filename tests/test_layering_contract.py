@@ -1,4 +1,4 @@
-"""Layering-invariant contract — enforce the import-direction rules CLAUDE.md
+"""Layering-invariant contract — enforce the import-direction rules the module map
 documents under "Layering invariants" / "Named seams".
 
 ruff/mypy/pytest are all blind to these: a forbidden import still type-checks

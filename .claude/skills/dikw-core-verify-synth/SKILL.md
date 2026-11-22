@@ -1,6 +1,6 @@
 ---
 name: dikw-core-verify-synth
-description: The K-layer leg of step-3 in-loop verify — runs dikw-core's shipped synth self-check verbs (synth --verify [--judge], lint, eval --eval synth [--against]) against the real elon-musk corpus and folds them into one per-leg pass/fail table, applying the probabilistic grounding judgment the CLI deliberately leaves report-only. Use when a change touches the K layer (domains/knowledge/, api_synth.py, the LLM authoring prompts) or whenever iterating synth output quality.
+description: "The K-layer leg of step-3 in-loop verify — runs dikw-core's shipped synth self-check verbs (synth --verify [--judge], lint, eval --eval synth [--against]) against the real elon-musk corpus and folds them into one per-leg pass/fail table, applying the probabilistic grounding judgment the CLI deliberately leaves report-only. Use when a change touches the K layer (domains/knowledge/, api_synth.py, the LLM authoring prompts) or whenever iterating synth output quality."
 ---
 
 <what-this-is>
@@ -32,7 +32,7 @@ Track each leg. Run the floor first. A red **deterministic** leg: fix it and run
 
 ## 0. Scope — does this skill apply?
 
-Confirm that `git diff --name-only main...HEAD` touches the K layer:
+Take the union of paths from `git diff --name-only main...HEAD`, `git diff --name-only HEAD`, `git diff --cached --name-only` and `git ls-files --others --exclude-standard`. Check that list for K-layer changes:
 `src/dikw_core/domains/knowledge/**`, `src/dikw_core/api_synth.py`, or an LLM authoring prompt (`src/dikw_core/prompts/{synthesize,lint_fix_orphan_merge,lint_fix_broken_wikilink_grounded}.md`).
 
 - If it does not, this skill does nothing. Return to the caller.
