@@ -3,7 +3,7 @@
 Two checks the ``dikw --help`` exit-0 smoke in CI can't make:
 
 1. The top level stays local-only (``version`` / ``init`` / ``serve`` / ``auth`` /
-   ``client``). CLAUDE.md forbids top-level HTTP aliases — every HTTP-bound verb
+   ``client``). the CLI surface contract forbids top-level HTTP aliases — every HTTP-bound verb
    lives under ``dikw client <verb>``. A re-introduced alias fails here.
 2. A committed golden snapshot of the whole command tree, so an accidental rename
    or removed subcommand is caught and forces a deliberate golden update + doc sync
@@ -52,7 +52,7 @@ def test_top_level_commands_are_local_only() -> None:
     assert top == {"version", "init", "serve", "auth", "client"}, (
         "Top-level CLI must stay local-only (version/init/serve/auth/client). "
         "HTTP-bound verbs live under `dikw client <verb>` with no top-level "
-        f"aliases (CLAUDE.md). Unexpected top-level set: {sorted(top)}"
+        f"aliases (the CLI surface contract). Unexpected top-level set: {sorted(top)}"
     )
 
 

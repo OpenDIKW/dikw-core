@@ -1,0 +1,11 @@
+{
+  "description": "Independently review the diff against this repository's verification rubric and report actionable findings.",
+  "claudeTools": [
+    "Read",
+    "Grep",
+    "Glob"
+  ],
+  "antigravityTools": [
+    "read_file"
+  ]
+}

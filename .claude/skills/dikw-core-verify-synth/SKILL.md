@@ -1,6 +1,6 @@
 ---
 name: dikw-core-verify-synth
-description: The K-layer leg of step-3 in-loop verify — runs dikw-core's shipped synth self-check verbs (synth --verify [--judge], lint, eval --eval synth [--against]) against the real elon-musk corpus and folds them into one per-leg pass/fail table, applying the probabilistic grounding judgment the CLI deliberately leaves report-only. Use when a change touches the K layer (domains/knowledge/, api_synth.py, the LLM authoring prompts) or whenever iterating synth output quality.
+description: "The K-layer leg of step-3 in-loop verify — runs dikw-core's shipped synth self-check verbs (synth --verify [--judge], lint, eval --eval synth [--against]) against the real elon-musk corpus and folds them into one per-leg pass/fail table, applying the probabilistic grounding judgment the CLI deliberately leaves report-only. Use when a change touches the K layer (domains/knowledge/, api_synth.py, the LLM authoring prompts) or whenever iterating synth output quality."
 ---
 
 <what-this-is>

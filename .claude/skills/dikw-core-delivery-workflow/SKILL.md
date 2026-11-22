@@ -1,11 +1,11 @@
 ---
 name: dikw-core-delivery-workflow
-description: The dikw-core delivery loop — drive a non-trivial change from request to squash-merged PR through resume → clarify → plan/TDD → in-loop verify → review tiered by risk (codex, /code-review, fresh-review) → doc-sync → PR with delivery receipt → CI green → squash. Stops only on its block signals. Use for any non-trivial dikw-core change (feature, bugfix, refactor), so the sequence is run, not remembered.
+description: "The dikw-core delivery loop — drive a non-trivial change from request to squash-merged PR through resume → clarify → plan/TDD → in-loop verify → review tiered by risk (codex, independent code review, fresh-review) → doc-sync → PR with delivery receipt → CI green → squash. Stops only on its block signals. Use for any non-trivial dikw-core change (feature, bugfix, refactor), so the sequence is run, not remembered."
 ---
 
 <what-this-is>
 
-This skill is the only definition of the dikw-core delivery loop. CLAUDE.md points here.
+This skill is the only definition of the dikw-core delivery loop. AGENTS.md points here.
 
 **Finish line.** The loop is done when all of these are true:
 
@@ -43,7 +43,7 @@ Do not skip a step because it "feels unnecessary".
 
 - Restate the goal. List your assumptions. Name the alternatives.
 - For work with several design decisions, use the `grill-with-docs` skill until a written plan exists.
-- **STOP** and ask only if a decision blocks you and the code and docs cannot answer it. Then ask one question with the AskUserQuestion tool, with your recommended answer first.
+- **STOP** and ask only if a decision blocks you and the code and docs cannot answer it. Then ask one question using the client's question interface or a direct question, with your recommended answer first.
 
 ## 2. Plan in Chinese, test first
 
@@ -63,14 +63,14 @@ Find the highest tier that any file in the diff hits. When in doubt, go one tier
 
 | tier | the diff touches | review |
 |---|---|---|
-| **S** | only docs outside `src/` (`*.md`, `docs/**`) that are not instruction files; or a version / release / `DIKW_VERSION` bump | `/code-review` once |
-| **M** | anything else: code, tests, tools, dependencies, CI, and the instruction files (`CLAUDE.md`, `.claude/**`), because they change agent behavior | codex (≤ 3 rounds) + `/code-review` |
-| **L** | `src/dikw_core/domains/knowledge/**`, `src/dikw_core/api_synth.py`, `src/dikw_core/prompts/**`, `src/dikw_core/domains/info/**`, `RetrievalConfig` in `src/dikw_core/config.py`, `src/dikw_core/storage/**`, `src/dikw_core/providers/base.py`, the persist pipeline (`src/dikw_core/domains/data/persist.py`, `src/dikw_core/domains/wisdom/persist.py`, `src/dikw_core/domains/knowledge/page_index.py`), `src/dikw_core/server/auth.py`; or any other `src/` file that matches the `paths:` of `.claude/rules/{knowledge-layer,persist-pipeline,retrieval,storage-concurrency,delete-trash}.md` | tier M + `dikw-core-fresh-review` |
+| **S** | only docs outside `src/` (`*.md`, `docs/**`) that are not instruction files; or a version / release / `DIKW_VERSION` bump | independent code review once |
+| **M** | anything else: code, tests, tools, dependencies, CI, and the instruction files (`AGENTS.md`, `harness/**`, `scripts/harness-doctor` and the three client adapters), because they change agent behavior | codex (≤ 3 rounds) + independent code review |
+| **L** | `src/dikw_core/domains/knowledge/**`, `src/dikw_core/api_synth.py`, `src/dikw_core/prompts/**`, `src/dikw_core/domains/info/**`, `RetrievalConfig` in `src/dikw_core/config.py`, `src/dikw_core/storage/**`, `src/dikw_core/providers/base.py`, the persist pipeline (`src/dikw_core/domains/data/persist.py`, `src/dikw_core/domains/wisdom/persist.py`, `src/dikw_core/domains/knowledge/page_index.py`), `src/dikw_core/server/auth.py`; or any other `src/` file that matches the scopes in `harness/manifest.json` for `harness/rules/{knowledge-layer,persist-pipeline,retrieval,storage-concurrency,delete-trash}.md` | tier M + `dikw-core-fresh-review` |
 
 Run the reviews in this order:
 
-1. **Codex (tiers M and L).** Run `codex review --base main` in the background. The `/codex:review` slash command is user-only, so call the CLI. Fix the findings, then run it again. Stop after 3 rounds or when a round has no new actionable finding.
-2. **`/code-review` (all tiers).** It is never optional. Doc-only PRs also get real findings from it.
+1. **Codex (tiers M and L).** Run `codex review --base main` in the background. Fix the findings, then run it again. Stop after 3 rounds or when a round has no new actionable finding.
+2. **Independent code review (all tiers).** Use the client's review feature or a fresh `reviewer` with `docs/verification-rubric.md`. In Codex, start the review parent with `codex -s read-only` because its subagents inherit its permissions. Doc-only PRs also get real findings from it.
 3. **`dikw-core-fresh-review` (tier L).** Run it after the codex rounds are quiet.
 
 Triage every finding the same way:
@@ -79,7 +79,7 @@ Triage every finding the same way:
 - Before you fix a finding, read the cited code. A reviewer can be wrong.
 - Fix every actionable finding, blocking or not.
 - Reject a nitpick or a false positive with a one-line reason.
-- If a finding names one CLI string, symbol, route, or env var, grep the whole repo for it before you call it fixed. Include `CLAUDE.md`, `docs/**`, `CHANGELOG.md`, `.claude/**`.
+- If a finding names one CLI string, symbol, route, or env var, grep the whole repo for it before you call it fixed. Include `AGENTS.md`, `docs/**`, `CHANGELOG.md`, `harness/**`, `scripts/harness-doctor` and the three client adapters.
 
 ## 5. Re-verify after review fixes
 
@@ -88,7 +88,7 @@ Triage every finding the same way:
 
 ## 6. Doc sync
 
-Check every Markdown file against the diff: `CLAUDE.md`, `.claude/rules/**`, `CONTEXT.md`, `docs/**`, `CHANGELOG.md`, plans, ADRs, `GUIDE_FOR_AGENTS.md`.
+Check every Markdown file against the diff: `AGENTS.md`, `harness/rules/**`, `CONTEXT.md`, `docs/**`, `CHANGELOG.md`, plans, ADRs, `GUIDE_FOR_AGENTS.md`.
 Look for stale CLI spellings, front-matter keys, env vars, and HTTP routes. Fix each one in this PR.
 
 ## 7. Commit, push, open the PR
@@ -105,7 +105,7 @@ Look for stale CLI spellings, front-matter keys, env vars, and HTTP routes. Fix 
 - Required checks on `main`: `ci / lint-type-test (3.12)`, `ci / lint-type-test (3.13)`, `ci / Postgres contract tests`, `ci / Server e2e (serve-and-run)`, `codecov/patch`. Codex, CodeRabbit, and `eval-gate` are not required. Still treat their findings with the triage rules.
 - Continue until every check is green and `mergeStateStatus` is `CLEAN`.
 - Squash-merge. Fast-forward local `main`. Delete the feature branch.
-- End with the Report section from CLAUDE.md.
+- End with the decisions, changes and findings required by AGENTS.md.
 
 </checklist>
 
@@ -140,7 +140,7 @@ Template:
 | 1 | clarify         | …      | assumptions / plan link                    |
 | 2 | plan / TDD      | …      | failing-test refs                          |
 | 3 | verify          | …      | per-leg table ↓                            |
-| 4 | review          | …      | codex (N rounds); /code-review; fresh-review **pass** / **blocking** / N-A |
+| 4 | review          | …      | codex (N rounds); independent code review; fresh-review **pass** / **blocking** / N-A |
 | 5 | re-verify       | …      | check.py after review fixes                |
 | 6 | doc-sync        | …      | BASELINES link / no-baseline-needed / N-A  |
 | 7 | commit+push+PR  | …      | PR #                                       |
@@ -151,7 +151,7 @@ Template:
 <paste the dikw-core-verify per-leg PASS/FAIL/SKIPPED table verbatim>
 ### step 4 — review
 - codex (N rounds): <findings fixed / rejected>
-- /code-review: <result>
+- independent code review: <result>
 - fresh-review **pass** | **blocking** (tier L only): <TP/FP table>
 
 ## Open findings

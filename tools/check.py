@@ -19,6 +19,10 @@ from pathlib import Path
 
 # (label, command) in the same order CI's lint-type-test job runs them.
 STAGES: list[tuple[str, list[str]]] = [
+    (
+        "harness-doctor",
+        ["uv", "run", "--offline", "--no-project", "python", "scripts/harness-doctor", "check"],
+    ),
     ("ruff", ["uv", "run", "ruff", "check", "."]),
     ("mypy", ["uv", "run", "mypy", "src"]),
     ("pytest (fast)", ["uv", "run", "pytest", "-m", "not slow and not perf"]),
@@ -88,7 +92,7 @@ def main() -> int:
             return result.returncode
     stamped = _record_verify_stamp(repo_root, before)
     if stamped:
-        print("\n[OK] All checks passed (ruff + mypy + fast pytest).")
+        print("\n[OK] All checks passed (harness-doctor + ruff + mypy + fast pytest).")
     else:
         print(
             "\n[OK] All checks passed, but stamp was not recorded — "

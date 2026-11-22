@@ -1,0 +1,143 @@
+{
+  "skills": {
+    "dikw-core-delivery-workflow": "The dikw-core delivery loop — drive a non-trivial change from request to squash-merged PR through resume → clarify → plan/TDD → in-loop verify → review tiered by risk (codex, independent code review, fresh-review) → doc-sync → PR with delivery receipt → CI green → squash. Stops only on its block signals. Use for any non-trivial dikw-core change (feature, bugfix, refactor), so the sequence is run, not remembered.",
+    "dikw-core-fresh-review": "The pre-merge design review for tier-L changes — spawn a clean subagent that did NOT write the code, hand it ONLY the diff + dikw-core's design-invariant rubric + the relevant docs/design.md and harness/rules sections, and have it judge correctness, scope discipline, and invariant adherence (the checks ruff/mypy/pytest and independent code review's bug-hunt cannot make), plus sample-read synth-produced pages for K-layer changes. Emits a pass/blocking verdict with a triaged true-positive/false-positive table. Use at delivery-loop step 4 for tier-L diffs, after the codex rounds are quiet, before the PR merges.",
+    "dikw-core-verify-synth": "The K-layer leg of step-3 in-loop verify — runs dikw-core's shipped synth self-check verbs (synth --verify [--judge], lint, eval --eval synth [--against]) against the real elon-musk corpus and folds them into one per-leg pass/fail table, applying the probabilistic grounding judgment the CLI deliberately leaves report-only. Use when a change touches the K layer (domains/knowledge/, api_synth.py, the LLM authoring prompts) or whenever iterating synth output quality.",
+    "dikw-core-verify": "The delivery-loop step-3 in-loop verify router — classify what the diff touches, run the shared deterministic floor (tools/check.py) plus only the change-specific legs that path needs (storage→Postgres contract, info→retrieval ablation, knowledge→dikw-core-verify-synth, providers→contract+check, cli/server/client→e2e+import-direction+CLI-grep, docs→ref-resolve), emit a per-leg pass/fail table, and self-heal red legs by fixing and re-running. Use at delivery-loop step 3 after implementing a non-trivial change, before the review step.",
+    "grill-with-docs": "Grilling session that challenges your plan against the existing domain model, sharpens terminology, and updates documentation (CONTEXT.md, ADRs) inline as decisions crystallise. Use when user wants to stress-test a plan against their project's language and documented decisions."
+  },
+  "rules": {
+    "delete-trash": [
+      "src/dikw_core/domains/trash.py",
+      "src/dikw_core/api_delete.py",
+      "src/dikw_core/server/delete_op.py",
+      "src/dikw_core/domains/knowledge/lint_fix.py",
+      "src/dikw_core/storage/{base,sqlite,postgres}.py",
+      "tests/test_{trash,delete_page}.py"
+    ],
+    "knowledge-layer": [
+      "src/dikw_core/domains/knowledge/**",
+      "src/dikw_core/domains/wisdom/**",
+      "src/dikw_core/api_synth.py",
+      "src/dikw_core/api_lint.py",
+      "src/dikw_core/api_wisdom.py",
+      "src/dikw_core/prompts/**",
+      "src/dikw_core/config.py",
+      "src/dikw_core/server/synth_op.py",
+      "src/dikw_core/server/lint_op.py",
+      "src/dikw_core/api_graph.py",
+      "src/dikw_core/server/routes_pages.py",
+      "tests/test_{synth,lint,links,knowledge,persist_knowledge,prompt,wisdom}*.py",
+      "docs/design.md"
+    ],
+    "module-map": [
+      "src/dikw_core/*.py",
+      "src/dikw_core/client/**",
+      "docs/architecture.md"
+    ],
+    "observability": [
+      "src/dikw_core/logging.py",
+      "src/dikw_core/telemetry.py",
+      "src/dikw_core/config.py",
+      "src/dikw_core/server/app.py",
+      "src/dikw_core/client/cli_app.py",
+      "docs/observability.md",
+      "docs/observability/**",
+      "tests/test_{logging,telemetry,engine_op_spans,synth_observability}*.py"
+    ],
+    "persist-pipeline": [
+      "src/dikw_core/domains/data/**",
+      "src/dikw_core/domains/wisdom/persist.py",
+      "src/dikw_core/domains/knowledge/page_index.py",
+      "src/dikw_core/domains/knowledge/synthesize.py",
+      "src/dikw_core/domains/knowledge/lint_fix.py",
+      "src/dikw_core/domains/info/embed.py",
+      "src/dikw_core/domains/info/chunk.py",
+      "src/dikw_core/api_core.py",
+      "src/dikw_core/api_ingest.py",
+      "src/dikw_core/api_synth.py",
+      "src/dikw_core/api_lint.py",
+      "src/dikw_core/api_wisdom.py",
+      "src/dikw_core/server/ingest_op.py",
+      "src/dikw_core/server/wisdom_op.py",
+      "tests/test_{ingest,embed,persist,write_path,synth_persist}*.py"
+    ],
+    "providers-secrets": [
+      "src/dikw_core/providers/**",
+      "src/dikw_core/config.py",
+      "src/dikw_core/auth_cli.py",
+      ".env.example",
+      "docs/providers.md",
+      "tests/test_{provider,codex_auth,auth_cli,config}*.py"
+    ],
+    "retrieval": [
+      "src/dikw_core/domains/info/**",
+      "src/dikw_core/api_retrieve.py",
+      "src/dikw_core/providers/rerank.py",
+      "src/dikw_core/eval/**",
+      "src/dikw_core/server/routes_retrieve.py",
+      "src/dikw_core/config.py",
+      "tests/test_{search,retrieval,rerank,sweep_rrf,eval}*.py",
+      "evals/*.md"
+    ],
+    "storage-concurrency": [
+      "src/dikw_core/storage/**",
+      "src/dikw_core/server/runtime.py",
+      "src/dikw_core/server/tasks/**",
+      "src/dikw_core/server/*_op.py",
+      "src/dikw_core/server/routes_{tasks,import}.py",
+      "tests/server/test_route_write_lock_wiring.py",
+      "tests/test_storage_contract.py",
+      "tests/server/test_task_store_contract.py"
+    ],
+    "verification-tools": [
+      "tools/**",
+      "tests/test_e2e_verify_*.py",
+      ".github/workflows/**",
+      ".pre-commit-config.yaml"
+    ]
+  },
+  "agents": [
+    "reviewer"
+  ],
+  "sessionStart": {
+    "name": "harness-doctor",
+    "command": "uv run --offline --no-project python scripts/harness-doctor"
+  },
+  "commitHook": {
+    "claude": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c \"alias.dikw-verify=!uv run --offline --no-project python tools/verify_hook.py claude-pretool\" dikw-verify",
+            "statusMessage": "Checking commit verification stamp"
+          }
+        ]
+      }
+    ],
+    "codex": [
+      {
+        "matcher": "^(Bash|exec_command|shell_command)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c \"alias.dikw-verify=!uv run --offline --no-project python tools/verify_hook.py codex-pretool\" dikw-verify"
+          }
+        ]
+      }
+    ],
+    "antigravity": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c \"alias.dikw-verify=!uv run --offline --no-project python tools/verify_hook.py antigravity-pretool\" dikw-verify"
+          }
+        ]
+      }
+    ]
+  }
+}

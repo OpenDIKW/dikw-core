@@ -363,7 +363,10 @@ def test_stamp_invalidates_on_executable_bit_change(tmp_path: Path) -> None:
     vh.write_stamp(repo, stages=["ruff"])
     assert vh.verify_stamp(repo)[0] is True
 
-    script.chmod(0o755)
+    if os.name == "nt":
+        subprocess.run(["git", "update-index", "--chmod=+x", "hello.py"], cwd=repo, check=True)
+    else:
+        script.chmod(0o755)
     ok, reason = vh.verify_stamp(repo)
     assert ok is False
     assert "stale" in reason.lower()
@@ -427,6 +430,33 @@ def test_stamp_invalidates_after_new_commit(tmp_path: Path) -> None:
     ok, reason = vh.verify_stamp(repo)
     assert ok is False
     assert "head" in reason.lower() or "stale" in reason.lower()
+
+
+def test_powershell_paths_select_the_requested_worktree(tmp_path: Path) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    vh.write_stamp(repo, stages=["ruff"])
+    target = repo / r"other\checkout"
+    command = r"git -C other\checkout commit -m test"
+    invocations = vh.find_commit_invocations(command, repo, windows_shell=True)
+    assert [i.target_dir for i in invocations] == [target]
+    assert not vh.evaluate_commit_gate(repo, command=command, windows_shell=True).allowed
+
+
+def test_native_hook_uses_explicit_target_when_execution_directory_is_unknown(
+    tmp_path: Path,
+) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path, "work tree")
+    vh.write_stamp(repo, stages=["ruff"])
+    options = {"cwd_known": False, "windows_shell": None, "mode": "enforce"}
+    assert not vh.evaluate_commit_gate(repo, command="git commit -m test", **options).allowed
+    explicit = f'git -C "{repo.as_posix()}" commit -m test'
+    assert vh.evaluate_commit_gate(repo, command=explicit, **options).allowed
+    # With no shell metadata, Bash-escaped spaces must still be recognized.
+    assert not vh.evaluate_commit_gate(
+        repo, command=r"git -C other\ checkout commit -m test", **options
+    ).allowed
 
 
 def test_git_dash_c_checks_target_worktree_stamp(tmp_path: Path) -> None:
@@ -640,3 +670,70 @@ def test_claude_pretool_reads_env_mode_and_handles_payloads(
     # Malformed stdin never crashes the hook (fails open with exit 0).
     monkeypatch.setattr(sys, "stdin", io.StringIO("not-json"))
     assert vh.main(["--repo-root", str(repo), "claude-pretool"]) == 0
+
+
+@pytest.mark.parametrize("client", ["codex", "antigravity"])
+def test_native_pretool_keeps_unverified_commits_blocked(tmp_path, monkeypatch, capsys, client):
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    command = "git commit -m 'unverified'"
+    if client == "codex":
+        payload = {
+            "session_id": "test",
+            "cwd": str(repo),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+    else:
+        payload = {
+            "conversationId": "test",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": command, "Cwd": str(repo)}},
+        }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert vh.main(["--repo-root", str(repo), "--mode", "enforce", client + "-pretool"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    outcome = (
+        result["hookSpecificOutput"]["permissionDecision"]
+        if client == "codex"
+        else result["decision"]
+    )
+    assert outcome == "deny"
+
+
+def test_antigravity_leaves_native_permissions_in_control(tmp_path, monkeypatch, capsys):
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    vh.write_stamp(repo, stages=["ruff"])
+    for command in ("git status", "git commit -m test"):
+        payload = {
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": command,
+                    "Cwd": str(repo),
+                },
+            }
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert vh.main(["--repo-root", str(repo), "--mode", "enforce", "antigravity-pretool"]) == 0
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows command paths")
+def test_antigravity_uses_powershell_for_relative_worktree_paths(tmp_path, monkeypatch, capsys):
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    (repo / "tools").mkdir()
+    vh.write_stamp(repo, stages=["ruff"])
+    payload = {
+        "toolCall": {
+            "name": "run_command",
+            "args": {
+                "CommandLine": r"git -C .\tools commit -m test",
+                "Cwd": str(repo),
+            },
+        }
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert vh.main(["--repo-root", str(repo), "--mode", "enforce", "antigravity-pretool"]) == 0
+    assert capsys.readouterr().out == ""

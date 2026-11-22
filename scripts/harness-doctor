@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Check and generate this worktree's coding-agent adapters (Python 3.12+, stdlib)."""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TREES = (
+    ".claude/skills",
+    ".claude/rules",
+    ".claude/agents",
+    ".agents/skills",
+    ".agents/rules",
+    ".agents/agents",
+    ".codex/rules",
+    ".codex/agents",
+)
+CLIENTS = ("claude", "codex", "antigravity")
+COMMAND = "uv run --offline --no-project python scripts/harness-doctor"
+
+
+def quote(text):
+    return json.dumps(text, ensure_ascii=False)
+
+
+def json_file(obj):
+    return json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+
+
+def safe_path(root, relative):
+    """Reject links in managed paths, including directory junctions on Windows."""
+    path = root
+    for part in Path(relative).parts:
+        if part in ("..", ".") or Path(part).anchor:
+            raise ValueError(f"invalid repository path: {relative}")
+        path = path / part
+        if path.is_symlink() or path.is_junction():
+            raise ValueError(f"linked harness path: {path.relative_to(root)}")
+    return path
+
+
+def walk(root, directory):
+    start = safe_path(root, directory)
+    if start.exists() and not start.is_dir():
+        raise ValueError(f"expected a directory: {directory}")
+    if start.is_dir():
+        for child in sorted(start.iterdir()):
+            key = child.relative_to(root).as_posix()
+            safe_path(root, key)
+            if child.is_dir():
+                yield from walk(root, key)
+            else:
+                yield key
+
+
+def expand(pattern):
+    group = re.search(r"\{([^{}]+)\}", pattern)
+    if group:
+        for option in group[1].split(","):
+            yield from expand(pattern[: group.start()] + option + pattern[group.end() :])
+    else:
+        if (
+            not pattern
+            or any(s in ("", ".", "..") for s in pattern.split("/"))
+            or any(s in pattern for s in ("{", "}", ",", "\\", ":", "[", "]"))
+        ):
+            raise ValueError(f"unsupported rule pattern: {pattern}")
+        yield pattern
+
+
+def matches(path, pattern):
+    tokens = re.split(r"(\*\*/|\*\*|\*|\?)", pattern)
+    wildcards = {"**/": "(?:[^/]+/)*", "**": ".*", "*": "[^/]*", "?": "[^/]"}
+    return re.fullmatch("".join(wildcards.get(t, re.escape(t)) for t in tokens), path) is not None
+
+
+def hook_files(spec):
+    entry = spec["sessionStart"]
+    if entry["name"] != "harness-doctor" or entry["command"] != COMMAND:
+        raise ValueError("invalid sessionStart declaration in harness/manifest.json")
+    files = {}
+    for client, path in zip(
+        CLIENTS, (".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json"), strict=True
+    ):
+        # Git executes shell aliases from the worktree root, including in subdirectories.
+        hook = {
+            "type": "command",
+            "command": f'git -c "alias.dikw-doctor=!{COMMAND} session-start {client}" dikw-doctor',
+        }
+        extra = spec.get("commitHook", {}).get(client)
+        if client == "claude":
+            hook["statusMessage"] = "Checking repository harness"
+        if client == "antigravity":
+            config = {entry["name"]: {"SessionStart": [hook]}}
+            if extra:
+                config["verify-before-commit"] = {"PreToolUse": extra}
+        else:
+            events = {"SessionStart": [{"matcher": "startup|fork", "hooks": [hook]}]}
+            if extra:
+                events["PreToolUse"] = extra
+            config = {"hooks": events}
+        files[path] = json_file(config)
+    return files
+
+
+def expected(root, spec):
+    result = hook_files(spec)
+    for folder in ("rules", "agents", "skills"):
+        catalog = spec[folder]
+        if not catalog or any(not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) for name in catalog):
+            raise ValueError(f"invalid {folder} catalog")
+        base = safe_path(root, "harness/" + folder)
+        actual = {p.name for p in base.iterdir()}
+        registered = {name if folder == "skills" else name + ".md" for name in catalog}
+        if folder == "agents":
+            registered.update(name + ".json" for name in catalog)
+        if actual != registered:
+            raise ValueError(
+                f"harness/{folder} differs from manifest: {sorted(actual ^ registered)}"
+            )
+
+    for name, description in spec["skills"].items():
+        prefix = f"harness/skills/{name}/"
+        body = safe_path(root, prefix + "SKILL.md").read_text("utf-8")
+        if not description or not body.strip():
+            raise ValueError(f"empty skill: {name}")
+        for source in walk(root, prefix):
+            rel = source.removeprefix(prefix)
+            data = (
+                f"---\nname: {name}\ndescription: {quote(description)}\n---\n\n" + body
+                if rel == "SKILL.md"
+                else (root / source).read_bytes()
+            )
+            for base in (".claude", ".agents"):
+                result[f"{base}/skills/{name}/{rel}"] = data
+    for name, patterns in spec["rules"].items():
+        if not isinstance(patterns, list) or not patterns:
+            raise ValueError(f"missing rule scope: {name}")
+        body = safe_path(root, f"harness/rules/{name}.md").read_text("utf-8")
+        if not body.strip():
+            raise ValueError(f"empty rule: {name}")
+        # Antigravity compares selectors against absolute file paths.
+        globs = [
+            glob if glob.startswith("**/") else "**/" + glob
+            for pattern in patterns
+            for glob in expand(pattern)
+        ]
+        result[f".claude/rules/{name}.md"] = (
+            "---\npaths:\n" + "".join(f"  - {quote(p)}\n" for p in patterns) + "---\n\n" + body
+        )
+        result[f".agents/rules/{name}.md"] = (
+            f"---\ntrigger: glob\nglobs: {quote(','.join(globs))}\n---\n\n" + body
+        )
+        result[f".codex/rules/areas/{name}.md"] = body
+    for name in spec["agents"]:
+        meta = json.loads(safe_path(root, f"harness/agents/{name}.json").read_text("utf-8"))
+        body = safe_path(root, f"harness/agents/{name}.md").read_text("utf-8")
+        if (
+            not body.strip()
+            or not isinstance(meta.get("description"), str)
+            or not meta["description"].strip()
+        ):
+            raise ValueError(f"empty role instructions or description: {name}")
+        header = f"---\nname: {name}\ndescription: {quote(meta['description'])}\n"
+        model = "model: " + meta["claudeModel"] + "\n" if "claudeModel" in meta else ""
+        result[f".claude/agents/{name}.md"] = (
+            header + "tools: " + ", ".join(meta["claudeTools"]) + "\n" + model + "---\n\n" + body
+        )
+        result[f".agents/agents/{name}.md"] = (
+            header
+            + "tools: "
+            + quote(meta["antigravityTools"])
+            + "\nmainAgent: false\nsubagent: true\n---\n\n"
+            + body
+        )
+        result[f".codex/agents/{name}.toml"] = (
+            f"name = {quote(name)}\ndescription = {quote(meta['description'])}\ndeveloper_instructions = {quote(body)}\n"
+        )
+    for source in walk(root, "harness/policies"):
+        name = source.removeprefix("harness/policies/")
+        if not re.fullmatch(r"[a-z0-9-]+\.rules", name):
+            raise ValueError(f"invalid policy filename: {source}")
+        result[f".codex/rules/{name}"] = (root / source).read_text("utf-8")
+    if not result.get(".codex/rules/default.rules", "").strip():
+        raise ValueError("missing or empty harness/policies/default.rules")
+    return {
+        p: data.encode("utf-8") if isinstance(data, str) else data for p, data in result.items()
+    }
+
+
+def comparable(path, data):
+    return (
+        data.replace(b"\r\n", b"\n")
+        if Path(path).suffix in {".md", ".json", ".toml", ".rules"}
+        else data
+    )
+
+
+def write_atomic(path, data, mode=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temp = Path(stream.name)
+        try:
+            stream.write(data)
+        except BaseException:
+            stream.close()
+            temp.unlink(missing_ok=True)
+            raise
+    try:
+        if mode is not None and os.name != "nt":
+            temp.chmod(mode)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def difference(actual, wanted):
+    offset = next(
+        (i for i, (a, b) in enumerate(zip(actual, wanted, strict=False)) if a != b),
+        min(len(actual), len(wanted)),
+    )
+    line = wanted.count(b"\n", 0, offset) + 1
+    expected_byte = wanted[offset : offset + 1].hex() or "EOF"
+    actual_byte = actual[offset : offset + 1].hex() or "EOF"
+    return f"line {line}, byte {offset}: expected {expected_byte}, found {actual_byte}"
+
+
+def windows_exec_index(root):
+    if os.name != "nt":
+        return None
+    records = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            "harness/skills",
+            ".claude/skills",
+            ".agents/skills",
+        ],
+        cwd=root,
+    )
+    return {
+        os.fsdecode(r.split(b"\t", 1)[1]) for r in records.split(b"\0") if r.startswith(b"100755 ")
+    }
+
+
+def skill_mode(root, name, index):
+    if index is not None:
+        return 0o755 if name in index else 0o644
+    path = root / name
+    return path.stat().st_mode & 0o777 if path.exists() else 0
+
+
+def claude_settings(existing, wanted):
+    """Repair owned hooks without erasing other Claude project settings."""
+    try:
+        config = json.loads(existing)
+    except (ValueError, UnicodeError) as error:
+        raise ValueError("invalid .claude/settings.json; repair its JSON before sync") from error
+    if not isinstance(config, dict):
+        raise ValueError("invalid .claude/settings.json; restore its JSON object before sync")
+    expected_hooks = json.loads(wanted)["hooks"]
+    events = config.get("hooks", {})
+    if events == expected_hooks:
+        return existing
+    for event, groups in events.items() if isinstance(events, dict) else ():
+        registered = [h for group in expected_hooks.get(event, []) for h in group["hooks"]]
+        for group in groups if isinstance(groups, list) else []:
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            if isinstance(handlers, list) and any(
+                not isinstance(h, dict)
+                or not any(
+                    h.get("command") == reg["command"]
+                    or (reg.get("statusMessage") and h.get("statusMessage") == reg["statusMessage"])
+                    for reg in registered
+                )
+                for h in handlers
+            ):
+                raise ValueError(
+                    f"unexpected {event} hook in .claude/settings.json; move local hooks to .claude/settings.local.json or register them in harness/ before sync"
+                )
+    return json_file({**config, "hooks": expected_hooks}).encode()
+
+
+def inspect(root, spec, sync=False):
+    outputs = expected(root, spec)
+    problems = []
+    index = windows_exec_index(root)
+    guide = safe_path(root, "AGENTS.md")
+    if not guide.is_file():
+        problems.append("missing AGENTS.md")
+    else:
+        text = guide.read_text("utf-8")
+        if len(text.splitlines()) > 200:
+            problems.append("AGENTS.md exceeds 200 lines")
+        if COMMAND + " check" not in text or "sync" not in text:
+            problems.append("AGENTS.md must document harness-doctor check and sync")
+    for old in (
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        ".claude/CLAUDE.md",
+        ".claude/AGENTS.md",
+        "AGENTS.override.md",
+    ):
+        if (root / old).exists():
+            problems.append("competing project instructions: " + old)
+    actual = {p for directory in TREES for p in walk(root, directory)}
+    for p in sorted(actual - outputs.keys()):
+        problems.append("unexpected " + p + " (review and move or remove explicitly)")
+    for name, wanted in outputs.items():
+        path = safe_path(root, name)
+        existing = path.read_bytes() if path.exists() else None
+        if name == ".claude/settings.json" and existing is not None:
+            try:
+                wanted = claude_settings(existing, wanted)
+            except ValueError as error:
+                problems.append(str(error))
+                continue
+        _, skill, relative = name.partition("/skills/")
+        mode = skill_mode(root, "harness/skills/" + relative, index) if skill else None
+        mode_changed = mode is not None and bool((mode ^ skill_mode(root, name, index)) & 0o100)
+        actual_bytes = comparable(name, existing) if existing is not None else None
+        expected_bytes = comparable(name, wanted)
+        same_content = actual_bytes == expected_bytes
+        if same_content and not mode_changed:
+            continue
+        if sync:
+            if not same_content or index is None:
+                write_atomic(path, wanted, mode)
+        elif existing is None:
+            problems.append("missing " + name)
+        elif not same_content:
+            problems.append(f"changed {name} ({difference(actual_bytes, expected_bytes)})")
+        if mode_changed and (not sync or index is not None):
+            flag = "+x" if mode & 0o100 else "-x"
+            problems.append(f"executable mode {name}: git add --chmod={flag} -- {quote(name)}")
+    return problems
+
+
+def receipt(problems):
+    return (
+        "harness-doctor: FAIL\n"
+        + "\n".join(problems)
+        + f"\nReconcile sources in harness/, then run {COMMAND} sync and check."
+        if problems
+        else "harness-doctor: OK"
+    )
+
+
+def main(args):
+    action = args[0] if args else "check"
+    client = args[1] if action == "session-start" and len(args) == 2 else None
+    if (
+        (action in ("check", "sync") and len(args) > 1)
+        or (action == "rules" and len(args) < 2)
+        or (action == "session-start" and client not in CLIENTS)
+        or action not in ("check", "sync", "rules", "session-start")
+    ):
+        print(
+            "usage: harness-doctor [check | sync | rules <path>... | session-start <client>]",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        root = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True, encoding="utf-8"
+            ).strip()
+        ).resolve()
+        spec = json.loads(safe_path(root, "harness/manifest.json").read_text("utf-8"))
+        if action == "rules":
+            paths = [
+                Path(p.replace("\\", "/")).resolve().relative_to(root).as_posix() for p in args[1:]
+            ]
+            for name, patterns in sorted(spec["rules"].items()):
+                if any(
+                    matches(p, glob)
+                    for pattern in patterns
+                    for glob in expand(pattern)
+                    for p in paths
+                ):
+                    print(f".codex/rules/areas/{name}.md")
+            return 0
+        problems = inspect(root, spec, sync=action == "sync")
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        problems = [str(error)]
+    message = receipt(problems)
+    if client:
+        if client == "claude":
+            message += "\nIf this worktree's AGENTS.md is missing from your project instructions, read it before working."
+        response = (
+            {"injectSteps": [{"systemMessage": {"systemMessage": message}}]}
+            if client == "antigravity"
+            else {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": message,
+                }
+            }
+        )
+        print(json.dumps(response))
+        return 0
+    print(message)
+    return int(bool(problems))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

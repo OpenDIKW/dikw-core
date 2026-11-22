@@ -1,4 +1,4 @@
-"""Commit verification gate and stamp tracker for Claude Code / local runs.
+"""Commit verification gate and stamp tracker for coding agents and local runs.
 
 Implements an ``off`` / ``observe`` / ``enforce`` gate inspired by the Claude
 Code team's verification-gate pattern:
@@ -10,8 +10,8 @@ Code team's verification-gate pattern:
     --no-renames``, and untracked non-ignored paths, so staging files (including
     renames) via ``git add`` keeps the stamp valid while any post-check edit,
     partial staging mismatch, or new commit invalidates it.
-  * Wired as a Claude Code ``PreToolUse`` hook on ``Bash`` in
-    ``.claude/settings.json`` (mode controlled by ``DIKW_VERIFY_GATE_MODE``,
+  * Registered as a ``PreToolUse`` command hook by all three client adapters
+    (mode controlled by ``DIKW_VERIFY_GATE_MODE``,
     defaulting to ``enforce``; set ``observe`` or ``off`` to downgrade).
   * In ``enforce`` mode, an unverified ``git commit`` is blocked (exit 2)
     unless:
@@ -191,7 +191,7 @@ def extract_skip_reason(command: str) -> str | None:
     return reason or None
 
 
-def _strip_shell_comments(command: str) -> str:
+def _strip_shell_comments(command: str, escape: str = "\\") -> str:
     """Strip unquoted ``# ...`` shell comments while preserving newlines."""
     out: list[str] = []
     in_single = False
@@ -214,13 +214,13 @@ def _strip_shell_comments(command: str) -> str:
             continue
         if in_double:
             out.append(ch)
-            if ch == "\\":
+            if ch == escape:
                 escaped = True
             elif ch == '"':
                 in_double = False
             i += 1
             continue
-        if ch == "\\":
+        if ch == escape:
             out.append(ch)
             escaped = True
             i += 1
@@ -248,12 +248,17 @@ def _is_separator(tok: str) -> bool:
     return bool(tok) and all(ch in _SEPARATOR_CHARS for ch in tok)
 
 
-def _split_shell_segments_with_ops(command: str) -> list[tuple[str | None, list[str]]] | None:
+def _split_shell_segments_with_ops(
+    command: str, *, windows_shell: bool = False
+) -> list[tuple[str | None, list[str]]] | None:
     """Split ``command`` into ``(preceding_separator, tokens)`` pairs."""
-    cleaned = _strip_shell_comments(command)
+    # PowerShell escapes with a backtick and treats backslashes as path separators.
+    escape = "`" if windows_shell else "\\"
+    cleaned = _strip_shell_comments(command, escape)
     try:
         lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|<>\n")
         lexer.commenters = ""
+        lexer.escape = escape
         lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         tokens = list(lexer)
@@ -613,11 +618,13 @@ def _commit_has_all_flag(args: list[str]) -> bool:
     return _parse_commit_args(args).commits_worktree
 
 
-def find_commit_invocations(command: str, base_dir: Path) -> list[CommitInvocation]:
+def find_commit_invocations(
+    command: str, base_dir: Path, *, windows_shell: bool = False
+) -> list[CommitInvocation]:
     """Return all mutating ``git commit`` invocations in ``command`` with target dirs."""
     if "git" not in command or "commit" not in command:
         return []
-    paired_segments = _split_shell_segments_with_ops(command)
+    paired_segments = _split_shell_segments_with_ops(command, windows_shell=windows_shell)
     if paired_segments is None:
         # Unbalanced quotes — fall back conservatively to unquoted segment check.
         if re.search(r"(?:^|[;&|\n]\s*)git(?:\s+\S+)*\s+commit\b", command):
@@ -650,7 +657,8 @@ def find_commit_invocations(command: str, base_dir: Path) -> list[CommitInvocati
             cwd = target if target.is_absolute() else (cwd / target)
             continue
         subcmd, target_dir, sub_args, uses_custom_git_env = _parse_git_segment(seg, cwd)
-        resolved_target = target_dir.resolve()
+        # A relative target stays unresolved when the native hook omitted the execution cwd.
+        resolved_target = target_dir.resolve() if target_dir.is_absolute() else target_dir
         if subcmd == "commit":
             parsed = _parse_commit_args(sub_args, has_shell_redirection=has_input_redir)
             if parsed.read_only:
@@ -722,11 +730,6 @@ def _try_resolve_repo_root(target_dir: Path) -> Path | None:
         return None
 
 
-def _resolve_repo_root(target_dir: Path, fallback: Path) -> Path:
-    resolved = _try_resolve_repo_root(target_dir)
-    return resolved if resolved is not None else fallback
-
-
 def _git_head_sha(repo_root: Path) -> str:
     try:
         return _git(repo_root, ["rev-parse", "HEAD"]).decode("utf-8").strip()
@@ -768,6 +771,14 @@ def compute_tree_fingerprint(repo_root: Path) -> tuple[str, str]:
     ):
         paths.update(_git_name_set(repo_root, cmd))
 
+    # Windows records the executable bit in the Git index, not in NTFS chmod.
+    executable_index_paths: set[bytes] = set()
+    if os.name == "nt" and paths:
+        executable_index_paths = {
+            entry.split(b"\t", 1)[1]
+            for entry in _git(repo_root, ["ls-files", "--stage", "-z"]).split(b"\x00")
+            if entry.startswith(b"100755 ")
+        }
     digest = hashlib.sha256()
     digest.update(head_sha.encode("utf-8"))
     digest.update(b"\n")
@@ -779,7 +790,9 @@ def compute_tree_fingerprint(repo_root: Path) -> tuple[str, str]:
             digest.update(b"SYMLINK:")
             digest.update(os.readlink(target).encode("utf-8", errors="surrogateescape"))
         elif target.is_file():
-            mode_tag = b"EXEC:" if (target.stat().st_mode & 0o111) else b"FILE:"
+            executable = (os.fsencode(rel) in executable_index_paths
+                          if os.name == "nt" else bool(target.stat().st_mode & 0o111))
+            mode_tag = b"EXEC:" if executable else b"FILE:"
             digest.update(mode_tag)
             digest.update(hashlib.sha256(target.read_bytes()).hexdigest().encode("ascii"))
         else:
@@ -913,6 +926,8 @@ def evaluate_commit_gate(
     mode: GateMode | None = None,
     session_id: str = "default",
     command_cwd: Path | None = None,
+    windows_shell: bool | None = False,
+    cwd_known: bool = True,
 ) -> GateDecision:
     """Evaluate whether a ``git commit`` command should be allowed or blocked.
 
@@ -924,8 +939,13 @@ def evaluate_commit_gate(
     if effective_mode == "off":
         return GateDecision(allowed=True, exit_code=0, message="")
 
-    base_cwd = (command_cwd or repo_root).resolve()
-    invocations = find_commit_invocations(command, base_cwd)
+    base_cwd = (command_cwd or repo_root).resolve() if cwd_known else Path(".")
+    shell_modes = (False, True) if windows_shell is None else (windows_shell,)
+    invocations = dict.fromkeys(
+        invocation
+        for use_windows in shell_modes
+        for invocation in find_commit_invocations(command, base_cwd, windows_shell=use_windows)
+    )
     if not invocations:
         return GateDecision(allowed=True, exit_code=0, message="")
 
@@ -949,7 +969,15 @@ def evaluate_commit_gate(
 
     failures: list[tuple[Path, str]] = []
     for inv in invocations:
-        target_root = _resolve_repo_root(inv.target_dir, repo_root)
+        if not inv.target_dir.is_absolute():
+            failures.append(
+                (repo_root, "hook lacks the execution directory; use git -C <absolute-worktree> commit")
+            )
+            continue
+        target_root = _try_resolve_repo_root(inv.target_dir)
+        if target_root is None:
+            failures.append((inv.target_dir, "could not resolve the commit's target worktree"))
+            continue
         if inv.preceded_by_mutator:
             failures.append(
                 (
@@ -1030,7 +1058,7 @@ def evaluate_commit_gate(
     )
 
 
-def _handle_claude_pretool(repo_root: Path, mode: GateMode | None) -> int:
+def _handle_pretool(repo_root: Path, mode: GateMode | None, client: str) -> int:
     raw = sys.stdin.read()
     if not raw.strip():
         return 0
@@ -1040,24 +1068,68 @@ def _handle_claude_pretool(repo_root: Path, mode: GateMode | None) -> int:
         return 0
     if not isinstance(payload, dict):
         return 0
-    if payload.get("tool_name") != "Bash":
-        return 0
-    tool_input = payload.get("tool_input")
+    if client == "antigravity":
+        call = payload.get("toolCall")
+        if not isinstance(call, dict) or call.get("name") != "run_command":
+            return 0
+        tool_input = call.get("args")
+        session_id = payload.get("conversationId")
+    else:
+        if payload.get("tool_name") not in ("Bash", "exec_command", "shell_command"):
+            return 0
+        tool_input = payload.get("tool_input")
+        session_id = payload.get("session_id")
     if not isinstance(tool_input, dict):
         return 0
-    command = tool_input.get("command")
+    command = (
+        tool_input.get("CommandLine")
+        if client == "antigravity"
+        else (tool_input.get("command") or tool_input.get("cmd"))
+    )
     if not isinstance(command, str) or not command.strip():
         return 0
-    session_id = str(payload.get("session_id") or "default")
-    raw_cwd = payload.get("cwd")
-    command_cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and raw_cwd.strip() else None
+    raw_cwd = tool_input.get("Cwd") if client == "antigravity" else tool_input.get("workdir")
+    base = payload.get("cwd")
+    command_cwd = Path(base) if isinstance(base, str) and base else repo_root
+    if isinstance(raw_cwd, str) and raw_cwd:
+        command_cwd = command_cwd / raw_cwd
+    windows_shell: bool | None = False
+    if client != "claude" and os.name == "nt":
+        shell = tool_input.get("shell")
+        if isinstance(shell, str):
+            windows_shell = Path(shell).stem.lower() not in {"bash", "sh", "zsh"}
+        else:
+            # run_command uses PowerShell on Windows. Codex can select either shell.
+            windows_shell = True if client == "antigravity" else None
     decision = evaluate_commit_gate(
         repo_root,
         command=command,
         mode=mode,
-        session_id=session_id,
+        session_id=str(session_id or "default"),
         command_cwd=command_cwd,
+        windows_shell=windows_shell,
+        cwd_known=client != "codex" or bool(raw_cwd),
     )
+    if client == "antigravity":
+        # In CLI 1.5.12, empty stdout defers to native permissions; {} denies.
+        if not decision.allowed:
+            print(json.dumps({"decision": "deny", "reason": decision.message}))
+        elif decision.message:
+            print(decision.message, file=sys.stderr)
+        return 0
+    if client == "codex" and not decision.allowed:
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": decision.message,
+                    }
+                }
+            )
+        )
+        return 0
     if decision.message:
         print(decision.message, file=sys.stderr)
     return decision.exit_code
@@ -1079,6 +1151,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("claude-pretool", help="Claude Code PreToolUse Bash hook handler")
+    sub.add_parser("codex-pretool", help="Codex PreToolUse shell hook handler")
+    sub.add_parser("antigravity-pretool", help="Antigravity PreToolUse command hook handler")
     sub.add_parser("fingerprint", help="print current HEAD and tree fingerprint as JSON")
     stamp_p = sub.add_parser("stamp", help="record a fresh verification stamp")
     stamp_p.add_argument("--stage", action="append", default=[])
@@ -1089,8 +1163,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo_root: Path = args.repo_root.resolve()
 
-    if args.cmd == "claude-pretool":
-        return _handle_claude_pretool(repo_root, args.mode)
+    if args.cmd in {"claude-pretool", "codex-pretool", "antigravity-pretool"}:
+        return _handle_pretool(repo_root, args.mode, args.cmd.removesuffix("-pretool"))
     if args.cmd == "fingerprint":
         head_sha, fp = compute_tree_fingerprint(repo_root)
         print(json.dumps({"head_sha": head_sha, "tree_fingerprint": fp}))

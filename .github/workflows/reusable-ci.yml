@@ -36,6 +36,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-extras
 
+      - name: Check agent harness
+        run: uv run --offline --no-project python scripts/harness-doctor check
+
       - name: Ruff
         run: uv run ruff check .
 

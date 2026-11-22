@@ -26,7 +26,7 @@ Routes (``/v1/...``) are a deliberate follow-up: FastAPI path-template
 normalization (param-name + ``:path`` converter differences) carries enough
 false-positive risk that it is not worth shipping in this first advisory pass.
 
-Doc set: ``CLAUDE.md`` + ``docs/**/*.md`` + ``README.md`` + ``.claude/{skills,rules}/**/*.md``.
+Doc set: ``AGENTS.md`` + ``docs/**/*.md`` + ``README.md`` + ``harness/**/*.md``.
 ``CHANGELOG.md`` is excluded — it is a historical record that intentionally cites
 removed verbs/vars.
 
@@ -79,7 +79,7 @@ _ENV_ALLOWLIST: frozenset[str] = frozenset()
 # a ref matches if it equals an entry or extends it with positional args.
 _CLI_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # CLAUDE.md + docs/architecture.md + ADR-0005 + CHANGELOG: the never-built
+        # historical guidance + docs/architecture.md + ADR-0005 + CHANGELOG: the never-built
         # single-page reindex verb that PR3's stale_index/untracked_file drift
         # lint superseded. The docs still name it (as the superseded command), so
         # it must resolve here even though it has no implementation.
@@ -161,16 +161,12 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
     that intentionally cite removed verbs/vars to document what changed, so
     gating them on current source would false-positive by design.
 
-    Includes ``.claude/skills/**`` — skill docs cite CLI verbs and env vars
-    the same way ``docs/**`` does, and drift there silently breaks the agent
-    workflows that follow them. Includes ``.claude/rules/**`` for the same
-    reason — the path-scoped rules hold the area invariants moved out of
-    CLAUDE.md.
+    Check the canonical harness sources once; harness-doctor verifies client copies.
     """
     files: list[Path] = []
-    claude = repo_root / "CLAUDE.md"
-    if claude.is_file():
-        files.append(claude)
+    instructions = repo_root / "AGENTS.md"
+    if instructions.is_file():
+        files.append(instructions)
     readme = repo_root / "README.md"
     if readme.is_file():
         files.append(readme)
@@ -180,10 +176,7 @@ def _iter_doc_files(repo_root: Path) -> list[Path]:
         files.extend(
             p for p in sorted(docs_dir.rglob("*.md")) if adr_dir not in p.parents
         )
-    for sub in ("skills", "rules"):
-        claude_dir = repo_root / ".claude" / sub
-        if claude_dir.is_dir():
-            files.extend(sorted(claude_dir.rglob("*.md")))
+    files.extend(sorted((repo_root / "harness").rglob("*.md")))
     return files
 
 

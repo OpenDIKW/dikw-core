@@ -29,6 +29,7 @@ venv/
 .claude/*
 !.claude/skills/
 !.claude/rules/
+!.claude/agents/
 !.claude/settings.json
 # engine-managed state in example/test wikis
 **/.dikw/

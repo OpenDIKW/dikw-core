@@ -1,12 +1,25 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c \"alias.dikw-doctor=!uv run --offline --no-project python scripts/harness-doctor session-start claude\" dikw-doctor",
+            "statusMessage": "Checking repository harness"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'ROOT=\"${CLAUDE_PROJECT_DIR:-.}\"; PY=\"$ROOT/.venv/bin/python\"; [ -x \"$PY\" ] || PY=python3; exec \"$PY\" \"$ROOT/tools/verify_hook.py\" claude-pretool'"
+            "command": "git -c \"alias.dikw-verify=!uv run --offline --no-project python tools/verify_hook.py claude-pretool\" dikw-verify",
+            "statusMessage": "Checking commit verification stamp"
           }
         ]
       }

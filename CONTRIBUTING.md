@@ -87,7 +87,7 @@ commit message with the appropriate `Co-Authored-By:` trailer.
 
 Before changing core behavior, read [`docs/design.md`](./docs/design.md) (intent),
 [`docs/architecture.md`](./docs/architecture.md) (module map + seams), and the
-`CLAUDE.md` invariants. A few that come up often:
+`AGENTS.md` invariants. A few that come up often:
 
 - Engine code talks only to the `Storage` Protocol — no SQL or adapter internals
   from engine modules.

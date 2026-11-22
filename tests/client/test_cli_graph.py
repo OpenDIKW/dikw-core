@@ -3,7 +3,7 @@
 Drives the Typer ``CliRunner`` against the in-memory ASGI server: seed
 a few docs on the runtime, invoke the CLI like the user would, and
 assert that stdout carries a parseable JSON envelope shaped like
-``GraphResult``. Agent-first default per CLAUDE.md memory: JSON to
+``GraphResult``. Agent-first default per the client output contract: JSON to
 stdout, no human-only flags muddying the contract.
 """
 

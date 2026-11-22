@@ -13,7 +13,7 @@ baseline entry:
   * K-layer/synth diff (``domains/knowledge/**``, ``api_synth.py``, or the K-layer
     authoring prompts) — the entry demonstrates EITHER signal OR non-destructiveness
     (docs/eval-plan.md's exact framing) AND references the mandated ``elon-musk``
-    baseline corpus (CLAUDE.md "Things not to do"; ``feedback_real_data_validation``).
+    baseline corpus (AGENTS.md real-data requirements; ``feedback_real_data_validation``).
     *Signal* = ≥ N of the seven ``synth`` metrics OR a lint-outcome count (issue-kind
     / TP-FP, the shape lint-fix PRs baseline with), on numeric lines. *Non-
     destructiveness* = an explicit marker (byte-identical / non-destructive / purely
@@ -179,7 +179,7 @@ def check_baseline_addition(
             violations.append(
                 "K-layer/synth change: the new BASELINES entry must reference the "
                 "mandated `elon-musk` baseline corpus "
-                "(CLAUDE.md 'Things not to do' / feedback_real_data_validation)."
+                "(AGENTS.md real-data requirements / feedback_real_data_validation)."
             )
 
     # 3. Retrieval: an ablation with retrieval metrics.
