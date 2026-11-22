@@ -257,34 +257,53 @@ def skill_mode(root, name, index):
     return path.stat().st_mode & 0o777 if path.exists() else 0
 
 
-def claude_settings(existing, wanted):
-    """Repair owned hooks without erasing other Claude project settings."""
+def guard_hook_shape(value, registered, location):
+    """Missing managed fields can be restored; preserve additions for review."""
+    if isinstance(registered, dict) and isinstance(value, dict):
+        command = value.get("command")
+        if (
+            isinstance(command, str)
+            and "command" in registered
+            and command != registered["command"]
+        ):
+            alias = re.match(r'git -c "alias\.[a-z0-9-]+=', registered["command"])
+            labelled = (
+                registered.get("statusMessage")
+                and value.get("statusMessage") == registered["statusMessage"]
+            )
+            if not labelled and not (alias and command.startswith(alias[0])):
+                raise ValueError(
+                    f"unregistered command in {location}; register it or move it aside before sync"
+                )
+        for key, child in value.items():
+            if key not in registered:
+                raise ValueError(f"unexpected hook field {location}/{key}; review it before sync")
+            guard_hook_shape(child, registered[key], f"{location}/{key}")
+    elif isinstance(registered, list) and isinstance(value, list):
+        if len(value) > len(registered):
+            raise ValueError(f"unexpected hook in {location}; register it before sync")
+        for index, (child, template) in enumerate(zip(value, registered, strict=False)):
+            guard_hook_shape(child, template, f"{location}/{index}")
+    elif type(registered) is not type(value):
+        raise ValueError(f"invalid hook field {location}; repair it before sync")
+
+
+def hook_settings(name, existing, wanted):
     try:
         config = json.loads(existing)
     except (ValueError, UnicodeError) as error:
-        raise ValueError("invalid .claude/settings.json; repair its JSON before sync") from error
+        raise ValueError(f"invalid {name}; repair its JSON or move it aside before sync") from error
     if not isinstance(config, dict):
-        raise ValueError("invalid .claude/settings.json; restore its JSON object before sync")
-    expected_hooks = json.loads(wanted)["hooks"]
+        raise ValueError(f"invalid {name}; restore its JSON object before sync")
+    expected_config = json.loads(wanted)
+    if name != ".claude/settings.json":
+        guard_hook_shape(config, expected_config, name)
+        return wanted
+    expected_hooks = expected_config["hooks"]
     events = config.get("hooks", {})
     if events == expected_hooks:
         return existing
-    for event, groups in events.items() if isinstance(events, dict) else ():
-        registered = [h for group in expected_hooks.get(event, []) for h in group["hooks"]]
-        for group in groups if isinstance(groups, list) else []:
-            handlers = group.get("hooks") if isinstance(group, dict) else None
-            if isinstance(handlers, list) and any(
-                not isinstance(h, dict)
-                or not any(
-                    h.get("command") == reg["command"]
-                    or (reg.get("statusMessage") and h.get("statusMessage") == reg["statusMessage"])
-                    for reg in registered
-                )
-                for h in handlers
-            ):
-                raise ValueError(
-                    f"unexpected {event} hook in .claude/settings.json; move local hooks to .claude/settings.local.json or register them in harness/ before sync"
-                )
+    guard_hook_shape(events, expected_hooks, name + "/hooks")
     return json_file({**config, "hooks": expected_hooks}).encode()
 
 
@@ -303,22 +322,34 @@ def inspect(root, spec, sync=False):
             problems.append("AGENTS.md must document harness-doctor check and sync")
     for old in (
         "CLAUDE.md",
-        "CLAUDE.local.md",
+        "GEMINI.md",
+        *(
+            f"{directory}/{file}"
+            for directory in (".agents", ".agent", "_agents", "_agent")
+            for file in ("AGENTS.md", "GEMINI.md")
+        ),
         ".claude/CLAUDE.md",
         ".claude/AGENTS.md",
         "AGENTS.override.md",
     ):
         if (root / old).exists():
             problems.append("competing project instructions: " + old)
+    if (root / "CLAUDE.local.md").exists() and subprocess.check_output(
+        ["git", "ls-files", "--", "CLAUDE.local.md"], cwd=root
+    ):
+        problems.append("competing project instructions: CLAUDE.local.md (tracked personal file)")
     actual = {p for directory in TREES for p in walk(root, directory)}
     for p in sorted(actual - outputs.keys()):
         problems.append("unexpected " + p + " (review and move or remove explicitly)")
     for name, wanted in outputs.items():
         path = safe_path(root, name)
         existing = path.read_bytes() if path.exists() else None
-        if name == ".claude/settings.json" and existing is not None:
+        if (
+            name in (".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json")
+            and existing is not None
+        ):
             try:
-                wanted = claude_settings(existing, wanted)
+                wanted = hook_settings(name, existing, wanted)
             except ValueError as error:
                 problems.append(str(error))
                 continue

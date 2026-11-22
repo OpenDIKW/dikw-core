@@ -78,10 +78,12 @@ Triage every finding the same way:
 
 ## 5. Re-verify after review fixes
 
-- If a review fix changed code, run `uv run python tools/check.py` again.
+- If a review fix changed any file, run `uv run python tools/check.py` again. Documentation and harness changes also invalidate the stamp.
 - Record the review results (rounds, verdicts, rejected findings) in the artifact.
 
 ## 6. Doc sync
+
+If this step changes files, rerun `uv run python tools/check.py` on the final tree before committing.
 
 Check every Markdown file against the diff: `AGENTS.md`, `harness/rules/**`, `CONTEXT.md`, `docs/**`, `CHANGELOG.md`, plans, ADRs, `GUIDE_FOR_AGENTS.md`.
 Look for stale CLI spellings, front-matter keys, env vars, and HTTP routes. Fix each one in this PR.

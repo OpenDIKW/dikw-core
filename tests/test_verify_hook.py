@@ -443,6 +443,30 @@ def test_powershell_paths_select_the_requested_worktree(tmp_path: Path) -> None:
     assert not vh.evaluate_commit_gate(repo, command=command, windows_shell=True).allowed
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_powershell_continuations_parse_as_one_command(tmp_path: Path, newline: str) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    standard = "git commit -m test"
+    continued = "git `" + newline + "commit -m test"
+    assert vh.find_commit_invocations(
+        continued, repo, windows_shell=True
+    ) == vh.find_commit_invocations(standard, repo, windows_shell=True)
+    assert not vh.evaluate_commit_gate(
+        repo, command=continued, windows_shell=True, mode="enforce"
+    ).allowed
+    quoted = "git status -- 'a`" + newline + "b'"
+    assert vh._strip_shell_comments(quoted, "`") == quoted
+    middle = "Write-Output text`" + newline + "more"
+    assert vh._strip_shell_comments(middle, "`") == middle
+    tokens = vh._split_shell_segments_with_ops(middle, windows_shell=True)
+    assert tokens == (
+        [(None, ["Write-Output", "text\nmore"])]
+        if newline == "\n"
+        else [(None, ["Write-Output", "text\r"]), ("\n", ["more"])]
+    )
+
+
 def test_native_hook_uses_explicit_target_when_execution_directory_is_unknown(
     tmp_path: Path,
 ) -> None:

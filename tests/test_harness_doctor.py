@@ -25,7 +25,18 @@ def run(root, *args, cwd=None, stdin=None):
 
 
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    # A Git hook in the caller must not redirect any of this fixture's child processes.
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+    ):
+        monkeypatch.delenv(name, raising=False)
     root = tmp_path / "work tree"
     root.mkdir()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -83,8 +94,16 @@ def test_unknown_files_and_instruction_budget(repo):
     extra.unlink()
     local = repo / "CLAUDE.local.md"
     local.write_text("Personal instructions\n", encoding="utf-8")
+    assert run(repo).returncode == 0
+    subprocess.run(["git", "add", "-f", "--", "CLAUDE.local.md"], cwd=repo, check=True)
     assert "competing project instructions: CLAUDE.local.md" in run(repo).stdout
     local.unlink()
+    for old in ("GEMINI.md", ".agents/AGENTS.md", "_agent/GEMINI.md"):
+        conflicting = repo / old
+        conflicting.parent.mkdir(exist_ok=True)
+        conflicting.write_text("other root", encoding="utf-8")
+        assert old in run(repo).stdout
+        conflicting.unlink()
     guide = repo / "AGENTS.md"
     original = guide.read_text("utf-8").splitlines()
     guide.write_text("\n".join(original + ["line"] * (200 - len(original))) + "\n", "utf-8")
@@ -113,6 +132,31 @@ def test_preserves_claude_settings_and_unregistered_hooks(repo):
         result = run(repo, "sync")
         assert result.returncode == 1 and ".claude/settings.json" in result.stdout
         assert path.read_bytes() == malformed
+
+
+@pytest.mark.parametrize(
+    "name", [".claude/settings.json", ".codex/hooks.json", ".agents/hooks.json"]
+)
+def test_sync_protects_unregistered_and_malformed_hooks(repo, name):
+    path = repo / name
+    registered = json.loads(path.read_bytes())
+    owner = registered["harness-doctor"] if name.startswith(".agents/") else registered["hooks"]
+    original = owner["SessionStart"]
+    replacement = json.loads(json.dumps(original))
+    handler = replacement[0].get("hooks", replacement)[0]
+    handler["command"] = "node scripts/session-bootstrap.mjs"
+    handler.pop("statusMessage", None)
+    for changed in (
+        [*original, {"type": "command", "command": "echo local"}],
+        {"custom": True},
+        replacement,
+    ):
+        owner["SessionStart"] = changed
+        content = json.dumps(registered).encode()
+        path.write_bytes(content)
+        result = run(repo, "sync")
+        assert result.returncode == 1 and name in result.stdout
+        assert path.read_bytes() == content
 
 
 def test_skill_executable_mode(repo):

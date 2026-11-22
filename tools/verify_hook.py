@@ -197,6 +197,7 @@ def _strip_shell_comments(command: str, escape: str = "\\") -> str:
     in_single = False
     in_double = False
     escaped = False
+    at_word_start = True
     i = 0
     n = len(command)
     while i < n:
@@ -212,6 +213,10 @@ def _strip_shell_comments(command: str, escape: str = "\\") -> str:
                 in_single = False
             i += 1
             continue
+        if at_word_start and escape == "`" and ch == escape and command.startswith(("\r\n", "\n"), i + 1):
+            # At a token boundary, PowerShell treats the whole physical newline as a continuation.
+            i += 3 if command[i + 1] == "\r" else 2
+            continue
         if in_double:
             out.append(ch)
             if ch == escape:
@@ -221,16 +226,19 @@ def _strip_shell_comments(command: str, escape: str = "\\") -> str:
             i += 1
             continue
         if ch == escape:
+            at_word_start = False
             out.append(ch)
             escaped = True
             i += 1
             continue
         if ch == "'":
+            at_word_start = False
             in_single = True
             out.append(ch)
             i += 1
             continue
         if ch == '"':
+            at_word_start = False
             in_double = True
             out.append(ch)
             i += 1
@@ -240,6 +248,7 @@ def _strip_shell_comments(command: str, escape: str = "\\") -> str:
                 i += 1
             continue
         out.append(ch)
+        at_word_start = ch in " \t\r\n;&|<>"
         i += 1
     return "".join(out)
 

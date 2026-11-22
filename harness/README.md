@@ -10,7 +10,7 @@ From the current worktree root, use `uv run --offline --no-project python script
 
 The Git shell alias in each startup hook locates this worktree's root even from a nested directory. The doctor delivers a short success or diagnostic message using the client's SessionStart protocol. Keep local settings and session history outside the managed adapter trees.
 
-The doctor manages the declared hooks in `.claude/settings.json` and preserves other project settings. If it finds an unregistered handler, review it, then move personal hooks to `.claude/settings.local.json` or declare shared hooks in the manifest and its adapters. A parent directory's Claude instructions can shadow the repository's `AGENTS.md`. The Claude startup receipt asks the agent to read it when absent.
+The doctor protects unregistered handlers and malformed hook files in all three clients. Review the reported file before syncing. Move private hooks to local configuration or add shared hooks to the manifest and its adapters. The doctor preserves independent fields in Claude's project settings. Keep personal `CLAUDE.local.md` untracked. It and an ancestor's Claude instructions can shadow the repository's `AGENTS.md`, so the Claude startup receipt directs the agent to read it when absent.
 
 Skill attachments retain their Git executable bit. On Windows, use the exact `git add --chmod` command from the doctor to stage that bit for new or changed executable attachments and their adapters, then repeat `check`.
 

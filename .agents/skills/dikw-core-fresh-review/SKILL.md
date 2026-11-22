@@ -33,13 +33,13 @@ Stop only on a block signal: a design-level concern or `CHANGES_REQUESTED`, or a
 ## 0. Scope — when this runs
 
 - Step 4 of the delivery loop, for tier-L diffs, after the codex rounds are quiet.
-- If `git diff main...HEAD` is empty, diff the working tree. The review often runs before the commit.
+- Include pending edits even when the branch already has commits.
 
 ## 1. Gather the review packet
 
 The reviewer sees only this packet:
 
-- The unified diff: `git diff main...HEAD` (or the PR, or the working tree).
+- The committed patch (`git diff main...HEAD` or the PR), the staged patch (`git diff --cached`), the unstaged patch (`git diff`), and the contents of relevant new files listed by `git ls-files --others --exclude-standard`.
 - `docs/verification-rubric.md` — the yes / no / N-A invariant checklist, **read from the base branch (`git show main:docs/verification-rubric.md`)** so a PR can never weaken the rubric that judges it.
 - The `docs/design.md` sections for what the diff touches (K-layer authoring, retrieval fusion, persist pipeline, …) — **read approved excerpts from `main` (`git show main:docs/design.md`)** so proposed design edits in the diff are judged as proposed changes rather than already-approved authority.
 - The `harness/rules/*.md` files for the touched areas — **read existing rule files from `main` (`git show main:harness/rules/<file>`)** for the same anti-tamper reason; if the diff introduces a brand-new rule file absent on `main`, include it separately labeled as a proposed rule rather than replacing base-branch invariants.

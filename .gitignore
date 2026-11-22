@@ -27,6 +27,7 @@ venv/
 # ignored). Note: must ignore .claude/* (contents), not .claude/ (the dir), or
 # git can't re-include tracked entries under an excluded parent.
 .claude/*
+/CLAUDE.local.md
 !.claude/skills/
 !.claude/rules/
 !.claude/agents/

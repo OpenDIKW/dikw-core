@@ -23,10 +23,13 @@ Track each leg that fires. Run the shared floor first, then the change-specific 
 ## 0. Classify the diff
 
 ```
-git diff --name-only main...HEAD     # (or vs the working tree if pre-commit)
+git diff --name-only main...HEAD
+git diff --name-only HEAD
+git diff --cached --name-only
+git ls-files --others --exclude-standard
 ```
 
-Put each path in a bucket:
+Combine the outputs and classify each distinct path, including untracked files and pending edits.
 
 - `src/dikw_core/storage/**`
 - `src/dikw_core/domains/info/**` + `RetrievalConfig`
