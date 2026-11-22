@@ -202,20 +202,15 @@ def comparable(path, data):
 
 def write_atomic(path, data, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            stream.write(data)
-        except BaseException:
-            stream.close()
-            temp.unlink(missing_ok=True)
-            raise
-    try:
-        if mode is not None and os.name != "nt":
-            temp.chmod(mode)
+    with tempfile.TemporaryDirectory(dir=path.parent) as staging:
+        temp = Path(staging) / "output"
+        temp.write_bytes(data)
+        if os.name != "nt":
+            if mode is None and path.exists():
+                mode = path.stat().st_mode & 0o777
+            if mode is not None:
+                temp.chmod(mode)
         os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def difference(actual, wanted):

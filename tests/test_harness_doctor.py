@@ -185,6 +185,22 @@ def test_skill_executable_mode(repo):
         assert run(repo).returncode == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission and umask behavior")
+def test_generated_files_preserve_mode_and_respect_umask(repo):
+    role = repo / ".claude/agents/reviewer.md"
+    role.chmod(0o640)
+    role.write_text("change\n", encoding="utf8")
+    assert run(repo, "sync").returncode == 0
+    assert role.stat().st_mode & 0o777 == 0o640
+    role.unlink()
+    previous = os.umask(0o027)
+    try:
+        assert run(repo, "sync").returncode == 0
+    finally:
+        os.umask(previous)
+    assert role.stat().st_mode & 0o777 == 0o640
+
+
 def test_shared_routing_cases(repo):
     fixture = json.loads((repo / "harness/tests/routing.json").read_text("utf-8"))
     path = repo / "harness/manifest.json"

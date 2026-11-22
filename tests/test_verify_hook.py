@@ -443,6 +443,28 @@ def test_powershell_paths_select_the_requested_worktree(tmp_path: Path) -> None:
     assert not vh.evaluate_commit_gate(repo, command=command, windows_shell=True).allowed
 
 
+def test_windows_git_executable_names(tmp_path: Path) -> None:
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    expected = vh.find_commit_invocations("git commit -m test", repo, windows_shell=True)
+    assert len(expected) == 1
+    for program in ("Git", "GIT.EXE", r'"C:\Program Files\Git\cmd\git.exe"'):
+        assert (
+            vh.find_commit_invocations(program + " commit -m test", repo, windows_shell=True)
+            == expected
+        )
+        assert vh.find_commit_invocations(
+            program + " commit -m 'unfinished", repo, windows_shell=True
+        )
+
+
+def test_powershell_preserves_doubled_apostrophes_in_paths(tmp_path: Path) -> None:
+    vh = _load_module()
+    command = "git -C 'O''Brien worktree' commit -m test"
+    invocations = vh.find_commit_invocations(command, tmp_path, windows_shell=True)
+    assert [inv.target_dir for inv in invocations] == [tmp_path / "O'Brien worktree"]
+
+
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_powershell_continuations_parse_as_one_command(tmp_path: Path, newline: str) -> None:
     vh = _load_module()
@@ -702,6 +724,7 @@ def test_native_pretool_keeps_unverified_commits_blocked(tmp_path, monkeypatch, 
     repo = _init_git_repo(tmp_path)
     command = "git commit -m 'unverified'"
     if client == "codex":
+        command = f'git -C "{repo.as_posix()}" commit -m unverified'
         payload = {
             "session_id": "test",
             "cwd": str(repo),
@@ -722,6 +745,32 @@ def test_native_pretool_keeps_unverified_commits_blocked(tmp_path, monkeypatch, 
         else result["decision"]
     )
     assert outcome == "deny"
+    if client == "codex":
+        assert "no verification stamp" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        vh.write_stamp(repo, stages=["ruff"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert vh.main(["--repo-root", str(repo), "--mode", "enforce", "codex-pretool"]) == 0
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("raw_cwd", [True, "  "])
+def test_codex_treats_invalid_execution_directories_as_unknown(
+    tmp_path, monkeypatch, capsys, raw_cwd
+):
+    vh = _load_module()
+    repo = _init_git_repo(tmp_path)
+    vh.write_stamp(repo, stages=["ruff"])
+    payload = {
+        "session_id": "test",
+        "cwd": str(repo),
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m test", "workdir": raw_cwd, "shell": " "},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert vh.main(["--repo-root", str(repo), "--mode", "enforce", "codex-pretool"]) == 0
+    output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "execution directory" in output["permissionDecisionReason"]
 
 
 def test_antigravity_leaves_native_permissions_in_control(tmp_path, monkeypatch, capsys):

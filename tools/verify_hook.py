@@ -38,7 +38,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 GateMode = Literal["off", "observe", "enforce"]
@@ -208,6 +208,12 @@ def _strip_shell_comments(command: str, escape: str = "\\") -> str:
             i += 1
             continue
         if in_single:
+            if escape == "`" and command.startswith("''", i):
+                # PowerShell encodes a literal apostrophe by doubling it.
+                # Close the shlex quote, escape the apostrophe, then reopen it.
+                out.extend(("'", escape, "'", "'"))
+                i += 2
+                continue
             out.append(ch)
             if ch == "'":
                 in_single = False
@@ -380,7 +386,7 @@ def _segment_command_name(tokens: list[str]) -> str | None:
 
 
 def _parse_git_segment(
-    tokens: list[str], base_dir: Path
+    tokens: list[str], base_dir: Path, *, windows_names: bool = False
 ) -> tuple[str | None, Path, list[str], bool]:
     """Return ``(subcommand, effective_dir, subcommand_args, uses_custom_git_env)``."""
     idx = 0
@@ -393,7 +399,15 @@ def _parse_git_segment(
             if var_name in _GIT_LOCAL_ENV_VARS:
                 uses_custom_git_env = True
         idx += 1
-    if idx >= len(tokens) or Path(tokens[idx]).name != "git":
+    if idx >= len(tokens):
+        return None, base_dir, [], uses_custom_git_env
+    executable = tokens[idx]
+    is_git = (
+        PureWindowsPath(executable).name.casefold() in {"git", "git.exe"}
+        if windows_names
+        else Path(executable).name == "git"
+    )
+    if not is_git:
         return None, base_dir, [], uses_custom_git_env
 
     idx += 1
@@ -631,12 +645,18 @@ def find_commit_invocations(
     command: str, base_dir: Path, *, windows_shell: bool = False
 ) -> list[CommitInvocation]:
     """Return all mutating ``git commit`` invocations in ``command`` with target dirs."""
-    if "git" not in command or "commit" not in command:
+    windows_names = windows_shell or os.name == "nt"
+    if "git" not in (command.casefold() if windows_names else command) or "commit" not in command:
         return []
     paired_segments = _split_shell_segments_with_ops(command, windows_shell=windows_shell)
     if paired_segments is None:
         # Unbalanced quotes — fall back conservatively to unquoted segment check.
-        if re.search(r"(?:^|[;&|\n]\s*)git(?:\s+\S+)*\s+commit\b", command):
+        program = (
+            r"""(?:^|[;&|\n]|[/\\])\s*["']?(?i:git(?:\.exe)?)["']?"""
+            if windows_names
+            else r"(?:^|[;&|\n]\s*)git"
+        )
+        if re.search(program + r"(?:\s+\S+)*\s+commit\b", command):
             return [
                 CommitInvocation(
                     target_dir=base_dir, commit_all=False, preceded_by_mutator=False
@@ -665,7 +685,9 @@ def find_commit_invocations(
             target = Path(seg[1])
             cwd = target if target.is_absolute() else (cwd / target)
             continue
-        subcmd, target_dir, sub_args, uses_custom_git_env = _parse_git_segment(seg, cwd)
+        subcmd, target_dir, sub_args, uses_custom_git_env = _parse_git_segment(
+            seg, cwd, windows_names=windows_names
+        )
         # A relative target stays unresolved when the native hook omitted the execution cwd.
         resolved_target = target_dir.resolve() if target_dir.is_absolute() else target_dir
         if subcmd == "commit":
@@ -1100,13 +1122,14 @@ def _handle_pretool(repo_root: Path, mode: GateMode | None, client: str) -> int:
     raw_cwd = tool_input.get("Cwd") if client == "antigravity" else tool_input.get("workdir")
     base = payload.get("cwd")
     command_cwd = Path(base) if isinstance(base, str) and base else repo_root
-    if isinstance(raw_cwd, str) and raw_cwd:
+    has_raw_cwd = isinstance(raw_cwd, str) and bool(raw_cwd.strip())
+    if has_raw_cwd:
         command_cwd = command_cwd / raw_cwd
     windows_shell: bool | None = False
     if client != "claude" and os.name == "nt":
         shell = tool_input.get("shell")
-        if isinstance(shell, str):
-            windows_shell = Path(shell).stem.lower() not in {"bash", "sh", "zsh"}
+        if isinstance(shell, str) and shell.strip():
+            windows_shell = Path(shell.strip()).stem.lower() not in {"bash", "sh", "zsh"}
         else:
             # run_command uses PowerShell on Windows. Codex can select either shell.
             windows_shell = True if client == "antigravity" else None
@@ -1117,7 +1140,7 @@ def _handle_pretool(repo_root: Path, mode: GateMode | None, client: str) -> int:
         session_id=str(session_id or "default"),
         command_cwd=command_cwd,
         windows_shell=windows_shell,
-        cwd_known=client != "codex" or bool(raw_cwd),
+        cwd_known=client != "codex" or has_raw_cwd,
     )
     if client == "antigravity":
         # In CLI 1.5.12, empty stdout defers to native permissions; {} denies.
