@@ -928,18 +928,25 @@ async def test_materialize_skips_when_file_replaced_with_non_regular_before_slur
     assert not (project_root / "assets").exists()
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<!-- " + (b"c" * 220) + b' -->\n<svg xmlns="http://www.w3.org/2000/svg" />',
+        b'<!DOCTYPE svg [<!ENTITY label "ok">]><svg xmlns="http://www.w3.org/2000/svg"/>',
+    ],
+)
 async def test_materialize_svg_with_leading_comment_no_xml_decl(
     tmp_path: Path,
+    payload: bytes,
 ) -> None:
-    """A valid .svg starting with a 220-byte XML comment and no XML
-    declaration must still be recognized within the bounded 1024-byte header."""
+    """A valid .svg starting with a 220-byte XML comment or a DOCTYPE with
+    an internal subset (and no XML declaration) must still be recognized within
+    the bounded 1024-byte header."""
     project_root = tmp_path / "project"
     project_root.mkdir()
     md = project_root / "doc.md"
     md.write_text("x", encoding="utf-8")
-    leading_comment = b"<!-- " + (b"c" * 220) + b" -->\n"
-    svg_payload = leading_comment + b'<svg xmlns="http://www.w3.org/2000/svg" />'
-    (project_root / "commented.svg").write_bytes(svg_payload)
+    (project_root / "commented.svg").write_bytes(payload)
 
     ref = AssetRef(
         original_path="commented.svg", alt="", start=0, end=20, syntax="markdown"
@@ -964,6 +971,7 @@ async def test_materialize_svg_with_leading_comment_no_xml_decl(
     [
         b"<!-- <svg> not actually an svg -->\n<html><body>hi</body></html>",
         b"<!-- unclosed comment containing <svg> without closing marker",
+        b'<!DOCTYPE svg [<!ENTITY label "ok"> unclosed <svg/>',
     ],
 )
 async def test_materialize_rejects_svg_tag_only_inside_comment(

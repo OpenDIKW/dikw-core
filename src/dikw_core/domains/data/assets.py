@@ -165,8 +165,31 @@ _MIME_SNIFF_BYTES = 1024
 _SVG_PROLOGUE_DELIMS: tuple[tuple[bytes, bytes], ...] = (
     (b"<!--", b"-->"),
     (b"<?", b"?>"),
-    (b"<!doctype", b">"),
 )
+
+
+def _skip_doctype(head: bytes, start: int) -> int:
+    """Scan past a ``<!DOCTYPE ...>`` declaration (including quoted strings
+    and ``[...]`` internal subsets), returning the index after ``>`` or ``-1``."""
+    i = start
+    n = len(head)
+    quote = 0
+    bracket_depth = 0
+    while i < n:
+        ch = head[i]
+        if quote:
+            if ch == quote:
+                quote = 0
+        elif ch in b"\"'":
+            quote = ch
+        elif ch == ord("["):
+            bracket_depth += 1
+        elif ch == ord("]") and bracket_depth > 0:
+            bracket_depth -= 1
+        elif ch == ord(">") and bracket_depth == 0:
+            return i + 1
+        i += 1
+    return -1
 
 
 def _has_svg_root(data: bytes) -> bool:
@@ -179,6 +202,12 @@ def _has_svg_root(data: bytes) -> bool:
     while i < n:
         while i < n and head[i] in b" \t\r\n\f":
             i += 1
+        if head.startswith(b"<!doctype", i):
+            nxt = _skip_doctype(head, i + 9)
+            if nxt == -1:
+                return False
+            i = nxt
+            continue
         for opener, closer in _SVG_PROLOGUE_DELIMS:
             if head.startswith(opener, i):
                 end = head.find(closer, i + len(opener))
