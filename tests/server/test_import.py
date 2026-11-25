@@ -16,10 +16,18 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+
+from dikw_core.server.routes_import import (
+    Manifest,
+    ManifestEntry,
+    PackageEntry,
+    _verify_markdown_refs,
+)
 
 from ._import_helpers import packages_manifest, sha256, tar_bytes
 
@@ -286,3 +294,25 @@ async def test_import_rejects_smuggled_markdown_in_asset_paths(
     assert resp.json()["error"]["code"] == "import_asset_outside_root"
     assert not (base_root / "sources" / "benign.md").exists()
     assert not (base_root / "sources" / "evil.md").exists()
+
+
+def test_verify_markdown_refs_skips_non_file_md_path(tmp_path: Path) -> None:
+    """Defensive guard: ``_verify_markdown_refs`` ignores manifest markdown
+    entries whose staged path is not a regular file."""
+    staging = tmp_path / "staging"
+    (staging / "sources").mkdir(parents=True)
+    manifest = Manifest(
+        files=[
+            ManifestEntry(path="sources/missing.md", size=0, sha256="0" * 64)
+        ],
+        packages=[
+            PackageEntry(
+                id=0,
+                md_path="sources/missing.md",
+                asset_paths=[],
+                package_sha256="0" * 64,
+            )
+        ],
+        total_bytes=0,
+    )
+    _verify_markdown_refs(staging, manifest)

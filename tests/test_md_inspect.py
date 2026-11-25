@@ -24,8 +24,12 @@ import pytest
 
 from dikw_core.md_inspect import (
     InspectionResult,
+    _candidate_is_symlink,
+    _is_within_dikw_meta,
     _resolve_local,
+    find_outside_root_refs,
     inspect_markdown,
+    is_outside_root_ref,
 )
 
 
@@ -311,4 +315,65 @@ def test_resolve_local_rejects_device_node(
     assert (
         _resolve_local("dev.png", source_md_path=note, project_root=vault)
         is None
+    )
+
+
+def test_is_within_dikw_meta_handles_path_outside_root(tmp_path: Path) -> None:
+    vault = (tmp_path / "vault").resolve()
+    outside = (tmp_path / "other" / "file.png").resolve()
+    assert _is_within_dikw_meta(outside, vault) is False
+
+
+@pytest.mark.parametrize("bad_ref", ["", "bad\x00.png"])
+def test_forbidden_empty_and_nul_refs_rejected(
+    tmp_path: Path, bad_ref: str
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\nbody\n")
+
+    assert is_outside_root_ref(bad_ref, source_md_path=note, project_root=vault)
+    assert _resolve_local(bad_ref, source_md_path=note, project_root=vault) is None
+
+
+def test_is_outside_root_ref_allows_remote_urls(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\nbody\n")
+
+    assert (
+        is_outside_root_ref(
+            "https://example.com/img.png",
+            source_md_path=note,
+            project_root=vault,
+        )
+        is False
+    )
+
+
+def test_find_outside_root_refs_falls_back_on_malformed_frontmatter(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "bad.md"
+    _write(
+        note,
+        "---\ntitle: a\nfoo: : bar\n---\n"
+        "![](https://example.com/ok.png)\n"
+        "![](../../outside.png)\n",
+    )
+
+    assert find_outside_root_refs(note, project_root=vault) == [
+        "../../outside.png"
+    ]
+
+
+def test_candidate_is_symlink_skips_dotdot_segment(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](..)\n")
+
+    assert (
+        _candidate_is_symlink("..", source_md_path=note, project_root=vault)
+        is False
     )

@@ -22,7 +22,11 @@ from typing import Any
 
 import pytest
 
-from dikw_core.domains.data.assets import _MIME_SNIFF_BYTES, materialize_asset
+from dikw_core.domains.data.assets import (
+    _MIME_SNIFF_BYTES,
+    _read_bounded_header,
+    materialize_asset,
+)
 from dikw_core.schemas import AssetKind, AssetRecord, AssetRef
 
 # ---- Helpers -------------------------------------------------------------
@@ -815,6 +819,108 @@ async def test_materialize_drops_extension_only_mime_fallback(
         source_md_path=md,
         project_root=project_root,
         get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+def test_read_bounded_header_rejects_non_regular_and_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_read_bounded_header`` must return ``None`` for non-regular paths
+    (at both ``stat`` and ``fstat``) and on ``OSError``."""
+    assert _read_bounded_header(tmp_path) is None
+    assert _read_bounded_header(tmp_path / "does-not-exist.png") is None
+
+    target = tmp_path / "swapped.png"
+    target.write_bytes(_png_with_dims(4, 4))
+    real_fstat = os.fstat
+
+    def _fake_fstat(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        return os.stat_result((stat.S_IFIFO | 0o600, *st[1:]))
+
+    monkeypatch.setattr(os, "fstat", _fake_fstat)
+    assert _read_bounded_header(target) is None
+
+
+async def test_materialize_skips_when_header_read_fails_after_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the file becomes unreadable after ``_resolve_local`` succeeds,
+    ``materialize_asset`` logs and skips without hashing or slurping."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "unreadable.png"
+    target.write_bytes(_png_with_dims(4, 4))
+    target_resolved = target.resolve()
+
+    real_open = Path.open
+
+    def _deny_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if os.path.realpath(self) == str(target_resolved):
+            raise PermissionError("simulated unreadable file")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _deny_open)
+
+    ref = AssetRef(
+        original_path="unreadable.png",
+        alt="",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+
+
+async def test_materialize_skips_when_file_replaced_with_non_regular_before_slurp(
+    tmp_path: Path,
+) -> None:
+    """If the asset is swapped for a non-regular entry between hashing and
+    the final slurp, ``materialize_asset`` rejects it before ``read_bytes``."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "swapped.png"
+    target.write_bytes(_png_with_dims(4, 4))
+
+    store, _get, upsert = _make_fake_storage()
+
+    async def _get_and_swap(_asset_id: str) -> AssetRecord | None:
+        if target.is_file():
+            target.unlink()
+            target.mkdir()
+        return None
+
+    ref = AssetRef(
+        original_path="swapped.png",
+        alt="",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=_get_and_swap,
         upsert_asset=upsert,
     )
     assert rec is None
