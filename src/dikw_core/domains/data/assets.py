@@ -161,13 +161,36 @@ __all__ = [
 # WebP magic headers and leading SVG XML prologues/comments).
 _MIME_SNIFF_BYTES = 1024
 
-# SVG root detector within the bounded header: allows optional UTF-8 BOM and
-# any leading whitespace, XML declarations/PIs, XML comments, or DOCTYPE
-# before the ``<svg`` root element.
-_SVG_PROLOGUE_RE = re.compile(
-    rb"^(?:\xef\xbb\xbf)?(?:\s|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!doctype[^>]*>)*<svg(?=[\s/>]|$)",
-    re.IGNORECASE,
+# Opening/closing tokens skipped before the ``<svg`` root element.
+_SVG_PROLOGUE_DELIMS: tuple[tuple[bytes, bytes], ...] = (
+    (b"<!--", b"-->"),
+    (b"<?", b"?>"),
+    (b"<!doctype", b">"),
 )
+
+
+def _has_svg_root(data: bytes) -> bool:
+    """Return ``True`` if ``data`` starts with an ``<svg`` root element after
+    optional UTF-8 BOM, whitespace, XML declarations/PIs, comments, or DOCTYPE
+    within the bounded sniff window."""
+    head = data[:_MIME_SNIFF_BYTES].removeprefix(b"\xef\xbb\xbf").lower()
+    i = 0
+    n = len(head)
+    while i < n:
+        while i < n and head[i] in b" \t\r\n\f":
+            i += 1
+        for opener, closer in _SVG_PROLOGUE_DELIMS:
+            if head.startswith(opener, i):
+                end = head.find(closer, i + len(opener))
+                if end == -1:
+                    return False
+                i = end + len(closer)
+                break
+        else:
+            break
+    return head.startswith(b"<svg", i) and (
+        i + 4 == n or head[i + 4] in b" \t\r\n\f/>"
+    )
 
 
 def _detect_image_mime(data: bytes) -> str | None:
@@ -188,7 +211,7 @@ def _detect_image_mime(data: bytes) -> str | None:
         return "image/webp"
     # SVG is text-based; match an ``<svg`` root after optional XML prologues
     # and comments within the bounded header window.
-    if _SVG_PROLOGUE_RE.match(data[:_MIME_SNIFF_BYTES]):
+    if _has_svg_root(data):
         return "image/svg+xml"
     return None
 

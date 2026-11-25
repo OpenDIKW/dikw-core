@@ -959,18 +959,24 @@ async def test_materialize_svg_with_leading_comment_no_xml_decl(
     assert rec.media_meta is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<!-- <svg> not actually an svg -->\n<html><body>hi</body></html>",
+        b"<!-- unclosed comment containing <svg> without closing marker",
+    ],
+)
 async def test_materialize_rejects_svg_tag_only_inside_comment(
     tmp_path: Path,
+    payload: bytes,
 ) -> None:
-    """Mentioning ``<svg>`` inside a comment before a non-SVG root must not
-    fool the SVG header detector."""
+    """Mentioning ``<svg>`` inside a comment (closed or unclosed) before a
+    non-SVG root must not fool the SVG header detector."""
     project_root = tmp_path / "project"
     project_root.mkdir()
     md = project_root / "doc.md"
     md.write_text("x", encoding="utf-8")
-    (project_root / "tricky.svg").write_bytes(
-        b"<!-- <svg> not actually an svg -->\n<html><body>hi</body></html>"
-    )
+    (project_root / "tricky.svg").write_bytes(payload)
 
     ref = AssetRef(
         original_path="tricky.svg", alt="", start=0, end=20, syntax="markdown"
