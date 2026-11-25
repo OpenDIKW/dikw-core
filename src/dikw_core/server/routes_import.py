@@ -33,7 +33,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from ..md_inspect import package_sha256, sha256_file
+from ..md_inspect import find_outside_root_refs, package_sha256, sha256_file
 from ._time import isoformat_utc_ms
 from .errors import BadRequest
 from .runtime import ServerRuntime, get_runtime
@@ -125,6 +125,7 @@ def make_router(*, auth_dep: Any) -> APIRouter:
             _extract_safely(tarball_path, staging_root)
             os.unlink(tarball_path)
             file_rejects = _verify_manifest(staging_root, manifest_obj)
+            _verify_markdown_refs(staging_root, manifest_obj)
             # Mutating ``<base>/sources/`` must serialize with ingest
             # (which scans that tree) and with other concurrent imports
             # (which would otherwise race on the same archive paths).
@@ -381,6 +382,33 @@ def _verify_manifest(
             if f in bad_files:
                 bad_files[f].append(pkg.id)
     return bad_files
+
+
+def _verify_markdown_refs(staging_root: Path, manifest: Manifest) -> None:
+    """Reject staged markdown files containing local image references that
+    escape ``sources/`` (absolute paths, ``..`` traversals, or ``.dikw/``).
+
+    Mirrors the client importer's outside-root rejection on the server
+    import path so a direct HTTP caller cannot commit markdown pointing at
+    host files or internal base metadata into ``<base>/sources/``.
+    """
+    sources_root = staging_root / "sources"
+    md_paths = {pkg.md_path for pkg in manifest.packages}
+    for entry in manifest.files:
+        if Path(entry.path).suffix.lower() in (".md", ".markdown"):
+            md_paths.add(entry.path)
+    for rel in sorted(md_paths):
+        abs_md = staging_root / rel
+        if not abs_md.is_file():
+            continue
+        outside = find_outside_root_refs(abs_md, project_root=sources_root)
+        if outside:
+            raise BadRequest(
+                f"markdown file {rel!r} contains image references outside "
+                f"the sources root: {outside}",
+                code="import_asset_outside_root",
+                detail={"md_path": rel, "refs": outside[:10]},
+            )
 
 
 def _commit_packages(

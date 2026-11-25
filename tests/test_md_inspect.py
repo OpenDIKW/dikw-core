@@ -16,9 +16,22 @@ ten seconds later.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
-from dikw_core.md_inspect import InspectionResult, inspect_markdown
+import pytest
+
+from dikw_core.md_inspect import (
+    InspectionResult,
+    _candidate_is_symlink,
+    _is_remote,
+    _is_within_dikw_meta,
+    _resolve_local,
+    find_outside_root_refs,
+    inspect_markdown,
+    is_outside_root_ref,
+)
 
 
 def _write(path: Path, body: str) -> None:
@@ -185,3 +198,287 @@ def test_inspection_result_is_immutable(tmp_path: Path) -> None:
     # some Python builds).
     import dataclasses
     assert dataclasses.is_dataclass(result)
+
+
+def test_resolve_local_rejects_absolute_path_outside_root(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    _write(note, f"# n\n![]({outside})\n")
+
+    assert (
+        _resolve_local(str(outside), source_md_path=note, project_root=vault)
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+    assert result.asset_paths == []
+
+
+def test_resolve_local_rejects_parent_traversal_outside_root(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    _write(note, "# n\n![](../../outside.png)\n")
+
+    assert (
+        _resolve_local(
+            "../../outside.png", source_md_path=note, project_root=vault
+        )
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+    assert result.asset_paths == []
+
+
+def test_resolve_local_rejects_dikw_internal_metadata(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    secret = vault / ".dikw" / "auth.json"
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text('{"access_token": "fixture-only"}\n', encoding="utf-8")
+    _write(note, "# n\n![](../.dikw/auth.json)\n")
+
+    assert (
+        _resolve_local(
+            "../.dikw/auth.json", source_md_path=note, project_root=vault
+        )
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+
+
+def test_resolve_local_rejects_symlink_escaping_root(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](escape.png)\n")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    link = vault / "sources" / "escape.png"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
+        pytest.skip(f"symlinks unavailable: {e}")
+
+    assert (
+        _resolve_local("escape.png", source_md_path=note, project_root=vault)
+        is None
+    )
+
+
+def test_resolve_local_rejects_fifo(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - Windows
+        pytest.skip("mkfifo unavailable on this platform")
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](pipe.png)\n")
+    fifo = vault / "sources" / "pipe.png"
+    os.mkfifo(fifo)
+
+    assert (
+        _resolve_local("pipe.png", source_md_path=note, project_root=vault)
+        is None
+    )
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFCHR | 0o666, stat.S_IFBLK | 0o660])
+def test_resolve_local_rejects_device_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](dev.png)\n")
+    target = vault / "sources" / "dev.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n")
+    target_resolved = target.resolve()
+
+    real_stat = Path.stat
+
+    def _fake_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        st = real_stat(self, follow_symlinks=follow_symlinks)
+        if os.path.realpath(self) == str(target_resolved):
+            return os.stat_result((mode, *st[1:]))
+        return st
+
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+
+    assert (
+        _resolve_local("dev.png", source_md_path=note, project_root=vault)
+        is None
+    )
+
+
+def test_is_within_dikw_meta_handles_path_outside_root(tmp_path: Path) -> None:
+    vault = (tmp_path / "vault").resolve()
+    outside = (tmp_path / "other" / "file.png").resolve()
+    assert _is_within_dikw_meta(outside, vault) is False
+
+
+@pytest.mark.parametrize("bad_ref", ["", "bad\x00.png"])
+def test_forbidden_empty_and_nul_refs_rejected(
+    tmp_path: Path, bad_ref: str
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\nbody\n")
+
+    assert is_outside_root_ref(bad_ref, source_md_path=note, project_root=vault)
+    assert _resolve_local(bad_ref, source_md_path=note, project_root=vault) is None
+
+
+def test_is_outside_root_ref_allows_remote_urls(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\nbody\n")
+
+    assert (
+        is_outside_root_ref(
+            "https://example.com/img.png",
+            source_md_path=note,
+            project_root=vault,
+        )
+        is False
+    )
+
+
+def test_find_outside_root_refs_falls_back_on_malformed_frontmatter(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "bad.md"
+    _write(
+        note,
+        "---\ntitle: a\nfoo: : bar\n---\n"
+        "![](https://example.com/ok.png)\n"
+        "![](../../outside.png)\n",
+    )
+
+    assert find_outside_root_refs(note, project_root=vault) == [
+        "../../outside.png"
+    ]
+
+
+def test_candidate_is_symlink_skips_dotdot_segment(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](..)\n")
+
+    assert (
+        _candidate_is_symlink("..", source_md_path=note, project_root=vault)
+        is False
+    )
+
+
+def test_symlinked_dikw_directory_excluded_while_ordinary_assets_allowed(
+    tmp_path: Path,
+) -> None:
+    """When ``root/.dikw`` is a symlink to ``root/private-state``, both
+    ``../.dikw/auth.json`` and ``../private-state/auth.json`` must be rejected,
+    while ordinary assets outside both subtrees remain valid."""
+    vault = tmp_path / "vault"
+    private_state = vault / "private-state"
+    private_state.mkdir(parents=True)
+    (private_state / "auth.json").write_text(
+        '{"access_token": "fixture-only"}\n', encoding="utf-8"
+    )
+    dikw_link = vault / ".dikw"
+    try:
+        dikw_link.symlink_to(private_state, target_is_directory=True)
+    except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
+        pytest.skip(f"symlinks unavailable: {e}")
+
+    ok_img = vault / "sources" / "ok.png"
+    ok_img.parent.mkdir(parents=True, exist_ok=True)
+    ok_img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    note_via_dikw = vault / "sources" / "via_dikw.md"
+    _write(note_via_dikw, "# n\n![](../.dikw/auth.json)\n")
+    assert (
+        _resolve_local(
+            "../.dikw/auth.json",
+            source_md_path=note_via_dikw,
+            project_root=vault,
+        )
+        is None
+    )
+    res_dikw = inspect_markdown(note_via_dikw, project_root=vault)
+    assert not res_dikw.ok
+    assert any(i.kind == "asset_outside_root" for i in res_dikw.issues)
+    assert res_dikw.asset_paths == []
+
+    note_via_target = vault / "sources" / "via_target.md"
+    _write(note_via_target, "# n\n![](../private-state/auth.json)\n")
+    assert (
+        _resolve_local(
+            "../private-state/auth.json",
+            source_md_path=note_via_target,
+            project_root=vault,
+        )
+        is None
+    )
+    res_target = inspect_markdown(note_via_target, project_root=vault)
+    assert not res_target.ok
+    assert any(i.kind == "asset_outside_root" for i in res_target.issues)
+    assert res_target.asset_paths == []
+
+    note_ok = vault / "sources" / "ok.md"
+    _write(note_ok, "# n\n![](ok.png)\n")
+    res_ok = inspect_markdown(note_ok, project_root=vault)
+    assert res_ok.ok, res_ok.issues
+    assert res_ok.asset_paths == [ok_img.resolve()]
+
+
+def test_is_within_dikw_meta_handles_cyclic_dikw_symlink(
+    tmp_path: Path,
+) -> None:
+    """A broken/cyclic ``.dikw`` symlink must not break ordinary assets."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    dikw_link = vault / ".dikw"
+    try:
+        dikw_link.symlink_to(dikw_link)
+    except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
+        pytest.skip(f"symlinks unavailable: {e}")
+
+    vault_resolved = vault.resolve()
+    assert (
+        _is_within_dikw_meta(
+            vault_resolved / "sources" / "ok.png", vault_resolved
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "win_ref",
+    [r"C:\outside\secret.png", "c:/outside/secret.png", "D:relative.png"],
+)
+def test_windows_drive_letter_path_classified_local_and_outside_root(
+    tmp_path: Path, win_ref: str
+) -> None:
+    """Windows drive-letter paths must not be mistaken for URL schemes by
+    ``_is_remote``; they must reach containment and report ``asset_outside_root``."""
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, f"# n\n![]({win_ref})\n")
+
+    assert _is_remote(win_ref) is False
+    assert is_outside_root_ref(win_ref, source_md_path=note, project_root=vault)
+    assert (
+        _resolve_local(win_ref, source_md_path=note, project_root=vault) is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+    assert result.asset_paths == []

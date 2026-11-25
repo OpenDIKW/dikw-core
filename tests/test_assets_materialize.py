@@ -13,13 +13,20 @@ references and the engine-managed binary on disk. Contract:
 
 from __future__ import annotations
 
+import os
+import stat
 import struct
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from dikw_core.domains.data.assets import materialize_asset
+from dikw_core.domains.data.assets import (
+    _MIME_SNIFF_BYTES,
+    _read_bounded_header,
+    materialize_asset,
+)
 from dikw_core.schemas import AssetKind, AssetRecord, AssetRef
 
 # ---- Helpers -------------------------------------------------------------
@@ -555,3 +562,470 @@ async def test_materialize_uses_engine_vault_path_layout(tmp_path: Path) -> None
     assert parts[2].endswith(".png")
     # Sanitized: spaces collapsed to '-'.
     assert "diagram-with-spaces" in parts[2]
+
+
+async def test_materialize_rejects_absolute_path_outside_root(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "sources").mkdir(parents=True)
+    md = project_root / "sources" / "doc.md"
+    md.write_text("x", encoding="utf-8")
+
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_png_with_dims(10, 10))
+
+    ref = AssetRef(
+        original_path=str(outside),
+        alt="abs",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+async def test_materialize_rejects_parent_traversal_outside_root(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "sources").mkdir(parents=True)
+    md = project_root / "sources" / "doc.md"
+    md.write_text("x", encoding="utf-8")
+
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_png_with_dims(10, 10))
+
+    ref = AssetRef(
+        original_path="../../outside.png",
+        alt="esc",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+async def test_materialize_rejects_dikw_internal_file(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "sources").mkdir(parents=True)
+    (project_root / ".dikw").mkdir(parents=True)
+    # Even if an internal file started with PNG magic bytes, .dikw/ must be off-limits.
+    (project_root / ".dikw" / "auth.json").write_bytes(_png_with_dims(4, 4))
+    md = project_root / "sources" / "doc.md"
+    md.write_text("x", encoding="utf-8")
+
+    ref = AssetRef(
+        original_path="../.dikw/auth.json",
+        alt="meta",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFCHR | 0o666, stat.S_IFBLK | 0o660])
+async def test_materialize_rejects_device_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "dev.png"
+    target.write_bytes(_png_with_dims(4, 4))
+    target_resolved = target.resolve()
+
+    real_stat = Path.stat
+
+    def _fake_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        st = real_stat(self, follow_symlinks=follow_symlinks)
+        if os.path.realpath(self) == str(target_resolved):
+            return os.stat_result((mode, *st[1:]))
+        return st
+
+    def _forbid_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if os.path.realpath(self) == str(target_resolved):
+            raise AssertionError("device node must never be opened")
+        return real_open(self, *args, **kwargs)
+
+    real_open = Path.open
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+    monkeypatch.setattr(Path, "open", _forbid_open)
+
+    ref = AssetRef(
+        original_path="dev.png", alt="", start=0, end=10, syntax="markdown"
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+
+
+async def test_materialize_rejects_fifo(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - Windows
+        pytest.skip("mkfifo unavailable on this platform")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    os.mkfifo(project_root / "pipe.png")
+
+    ref = AssetRef(
+        original_path="pipe.png", alt="", start=0, end=10, syntax="markdown"
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+
+
+async def test_materialize_mime_uses_bounded_header_without_slurp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-image files must be rejected from a bounded header read before
+    streaming-hashing or calling ``read_bytes()``."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "large-non-image.png"
+    target.write_bytes(b"NOT_AN_IMAGE_" * 5000)
+    target_resolved = target.resolve()
+
+    read_sizes: list[int] = []
+    real_open = Path.open
+
+    class _RecordingReader:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def fileno(self) -> int:
+            return int(self._inner.fileno())
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            return bytes(self._inner.read(size))
+
+        def __enter__(self) -> _RecordingReader:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._inner.close()
+
+    def _spy_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        fh = real_open(self, *args, **kwargs)
+        if os.path.realpath(self) == str(target_resolved):
+            return _RecordingReader(fh)
+        return fh
+
+    def _explode_read_bytes(_self: Path) -> bytes:
+        raise AssertionError("read_bytes() must not be called for non-image")
+
+    def _explode_hash_file(_p: Path) -> str:
+        raise AssertionError("hash_file() must not be called for non-image")
+
+    monkeypatch.setattr(Path, "open", _spy_open)
+    monkeypatch.setattr(Path, "read_bytes", _explode_read_bytes)
+    monkeypatch.setattr("dikw_core.domains.data.assets.hash_file", _explode_hash_file)
+
+    ref = AssetRef(
+        original_path="large-non-image.png",
+        alt="",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert read_sizes == [_MIME_SNIFF_BYTES]
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["fake.png", "fake.jpg", "fake.jpeg", "fake.gif", "fake.webp", "fake.svg"],
+)
+async def test_materialize_drops_extension_only_mime_fallback(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    """A non-image payload must NOT be materialized just because its filename
+    ends in an image extension."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    (project_root / filename).write_bytes(b'{"fixture": "plain-text-not-image"}\n')
+
+    ref = AssetRef(
+        original_path=filename, alt="", start=0, end=20, syntax="markdown"
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+def test_read_bounded_header_rejects_non_regular_and_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_read_bounded_header`` must return ``None`` for non-regular paths
+    (at both ``stat`` and ``fstat``) and on ``OSError``."""
+    assert _read_bounded_header(tmp_path) is None
+    assert _read_bounded_header(tmp_path / "does-not-exist.png") is None
+
+    target = tmp_path / "swapped.png"
+    target.write_bytes(_png_with_dims(4, 4))
+    real_fstat = os.fstat
+
+    def _fake_fstat(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        return os.stat_result((stat.S_IFIFO | 0o600, *st[1:]))
+
+    monkeypatch.setattr(os, "fstat", _fake_fstat)
+    assert _read_bounded_header(target) is None
+
+
+async def test_materialize_skips_when_header_read_fails_after_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the file becomes unreadable after ``_resolve_local`` succeeds,
+    ``materialize_asset`` logs and skips without hashing or slurping."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "unreadable.png"
+    target.write_bytes(_png_with_dims(4, 4))
+    target_resolved = target.resolve()
+
+    real_open = Path.open
+
+    def _deny_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if os.path.realpath(self) == str(target_resolved):
+            raise PermissionError("simulated unreadable file")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _deny_open)
+
+    ref = AssetRef(
+        original_path="unreadable.png",
+        alt="",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+
+
+async def test_materialize_skips_when_file_replaced_with_non_regular_before_slurp(
+    tmp_path: Path,
+) -> None:
+    """If the asset is swapped for a non-regular entry between hashing and
+    the final slurp, ``materialize_asset`` rejects it before ``read_bytes``."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    target = project_root / "swapped.png"
+    target.write_bytes(_png_with_dims(4, 4))
+
+    store, _get, upsert = _make_fake_storage()
+
+    async def _get_and_swap(_asset_id: str) -> AssetRecord | None:
+        if target.is_file():
+            target.unlink()
+            target.mkdir()
+        return None
+
+    ref = AssetRef(
+        original_path="swapped.png",
+        alt="",
+        start=0,
+        end=20,
+        syntax="markdown",
+    )
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=_get_and_swap,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<!-- " + (b"c" * 220) + b' -->\n<svg xmlns="http://www.w3.org/2000/svg" />',
+        b'<!DOCTYPE svg [<!ENTITY label "ok">]><svg xmlns="http://www.w3.org/2000/svg"/>',
+    ],
+)
+async def test_materialize_svg_with_leading_comment_no_xml_decl(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    """A valid .svg starting with a 220-byte XML comment or a DOCTYPE with
+    an internal subset (and no XML declaration) must still be recognized within
+    the bounded 1024-byte header."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    (project_root / "commented.svg").write_bytes(payload)
+
+    ref = AssetRef(
+        original_path="commented.svg", alt="", start=0, end=20, syntax="markdown"
+    )
+    _store, get, upsert = _make_fake_storage()
+    result = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert result is not None
+    rec, was_new = result
+    assert was_new is True
+    assert rec.mime == "image/svg+xml"
+    assert rec.media_meta is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<!-- <svg> not actually an svg -->\n<html><body>hi</body></html>",
+        b"<!-- unclosed comment containing <svg> without closing marker",
+        b'<!DOCTYPE svg [<!ENTITY label "ok"> unclosed <svg/>',
+    ],
+)
+async def test_materialize_rejects_svg_tag_only_inside_comment(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    """Mentioning ``<svg>`` inside a comment (closed or unclosed) before a
+    non-SVG root must not fool the SVG header detector."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    (project_root / "tricky.svg").write_bytes(payload)
+
+    ref = AssetRef(
+        original_path="tricky.svg", alt="", start=0, end=20, syntax="markdown"
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+async def test_materialize_rejects_windows_drive_letter_path(
+    tmp_path: Path,
+) -> None:
+    """Windows drive-letter paths must be treated as local (not remote) and
+    rejected by containment."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+
+    ref = AssetRef(
+        original_path=r"C:\outside\secret.png",
+        alt="",
+        start=0,
+        end=25,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}

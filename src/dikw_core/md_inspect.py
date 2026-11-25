@@ -32,12 +32,14 @@ from urllib.parse import urlparse
 
 import frontmatter
 
+from .api_path_safety import _assert_within
 from .schemas import AssetRef
 
 IssueKind = Literal[
     "frontmatter_error",
     "asset_missing",
     "asset_symlink",
+    "asset_outside_root",
     "empty_body",
     "encoding_error",
 ]
@@ -120,28 +122,133 @@ def extract_image_refs(body: str) -> list[AssetRef]:
     return refs
 
 
+# Windows drive-letter prefix (e.g. ``C:\...``, ``C:/...``, ``C:rel``).
+# Checked before ``urlparse`` so single-letter drive prefixes are treated as
+# local paths rather than URL schemes.
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
 def _is_remote(original_path: str) -> bool:
     """Treat anything with a non-empty scheme (http, https, ftp, data, …)
-    as remote. Plain relative paths and bare filenames stay local.
-    Mirror of ``domains/data/assets._is_remote`` so the pre-flight + the
-    materialize step agree on the same boundary."""
+    as remote. Plain relative paths, bare filenames, ``file:`` URIs, and
+    Windows drive-letter paths stay local.
+    Shared with ``domains/data/assets`` so pre-flight and materialization
+    agree on the same boundary."""
+    if _WIN_DRIVE_RE.match(original_path):
+        return False
     parsed = urlparse(original_path)
     return bool(parsed.scheme) and parsed.scheme not in ("file",)
+
+
+def _is_within_dikw_meta(resolved: Path, root_resolved: Path) -> bool:
+    """Return ``True`` when ``resolved`` lives under ``<project_root>/.dikw/``,
+    either under the logical ``.dikw`` subtree or under ``.dikw``'s resolved
+    canonical target when ``.dikw`` is a directory symlink."""
+    dikw_dir = root_resolved / ".dikw"
+    if resolved.is_relative_to(dikw_dir):
+        return True
+    if dikw_dir.is_symlink():
+        try:
+            dikw_target = dikw_dir.resolve()
+        except (OSError, RuntimeError):
+            return False
+        if resolved.is_relative_to(dikw_target):
+            return True
+    return False
+
+
+def _is_forbidden_local_ref(original_path: str) -> bool:
+    """Reject empty, NUL-bearing, ``file:`` URI, Windows drive-letter, or
+    OS-absolute local refs."""
+    if not original_path or "\x00" in original_path:
+        return True
+    if _WIN_DRIVE_RE.match(original_path):
+        return True
+    if urlparse(original_path).scheme == "file":
+        return True
+    return Path(original_path).is_absolute() or original_path.startswith(("/", "\\"))
+
+
+def _resolve_within_root(
+    raw_candidate: Path, *, root_resolved: Path
+) -> Path | None:
+    """Resolve ``raw_candidate`` and require it to stay within ``root_resolved``
+    (via :func:`_assert_within`) and outside internal ``.dikw/`` state."""
+    try:
+        candidate = _assert_within(root_resolved, raw_candidate)
+    except (ValueError, OSError):
+        return None
+    if _is_within_dikw_meta(candidate, root_resolved):
+        return None
+    return candidate
+
+
+def is_outside_root_ref(
+    original_path: str, *, source_md_path: Path, project_root: Path
+) -> bool:
+    """Return ``True`` iff a non-remote image ref escapes ``project_root``
+    (or targets internal ``.dikw/`` metadata) under every lookup stage."""
+    if _is_remote(original_path):
+        return False
+    if _is_forbidden_local_ref(original_path):
+        return True
+    root_resolved = project_root.resolve()
+    return all(
+        _resolve_within_root(raw_candidate, root_resolved=root_resolved) is None
+        for raw_candidate in (
+            source_md_path.parent / original_path,
+            project_root / original_path,
+        )
+    )
+
+
+def find_outside_root_refs(
+    path: Path, *, project_root: Path
+) -> list[str]:
+    """Return every local image reference in ``path`` that escapes
+    ``project_root`` (or targets internal ``.dikw/`` metadata)."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        body = frontmatter.loads(text).content
+    except Exception:
+        body = text
+    bad: list[str] = []
+    for ref in extract_image_refs(body):
+        if is_outside_root_ref(
+            ref.original_path, source_md_path=path, project_root=project_root
+        ):
+            bad.append(ref.original_path)
+    return bad
 
 
 def _resolve_local(
     original_path: str, *, source_md_path: Path, project_root: Path
 ) -> Path | None:
-    """Sibling-of-md → project-root two-stage lookup.
+    """Sibling-of-md → project-root two-stage lookup confined to ``project_root``.
 
-    Mirrors ``domains/data/assets._resolve_local`` so the importer
-    and ingest agree on which file an embed reference points at."""
-    candidate = (source_md_path.parent / original_path).resolve()
-    if candidate.is_file():
-        return candidate
-    candidate = (project_root / original_path).resolve()
-    if candidate.is_file():
-        return candidate
+    Every candidate is resolved and verified with :func:`_assert_within`
+    against ``project_root``, must not live under internal ``.dikw/`` state,
+    and must be a regular file (rejecting directories, FIFOs, sockets, and
+    device nodes).
+    """
+    if _is_forbidden_local_ref(original_path):
+        return None
+    root_resolved = project_root.resolve()
+    for raw_candidate in (
+        source_md_path.parent / original_path,
+        project_root / original_path,
+    ):
+        candidate = _resolve_within_root(
+            raw_candidate, root_resolved=root_resolved
+        )
+        if candidate is None:
+            continue
+        try:
+            st = candidate.stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode):
+            return candidate
     return None
 
 
@@ -149,7 +256,7 @@ def _candidate_is_symlink(
     original_path: str, *, source_md_path: Path, project_root: Path
 ) -> bool:
     """``True`` iff the raw lookup path for ``original_path`` (under
-    sibling-of-md or project-root) lstats to a symlink.
+    sibling-of-md or project-root) lstats to a symlink inside ``project_root``.
 
     The pre-flight needs this because ``_resolve_local`` runs
     ``Path.resolve`` and silently follows the symlink — the import
@@ -157,10 +264,17 @@ def _candidate_is_symlink(
     breaking the md's reference and potentially leaking files outside
     the import root.
     """
+    if _is_forbidden_local_ref(original_path):
+        return False
+    root_resolved = project_root.resolve()
     for candidate in (
         source_md_path.parent / original_path,
         project_root / original_path,
     ):
+        if candidate.name in ("", ".", ".."):
+            continue
+        if _resolve_within_root(candidate.parent, root_resolved=root_resolved) is None:
+            continue
         try:
             cst = candidate.lstat()
         except OSError:
@@ -294,6 +408,19 @@ def inspect_markdown(
                 )
             )
             continue
+        if is_outside_root_ref(
+            ref.original_path, source_md_path=path, project_root=project_root
+        ):
+            issues.append(
+                InspectionIssue(
+                    kind="asset_outside_root",
+                    message=(
+                        f"asset reference {ref.original_path!r} escapes "
+                        f"the project root ({project_root})"
+                    ),
+                )
+            )
+            continue
         resolved = _resolve_local(
             ref.original_path,
             source_md_path=path,
@@ -328,7 +455,9 @@ __all__ = [
     "InspectionResult",
     "IssueKind",
     "extract_image_refs",
+    "find_outside_root_refs",
     "inspect_markdown",
+    "is_outside_root_ref",
     "package_sha256",
     "sha256_file",
 ]

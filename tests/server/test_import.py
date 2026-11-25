@@ -16,10 +16,18 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+
+from dikw_core.server.routes_import import (
+    Manifest,
+    ManifestEntry,
+    PackageEntry,
+    _verify_markdown_refs,
+)
 
 from ._import_helpers import packages_manifest, sha256, tar_bytes
 
@@ -225,3 +233,87 @@ async def test_import_too_large_rejected(
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "import_too_large"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "md_body",
+    [
+        b"# pwn\n![](/abs/path/to/file.png)\n",
+        b"# pwn\n![](../.dikw/auth.json)\n",
+        b"# pwn\n![](../../outside.png)\n",
+        b"# pwn\n![[../.dikw/auth.json]]\n",
+        b"# pwn\n![[/etc/hosts|alias]]\n",
+        b"# pwn\n![](file:///tmp/secret.png)\n",
+        b"# pwn\n![](C:\\Windows\\win.ini)\n",
+    ],
+)
+async def test_import_rejects_markdown_with_outside_root_image_ref(
+    server_client: httpx.AsyncClient,
+    base_root: Any,
+    md_body: bytes,
+) -> None:
+    """Server import must mirror client-side containment and reject markdown
+    containing absolute or escaping image references before committing."""
+    files = {"sources/pwn.md": md_body}
+    manifest = packages_manifest(
+        files, [{"md_path": "sources/pwn.md", "asset_paths": []}]
+    )
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/import",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "import_asset_outside_root"
+    assert not (base_root / "sources" / "pwn.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_smuggled_markdown_in_asset_paths(
+    server_client: httpx.AsyncClient,
+    base_root: Any,
+) -> None:
+    """A malicious .md listed under ``asset_paths`` instead of ``md_path``
+    must still be inspected and rejected before commit."""
+    files = {
+        "sources/benign.md": b"# ok\nbody\n",
+        "sources/evil.md": b"# evil\n![](../.dikw/auth.json)\n",
+    }
+    manifest = packages_manifest(
+        files,
+        [{"md_path": "sources/benign.md", "asset_paths": ["sources/evil.md"]}],
+    )
+    payload = tar_bytes(files)
+    resp = await server_client.post(
+        "/v1/import",
+        files={"payload": ("u.tar.gz", payload, "application/gzip")},
+        data={"manifest": json.dumps(manifest)},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "import_asset_outside_root"
+    assert not (base_root / "sources" / "benign.md").exists()
+    assert not (base_root / "sources" / "evil.md").exists()
+
+
+def test_verify_markdown_refs_skips_non_file_md_path(tmp_path: Path) -> None:
+    """Defensive guard: ``_verify_markdown_refs`` ignores manifest markdown
+    entries whose staged path is not a regular file."""
+    staging = tmp_path / "staging"
+    (staging / "sources").mkdir(parents=True)
+    manifest = Manifest(
+        files=[
+            ManifestEntry(path="sources/missing.md", size=0, sha256="0" * 64)
+        ],
+        packages=[
+            PackageEntry(
+                id=0,
+                md_path="sources/missing.md",
+                asset_paths=[],
+                package_sha256="0" * 64,
+            )
+        ],
+        total_bytes=0,
+    )
+    _verify_markdown_refs(staging, manifest)
