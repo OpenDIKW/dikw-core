@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable
@@ -156,21 +157,18 @@ __all__ = [
 
 # ---- Image MIME + dimension probe (stdlib, no Pillow) --------------------
 
-_EXT_TO_MIME = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "gif": "image/gif",
-    "webp": "image/webp",
-    "svg": "image/svg+xml",
-}
+# Bounded pre-slurp header read size for MIME sniffing (covers PNG/JPEG/GIF/
+# WebP magic headers and the 1000-byte SVG XML prologue window).
+_MIME_SNIFF_BYTES = 1024
 
 
-def _detect_image_mime(data: bytes, ext_hint: str = "") -> str | None:
-    """Detect image MIME from magic bytes; fall back to file extension.
+def _detect_image_mime(data: bytes) -> str | None:
+    """Detect image MIME strictly from magic bytes / SVG XML prologue.
 
     Returns ``None`` for anything that isn't a v1-supported image format,
-    which the caller treats as a signal to skip materialization.
+    which the caller treats as a signal to skip materialization. Never
+    falls back to the file extension so non-image files cannot masquerade
+    as images via a ``.png``/``.svg`` suffix.
     """
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
@@ -184,7 +182,29 @@ def _detect_image_mime(data: bytes, ext_hint: str = "") -> str | None:
     head = data[:200].lower()
     if b"<svg" in head or (b"<?xml" in head and b"svg" in data[:1000].lower()):
         return "image/svg+xml"
-    return _EXT_TO_MIME.get(ext_hint.lower())
+    return None
+
+
+def _read_bounded_header(
+    path: Path, *, max_bytes: int = _MIME_SNIFF_BYTES
+) -> bytes | None:
+    """Verify ``path`` is a regular file and read at most ``max_bytes``.
+
+    Checks ``stat.S_ISREG`` both before opening (avoiding blocking on
+    FIFOs or touching device nodes) and on the opened descriptor (closing
+    a swap window between ``stat`` and ``open``).
+    """
+    try:
+        st = path.stat()
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        with path.open("rb") as fh:
+            fst = os.fstat(fh.fileno())
+            if not stat.S_ISREG(fst.st_mode):
+                return None
+            return fh.read(max_bytes)
+    except OSError:
+        return None
 
 
 def _probe_dimensions(data: bytes, mime: str) -> tuple[int | None, int | None]:
@@ -309,6 +329,21 @@ async def materialize_asset(
         )
         return None
 
+    # Bounded header sniff + regular-file check before any full-file hash or
+    # slurp so non-images and device nodes are never read into memory.
+    header = _read_bounded_header(abs_path)
+    if header is None:
+        logger.warning(
+            "skipping non-regular or unreadable image reference: %s", abs_path
+        )
+        return None
+    if _detect_image_mime(header) is None:
+        logger.warning(
+            "skipping unrecognized image format at %s",
+            abs_path,
+        )
+        return None
+
     # Stream-hash first so cache hits never have to slurp the file.
     try:
         sha = hash_file(abs_path)
@@ -336,6 +371,9 @@ async def materialize_asset(
             return await _attach_or_return(existing, ref, upsert_asset)
 
     try:
+        if not stat.S_ISREG(abs_path.stat().st_mode):
+            logger.warning("skipping non-regular file at %s", abs_path)
+            return None
         data = abs_path.read_bytes()
     except OSError as e:
         logger.warning("failed to read %s: %s", abs_path, e)
@@ -351,13 +389,11 @@ async def materialize_asset(
         if existing is not None:
             return await _attach_or_return(existing, ref, upsert_asset)
 
-    _, ext_hint = _split_basename_and_ext(ref.original_path)
-    mime = _detect_image_mime(data, ext_hint=ext_hint)
+    mime = _detect_image_mime(data)
     if mime is None:
         logger.warning(
-            "skipping unrecognized image format at %s (ext=%r)",
+            "skipping unrecognized image format at %s",
             abs_path,
-            ext_hint,
         )
         return None
 

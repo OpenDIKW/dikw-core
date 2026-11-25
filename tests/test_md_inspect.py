@@ -16,9 +16,17 @@ ten seconds later.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
-from dikw_core.md_inspect import InspectionResult, inspect_markdown
+import pytest
+
+from dikw_core.md_inspect import (
+    InspectionResult,
+    _resolve_local,
+    inspect_markdown,
+)
 
 
 def _write(path: Path, body: str) -> None:
@@ -185,3 +193,122 @@ def test_inspection_result_is_immutable(tmp_path: Path) -> None:
     # some Python builds).
     import dataclasses
     assert dataclasses.is_dataclass(result)
+
+
+def test_resolve_local_rejects_absolute_path_outside_root(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    _write(note, f"# n\n![]({outside})\n")
+
+    assert (
+        _resolve_local(str(outside), source_md_path=note, project_root=vault)
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+    assert result.asset_paths == []
+
+
+def test_resolve_local_rejects_parent_traversal_outside_root(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    _write(note, "# n\n![](../../outside.png)\n")
+
+    assert (
+        _resolve_local(
+            "../../outside.png", source_md_path=note, project_root=vault
+        )
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+    assert result.asset_paths == []
+
+
+def test_resolve_local_rejects_dikw_internal_metadata(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    secret = vault / ".dikw" / "auth.json"
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text('{"access_token": "fixture-only"}\n', encoding="utf-8")
+    _write(note, "# n\n![](../.dikw/auth.json)\n")
+
+    assert (
+        _resolve_local(
+            "../.dikw/auth.json", source_md_path=note, project_root=vault
+        )
+        is None
+    )
+    result = inspect_markdown(note, project_root=vault)
+    assert not result.ok
+    assert any(i.kind == "asset_outside_root" for i in result.issues)
+
+
+def test_resolve_local_rejects_symlink_escaping_root(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](escape.png)\n")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+    link = vault / "sources" / "escape.png"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as e:  # pragma: no cover - Windows
+        pytest.skip(f"symlinks unavailable: {e}")
+
+    assert (
+        _resolve_local("escape.png", source_md_path=note, project_root=vault)
+        is None
+    )
+
+
+def test_resolve_local_rejects_fifo(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - Windows
+        pytest.skip("mkfifo unavailable on this platform")
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](pipe.png)\n")
+    fifo = vault / "sources" / "pipe.png"
+    os.mkfifo(fifo)
+
+    assert (
+        _resolve_local("pipe.png", source_md_path=note, project_root=vault)
+        is None
+    )
+
+
+@pytest.mark.parametrize("mode", [stat.S_IFCHR | 0o666, stat.S_IFBLK | 0o660])
+def test_resolve_local_rejects_device_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "sources" / "n.md"
+    _write(note, "# n\n![](dev.png)\n")
+    target = vault / "sources" / "dev.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n")
+    target_resolved = target.resolve()
+
+    real_stat = Path.stat
+
+    def _fake_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        st = real_stat(self, follow_symlinks=follow_symlinks)
+        if os.path.realpath(self) == str(target_resolved):
+            return os.stat_result((mode, *st[1:]))
+        return st
+
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+
+    assert (
+        _resolve_local("dev.png", source_md_path=note, project_root=vault)
+        is None
+    )
