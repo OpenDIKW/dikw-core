@@ -122,27 +122,47 @@ def extract_image_refs(body: str) -> list[AssetRef]:
     return refs
 
 
+# Windows drive-letter prefix (e.g. ``C:\...``, ``C:/...``, ``C:rel``).
+# Checked before ``urlparse`` so single-letter drive prefixes are treated as
+# local paths rather than URL schemes.
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
 def _is_remote(original_path: str) -> bool:
     """Treat anything with a non-empty scheme (http, https, ftp, data, …)
-    as remote. Plain relative paths and bare filenames stay local.
-    Mirror of ``domains/data/assets._is_remote`` so the pre-flight + the
-    materialize step agree on the same boundary."""
+    as remote. Plain relative paths, bare filenames, ``file:`` URIs, and
+    Windows drive-letter paths stay local.
+    Shared with ``domains/data/assets`` so pre-flight and materialization
+    agree on the same boundary."""
+    if _WIN_DRIVE_RE.match(original_path):
+        return False
     parsed = urlparse(original_path)
     return bool(parsed.scheme) and parsed.scheme not in ("file",)
 
 
 def _is_within_dikw_meta(resolved: Path, root_resolved: Path) -> bool:
-    """Return ``True`` when ``resolved`` lives under ``<project_root>/.dikw/``."""
-    try:
-        rel = resolved.relative_to(root_resolved)
-    except ValueError:
-        return False
-    return bool(rel.parts) and rel.parts[0] == ".dikw"
+    """Return ``True`` when ``resolved`` lives under ``<project_root>/.dikw/``,
+    either under the logical ``.dikw`` subtree or under ``.dikw``'s resolved
+    canonical target when ``.dikw`` is a directory symlink."""
+    dikw_dir = root_resolved / ".dikw"
+    if resolved.is_relative_to(dikw_dir):
+        return True
+    if dikw_dir.is_symlink():
+        try:
+            dikw_target = dikw_dir.resolve()
+        except (OSError, RuntimeError):
+            return False
+        if resolved.is_relative_to(dikw_target):
+            return True
+    return False
 
 
 def _is_forbidden_local_ref(original_path: str) -> bool:
-    """Reject empty, NUL-bearing, ``file:`` URI, or OS-absolute local refs."""
+    """Reject empty, NUL-bearing, ``file:`` URI, Windows drive-letter, or
+    OS-absolute local refs."""
     if not original_path or "\x00" in original_path:
+        return True
+    if _WIN_DRIVE_RE.match(original_path):
         return True
     if urlparse(original_path).scheme == "file":
         return True

@@ -926,3 +926,92 @@ async def test_materialize_skips_when_file_replaced_with_non_regular_before_slur
     assert rec is None
     assert store == {}
     assert not (project_root / "assets").exists()
+
+
+async def test_materialize_svg_with_leading_comment_no_xml_decl(
+    tmp_path: Path,
+) -> None:
+    """A valid .svg starting with a 220-byte XML comment and no XML
+    declaration must still be recognized within the bounded 1024-byte header."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    leading_comment = b"<!-- " + (b"c" * 220) + b" -->\n"
+    svg_payload = leading_comment + b'<svg xmlns="http://www.w3.org/2000/svg" />'
+    (project_root / "commented.svg").write_bytes(svg_payload)
+
+    ref = AssetRef(
+        original_path="commented.svg", alt="", start=0, end=20, syntax="markdown"
+    )
+    _store, get, upsert = _make_fake_storage()
+    result = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert result is not None
+    rec, was_new = result
+    assert was_new is True
+    assert rec.mime == "image/svg+xml"
+    assert rec.media_meta is None
+
+
+async def test_materialize_rejects_svg_tag_only_inside_comment(
+    tmp_path: Path,
+) -> None:
+    """Mentioning ``<svg>`` inside a comment before a non-SVG root must not
+    fool the SVG header detector."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+    (project_root / "tricky.svg").write_bytes(
+        b"<!-- <svg> not actually an svg -->\n<html><body>hi</body></html>"
+    )
+
+    ref = AssetRef(
+        original_path="tricky.svg", alt="", start=0, end=20, syntax="markdown"
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}
+    assert not (project_root / "assets").exists()
+
+
+async def test_materialize_rejects_windows_drive_letter_path(
+    tmp_path: Path,
+) -> None:
+    """Windows drive-letter paths must be treated as local (not remote) and
+    rejected by containment."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    md = project_root / "doc.md"
+    md.write_text("x", encoding="utf-8")
+
+    ref = AssetRef(
+        original_path=r"C:\outside\secret.png",
+        alt="",
+        start=0,
+        end=25,
+        syntax="markdown",
+    )
+    store, get, upsert = _make_fake_storage()
+    rec = await materialize_asset(
+        ref,
+        source_md_path=md,
+        project_root=project_root,
+        get_asset=get,
+        upsert_asset=upsert,
+    )
+    assert rec is None
+    assert store == {}

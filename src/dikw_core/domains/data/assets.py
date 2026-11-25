@@ -158,8 +158,16 @@ __all__ = [
 # ---- Image MIME + dimension probe (stdlib, no Pillow) --------------------
 
 # Bounded pre-slurp header read size for MIME sniffing (covers PNG/JPEG/GIF/
-# WebP magic headers and the 1000-byte SVG XML prologue window).
+# WebP magic headers and leading SVG XML prologues/comments).
 _MIME_SNIFF_BYTES = 1024
+
+# SVG root detector within the bounded header: allows optional UTF-8 BOM and
+# any leading whitespace, XML declarations/PIs, XML comments, or DOCTYPE
+# before the ``<svg`` root element.
+_SVG_PROLOGUE_RE = re.compile(
+    rb"^(?:\xef\xbb\xbf)?(?:\s|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!doctype[^>]*>)*<svg(?=[\s/>]|$)",
+    re.IGNORECASE,
+)
 
 
 def _detect_image_mime(data: bytes) -> str | None:
@@ -178,9 +186,9 @@ def _detect_image_mime(data: bytes) -> str | None:
         return "image/gif"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
-    # SVG is text-based; sniff the first ~200 bytes for the root tag.
-    head = data[:200].lower()
-    if b"<svg" in head or (b"<?xml" in head and b"svg" in data[:1000].lower()):
+    # SVG is text-based; match an ``<svg`` root after optional XML prologues
+    # and comments within the bounded header window.
+    if _SVG_PROLOGUE_RE.match(data[:_MIME_SNIFF_BYTES]):
         return "image/svg+xml"
     return None
 

@@ -245,6 +245,7 @@ async def test_import_too_large_rejected(
         b"# pwn\n![[../.dikw/auth.json]]\n",
         b"# pwn\n![[/etc/hosts|alias]]\n",
         b"# pwn\n![](file:///tmp/secret.png)\n",
+        b"# pwn\n![](C:\\Windows\\win.ini)\n",
     ],
 )
 async def test_import_rejects_markdown_with_outside_root_image_ref(
